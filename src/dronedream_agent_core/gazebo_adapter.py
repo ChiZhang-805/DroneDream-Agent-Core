@@ -2558,8 +2558,13 @@ def run_px4_gazebo_track(
         simulation_camera_profile == "native" or simulation_training_channel is None
     ):
         raise ValueError("render warmup requires explicit source-bound visual training")
+    # 教师采集与在线学习器均属显式训练；不能要求教师伪造一个互斥的学习器通道。
+    # 仅记录观察不授予该权限，教师还必须明确开启，后续仍检查其不能混入模型控制权限。
+    camera_training_authorized = simulation_training_channel is not None or (
+        simulation_teacher_control and record_learning_observations
+    )
     if simulation_camera_profile != "native" and (
-        simulation_training_channel is None or not local_navigation_visual_enabled
+        not camera_training_authorized or not local_navigation_visual_enabled
     ):
         raise ValueError(
             "camera stream profile is restricted to explicit visual simulation training"
