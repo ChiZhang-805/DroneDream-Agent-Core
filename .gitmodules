@@ -1,0 +1,3 @@
+[submodule "shared/dronedream-runtime-source"]
+	path = shared/dronedream-runtime-source
+	url = https://github.com/ChiZhang-805/DroneDream.git

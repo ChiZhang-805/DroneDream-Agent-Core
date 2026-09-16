@@ -1,0 +1,198 @@
+{
+  "$defs": {
+    "AssetFile": {
+      "additionalProperties": false,
+      "description": "One package member's identity, byte size and authority-bearing role.",
+      "properties": {
+        "media_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "asset_ir",
+            "source",
+            "source_reference",
+            "visual",
+            "collision",
+            "sdf",
+            "urdf",
+            "xacro",
+            "controller",
+            "semantic",
+            "thumbnail",
+            "evidence",
+            "license",
+            "metadata"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 2147483648,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "role",
+        "media_type",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "AssetFile",
+      "type": "object"
+    },
+    "QualificationBinding": {
+      "additionalProperties": false,
+      "description": "Content/environment binding; caller must verify its locally produced evidence.",
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "environment_versions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 64,
+          "minProperties": 1,
+          "title": "Environment Versions",
+          "type": "object"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "maturity": {
+          "enum": [
+            "visual_only",
+            "physics_ready",
+            "simulation_ready",
+            "flight_ready",
+            "qualified"
+          ],
+          "title": "Maturity",
+          "type": "string"
+        },
+        "qualified_at": {
+          "format": "date-time",
+          "title": "Qualified At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.asset-qualification-binding.v1",
+          "default": "dronedream.asset-qualification-binding.v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "maturity",
+        "content_sha256",
+        "environment_versions",
+        "qualified_at"
+      ],
+      "title": "QualificationBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Content-addressed file index; its digest is integrity, not a publisher signature.",
+  "properties": {
+    "asset_id": {
+      "maxLength": 160,
+      "minLength": 3,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "asset_ir_path": {
+      "default": "normalized/asset-ir.json",
+      "title": "Asset Ir Path",
+      "type": "string"
+    },
+    "asset_kind": {
+      "enum": [
+        "map",
+        "world",
+        "vehicle"
+      ],
+      "title": "Asset Kind",
+      "type": "string"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/AssetFile"
+      },
+      "maxItems": 20000,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "package_id": {
+      "maxLength": 160,
+      "minLength": 3,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Package Id",
+      "type": "string"
+    },
+    "qualification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QualificationBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "dronedream.ddpkg.v1",
+      "default": "dronedream.ddpkg.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "package_id",
+    "asset_id",
+    "asset_kind",
+    "content_sha256",
+    "files",
+    "created_at"
+  ],
+  "title": "DDPkgManifest",
+  "type": "object"
+}

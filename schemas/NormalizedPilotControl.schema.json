@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "description": "Controller-neutral, continuous output of a learned local pilot.\n\nThe four axes are deliberately dimensionless.  A vehicle-bound deterministic\nadapter maps them to body velocity and yaw-rate limits before the existing\nacceleration, jerk, collision and command-lease gates run.  This keeps a\nlearned model independent of PX4/ArduPilot transport details and prevents it\nfrom writing motor outputs or inventing world-frame coordinates.",
+  "properties": {
+    "forward_axis": {
+      "maximum": 1.0,
+      "minimum": -1.0,
+      "title": "Forward Axis",
+      "type": "number"
+    },
+    "right_axis": {
+      "maximum": 1.0,
+      "minimum": -1.0,
+      "title": "Right Axis",
+      "type": "number"
+    },
+    "schema_version": {
+      "const": "dronedream.normalized-pilot-control.v1",
+      "default": "dronedream.normalized-pilot-control.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "up_axis": {
+      "maximum": 1.0,
+      "minimum": -1.0,
+      "title": "Up Axis",
+      "type": "number"
+    },
+    "yaw_axis": {
+      "maximum": 1.0,
+      "minimum": -1.0,
+      "title": "Yaw Axis",
+      "type": "number"
+    }
+  },
+  "required": [
+    "forward_axis",
+    "right_axis",
+    "up_axis",
+    "yaw_axis"
+  ],
+  "title": "NormalizedPilotControl",
+  "type": "object"
+}

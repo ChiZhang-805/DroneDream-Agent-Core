@@ -1,0 +1,217 @@
+{
+  "$defs": {
+    "RealtimeFeatureEncoding": {
+      "additionalProperties": false,
+      "description": "One fixed-width, auditable encoder result.\n\n``valid_mask`` is kept separate from values so absence cannot be confused\nwith a measured zero.  Features are normalized only by declared physical\nlimits and remain finite, which makes the same contract usable by native\ncode, ONNX Runtime and replay qualification.",
+      "properties": {
+        "coverage": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Coverage",
+          "type": "number"
+        },
+        "encoded_at_unix_ms": {
+          "minimum": 0,
+          "title": "Encoded At Unix Ms",
+          "type": "integer"
+        },
+        "encoder_role": {
+          "enum": [
+            "metric-geometry-encoder",
+            "dynamic-target-encoder",
+            "flight-state-encoder"
+          ],
+          "title": "Encoder Role",
+          "type": "string"
+        },
+        "feature_contract_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feature Contract Sha256"
+        },
+        "features": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 512,
+          "minItems": 1,
+          "title": "Features",
+          "type": "array"
+        },
+        "inference_latency_ms": {
+          "maximum": 30000.0,
+          "minimum": 0.0,
+          "title": "Inference Latency Ms",
+          "type": "number"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 24,
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "maximum_age_milliseconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 30000,
+          "title": "Maximum Age Milliseconds",
+          "type": "integer"
+        },
+        "observed_at_unix_ms": {
+          "minimum": 0,
+          "title": "Observed At Unix Ms",
+          "type": "integer"
+        },
+        "quality": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Quality",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.realtime-feature-encoding.v1",
+          "default": "dronedream.realtime-feature-encoding.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "uncertainty": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Uncertainty",
+          "type": "number"
+        },
+        "valid_mask": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 512,
+          "minItems": 1,
+          "title": "Valid Mask",
+          "type": "array"
+        }
+      },
+      "required": [
+        "encoder_role",
+        "source_ids",
+        "source_sha256",
+        "observed_at_unix_ms",
+        "encoded_at_unix_ms",
+        "maximum_age_milliseconds",
+        "quality",
+        "coverage",
+        "uncertainty",
+        "features",
+        "valid_mask",
+        "inference_latency_ms"
+      ],
+      "title": "RealtimeFeatureEncoding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Synchronized encoder set admitted to one local-control tick.",
+  "properties": {
+    "captured_at_unix_ms": {
+      "minimum": 0,
+      "title": "Captured At Unix Ms",
+      "type": "integer"
+    },
+    "encodings": {
+      "items": {
+        "$ref": "#/$defs/RealtimeFeatureEncoding"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Encodings",
+      "type": "array"
+    },
+    "fused_features": {
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 2048,
+      "minItems": 1,
+      "title": "Fused Features",
+      "type": "array"
+    },
+    "fused_valid_mask": {
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 2048,
+      "minItems": 1,
+      "title": "Fused Valid Mask",
+      "type": "array"
+    },
+    "issue_codes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 64,
+      "title": "Issue Codes",
+      "type": "array"
+    },
+    "ready_for_control": {
+      "title": "Ready For Control",
+      "type": "boolean"
+    },
+    "required_roles": {
+      "items": {
+        "enum": [
+          "metric-geometry-encoder",
+          "dynamic-target-encoder",
+          "flight-state-encoder"
+        ],
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Required Roles",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "dronedream.realtime-feature-snapshot.v1",
+      "default": "dronedream.realtime-feature-snapshot.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Snapshot Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "captured_at_unix_ms",
+    "encodings",
+    "ready_for_control",
+    "fused_features",
+    "fused_valid_mask",
+    "snapshot_sha256"
+  ],
+  "title": "RealtimeFeatureSnapshot",
+  "type": "object"
+}

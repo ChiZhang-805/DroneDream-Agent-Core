@@ -1,0 +1,1096 @@
+{
+  "$defs": {
+    "GraphRoute": {
+      "additionalProperties": false,
+      "properties": {
+        "all_edges_flight_verified": {
+          "title": "All Edges Flight Verified",
+          "type": "boolean"
+        },
+        "edge_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Edge Ids",
+          "type": "array"
+        },
+        "goal_node": {
+          "title": "Goal Node",
+          "type": "string"
+        },
+        "node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Node Ids",
+          "type": "array"
+        },
+        "positions_m": {
+          "items": {
+            "$ref": "#/$defs/Vector3"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Positions M",
+          "type": "array"
+        },
+        "route_length_m": {
+          "minimum": 0.0,
+          "title": "Route Length M",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.graph-route.v1",
+          "default": "dronedream.graph-route.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "start_node": {
+          "title": "Start Node",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_node",
+        "goal_node",
+        "node_ids",
+        "edge_ids",
+        "positions_m",
+        "route_length_m",
+        "all_edges_flight_verified"
+      ],
+      "title": "GraphRoute",
+      "type": "object"
+    },
+    "PluginHookReceipt": {
+      "additionalProperties": false,
+      "description": "Hash-bound evidence for a non-tool Harness extension invocation.",
+      "properties": {
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hook": {
+          "pattern": "^[a-z][a-z0-9._-]{1,95}$",
+          "title": "Hook",
+          "type": "string"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "invocation_id": {
+          "pattern": "^hook-[0-9a-f]{24}$",
+          "title": "Invocation Id",
+          "type": "string"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "outcome": {
+          "enum": [
+            "accepted",
+            "skipped",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "plugin_id": {
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "plugin_package_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plugin Package Sha256",
+          "type": "string"
+        },
+        "plugin_version": {
+          "title": "Plugin Version",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.plugin-hook-receipt.v1",
+          "default": "dronedream.plugin-hook-receipt.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "slot_id": {
+          "title": "Slot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "invocation_id",
+        "plugin_id",
+        "plugin_version",
+        "plugin_package_sha256",
+        "capability_id",
+        "slot_id",
+        "hook",
+        "outcome",
+        "input_sha256",
+        "output_sha256",
+        "created_at"
+      ],
+      "title": "PluginHookReceipt",
+      "type": "object"
+    },
+    "Px4CoordinateContract": {
+      "additionalProperties": false,
+      "properties": {
+        "collision_center_offset_model_m": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Collision Center Offset Model M",
+          "type": "array"
+        },
+        "executor_x": {
+          "const": "PX4 local north physically mapped to qualified-map ENU north",
+          "default": "PX4 local north physically mapped to qualified-map ENU north",
+          "title": "Executor X",
+          "type": "string"
+        },
+        "executor_y": {
+          "const": "PX4 local east physically mapped to qualified-map ENU east",
+          "default": "PX4 local east physically mapped to qualified-map ENU east",
+          "title": "Executor Y",
+          "type": "string"
+        },
+        "executor_z": {
+          "const": "PX4 local up",
+          "default": "PX4 local up",
+          "title": "Executor Z",
+          "type": "string"
+        },
+        "model_root_world_enu_m": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Model Root World Enu M",
+          "type": "array"
+        },
+        "source": {
+          "const": "Gazebo ENU vehicle-collision-envelope center",
+          "default": "Gazebo ENU vehicle-collision-envelope center",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_root_world_enu_m",
+        "collision_center_offset_model_m"
+      ],
+      "title": "Px4CoordinateContract",
+      "type": "object"
+    },
+    "Px4Track": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinate_contract": {
+          "$ref": "#/$defs/Px4CoordinateContract"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Px4TrackPoint"
+          },
+          "maxItems": 10000,
+          "minItems": 2,
+          "title": "Points",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "dronedream.px4-track.v2",
+          "default": "dronedream.px4-track.v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_world_points": {
+          "items": {
+            "$ref": "#/$defs/WorldTrackPoint"
+          },
+          "maxItems": 10000,
+          "minItems": 2,
+          "title": "Source World Points",
+          "type": "array"
+        },
+        "stop_at_waypoints": {
+          "default": true,
+          "title": "Stop At Waypoints",
+          "type": "boolean"
+        },
+        "track_type": {
+          "const": "custom",
+          "default": "custom",
+          "title": "Track Type",
+          "type": "string"
+        },
+        "waypoint_hold_seconds": {
+          "maximum": 30.0,
+          "minimum": 0.0,
+          "title": "Waypoint Hold Seconds",
+          "type": "number"
+        },
+        "waypoint_position_tolerance_m": {
+          "default": 0.2,
+          "exclusiveMinimum": 0.0,
+          "maximum": 2.0,
+          "title": "Waypoint Position Tolerance M",
+          "type": "number"
+        },
+        "waypoint_settle_timeout_seconds": {
+          "default": 12.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 120.0,
+          "title": "Waypoint Settle Timeout Seconds",
+          "type": "number"
+        },
+        "waypoint_speed_tolerance_mps": {
+          "default": 0.15,
+          "exclusiveMinimum": 0.0,
+          "maximum": 2.0,
+          "title": "Waypoint Speed Tolerance Mps",
+          "type": "number"
+        },
+        "waypoint_stable_window_seconds": {
+          "default": 0.5,
+          "exclusiveMinimum": 0.0,
+          "maximum": 10.0,
+          "title": "Waypoint Stable Window Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "coordinate_contract",
+        "points",
+        "source_world_points",
+        "waypoint_hold_seconds"
+      ],
+      "title": "Px4Track",
+      "type": "object"
+    },
+    "Px4TrackPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "enum": [
+            "launch",
+            "transit",
+            "stairs",
+            "pickup",
+            "return",
+            "land"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "speed_limit_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Speed Limit Mps",
+          "type": "number"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "phase",
+        "speed_limit_mps"
+      ],
+      "title": "Px4TrackPoint",
+      "type": "object"
+    },
+    "RouteClearanceReport": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "collision_count": {
+          "minimum": 0,
+          "title": "Collision Count",
+          "type": "integer"
+        },
+        "collisions": {
+          "items": {
+            "$ref": "#/$defs/RouteCollision"
+          },
+          "maxItems": 100,
+          "title": "Collisions",
+          "type": "array"
+        },
+        "minimum_clearance_m": {
+          "title": "Minimum Clearance M",
+          "type": "number"
+        },
+        "minimum_clearance_point": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "minimum_clearance_primitive": {
+          "title": "Minimum Clearance Primitive",
+          "type": "string"
+        },
+        "primitive_count": {
+          "minimum": 1,
+          "title": "Primitive Count",
+          "type": "integer"
+        },
+        "route_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Route Sha256",
+          "type": "string"
+        },
+        "sample_count": {
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "sample_interval_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Sample Interval M",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.route-clearance.v1",
+          "default": "dronedream.route-clearance.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "segment_minimum_clearances_m": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 9999,
+          "title": "Segment Minimum Clearances M",
+          "type": "array"
+        },
+        "semantic_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Semantic Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "route_sha256",
+        "semantic_sha256",
+        "sample_interval_m",
+        "sample_count",
+        "primitive_count",
+        "collision_count",
+        "minimum_clearance_m",
+        "minimum_clearance_point",
+        "minimum_clearance_primitive"
+      ],
+      "title": "RouteClearanceReport",
+      "type": "object"
+    },
+    "RouteCollision": {
+      "additionalProperties": false,
+      "properties": {
+        "clearance_m": {
+          "title": "Clearance M",
+          "type": "number"
+        },
+        "position_m": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "primitive_name": {
+          "title": "Primitive Name",
+          "type": "string"
+        },
+        "sample_index": {
+          "minimum": 0,
+          "title": "Sample Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_index",
+        "position_m",
+        "primitive_name",
+        "clearance_m"
+      ],
+      "title": "RouteCollision",
+      "type": "object"
+    },
+    "RuntimeActionExecutionContract": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_catalog_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Adapter Catalog Sha256",
+          "type": "string"
+        },
+        "contract_id": {
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "domain_action_catalog_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Domain Action Catalog Sha256",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.runtime-action-execution.v1",
+          "default": "dronedream.runtime-action-execution.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/RuntimeActionExecutionStep"
+          },
+          "maxItems": 128,
+          "title": "Steps",
+          "type": "array"
+        },
+        "task_graph_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Task Graph Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "task_graph_sha256",
+        "domain_action_catalog_sha256",
+        "adapter_catalog_sha256"
+      ],
+      "title": "RuntimeActionExecutionContract",
+      "type": "object"
+    },
+    "RuntimeActionExecutionStep": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "maxLength": 120,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+          "title": "Action",
+          "type": "string"
+        },
+        "adapter_id": {
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "authority": {
+          "enum": [
+            "simulate",
+            "control",
+            "actuate"
+          ],
+          "title": "Authority",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "anyOf": [
+            {
+              "pattern": "^checkpoint-[0-9]{3,6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint Id"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "driver": {
+          "enum": [
+            "mavsdk-camera",
+            "gazebo-payload",
+            "payload-transition",
+            "ros2-service"
+          ],
+          "title": "Driver",
+          "type": "string"
+        },
+        "fallback": {
+          "enum": [
+            "continue",
+            "hold",
+            "return",
+            "land",
+            "abort"
+          ],
+          "title": "Fallback",
+          "type": "string"
+        },
+        "max_attempts": {
+          "maximum": 9,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "required_success_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 24,
+          "minItems": 1,
+          "title": "Required Success Evidence",
+          "type": "array"
+        },
+        "runtime_executor": {
+          "title": "Runtime Executor",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.runtime-action-step.v1",
+          "default": "dronedream.runtime-action-step.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "step_id": {
+          "pattern": "^action-[0-9]{3,6}$",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "target_node": {
+          "title": "Target Node",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 300.0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "trigger": {
+          "enum": [
+            "post-takeoff",
+            "post-replan",
+            "checkpoint"
+          ],
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "task_id",
+        "action",
+        "target_node",
+        "trigger",
+        "runtime_executor",
+        "adapter_id",
+        "driver",
+        "required_success_evidence",
+        "max_attempts",
+        "fallback",
+        "timeout_seconds",
+        "authority"
+      ],
+      "title": "RuntimeActionExecutionStep",
+      "type": "object"
+    },
+    "RuntimeCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": {
+          "pattern": "^checkpoint-[0-9]{3,6}$",
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "segment_id": {
+          "pattern": "^segment-[0-9]{3,6}$",
+          "title": "Segment Id",
+          "type": "string"
+        },
+        "target_node": {
+          "title": "Target Node",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "track_point_index": {
+          "minimum": 1,
+          "title": "Track Point Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "segment_id",
+        "task_id",
+        "track_point_index",
+        "target_node"
+      ],
+      "title": "RuntimeCheckpoint",
+      "type": "object"
+    },
+    "RuntimeCheckpointContract": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoints": {
+          "items": {
+            "$ref": "#/$defs/RuntimeCheckpoint"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Checkpoints",
+          "type": "array"
+        },
+        "contract_id": {
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.runtime-checkpoints.v1",
+          "default": "dronedream.runtime-checkpoints.v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "checkpoints"
+      ],
+      "title": "RuntimeCheckpointContract",
+      "type": "object"
+    },
+    "RuntimeToolReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "accepted",
+            "rejected",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "plugin_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugin Id"
+        },
+        "plugin_package_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugin Package Sha256"
+        },
+        "tool_id": {
+          "title": "Tool Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "outcome",
+        "input_sha256",
+        "output_sha256"
+      ],
+      "title": "RuntimeToolReceipt",
+      "type": "object"
+    },
+    "TaskGraph": {
+      "additionalProperties": false,
+      "properties": {
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/TaskNode"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "title": "Nodes",
+          "type": "array"
+        },
+        "revision": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "schema_version": {
+          "default": "dronedream.task-graph.v2",
+          "enum": [
+            "dronedream.task-graph.v1",
+            "dronedream.task-graph.v2"
+          ],
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodes"
+      ],
+      "title": "TaskGraph",
+      "type": "object"
+    },
+    "TaskNode": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "maxLength": 120,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+          "title": "Action",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "fallback": {
+          "enum": [
+            "continue",
+            "hold",
+            "return",
+            "land",
+            "abort"
+          ],
+          "title": "Fallback",
+          "type": "string"
+        },
+        "max_retries": {
+          "default": 1,
+          "maximum": 8,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "success_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Success Evidence",
+          "type": "array"
+        },
+        "target_node": {
+          "title": "Target Node",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "action",
+        "target_node",
+        "success_evidence",
+        "fallback"
+      ],
+      "title": "TaskNode",
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    },
+    "WorldTrackPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "east_m": {
+          "title": "East M",
+          "type": "number"
+        },
+        "north_m": {
+          "title": "North M",
+          "type": "number"
+        },
+        "up_m": {
+          "title": "Up M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "east_m",
+        "north_m",
+        "up_m"
+      ],
+      "title": "WorldTrackPoint",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A code-validated track that may supersede the active track during stable hold.",
+  "properties": {
+    "amendment_action": {
+      "default": "replan",
+      "enum": [
+        "replan",
+        "redirect",
+        "set_speed",
+        "return_home",
+        "set_return_point",
+        "set_coverage",
+        "follow_target"
+      ],
+      "title": "Amendment Action",
+      "type": "string"
+    },
+    "amendment_parameters": {
+      "additionalProperties": true,
+      "title": "Amendment Parameters",
+      "type": "object"
+    },
+    "clearance": {
+      "$ref": "#/$defs/RouteClearanceReport"
+    },
+    "decision_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Decision Sha256",
+      "type": "string"
+    },
+    "deterministic_gates": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "maxProperties": 32,
+      "minProperties": 1,
+      "title": "Deterministic Gates",
+      "type": "object"
+    },
+    "execution_id": {
+      "pattern": "^execution-[0-9a-f]{32}$",
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "hold_ack_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Hold Ack Sha256",
+      "type": "string"
+    },
+    "message_id": {
+      "pattern": "^runtime-msg-[0-9a-f]{32}$",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "message_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Message Sha256",
+      "type": "string"
+    },
+    "plugin_hook_receipts": {
+      "items": {
+        "$ref": "#/$defs/PluginHookReceipt"
+      },
+      "title": "Plugin Hook Receipts",
+      "type": "array"
+    },
+    "plugin_tool_receipts": {
+      "items": {
+        "$ref": "#/$defs/RuntimeToolReceipt"
+      },
+      "title": "Plugin Tool Receipts",
+      "type": "array"
+    },
+    "prior_track_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prior Track Sha256",
+      "type": "string"
+    },
+    "replacement_sequence": {
+      "minimum": 1,
+      "title": "Replacement Sequence",
+      "type": "integer"
+    },
+    "return_node": {
+      "title": "Return Node",
+      "type": "string"
+    },
+    "revised_task_graph": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskGraph"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "route": {
+      "$ref": "#/$defs/GraphRoute"
+    },
+    "runtime_actions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeActionExecutionContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "runtime_checkpoints": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeCheckpointContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "default": "dronedream.runtime-replacement-track.v2",
+      "enum": [
+        "dronedream.runtime-replacement-track.v1",
+        "dronedream.runtime-replacement-track.v2"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "superseded_runtime_action_step_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 128,
+      "title": "Superseded Runtime Action Step Ids",
+      "type": "array"
+    },
+    "target_node": {
+      "title": "Target Node",
+      "type": "string"
+    },
+    "track": {
+      "$ref": "#/$defs/Px4Track"
+    }
+  },
+  "required": [
+    "message_id",
+    "execution_id",
+    "replacement_sequence",
+    "message_sha256",
+    "hold_ack_sha256",
+    "decision_sha256",
+    "prior_track_sha256",
+    "target_node",
+    "return_node",
+    "route",
+    "clearance",
+    "track",
+    "deterministic_gates",
+    "generated_at"
+  ],
+  "title": "RuntimeReplacementTrack",
+  "type": "object"
+}

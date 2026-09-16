@@ -1,0 +1,806 @@
+{
+  "$defs": {
+    "AssetFile": {
+      "additionalProperties": false,
+      "description": "One package member's identity, byte size and authority-bearing role.",
+      "properties": {
+        "media_type": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "asset_ir",
+            "source",
+            "source_reference",
+            "visual",
+            "collision",
+            "sdf",
+            "urdf",
+            "xacro",
+            "controller",
+            "semantic",
+            "thumbnail",
+            "evidence",
+            "license",
+            "metadata"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 2147483648,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "role",
+        "media_type",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "AssetFile",
+      "type": "object"
+    },
+    "AssetSource": {
+      "additionalProperties": false,
+      "description": "Declared source provenance; source hashes still need local admission verification.",
+      "properties": {
+        "adapter_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Adapter Id",
+          "type": "string"
+        },
+        "adapter_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "application": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Application",
+          "type": "string"
+        },
+        "application_version": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Application Version"
+        },
+        "source_format": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Source Format",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "source_uri_redacted": {
+          "anyOf": [
+            {
+              "maxLength": 240,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Uri Redacted"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "adapter_version",
+        "application",
+        "source_format",
+        "source_sha256"
+      ],
+      "title": "AssetSource",
+      "type": "object"
+    },
+    "GeometrySummary": {
+      "additionalProperties": false,
+      "description": "Geometry inventory and units, not a collision-clearance or navigability proof.",
+      "properties": {
+        "collision_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Collision Count",
+          "type": "integer"
+        },
+        "collision_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Collision Paths",
+          "type": "array"
+        },
+        "coordinate_frames": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Coordinate Frames",
+          "type": "array"
+        },
+        "paths_normalized": {
+          "default": true,
+          "title": "Paths Normalized",
+          "type": "boolean"
+        },
+        "up_axis": {
+          "default": "unknown",
+          "enum": [
+            "x",
+            "y",
+            "z",
+            "unknown"
+          ],
+          "title": "Up Axis",
+          "type": "string"
+        },
+        "visual_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Visual Count",
+          "type": "integer"
+        },
+        "visual_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Visual Paths",
+          "type": "array"
+        }
+      },
+      "title": "GeometrySummary",
+      "type": "object"
+    },
+    "InterfaceSummary": {
+      "additionalProperties": false,
+      "description": "Entrypoint declarations do not grant permission to execute their contents.",
+      "properties": {
+        "gazebo_entrypoints": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Gazebo Entrypoints",
+          "type": "array"
+        },
+        "px4_profiles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Px4 Profiles",
+          "type": "array"
+        },
+        "ros2_entrypoints": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Ros2 Entrypoints",
+          "type": "array"
+        }
+      },
+      "title": "InterfaceSummary",
+      "type": "object"
+    },
+    "PhysicsSummary": {
+      "additionalProperties": false,
+      "description": "Declared physics coverage; numeric/model feasibility needs independent qualification.",
+      "properties": {
+        "collision_complete": {
+          "default": false,
+          "title": "Collision Complete",
+          "type": "boolean"
+        },
+        "contact_materials": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Contact Materials",
+          "type": "array"
+        },
+        "inertia_complete": {
+          "default": false,
+          "title": "Inertia Complete",
+          "type": "boolean"
+        },
+        "inertia_entry_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Inertia Entry Count",
+          "type": "integer"
+        },
+        "joint_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Joint Count",
+          "type": "integer"
+        },
+        "link_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Link Count",
+          "type": "integer"
+        },
+        "mass_complete": {
+          "default": false,
+          "title": "Mass Complete",
+          "type": "boolean"
+        },
+        "mass_entry_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Mass Entry Count",
+          "type": "integer"
+        }
+      },
+      "title": "PhysicsSummary",
+      "type": "object"
+    },
+    "ReadinessSummary": {
+      "additionalProperties": false,
+      "description": "Source readiness claims remain bounded by locally verified qualification evidence.",
+      "properties": {
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Evidence Paths",
+          "type": "array"
+        },
+        "maturity_ceiling": {
+          "default": "visual_only",
+          "enum": [
+            "visual_only",
+            "physics_ready",
+            "simulation_ready",
+            "flight_ready",
+            "qualified"
+          ],
+          "title": "Maturity Ceiling",
+          "type": "string"
+        },
+        "missing_fields": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Missing Fields",
+          "type": "array"
+        },
+        "qualification_required": {
+          "default": true,
+          "title": "Qualification Required",
+          "type": "boolean"
+        },
+        "runtime_validation_performed": {
+          "default": false,
+          "title": "Runtime Validation Performed",
+          "type": "boolean"
+        }
+      },
+      "title": "ReadinessSummary",
+      "type": "object"
+    },
+    "RuntimeExtension": {
+      "additionalProperties": false,
+      "description": "A discovered executable reference remains disabled; declaration is not authorization.",
+      "properties": {
+        "admission": {
+          "default": "blocked",
+          "enum": [
+            "blocked",
+            "requires_explicit_trust"
+          ],
+          "title": "Admission",
+          "type": "string"
+        },
+        "enabled_by_default": {
+          "const": false,
+          "default": false,
+          "title": "Enabled By Default",
+          "type": "boolean"
+        },
+        "filename": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filename"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source_path"
+      ],
+      "title": "RuntimeExtension",
+      "type": "object"
+    },
+    "SemanticSummary": {
+      "additionalProperties": false,
+      "description": "Semantic/navigation file references whose existence is checked by AssetIR.",
+      "properties": {
+        "named_place_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Named Place Count",
+          "type": "integer"
+        },
+        "navigation_graph_path": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Navigation Graph Path"
+        },
+        "region_count": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Region Count",
+          "type": "integer"
+        },
+        "traversability_path": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Traversability Path"
+        }
+      },
+      "title": "SemanticSummary",
+      "type": "object"
+    },
+    "SensorSummary": {
+      "additionalProperties": false,
+      "description": "Declared sensor source/rate, not a measurement or proof of live sensor delivery.",
+      "properties": {
+        "frame_id": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Id"
+        },
+        "kind": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        },
+        "update_rate_hz": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000000.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Update Rate Hz"
+        }
+      },
+      "required": [
+        "kind",
+        "source_path"
+      ],
+      "title": "SensorSummary",
+      "type": "object"
+    },
+    "SimulationTarget": {
+      "additionalProperties": false,
+      "description": "Declared simulator interface; compatibility is checked again during qualification.",
+      "properties": {
+        "autopilot": {
+          "default": "none",
+          "enum": [
+            "px4",
+            "ardupilot",
+            "none",
+            "other"
+          ],
+          "title": "Autopilot",
+          "type": "string"
+        },
+        "entrypoint": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Entrypoint",
+          "type": "string"
+        },
+        "ros_distribution": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ros Distribution"
+        },
+        "simulator": {
+          "enum": [
+            "gazebo-classic",
+            "gazebo-harmonic",
+            "isaac-sim",
+            "webots",
+            "other"
+          ],
+          "title": "Simulator",
+          "type": "string"
+        },
+        "simulator_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Simulator Version",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 160,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "simulator",
+        "simulator_version",
+        "entrypoint"
+      ],
+      "title": "SimulationTarget",
+      "type": "object"
+    },
+    "VehicleSummary": {
+      "additionalProperties": false,
+      "description": "Optional dynamics descriptors, with unknown distinct from a guessed zero value.",
+      "properties": {
+        "actuator_count": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actuator Count"
+        },
+        "autopilot_profile": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Autopilot Profile"
+        },
+        "battery_model": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Battery Model"
+        },
+        "payload_limit_kg": {
+          "anyOf": [
+            {
+              "maximum": 10000.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Limit Kg"
+        },
+        "rotor_count": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotor Count"
+        },
+        "vehicle_class": {
+          "default": "unknown",
+          "enum": [
+            "multirotor",
+            "fixed_wing",
+            "vtol",
+            "ground",
+            "other",
+            "unknown"
+          ],
+          "title": "Vehicle Class",
+          "type": "string"
+        }
+      },
+      "title": "VehicleSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Normalized metadata independent of source-editor formats and simulator execution.",
+  "properties": {
+    "angle_unit": {
+      "const": "radian",
+      "default": "radian",
+      "title": "Angle Unit",
+      "type": "string"
+    },
+    "asset_id": {
+      "maxLength": 160,
+      "minLength": 3,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "capabilities": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Capabilities",
+      "type": "array"
+    },
+    "coordinate_frame": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Coordinate Frame",
+      "type": "string"
+    },
+    "dependencies": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Dependencies",
+      "type": "array"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/AssetFile"
+      },
+      "maxItems": 20000,
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "geometry": {
+      "$ref": "#/$defs/GeometrySummary"
+    },
+    "interfaces": {
+      "$ref": "#/$defs/InterfaceSummary"
+    },
+    "kind": {
+      "enum": [
+        "map",
+        "world",
+        "vehicle"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "length_unit": {
+      "const": "metre",
+      "default": "metre",
+      "title": "Length Unit",
+      "type": "string"
+    },
+    "license_expression": {
+      "maxLength": 240,
+      "minLength": 1,
+      "title": "License Expression",
+      "type": "string"
+    },
+    "mass_unit": {
+      "const": "kilogram",
+      "default": "kilogram",
+      "title": "Mass Unit",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "physics": {
+      "$ref": "#/$defs/PhysicsSummary"
+    },
+    "readiness": {
+      "$ref": "#/$defs/ReadinessSummary"
+    },
+    "runtime_extensions": {
+      "items": {
+        "$ref": "#/$defs/RuntimeExtension"
+      },
+      "maxItems": 256,
+      "title": "Runtime Extensions",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "dronedream.asset-ir.v1",
+      "default": "dronedream.asset-ir.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "semantic_layers": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Semantic Layers",
+      "type": "array"
+    },
+    "semantics": {
+      "$ref": "#/$defs/SemanticSummary"
+    },
+    "sensors": {
+      "items": {
+        "$ref": "#/$defs/SensorSummary"
+      },
+      "maxItems": 1000,
+      "title": "Sensors",
+      "type": "array"
+    },
+    "simulation_targets": {
+      "items": {
+        "$ref": "#/$defs/SimulationTarget"
+      },
+      "maxItems": 32,
+      "title": "Simulation Targets",
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/$defs/AssetSource"
+    },
+    "vehicle": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VehicleSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "version": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_id",
+    "name",
+    "version",
+    "kind",
+    "source",
+    "coordinate_frame",
+    "files",
+    "license_expression"
+  ],
+  "title": "AssetIR",
+  "type": "object"
+}

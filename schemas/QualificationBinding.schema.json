@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "Content/environment binding; caller must verify its locally produced evidence.",
+  "properties": {
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "environment_versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 64,
+      "minProperties": 1,
+      "title": "Environment Versions",
+      "type": "object"
+    },
+    "evidence_paths": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1000,
+      "title": "Evidence Paths",
+      "type": "array"
+    },
+    "maturity": {
+      "enum": [
+        "visual_only",
+        "physics_ready",
+        "simulation_ready",
+        "flight_ready",
+        "qualified"
+      ],
+      "title": "Maturity",
+      "type": "string"
+    },
+    "qualified_at": {
+      "format": "date-time",
+      "title": "Qualified At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dronedream.asset-qualification-binding.v1",
+      "default": "dronedream.asset-qualification-binding.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "maturity",
+    "content_sha256",
+    "environment_versions",
+    "qualified_at"
+  ],
+  "title": "QualificationBinding",
+  "type": "object"
+}

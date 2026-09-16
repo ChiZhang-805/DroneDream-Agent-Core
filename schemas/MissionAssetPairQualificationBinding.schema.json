@@ -1,0 +1,99 @@
+{
+  "additionalProperties": false,
+  "description": "Portable proof that planning used one immutable, qualified asset pair.",
+  "properties": {
+    "environment_versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 64,
+      "minProperties": 1,
+      "title": "Environment Versions",
+      "type": "object"
+    },
+    "map_asset_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Map Asset Id",
+      "type": "string"
+    },
+    "map_qualified_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Map Qualified Content Sha256",
+      "type": "string"
+    },
+    "map_source_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Map Source Content Sha256",
+      "type": "string"
+    },
+    "plugin_snapshot_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plugin Snapshot Sha256"
+    },
+    "qualification_id": {
+      "pattern": "^asset-qualification-[0-9a-f]{24}$",
+      "title": "Qualification Id",
+      "type": "string"
+    },
+    "qualified_at": {
+      "format": "date-time",
+      "title": "Qualified At",
+      "type": "string"
+    },
+    "receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Receipt Sha256",
+      "type": "string"
+    },
+    "runtime_evidence_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Evidence Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dronedream.mission-asset-pair-binding.v1",
+      "default": "dronedream.mission-asset-pair-binding.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "vehicle_asset_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Vehicle Asset Id",
+      "type": "string"
+    },
+    "vehicle_qualified_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Vehicle Qualified Content Sha256",
+      "type": "string"
+    },
+    "vehicle_source_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Vehicle Source Content Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "qualification_id",
+    "receipt_sha256",
+    "runtime_evidence_sha256",
+    "map_asset_id",
+    "map_source_content_sha256",
+    "map_qualified_content_sha256",
+    "vehicle_asset_id",
+    "vehicle_source_content_sha256",
+    "vehicle_qualified_content_sha256",
+    "environment_versions",
+    "qualified_at"
+  ],
+  "title": "MissionAssetPairQualificationBinding",
+  "type": "object"
+}

@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dronedream-flight-agent-core"
+version = "1.0.0"
+description = "Open-source harness for structured, closed-loop DroneDream AGENT"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "DroneDream" }]
+dependencies = [
+  "cryptography>=45,<51",
+  "httpx>=0.28,<1",
+  "jsonschema>=4.23,<5",
+  "numpy>=2,<3",
+  "openai>=2,<3",
+  "pydantic>=2.10,<3",
+  "Pillow>=11,<13",
+  "pypdf>=5,<7",
+]
+
+[project.optional-dependencies]
+desktop = [
+  "fastapi>=0.116,<1",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.35,<1",
+]
+dev = [
+  "fastapi>=0.116,<1",
+  "pyinstaller>=6.15,<7",
+  "pytest>=8,<10",
+  "pytest-cov>=5,<8",
+  "python-multipart>=0.0.20,<1",
+  "ruff>=0.9,<1",
+  "uvicorn[standard]>=0.35,<1",
+]
+local-policy = [
+  "numpy>=2,<3",
+  "onnxruntime>=1.29,<2",
+]
+local-policy-training = [
+  "numpy>=2,<3",
+  "onnx>=1.22,<2",
+]
+local-policy-refinement = [
+  "numpy>=2,<3",
+  "onnx>=1.22,<2",
+  "torch>=2.13,<2.14",
+]
+local-vision-training = [
+  "numpy>=2,<3",
+  "onnx>=1.22,<2",
+  "torch>=2.13,<2.14",
+  "torchvision>=0.28,<0.29",
+]
+
+[project.scripts]
+dronedream-agent = "dronedream_agent_core.cli:main"
+dronedream-plugin = "dronedream_agent_core.plugin_cli:main"
+dronedream-autonomy-core = "dronedream_agent_app.server:main"
+dronedream-console = "dronedream_agent_app.console:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["shared/dronedream-runtime-source"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]

@@ -1,0 +1,53 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    env:
+      DRONEDREAM_OAUTH_CLIENT_ID_AGENT: ${{ vars.DRONEDREAM_OAUTH_CLIENT_ID_AGENT || vars.DRONEDREAM_OAUTH_CLIENT_ID_AUTONOMY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            app/frontend/package-lock.json
+            app/desktop/package-lock.json
+      - name: Verify registered public OAuth client
+        shell: pwsh
+        run: |
+          if ($env:DRONEDREAM_OAUTH_CLIENT_ID_AGENT -notmatch '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$') {
+            throw 'DRONEDREAM_OAUTH_CLIENT_ID_AGENT is missing or malformed.'
+          }
+      - name: Prepare Python build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+      - name: Build validated installer
+        shell: pwsh
+        run: .\scripts\build-autonomy-windows.ps1
+      - name: Upload installer and checksum evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: DroneDream-AGENT-Windows
+          path: |
+            artifacts/desktop/DroneDream-AGENT_0.1.0_x64-setup.exe
+            artifacts/desktop/DroneDream-AGENT_0.1.0_x64-setup.exe.sha256
+            artifacts/desktop/DroneDream-AGENT_0.1.0_x64-source-inventory.json
+          if-no-files-found: error
+          retention-days: 14

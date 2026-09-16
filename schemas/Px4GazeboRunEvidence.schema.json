@@ -1,0 +1,2323 @@
+{
+  "$defs": {
+    "ControlledVehicleEntityEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_entity_names": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Candidate Entity Names",
+          "type": "array"
+        },
+        "collision_center_offset_model_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Collision Center Offset Model M",
+          "type": "array"
+        },
+        "pose_reference": {
+          "title": "Pose Reference",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.controlled-vehicle-entity.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_at_elapsed_s": {
+          "minimum": 0.0,
+          "title": "Selected At Elapsed S",
+          "type": "number"
+        },
+        "selected_entity_name": {
+          "title": "Selected Entity Name",
+          "type": "string"
+        },
+        "vehicle_model_name": {
+          "title": "Vehicle Model Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "vehicle_model_name",
+        "selected_entity_name",
+        "pose_reference",
+        "candidate_entity_names",
+        "collision_center_offset_model_m",
+        "selected_at_elapsed_s"
+      ],
+      "title": "ControlledVehicleEntityEvidence",
+      "type": "object"
+    },
+    "ControlledVehicleIdentityEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "aligned_gazebo_collision_center_world_enu_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vector3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "consecutive_mismatch_samples": {
+          "minimum": 0,
+          "title": "Consecutive Mismatch Samples",
+          "type": "integer"
+        },
+        "correction_source": {
+          "default": "unavailable",
+          "enum": [
+            "live",
+            "cached",
+            "unavailable",
+            "validated-before-terminal-phase"
+          ],
+          "title": "Correction Source",
+          "type": "string"
+        },
+        "gazebo_collision_center_world_enu_m": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "gazebo_pose_queue_age_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gazebo Pose Queue Age Seconds"
+        },
+        "identity_alignment_seconds": {
+          "default": 0.0,
+          "maximum": 0.5,
+          "minimum": -0.5,
+          "title": "Identity Alignment Seconds",
+          "type": "number"
+        },
+        "identity_offset_innovation_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Offset Innovation M"
+        },
+        "identity_required": {
+          "default": true,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "last_correction_age_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Correction Age Seconds"
+        },
+        "maximum_absolute_correction_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Absolute Correction M"
+        },
+        "maximum_correction_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Correction M"
+        },
+        "maximum_offset_innovation_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Offset Innovation M"
+        },
+        "pose_reference": {
+          "title": "Pose Reference",
+          "type": "string"
+        },
+        "position_disagreement_m": {
+          "minimum": 0.0,
+          "title": "Position Disagreement M",
+          "type": "number"
+        },
+        "px4_collision_center_world_enu_m": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "runtime_phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Phase"
+        },
+        "schema_version": {
+          "const": "dronedream.controlled-vehicle-identity.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_entity_name": {
+          "title": "Selected Entity Name",
+          "type": "string"
+        },
+        "time_aligned_position_disagreement_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time Aligned Position Disagreement M"
+        },
+        "tracking_age_seconds": {
+          "title": "Tracking Age Seconds",
+          "type": "number"
+        },
+        "tracking_fresh": {
+          "default": true,
+          "title": "Tracking Fresh",
+          "type": "boolean"
+        },
+        "updated_at_unix_ms": {
+          "minimum": 0,
+          "title": "Updated At Unix Ms",
+          "type": "integer"
+        },
+        "validated_during_active_flight": {
+          "default": false,
+          "title": "Validated During Active Flight",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schema_version",
+        "selected_entity_name",
+        "pose_reference",
+        "gazebo_collision_center_world_enu_m",
+        "px4_collision_center_world_enu_m",
+        "position_disagreement_m",
+        "tracking_age_seconds",
+        "consecutive_mismatch_samples",
+        "accepted",
+        "updated_at_unix_ms"
+      ],
+      "title": "ControlledVehicleIdentityEvidence",
+      "type": "object"
+    },
+    "LiveSafetyEvent": {
+      "additionalProperties": false,
+      "description": "Typed fail-closed record emitted by the live Gazebo safety monitor.",
+      "properties": {
+        "clearance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clearance M"
+        },
+        "collision_primitive": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collision Primitive"
+        },
+        "elapsed_s": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Elapsed S"
+        },
+        "error_type": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Type"
+        },
+        "goal_departure_observed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goal Departure Observed"
+        },
+        "goal_observed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goal Observed"
+        },
+        "identity_alignment_seconds": {
+          "anyOf": [
+            {
+              "maximum": 0.5,
+              "minimum": -0.5,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Alignment Seconds"
+        },
+        "identity_offset_innovation_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Offset Innovation M"
+        },
+        "maximum_absolute_correction_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Absolute Correction M"
+        },
+        "maximum_offset_innovation_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Offset Innovation M"
+        },
+        "nearest_collision_primitive": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nearest Collision Primitive"
+        },
+        "phase_read": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase Read"
+        },
+        "pose_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Reference"
+        },
+        "position_disagreement_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Position Disagreement M"
+        },
+        "px4_collision_center_world_enu_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vector3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "enum": [
+            "LIVE_STATIC_COLLISION",
+            "LIVE_ROUTE_DEVIATION",
+            "CONTROLLED_ENTITY_IDENTITY_MISMATCH",
+            "PX4_TRACKING_TELEMETRY_STALE",
+            "GAZEBO_POSE_PROCESSING_FAILED",
+            "LIVE_RUNTIME_PHASE_CLOCK_INVALID",
+            "LIVE_RUNTIME_PHASE_UNAVAILABLE",
+            "LIVE_RUNTIME_PHASE_READ_FAILED"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "reference_polyline_world_enu_m": {
+          "anyOf": [
+            {
+              "items": {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Polyline World Enu M"
+        },
+        "route_deviation_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Route Deviation M"
+        },
+        "runtime_phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Phase"
+        },
+        "schema_version": {
+          "const": "dronedream.live-safety-event.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_entity_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Entity Name"
+        },
+        "time_aligned_position_disagreement_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time Aligned Position Disagreement M"
+        },
+        "tracking_age_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tracking Age Seconds"
+        },
+        "vehicle_collision_center_world_enu_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorldTrackPoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "schema_version",
+        "reason"
+      ],
+      "title": "LiveSafetyEvent",
+      "type": "object"
+    },
+    "Px4GazeboArtifactBindings": {
+      "additionalProperties": false,
+      "properties": {
+        "clearance_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Clearance Sha256",
+          "type": "string"
+        },
+        "control_application_verification": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Control Application Verification"
+        },
+        "control_applications_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Control Applications Sha256"
+        },
+        "controller_params_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Controller Params Sha256",
+          "type": "string"
+        },
+        "depth_safety_history_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Safety History Sha256"
+        },
+        "development_fault_injection_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Development Fault Injection Sha256"
+        },
+        "executor_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Executor Sha256",
+          "type": "string"
+        },
+        "learning_observation_summary_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Learning Observation Summary Sha256"
+        },
+        "learning_observations_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Learning Observations Sha256"
+        },
+        "local_control_timing_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Control Timing Sha256"
+        },
+        "local_policy_selection_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Policy Selection Sha256"
+        },
+        "local_safety_executor_history_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Safety Executor History Sha256"
+        },
+        "model_navigation_calls_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Navigation Calls Sha256"
+        },
+        "model_navigation_cycles_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Navigation Cycles Sha256"
+        },
+        "model_navigation_snapshots_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Navigation Snapshots Sha256"
+        },
+        "model_navigation_timing_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Navigation Timing Sha256"
+        },
+        "model_navigation_visual_frames": {
+          "items": {
+            "$ref": "#/$defs/Px4UlogArtifact"
+          },
+          "title": "Model Navigation Visual Frames",
+          "type": "array"
+        },
+        "multimodal_dataset_records_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multimodal Dataset Records Sha256"
+        },
+        "multimodal_dataset_root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multimodal Dataset Root"
+        },
+        "px4_ulogs": {
+          "items": {
+            "$ref": "#/$defs/Px4UlogArtifact"
+          },
+          "title": "Px4 Ulogs",
+          "type": "array"
+        },
+        "render_world_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Render World Sha256"
+        },
+        "ros_workspace": {
+          "title": "Ros Workspace",
+          "type": "string"
+        },
+        "route_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Route Sha256",
+          "type": "string"
+        },
+        "runtime_evidence_writer_summary_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Evidence Writer Summary Sha256"
+        },
+        "runtime_snapshot_writer_summary_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Snapshot Writer Summary Sha256"
+        },
+        "semantic_label_map_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Label Map Sha256"
+        },
+        "semantic_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Semantic Sha256",
+          "type": "string"
+        },
+        "static_render_batching": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Static Render Batching"
+        },
+        "track_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Track Sha256",
+          "type": "string"
+        },
+        "vehicle_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Vehicle Sha256",
+          "type": "string"
+        },
+        "world_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "World Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "world_sha256",
+        "semantic_sha256",
+        "vehicle_sha256",
+        "route_sha256",
+        "track_sha256",
+        "clearance_sha256",
+        "controller_params_sha256",
+        "executor_sha256",
+        "px4_ulogs",
+        "ros_workspace"
+      ],
+      "title": "Px4GazeboArtifactBindings",
+      "type": "object"
+    },
+    "Px4GazeboDevelopmentPayloadCollectionMeasurements": {
+      "additionalProperties": false,
+      "properties": {
+        "development_only": {
+          "default": false,
+          "title": "Development Only",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "flight_qualification_granted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flight Qualification Granted"
+        },
+        "fresh_px4_dynamics_required": {
+          "default": false,
+          "title": "Fresh Px4 Dynamics Required",
+          "type": "boolean"
+        },
+        "maximum_controller_step_scale": {
+          "anyOf": [
+            {
+              "maximum": 0.2,
+              "minimum": 0.1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Controller Step Scale"
+        }
+      },
+      "title": "Px4GazeboDevelopmentPayloadCollectionMeasurements",
+      "type": "object"
+    },
+    "Px4GazeboGates": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_model_control_input_deadlines_bounded": {
+          "default": false,
+          "title": "Actual Model Control Input Deadlines Bounded",
+          "type": "boolean"
+        },
+        "continuous_control_effective_timing_bounded": {
+          "default": false,
+          "title": "Continuous Control Effective Timing Bounded",
+          "type": "boolean"
+        },
+        "controlled_vehicle_entity_selected": {
+          "default": false,
+          "title": "Controlled Vehicle Entity Selected",
+          "type": "boolean"
+        },
+        "controlled_vehicle_identity_confirmed": {
+          "default": false,
+          "title": "Controlled Vehicle Identity Confirmed",
+          "type": "boolean"
+        },
+        "development_fault_injection_absent": {
+          "default": true,
+          "title": "Development Fault Injection Absent",
+          "type": "boolean"
+        },
+        "development_payload_collection_absent": {
+          "default": true,
+          "title": "Development Payload Collection Absent",
+          "type": "boolean"
+        },
+        "executor_completed": {
+          "title": "Executor Completed",
+          "type": "boolean"
+        },
+        "goal_observed": {
+          "title": "Goal Observed",
+          "type": "boolean"
+        },
+        "independent_native_state_publication_drained": {
+          "default": false,
+          "title": "Independent Native State Publication Drained",
+          "type": "boolean"
+        },
+        "landing_confirmed": {
+          "title": "Landing Confirmed",
+          "type": "boolean"
+        },
+        "learning_observation_recording_complete": {
+          "default": false,
+          "title": "Learning Observation Recording Complete",
+          "type": "boolean"
+        },
+        "live_depth_metric_map_present": {
+          "default": false,
+          "title": "Live Depth Metric Map Present",
+          "type": "boolean"
+        },
+        "live_depth_perception_healthy": {
+          "default": false,
+          "title": "Live Depth Perception Healthy",
+          "type": "boolean"
+        },
+        "live_depth_safety_history_present": {
+          "default": false,
+          "title": "Live Depth Safety History Present",
+          "type": "boolean"
+        },
+        "local_policy_qualified_selection_recorded": {
+          "default": false,
+          "title": "Local Policy Qualified Selection Recorded",
+          "type": "boolean"
+        },
+        "local_policy_simulation_admission_recorded": {
+          "default": false,
+          "title": "Local Policy Simulation Admission Recorded",
+          "type": "boolean"
+        },
+        "local_safety_command_present": {
+          "default": false,
+          "title": "Local Safety Command Present",
+          "type": "boolean"
+        },
+        "local_safety_observation_present": {
+          "default": false,
+          "title": "Local Safety Observation Present",
+          "type": "boolean"
+        },
+        "local_safety_observation_sequence_advanced": {
+          "default": false,
+          "title": "Local Safety Observation Sequence Advanced",
+          "type": "boolean"
+        },
+        "model_navigation_authorized_control_applied": {
+          "default": false,
+          "title": "Model Navigation Authorized Control Applied",
+          "type": "boolean"
+        },
+        "model_navigation_authorized_schedule_advance_recorded": {
+          "default": false,
+          "title": "Model Navigation Authorized Schedule Advance Recorded",
+          "type": "boolean"
+        },
+        "model_navigation_control_authority_required": {
+          "default": false,
+          "title": "Model Navigation Control Authority Required",
+          "type": "boolean"
+        },
+        "model_navigation_cycle_recorded": {
+          "default": false,
+          "title": "Model Navigation Cycle Recorded",
+          "type": "boolean"
+        },
+        "model_navigation_fresh_revalidation_stable": {
+          "default": false,
+          "title": "Model Navigation Fresh Revalidation Stable",
+          "type": "boolean"
+        },
+        "model_navigation_invocation_failure_absent": {
+          "default": false,
+          "title": "Model Navigation Invocation Failure Absent",
+          "type": "boolean"
+        },
+        "model_navigation_primary_provider_call_recorded": {
+          "default": false,
+          "title": "Model Navigation Primary Provider Call Recorded",
+          "type": "boolean"
+        },
+        "model_navigation_provider_cadence_bounded": {
+          "default": false,
+          "title": "Model Navigation Provider Cadence Bounded",
+          "type": "boolean"
+        },
+        "model_navigation_provider_call_recorded": {
+          "default": false,
+          "title": "Model Navigation Provider Call Recorded",
+          "type": "boolean"
+        },
+        "model_navigation_route_fallback_absent": {
+          "default": false,
+          "title": "Model Navigation Route Fallback Absent",
+          "type": "boolean"
+        },
+        "model_navigation_shadow_only": {
+          "default": false,
+          "title": "Model Navigation Shadow Only",
+          "type": "boolean"
+        },
+        "model_navigation_shutdown_complete": {
+          "default": false,
+          "title": "Model Navigation Shutdown Complete",
+          "type": "boolean"
+        },
+        "model_navigation_snapshot_recorded": {
+          "default": false,
+          "title": "Model Navigation Snapshot Recorded",
+          "type": "boolean"
+        },
+        "model_navigation_visual_frame_recorded": {
+          "default": false,
+          "title": "Model Navigation Visual Frame Recorded",
+          "type": "boolean"
+        },
+        "multimodal_dataset_records_present": {
+          "default": false,
+          "title": "Multimodal Dataset Records Present",
+          "type": "boolean"
+        },
+        "multimodal_dataset_summary_consistent": {
+          "default": false,
+          "title": "Multimodal Dataset Summary Consistent",
+          "type": "boolean"
+        },
+        "multimodal_dataset_summary_present": {
+          "default": false,
+          "title": "Multimodal Dataset Summary Present",
+          "type": "boolean"
+        },
+        "native_observer_subscriptions_closed": {
+          "default": false,
+          "title": "Native Observer Subscriptions Closed",
+          "type": "boolean"
+        },
+        "native_sensor_subscriptions_closed": {
+          "default": false,
+          "title": "Native Sensor Subscriptions Closed",
+          "type": "boolean"
+        },
+        "native_terminal_lifecycle_published": {
+          "title": "Native Terminal Lifecycle Published",
+          "type": "boolean"
+        },
+        "no_live_abort": {
+          "title": "No Live Abort",
+          "type": "boolean"
+        },
+        "offboard_timing_complete": {
+          "title": "Offboard Timing Complete",
+          "type": "boolean"
+        },
+        "offline_training_authority_absent": {
+          "default": true,
+          "title": "Offline Training Authority Absent",
+          "type": "boolean"
+        },
+        "px4_ulog_present": {
+          "title": "Px4 Ulog Present",
+          "type": "boolean"
+        },
+        "ros_observations_present": {
+          "title": "Ros Observations Present",
+          "type": "boolean"
+        },
+        "runtime_evidence_writer_complete": {
+          "default": false,
+          "title": "Runtime Evidence Writer Complete",
+          "type": "boolean"
+        },
+        "runtime_pose_samples_present": {
+          "title": "Runtime Pose Samples Present",
+          "type": "boolean"
+        },
+        "runtime_snapshot_writer_complete": {
+          "default": false,
+          "title": "Runtime Snapshot Writer Complete",
+          "type": "boolean"
+        },
+        "semantic_supervision_recorded_for_every_sample": {
+          "default": false,
+          "title": "Semantic Supervision Recorded For Every Sample",
+          "type": "boolean"
+        },
+        "static_route_clearance_bound": {
+          "title": "Static Route Clearance Bound",
+          "type": "boolean"
+        },
+        "teacher_execution_recording_complete": {
+          "default": false,
+          "title": "Teacher Execution Recording Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "executor_completed",
+        "offboard_timing_complete",
+        "runtime_pose_samples_present",
+        "ros_observations_present",
+        "goal_observed",
+        "landing_confirmed",
+        "native_terminal_lifecycle_published",
+        "no_live_abort",
+        "px4_ulog_present",
+        "static_route_clearance_bound"
+      ],
+      "title": "Px4GazeboGates",
+      "type": "object"
+    },
+    "Px4GazeboLocalPolicySelection": {
+      "additionalProperties": false,
+      "properties": {
+        "development_payload_collection": {
+          "default": false,
+          "title": "Development Payload Collection",
+          "type": "boolean"
+        },
+        "flight_qualification_granted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flight Qualification Granted"
+        },
+        "map_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Map Sha256",
+          "type": "string"
+        },
+        "package_id": {
+          "minLength": 1,
+          "title": "Package Id",
+          "type": "string"
+        },
+        "package_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Package Sha256",
+          "type": "string"
+        },
+        "qualification_receipt_id": {
+          "minLength": 1,
+          "title": "Qualification Receipt Id",
+          "type": "string"
+        },
+        "rollback_package_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollback Package Sha256"
+        },
+        "scope": {
+          "enum": [
+            "general",
+            "map-specific"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "selection_reason": {
+          "minLength": 1,
+          "title": "Selection Reason",
+          "type": "string"
+        },
+        "sensor_contract_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sensor Contract Sha256",
+          "type": "string"
+        },
+        "simulation_only": {
+          "title": "Simulation Only",
+          "type": "boolean"
+        },
+        "vehicle_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Vehicle Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "map_sha256",
+        "package_id",
+        "package_sha256",
+        "qualification_receipt_id",
+        "scope",
+        "selection_reason",
+        "sensor_contract_sha256",
+        "simulation_only",
+        "vehicle_sha256"
+      ],
+      "title": "Px4GazeboLocalPolicySelection",
+      "type": "object"
+    },
+    "Px4GazeboLocalSafetyMeasurements": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_source": {
+          "default": "simulation-ground-truth",
+          "enum": [
+            "live-depth-metric-fusion",
+            "simulation-ground-truth"
+          ],
+          "title": "Authority Source",
+          "type": "string"
+        },
+        "command_artifact": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Artifact"
+        },
+        "depth_perception_health": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Perception Health"
+        },
+        "depth_safety_history_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Depth Safety History Count",
+          "type": "integer"
+        },
+        "executor_history_artifact": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executor History Artifact"
+        },
+        "executor_history_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Executor History Count",
+          "type": "integer"
+        },
+        "identity_correction_limit_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Correction Limit M"
+        },
+        "observation_artifact": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Artifact"
+        },
+        "observation_sequence": {
+          "minimum": 0,
+          "title": "Observation Sequence",
+          "type": "integer"
+        },
+        "perception_control_completion": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Perception Control Completion"
+        },
+        "required_clearance_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Required Clearance M",
+          "type": "number"
+        },
+        "runtime_evidence_artifact_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Evidence Artifact Counts"
+        },
+        "runtime_evidence_writer_summary": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Evidence Writer Summary"
+        },
+        "runtime_snapshot_writer_summary": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Snapshot Writer Summary"
+        },
+        "supported_by_executor": {
+          "title": "Supported By Executor",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "supported_by_executor",
+        "observation_sequence",
+        "required_clearance_m"
+      ],
+      "title": "Px4GazeboLocalSafetyMeasurements",
+      "type": "object"
+    },
+    "Px4GazeboMeasurements": {
+      "additionalProperties": false,
+      "properties": {
+        "abort_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abort Reason"
+        },
+        "controlled_vehicle_entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlledVehicleEntityEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "controlled_vehicle_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlledVehicleIdentityEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "development_fault_injection": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Development Fault Injection"
+        },
+        "development_payload_collection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4GazeboDevelopmentPayloadCollectionMeasurements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "executor_return_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executor Return Code"
+        },
+        "external_abort_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4RuntimeAbortRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "goal_departure_observed": {
+          "default": false,
+          "title": "Goal Departure Observed",
+          "type": "boolean"
+        },
+        "goal_observed_runtime": {
+          "default": false,
+          "title": "Goal Observed Runtime",
+          "type": "boolean"
+        },
+        "landing_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Landing State"
+        },
+        "live_safety_event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiveSafetyEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "local_safety": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4GazeboLocalSafetyMeasurements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "minimum_goal_distance_m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Goal Distance M"
+        },
+        "minimum_tolerated_landing_clearance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Tolerated Landing Clearance M"
+        },
+        "model_navigation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4GazeboModelNavigationMeasurements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "multimodal_dataset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4GazeboMultimodalDatasetMeasurements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "native_sensor_deployment": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Sensor Deployment"
+        },
+        "pose_sample_count": {
+          "minimum": 0,
+          "title": "Pose Sample Count",
+          "type": "integer"
+        },
+        "ros_observation_rows": {
+          "minimum": 0,
+          "title": "Ros Observation Rows",
+          "type": "integer"
+        },
+        "simulation_learning": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Simulation Learning"
+        },
+        "tolerated_landing_contact_samples": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tolerated Landing Contact Samples",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pose_sample_count",
+        "ros_observation_rows"
+      ],
+      "title": "Px4GazeboMeasurements",
+      "type": "object"
+    },
+    "Px4GazeboModelControlAuthorityEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized_control_applied_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Authorized Control Applied Count",
+          "type": "integer"
+        },
+        "authorized_schedule_advance_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Authorized Schedule Advance Count",
+          "type": "integer"
+        },
+        "control_application_counts": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Control Application Counts",
+          "type": "object"
+        },
+        "progress_schedule_hold_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Progress Schedule Hold Count",
+          "type": "integer"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "route_fallback_schedule_advance_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Route Fallback Schedule Advance Count",
+          "type": "integer"
+        },
+        "unauthorized_hold_applied_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Unauthorized Hold Applied Count",
+          "type": "integer"
+        },
+        "unauthorized_schedule_hold_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Unauthorized Schedule Hold Count",
+          "type": "integer"
+        }
+      },
+      "title": "Px4GazeboModelControlAuthorityEvidence",
+      "type": "object"
+    },
+    "Px4GazeboModelNavigationMeasurements": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized_control_applied_count": {
+          "minimum": 0,
+          "title": "Authorized Control Applied Count",
+          "type": "integer"
+        },
+        "control_authority": {
+          "const": "deterministic-local-safety",
+          "title": "Control Authority",
+          "type": "string"
+        },
+        "controller_step_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Step M"
+        },
+        "cycle_count": {
+          "minimum": 0,
+          "title": "Cycle Count",
+          "type": "integer"
+        },
+        "cycle_period_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Cycle Period Seconds",
+          "type": "number"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fallback_model_timeout_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fallback Model Timeout Seconds"
+        },
+        "fallback_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fallback Provider"
+        },
+        "fallback_provider_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Fallback Provider Call Count",
+          "type": "integer"
+        },
+        "invocation_failure_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Invocation Failure Count",
+          "type": "integer"
+        },
+        "invocation_timeout_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Invocation Timeout Count",
+          "type": "integer"
+        },
+        "local_policy_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Px4GazeboLocalPolicySelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "maximum_cycle_gap_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Cycle Gap Seconds"
+        },
+        "maximum_provider_participation_gap_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Provider Participation Gap Seconds"
+        },
+        "model_control_authority_evidence": {
+          "$ref": "#/$defs/Px4GazeboModelControlAuthorityEvidence"
+        },
+        "model_control_authority_required": {
+          "default": false,
+          "title": "Model Control Authority Required",
+          "type": "boolean"
+        },
+        "model_timeout_seconds": {
+          "exclusiveMinimum": 0.0,
+          "title": "Model Timeout Seconds",
+          "type": "number"
+        },
+        "motion_proposal_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Motion Proposal Count",
+          "type": "integer"
+        },
+        "perception_changed_during_model_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Perception Changed During Model Call Count",
+          "type": "integer"
+        },
+        "primary_provider_call_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Primary Provider Call Count",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "provider_call_count": {
+          "minimum": 0,
+          "title": "Provider Call Count",
+          "type": "integer"
+        },
+        "provider_participation_gap_limit_seconds": {
+          "default": 60.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Provider Participation Gap Limit Seconds",
+          "type": "number"
+        },
+        "revalidation_timeout_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Revalidation Timeout Count",
+          "type": "integer"
+        },
+        "snapshot_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Snapshot Count",
+          "type": "integer"
+        },
+        "visual_enabled": {
+          "title": "Visual Enabled",
+          "type": "boolean"
+        },
+        "visual_frame_count": {
+          "minimum": 0,
+          "title": "Visual Frame Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "enabled",
+        "cycle_count",
+        "provider_call_count",
+        "authorized_control_applied_count",
+        "model_timeout_seconds",
+        "cycle_period_seconds",
+        "control_authority",
+        "visual_enabled",
+        "visual_frame_count"
+      ],
+      "title": "Px4GazeboModelNavigationMeasurements",
+      "type": "object"
+    },
+    "Px4GazeboMultimodalDatasetMeasurements": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "flight_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flight Id"
+        },
+        "maximum_mib": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Mib"
+        },
+        "record_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Record Count",
+          "type": "integer"
+        },
+        "record_period_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Period Seconds"
+        },
+        "semantic_record_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Semantic Record Count",
+          "type": "integer"
+        },
+        "semantic_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Semantic Topic"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "title": "Px4GazeboMultimodalDatasetMeasurements",
+      "type": "object"
+    },
+    "Px4RuntimeAbortRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "contract_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contract Id"
+        },
+        "deadline_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline Ms"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "observation_age_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Age Ms"
+        },
+        "observation_sequence": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Sequence"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "safety_event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiveSafetyEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Severity"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "world_paused": {
+          "default": false,
+          "title": "World Paused",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "Px4RuntimeAbortRequest",
+      "type": "object"
+    },
+    "Px4UlogArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "Px4UlogArtifact",
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    },
+    "WorldTrackPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "east_m": {
+          "title": "East M",
+          "type": "number"
+        },
+        "north_m": {
+          "title": "North M",
+          "type": "number"
+        },
+        "up_m": {
+          "title": "Up M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "east_m",
+        "north_m",
+        "up_m"
+      ],
+      "title": "WorldTrackPoint",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "$ref": "#/$defs/Px4GazeboArtifactBindings"
+    },
+    "gates": {
+      "$ref": "#/$defs/Px4GazeboGates"
+    },
+    "measurements": {
+      "$ref": "#/$defs/Px4GazeboMeasurements"
+    },
+    "schema_version": {
+      "const": "dronedream.generic-px4-gazebo-run.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "verified",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "vehicle": {
+      "title": "Vehicle",
+      "type": "string"
+    },
+    "world": {
+      "title": "World",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "world",
+    "vehicle",
+    "gates",
+    "measurements",
+    "artifacts"
+  ],
+  "title": "Px4GazeboRunEvidence",
+  "type": "object"
+}

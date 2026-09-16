@@ -1,0 +1,42 @@
+{
+  "qualified_pair": {
+    "packages": [
+      {
+        "asset_id": "dronedream.school-map.v1",
+        "content_sha256": "bc88b79228ec7ae4c974957b6b692d7941607885c5489fc1d9f5f925dba10f2d",
+        "file": "school-map.ddpkg",
+        "kind": "map",
+        "sha256": "441364e913d588984851120322080131f87b93565b8880205105817aa25c64a8",
+        "source_content_sha256": "f5e6e1e2d7997c2bac1fd12274774ccccf412903eb0e4a4d58a85792341cacde"
+      },
+      {
+        "asset_id": "dronedream.my-drone.v1",
+        "content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd",
+        "file": "my-drone.ddpkg",
+        "kind": "vehicle",
+        "sha256": "695cb08542bfec997a58b14d8beaa11bcc5c6927216c2dd2d4244731dc6434d0",
+        "source_content_sha256": "cc576b3000346dfeb7b8cf91a6e8353db57c3b9c9460d19a790d07513ad8c4e9"
+      }
+    ],
+    "qualification_id": "asset-qualification-9968cd42eaf394ff55ce5792",
+    "receipt_sha256": "1b63265a27d66d4d3dae0d918349d2b08816383e241f1f9a35df4992029713fa",
+    "schema_version": "dronedream.bundled-qualified-pair.v1"
+  },
+  "schema_version": "dronedream.bundled-assets.v2",
+  "superseded_qualified_pairs": [
+    {
+      "map_content_sha256": "b588d38a28c1fb9dd7bd0ddd678bdcf199d1d156b4a7b24972c463e36d4c98c2",
+      "map_source_content_sha256": "d85a29d6e1c2f3998566d79536b3621ec0b13408c6eca87b9ce9fc2e3a968b3f",
+      "qualification_id": "asset-qualification-7ea177c2913c88852e9e1a27",
+      "vehicle_content_sha256": "d2e05c765ebae095693d89c57e209977e1a6d89022ae873f7b410fe1e736bf79",
+      "vehicle_source_content_sha256": "a98bb9d8d5918ff25df011034c2d452eb1e65207fd3552ede067533e534c3bbf"
+    },
+    {
+      "map_content_sha256": "2e4e1680c8675ea7df5a85cb38fe6ca401c1477481d0841897a70ad5d77a0c51",
+      "map_source_content_sha256": "96006ce38f26a6e88b2ecad8197d7ea9ec23310edb525b674a144fc81bd668c0",
+      "qualification_id": "asset-qualification-186c3104673ac6f278bf00ee",
+      "vehicle_content_sha256": "30716d42ffb522c11fe6874e2efa99a145c4805ff3b352141202658a1e5373e3",
+      "vehicle_source_content_sha256": "c386f044c10ff957ffd51b832bf323092f4e9ff60c6613835ea5a49cd196a74b"
+    }
+  ]
+}

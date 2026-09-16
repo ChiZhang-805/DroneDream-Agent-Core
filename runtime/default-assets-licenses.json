@@ -1,0 +1,20 @@
+{
+  "schema_version": "dronedream.first-party-asset-license-grant.v1",
+  "copyright_holder": "Chi Zhang",
+  "effective_date": "2026-09-16",
+  "license_expression": "MIT",
+  "license_file": "LICENSE",
+  "scope": "First-party asset content and qualification fixtures only; no third-party code, weights, trademarks, or private user data are relicensed.",
+  "assets": [
+    {
+      "asset_id": "dronedream.school-map.v1",
+      "path": "app/desktop/src-tauri/resources/default-assets/school-map.ddpkg",
+      "sha256": "441364e913d588984851120322080131f87b93565b8880205105817aa25c64a8"
+    },
+    {
+      "asset_id": "dronedream.my-drone.v1",
+      "path": "app/desktop/src-tauri/resources/default-assets/my-drone.ddpkg",
+      "sha256": "695cb08542bfec997a58b14d8beaa11bcc5c6927216c2dd2d4244731dc6434d0"
+    }
+  ]
+}

@@ -1,0 +1,302 @@
+{
+  "$defs": {
+    "BodyFrameControlIntent": {
+      "additionalProperties": false,
+      "description": "Short-lived, joystick-like motion request from one local control expert.\n\nThe local expert does not author a world coordinate or a motor command.  It\nrequests body-relative translational velocity and yaw rate inside an\nindependently enforced vehicle/safety envelope.  The explicit model call,\nnavigation snapshot and expiry bindings prevent a command from surviving a\ngoal change or being replayed against fresher sensor state.",
+      "properties": {
+        "control_origin": {
+          "default": "candidate-path-derived",
+          "enum": [
+            "candidate-path-derived",
+            "continuous-model-output"
+          ],
+          "title": "Control Origin",
+          "type": "string"
+        },
+        "forward_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Forward Velocity Mps",
+          "type": "number"
+        },
+        "generated_at_unix_ms": {
+          "minimum": 0,
+          "title": "Generated At Unix Ms",
+          "type": "integer"
+        },
+        "harness_control_scale": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.1,
+          "title": "Harness Control Scale",
+          "type": "number"
+        },
+        "maximum_acceleration_mps2": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 30.0,
+          "title": "Maximum Acceleration Mps2",
+          "type": "number"
+        },
+        "maximum_jerk_mps3": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 100.0,
+          "title": "Maximum Jerk Mps3",
+          "type": "number"
+        },
+        "model_call_id": {
+          "pattern": "^model-[0-9a-f]{24}$",
+          "title": "Model Call Id",
+          "type": "string"
+        },
+        "navigation_snapshot_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Navigation Snapshot Sha256",
+          "type": "string"
+        },
+        "right_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Right Velocity Mps",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.body-frame-control-intent.v1",
+          "default": "dronedream.body-frame-control-intent.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_expert": {
+          "enum": [
+            "local-navigation-policy",
+            "precision-maneuver-policy",
+            "recovery-policy"
+          ],
+          "title": "Source Expert",
+          "type": "string"
+        },
+        "task_reference_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Task Reference Sha256",
+          "type": "string"
+        },
+        "up_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Up Velocity Mps",
+          "type": "number"
+        },
+        "valid_until_unix_ms": {
+          "minimum": 0,
+          "title": "Valid Until Unix Ms",
+          "type": "integer"
+        },
+        "yaw_control_mode": {
+          "default": "model-rate",
+          "enum": [
+            "model-rate",
+            "route-heading-assist"
+          ],
+          "title": "Yaw Control Mode",
+          "type": "string"
+        },
+        "yaw_rate_dps": {
+          "maximum": 180.0,
+          "minimum": -180.0,
+          "title": "Yaw Rate Dps",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_expert",
+        "model_call_id",
+        "navigation_snapshot_sha256",
+        "task_reference_sha256",
+        "generated_at_unix_ms",
+        "valid_until_unix_ms",
+        "forward_velocity_mps",
+        "right_velocity_mps",
+        "up_velocity_mps",
+        "yaw_rate_dps",
+        "maximum_acceleration_mps2",
+        "maximum_jerk_mps3"
+      ],
+      "title": "BodyFrameControlIntent",
+      "type": "object"
+    },
+    "YawRateApplication": {
+      "additionalProperties": false,
+      "description": "Rate-to-heading conversion actually supplied to the FC transport.\n\nThis is a command, not measured yaw response. An absolute-heading sender\ncannot invent a zero rate by omitting this evidence.",
+      "properties": {
+        "clockwise_rate_dps": {
+          "maximum": 180,
+          "minimum": -180,
+          "title": "Clockwise Rate Dps",
+          "type": "number"
+        },
+        "integration_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 0.25,
+          "title": "Integration Seconds",
+          "type": "number"
+        },
+        "previous_heading_deg": {
+          "title": "Previous Heading Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "previous_heading_deg",
+        "clockwise_rate_dps",
+        "integration_seconds"
+      ],
+      "title": "YawRateApplication",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Actual NED transport receipt bound to one original command and observation.\n\nPreserve safety replacements and late acceptances for auditing. Construction\nalone does not qualify the receipt; verification checks provenance/time.",
+  "properties": {
+    "accepted_at_unix_ms": {
+      "minimum": 0,
+      "title": "Accepted At Unix Ms",
+      "type": "integer"
+    },
+    "command_generated_at_unix_ms": {
+      "minimum": 0,
+      "title": "Command Generated At Unix Ms",
+      "type": "integer"
+    },
+    "command_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Command Sha256",
+      "type": "string"
+    },
+    "command_valid_until_unix_ms": {
+      "minimum": 0,
+      "title": "Command Valid Until Unix Ms",
+      "type": "integer"
+    },
+    "control_source": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Control Source",
+      "type": "string"
+    },
+    "intent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BodyFrameControlIntent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model_authorized": {
+      "title": "Model Authorized",
+      "type": "boolean"
+    },
+    "observation_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observation Sha256",
+      "type": "string"
+    },
+    "position_ned_m": {
+      "anyOf": [
+        {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Position Ned M"
+    },
+    "safety_action": {
+      "enum": [
+        "continue",
+        "slow",
+        "hold",
+        "replan"
+      ],
+      "title": "Safety Action",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "transport": {
+      "enum": [
+        "velocity-ned",
+        "position-velocity-ned"
+      ],
+      "title": "Transport",
+      "type": "string"
+    },
+    "velocity_ned_mps": {
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Velocity Ned Mps",
+      "type": "array"
+    },
+    "yaw_heading_deg": {
+      "title": "Yaw Heading Deg",
+      "type": "number"
+    },
+    "yaw_rate_application": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/YawRateApplication"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "sequence",
+    "accepted_at_unix_ms",
+    "command_sha256",
+    "observation_sha256",
+    "command_generated_at_unix_ms",
+    "command_valid_until_unix_ms",
+    "transport",
+    "velocity_ned_mps",
+    "yaw_heading_deg",
+    "safety_action",
+    "control_source",
+    "model_authorized",
+    "intent"
+  ],
+  "title": "ControlApplicationRecord",
+  "type": "object"
+}

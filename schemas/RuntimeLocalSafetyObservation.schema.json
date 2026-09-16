@@ -1,0 +1,203 @@
+{
+  "$defs": {
+    "DynamicObstacleObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "age_seconds": {
+          "minimum": 0.0,
+          "title": "Age Seconds",
+          "type": "number"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 50.0,
+          "title": "Height M",
+          "type": "number"
+        },
+        "obstacle_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Obstacle Id",
+          "type": "string"
+        },
+        "position_m": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "velocity_mps": {
+          "$ref": "#/$defs/Vector3"
+        }
+      },
+      "required": [
+        "obstacle_id",
+        "position_m",
+        "velocity_mps",
+        "radius_m",
+        "height_m",
+        "confidence",
+        "age_seconds"
+      ],
+      "title": "DynamicObstacleObservation",
+      "type": "object"
+    },
+    "QuaternionWxyz": {
+      "additionalProperties": false,
+      "description": "Unit quaternion using an explicit scalar-first convention.",
+      "properties": {
+        "w": {
+          "title": "W",
+          "type": "number"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "w",
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "QuaternionWxyz",
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "body_orientation_world_from_body": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuaternionWxyz"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "current_acceleration_world_enu_mps2": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Vector3"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "current_position_m": {
+      "$ref": "#/$defs/Vector3"
+    },
+    "current_velocity_mps": {
+      "$ref": "#/$defs/Vector3"
+    },
+    "dynamic_obstacles": {
+      "items": {
+        "$ref": "#/$defs/DynamicObstacleObservation"
+      },
+      "maxItems": 512,
+      "title": "Dynamic Obstacles",
+      "type": "array"
+    },
+    "localization_covariance_m2": {
+      "maximum": 10000.0,
+      "minimum": 0.0,
+      "title": "Localization Covariance M2",
+      "type": "number"
+    },
+    "observed_at_unix_ms": {
+      "minimum": 0,
+      "title": "Observed At Unix Ms",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "dronedream.runtime-local-safety-observation.v1",
+      "default": "dronedream.runtime-local-safety-observation.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "simulation-ground-truth",
+        "onboard",
+        "external"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_age_seconds": {
+      "minimum": 0.0,
+      "title": "Stream Age Seconds",
+      "type": "number"
+    },
+    "stream_healthy": {
+      "title": "Stream Healthy",
+      "type": "boolean"
+    },
+    "target_position_m": {
+      "$ref": "#/$defs/Vector3"
+    }
+  },
+  "required": [
+    "sequence",
+    "observed_at_unix_ms",
+    "source",
+    "stream_healthy",
+    "stream_age_seconds",
+    "localization_covariance_m2",
+    "current_position_m",
+    "current_velocity_mps",
+    "target_position_m"
+  ],
+  "title": "RuntimeLocalSafetyObservation",
+  "type": "object"
+}

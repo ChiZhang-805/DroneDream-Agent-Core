@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DroneDream-AGENT",
+  "version": "1.0.0",
+  "identifier": "io.dronedream.desktop.autonomy",
+  "build": {
+    "beforeDevCommand": "npm run frontend:dev",
+    "beforeBuildCommand": "npm run frontend:build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DroneDream · AGENT",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 880,
+        "minHeight": 650,
+        "resizable": true,
+        "fullscreen": false,
+        "backgroundColor": "#ffffff"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:* https://*.supabase.co wss://*.supabase.co; img-src 'self' asset: http://asset.localhost data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'",
+      "devCsp": "default-src 'self' http://127.0.0.1:5173; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:* https://*.supabase.co wss://*.supabase.co; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-eval'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "DroneDream",
+    "copyright": "Copyright © 2026 DroneDream",
+    "category": "Productivity",
+    "shortDescription": "Natural-language agent workspace for simulated and physical drones",
+    "longDescription": "DroneDream AGENT turns natural-language objectives into structured, safety-gated, evidence-backed drone missions through real model APIs, ROS 2, Gazebo and PX4.",
+    "licenseFile": "../../../LICENSE",
+    "externalBin": [
+      "binaries/dronedream-autonomy-core",
+      "binaries/dronedream-plugin-isolator"
+    ],
+    "resources": {
+      "resources/runtime": "runtime",
+      "resources/official-plugins": "official-plugins",
+      "resources/default-assets": "default-assets"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installerHooks": "windows/installer-hooks.nsh",
+        "startMenuFolder": "DroneDream"
+      }
+    }
+  }
+}

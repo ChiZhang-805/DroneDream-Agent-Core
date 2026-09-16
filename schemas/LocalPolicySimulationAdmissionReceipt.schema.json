@@ -1,0 +1,673 @@
+{
+  "$defs": {
+    "LocalPolicyAdvisorAdmissionMetrics": {
+      "additionalProperties": false,
+      "description": "Independent held-out metrics for one packaged advisory expert.",
+      "properties": {
+        "controller_step_scale_mean_absolute_error": {
+          "anyOf": [
+            {
+              "maximum": 0.9,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Step Scale Mean Absolute Error"
+        },
+        "p99_inference_latency_ms": {
+          "maximum": 60000.0,
+          "minimum": 0.0,
+          "title": "P99 Inference Latency Ms",
+          "type": "number"
+        },
+        "risk_hold_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Hold Recall",
+          "type": "number"
+        },
+        "risk_mean_absolute_error": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Mean Absolute Error",
+          "type": "number"
+        },
+        "risky_sample_count": {
+          "maximum": 10000000,
+          "minimum": 0,
+          "title": "Risky Sample Count",
+          "type": "integer"
+        },
+        "safe_motion_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Safe Motion Recall",
+          "type": "number"
+        },
+        "safe_sample_count": {
+          "maximum": 10000000,
+          "minimum": 0,
+          "title": "Safe Sample Count",
+          "type": "integer"
+        },
+        "sample_count": {
+          "maximum": 10000000,
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_count",
+        "risky_sample_count",
+        "safe_sample_count",
+        "risk_hold_recall",
+        "safe_motion_recall",
+        "risk_mean_absolute_error",
+        "p99_inference_latency_ms"
+      ],
+      "title": "LocalPolicyAdvisorAdmissionMetrics",
+      "type": "object"
+    },
+    "LocalPolicyTrainingMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "action_accuracy": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Action Accuracy",
+          "type": "number"
+        },
+        "authorized_motion_recall": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Authorized Motion Recall",
+          "type": "number"
+        },
+        "candidate_sample_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Candidate Sample Count",
+          "type": "integer"
+        },
+        "candidate_selection_accuracy": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Candidate Selection Accuracy",
+          "type": "number"
+        },
+        "mean_cross_entropy": {
+          "minimum": 0.0,
+          "title": "Mean Cross Entropy",
+          "type": "number"
+        },
+        "motion_authorization_accuracy": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Motion Authorization Accuracy",
+          "type": "number"
+        },
+        "motion_sample_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Motion Sample Count",
+          "type": "integer"
+        },
+        "non_motion_recall": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Non Motion Recall",
+          "type": "number"
+        },
+        "non_motion_sample_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Non Motion Sample Count",
+          "type": "integer"
+        },
+        "pilot_axis_evidence": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PilotAxisEvidence"
+          },
+          "maxProperties": 4,
+          "title": "Pilot Axis Evidence",
+          "type": "object"
+        },
+        "pilot_control_mean_absolute_error": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pilot Control Mean Absolute Error"
+        },
+        "risk_hold_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Hold Recall",
+          "type": "number"
+        },
+        "risk_mean_absolute_error": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Mean Absolute Error",
+          "type": "number"
+        },
+        "risky_sample_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Risky Sample Count",
+          "type": "integer"
+        },
+        "safe_motion_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Safe Motion Recall",
+          "type": "number"
+        },
+        "safe_sample_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Safe Sample Count",
+          "type": "integer"
+        },
+        "sample_count": {
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_count",
+        "action_accuracy",
+        "motion_authorization_accuracy",
+        "candidate_selection_accuracy",
+        "risk_hold_recall",
+        "safe_motion_recall",
+        "risk_mean_absolute_error",
+        "mean_cross_entropy"
+      ],
+      "title": "LocalPolicyTrainingMetrics",
+      "type": "object"
+    },
+    "PilotAxisEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "active_mean_absolute_error": {
+          "anyOf": [
+            {
+              "maximum": 2.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Mean Absolute Error"
+        },
+        "maximum_absolute_error": {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Maximum Absolute Error",
+          "type": "number"
+        },
+        "mean_absolute_error": {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "title": "Mean Absolute Error",
+          "type": "number"
+        },
+        "negative_sample_count": {
+          "minimum": 0,
+          "title": "Negative Sample Count",
+          "type": "integer"
+        },
+        "neutral_sample_count": {
+          "minimum": 0,
+          "title": "Neutral Sample Count",
+          "type": "integer"
+        },
+        "positive_sample_count": {
+          "minimum": 0,
+          "title": "Positive Sample Count",
+          "type": "integer"
+        },
+        "sample_count": {
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_count",
+        "positive_sample_count",
+        "negative_sample_count",
+        "neutral_sample_count",
+        "mean_absolute_error",
+        "maximum_absolute_error"
+      ],
+      "title": "PilotAxisEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Offline evidence that permits an unqualified package in simulation only.",
+  "properties": {
+    "admission_scope": {
+      "default": "standard-simulation",
+      "enum": [
+        "standard-simulation",
+        "recovery-bootstrap-simulation"
+      ],
+      "title": "Admission Scope",
+      "type": "string"
+    },
+    "admitted_to_simulation": {
+      "title": "Admitted To Simulation",
+      "type": "boolean"
+    },
+    "advisor_evaluation_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Advisor Evaluation Sha256"
+    },
+    "advisor_metrics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/LocalPolicyAdvisorAdmissionMetrics"
+      },
+      "propertyNames": {
+        "enum": [
+          "perception-encoder",
+          "local-navigation-policy",
+          "precision-maneuver-policy",
+          "recovery-policy",
+          "risk-critic",
+          "perception-health-critic",
+          "settle-stability-critic",
+          "payload-dynamics-adapter",
+          "state-anomaly-detector",
+          "cross-modal-consistency-critic"
+        ]
+      },
+      "title": "Advisor Metrics",
+      "type": "object"
+    },
+    "artifact_preservation_receipt_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Artifact Preservation Receipt Sha256"
+    },
+    "candidate_selection_accuracy": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Candidate Selection Accuracy",
+      "type": "number"
+    },
+    "combined_p99_inference_latency_ms": {
+      "anyOf": [
+        {
+          "maximum": 60000.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Combined P99 Inference Latency Ms"
+    },
+    "control_feature_contract_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Control Feature Contract Sha256"
+    },
+    "dataset_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Receipt Sha256",
+      "type": "string"
+    },
+    "evaluation_suite_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Evaluation Suite Sha256",
+      "type": "string"
+    },
+    "inherited_admission_receipt_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inherited Admission Receipt Sha256"
+    },
+    "issue_codes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 64,
+      "title": "Issue Codes",
+      "type": "array"
+    },
+    "map_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Map Sha256"
+    },
+    "minimum_motion_sample_count": {
+      "default": 20,
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Minimum Motion Sample Count",
+      "type": "integer"
+    },
+    "minimum_non_motion_sample_count": {
+      "default": 20,
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Minimum Non Motion Sample Count",
+      "type": "integer"
+    },
+    "motion_authorization_accuracy": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Motion Authorization Accuracy",
+      "type": "number"
+    },
+    "motion_sample_count": {
+      "maximum": 10000000,
+      "minimum": 0,
+      "title": "Motion Sample Count",
+      "type": "integer"
+    },
+    "navigation_admission_source_evidence_sha256": {
+      "items": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 1024,
+      "title": "Navigation Admission Source Evidence Sha256",
+      "type": "array"
+    },
+    "navigation_admission_split": {
+      "anyOf": [
+        {
+          "enum": [
+            "training",
+            "validation"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Navigation Admission Split"
+    },
+    "navigation_expert_metrics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/LocalPolicyTrainingMetrics"
+      },
+      "maxProperties": 3,
+      "title": "Navigation Expert Metrics",
+      "type": "object"
+    },
+    "navigation_training_dataset_receipt_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Navigation Training Dataset Receipt Sha256"
+    },
+    "non_motion_sample_count": {
+      "maximum": 10000000,
+      "minimum": 0,
+      "title": "Non Motion Sample Count",
+      "type": "integer"
+    },
+    "p50_inference_latency_ms": {
+      "maximum": 60000.0,
+      "minimum": 0.0,
+      "title": "P50 Inference Latency Ms",
+      "type": "number"
+    },
+    "p95_inference_latency_ms": {
+      "maximum": 60000.0,
+      "minimum": 0.0,
+      "title": "P95 Inference Latency Ms",
+      "type": "number"
+    },
+    "p99_inference_latency_ms": {
+      "maximum": 60000.0,
+      "minimum": 0.0,
+      "title": "P99 Inference Latency Ms",
+      "type": "number"
+    },
+    "perception_encoder_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Perception Encoder Sha256"
+    },
+    "pilot_control_mean_absolute_error": {
+      "anyOf": [
+        {
+          "maximum": 2.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pilot Control Mean Absolute Error"
+    },
+    "pilot_control_target_sample_count": {
+      "anyOf": [
+        {
+          "maximum": 10000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pilot Control Target Sample Count"
+    },
+    "policy_package_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Package Sha256",
+      "type": "string"
+    },
+    "realtime_feature_ready_sample_count": {
+      "anyOf": [
+        {
+          "maximum": 10000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Realtime Feature Ready Sample Count"
+    },
+    "receipt_id": {
+      "pattern": "^policy-simulation-admission-[0-9a-f]{32}$",
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "risk_hold_recall": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Risk Hold Recall",
+      "type": "number"
+    },
+    "risk_mean_absolute_error": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Risk Mean Absolute Error"
+    },
+    "safe_motion_recall": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Safe Motion Recall",
+      "type": "number"
+    },
+    "sample_count": {
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Sample Count",
+      "type": "integer"
+    },
+    "sensor_contract_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sensor Contract Sha256",
+      "type": "string"
+    },
+    "vehicle_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Vehicle Sha256",
+      "type": "string"
+    },
+    "visual_encoder_p99_inference_latency_ms": {
+      "anyOf": [
+        {
+          "maximum": 60000.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Visual Encoder P99 Inference Latency Ms"
+    },
+    "visual_encoding_receipt_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Visual Encoding Receipt Sha256"
+    },
+    "visual_preprocess_p99_latency_ms": {
+      "anyOf": [
+        {
+          "maximum": 60000.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Visual Preprocess P99 Latency Ms"
+    }
+  },
+  "required": [
+    "receipt_id",
+    "policy_package_sha256",
+    "dataset_receipt_sha256",
+    "evaluation_suite_sha256",
+    "vehicle_sha256",
+    "sensor_contract_sha256",
+    "sample_count",
+    "motion_sample_count",
+    "non_motion_sample_count",
+    "motion_authorization_accuracy",
+    "candidate_selection_accuracy",
+    "risk_hold_recall",
+    "safe_motion_recall",
+    "p50_inference_latency_ms",
+    "p95_inference_latency_ms",
+    "p99_inference_latency_ms",
+    "admitted_to_simulation"
+  ],
+  "title": "LocalPolicySimulationAdmissionReceipt",
+  "type": "object"
+}

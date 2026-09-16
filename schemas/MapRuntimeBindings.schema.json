@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Normalized simulator bindings required before a map can execute missions.",
+  "properties": {
+    "coordinate_frame": {
+      "const": "ENU",
+      "default": "ENU",
+      "title": "Coordinate Frame",
+      "type": "string"
+    },
+    "mission_launch_waypoint": {
+      "$ref": "#/$defs/Vector3"
+    },
+    "schema_version": {
+      "const": "dronedream.map-runtime-bindings.v1",
+      "default": "dronedream.map-runtime-bindings.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "simulator": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Simulator",
+      "type": "string"
+    },
+    "vehicle_spawn": {
+      "$ref": "#/$defs/Vector3"
+    }
+  },
+  "required": [
+    "simulator",
+    "vehicle_spawn",
+    "mission_launch_waypoint"
+  ],
+  "title": "MapRuntimeBindings",
+  "type": "object"
+}

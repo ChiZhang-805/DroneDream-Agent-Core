@@ -1,0 +1,82 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "controller_params": {
+      "title": "Controller Params",
+      "type": "string"
+    },
+    "graph": {
+      "title": "Graph",
+      "type": "string"
+    },
+    "map_asset_id": {
+      "title": "Map Asset Id",
+      "type": "string"
+    },
+    "map_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Map Content Sha256",
+      "type": "string"
+    },
+    "px4_sitl_model": {
+      "title": "Px4 Sitl Model",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dronedream.asset-qualification-inputs.v1",
+      "default": "dronedream.asset-qualification-inputs.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "semantic": {
+      "title": "Semantic",
+      "type": "string"
+    },
+    "vehicle_asset_id": {
+      "title": "Vehicle Asset Id",
+      "type": "string"
+    },
+    "vehicle_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Vehicle Content Sha256",
+      "type": "string"
+    },
+    "vehicle_metadata": {
+      "title": "Vehicle Metadata",
+      "type": "string"
+    },
+    "vehicle_name": {
+      "title": "Vehicle Name",
+      "type": "string"
+    },
+    "vehicle_sdf": {
+      "title": "Vehicle Sdf",
+      "type": "string"
+    },
+    "world_name": {
+      "title": "World Name",
+      "type": "string"
+    },
+    "world_sdf": {
+      "title": "World Sdf",
+      "type": "string"
+    }
+  },
+  "required": [
+    "map_asset_id",
+    "map_content_sha256",
+    "vehicle_asset_id",
+    "vehicle_content_sha256",
+    "world_sdf",
+    "semantic",
+    "graph",
+    "vehicle_sdf",
+    "vehicle_metadata",
+    "controller_params",
+    "world_name",
+    "vehicle_name",
+    "px4_sitl_model"
+  ],
+  "title": "AssetQualificationInputs",
+  "type": "object"
+}

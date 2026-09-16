@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "One additive plugin verdict bound into the immutable pair receipt.\n\nPlugin checks may reject a pair or add evidence, but they never replace the\nnon-negotiable runtime gates validated by this module.",
+  "properties": {
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "capability_id": {
+      "pattern": "^[a-z][a-z0-9._-]{2,119}$",
+      "title": "Capability Id",
+      "type": "string"
+    },
+    "check_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,159}$",
+      "title": "Check Id",
+      "type": "string"
+    },
+    "details": {
+      "additionalProperties": true,
+      "title": "Details",
+      "type": "object"
+    },
+    "issue_codes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 128,
+      "title": "Issue Codes",
+      "type": "array"
+    },
+    "plugin_id": {
+      "pattern": "^[a-z][a-z0-9._-]{2,119}$",
+      "title": "Plugin Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "check_id",
+    "plugin_id",
+    "capability_id",
+    "accepted"
+  ],
+  "title": "AssetQualificationPluginCheck",
+  "type": "object"
+}

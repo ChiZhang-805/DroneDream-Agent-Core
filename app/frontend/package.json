@@ -1,0 +1,36 @@
+{
+  "name": "dronedream-agent-frontend",
+  "private": true,
+  "license": "MIT",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "test:visual:startup": "node scripts/verify-startup-ui.mjs",
+    "test:visual:bilingual": "node scripts/verify-bilingual-ui.mjs",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@lobehub/icons-static-svg": "1.94.0",
+    "@supabase/supabase-js": "^2.110.8",
+    "@tauri-apps/api": "2.11.0",
+    "@types/three": "^0.179.0",
+    "lucide-react": "^1.26.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "playwright": "1.61.1",
+    "typescript": "^5.5.4",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
+  }
+}

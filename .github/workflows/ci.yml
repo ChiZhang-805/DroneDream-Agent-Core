@@ -1,0 +1,86 @@
+name: Core checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    # AGENT is a Windows desktop product and these contracts intentionally
+    # exercise DPAPI, Windows paths, and the WSL bridge. Running them on Linux
+    # reports platform-unavailable failures instead of testing the product.
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests scripts
+      - name: Contract schemas
+        run: python scripts/export_schemas.py --check
+      - name: Shared Runtime Base source contract
+        run: python scripts/verify_shared_runtime_base.py
+      - name: Unit and contract tests
+        run: python -m pytest
+
+  desktop:
+    runs-on: windows-2025
+    env:
+      DRONEDREAM_OAUTH_CLIENT_ID_AGENT: ${{ vars.DRONEDREAM_OAUTH_CLIENT_ID_AGENT || vars.DRONEDREAM_OAUTH_CLIENT_ID_AUTONOMY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            app/frontend/package-lock.json
+            app/desktop/package-lock.json
+      - name: Verify registered public OAuth client
+        shell: pwsh
+        run: |
+          if ($env:DRONEDREAM_OAUTH_CLIENT_ID_AGENT -notmatch '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$') {
+            throw 'DRONEDREAM_OAUTH_CLIENT_ID_AGENT is missing or malformed.'
+          }
+      - name: Verify shared Runtime Base source
+        run: python scripts/verify_shared_runtime_base.py
+      - name: Install frontend dependencies
+        run: |
+          npm ci --prefix app/frontend
+          npm ci --prefix app/desktop
+      - name: Frontend tests and production build
+        run: |
+          npm --prefix app/frontend test -- --run
+          npm --prefix app/frontend run build
+      - name: Rust shared Runtime Base checks
+        shell: pwsh
+        run: |
+          # Unit tests exercise the Rust integration without packaging resources. The
+          # separate Windows installer workflow builds and verifies the real sidecar.
+          New-Item -ItemType Directory -Force -Path app/desktop/src-tauri/resources/runtime | Out-Null
+          New-Item -ItemType Directory -Force -Path app/desktop/src-tauri/resources/official-plugins | Out-Null
+          $env:TAURI_CONFIG = '{"bundle":{"externalBin":[]}}'
+          cargo test --manifest-path app/desktop/src-tauri/Cargo.toml --lib
+
+  runtime-boundary-note:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Keep hosted CI claims bounded
+        run: |
+          echo "Hosted CI does not claim ROS 2 / Gazebo / PX4 acceptance."
+          echo "Use the qualified DroneDreamRuntime stack and recorded runtime evidence."

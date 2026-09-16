@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "MapEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "bidirectional": {
+          "default": true,
+          "title": "Bidirectional",
+          "type": "boolean"
+        },
+        "distance_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 10000.0,
+          "title": "Distance M",
+          "type": "number"
+        },
+        "edge_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Edge Id",
+          "type": "string"
+        },
+        "evidence_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Sha256"
+        },
+        "from_node": {
+          "title": "From Node",
+          "type": "string"
+        },
+        "minimum_clearance_m": {
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Minimum Clearance M",
+          "type": "number"
+        },
+        "qualification": {
+          "default": "geometry-derived",
+          "enum": [
+            "flight-verified",
+            "geometry-derived"
+          ],
+          "title": "Qualification",
+          "type": "string"
+        },
+        "speed_limit_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Speed Limit Mps",
+          "type": "number"
+        },
+        "to_node": {
+          "title": "To Node",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edge_id",
+        "from_node",
+        "to_node",
+        "distance_m",
+        "minimum_clearance_m",
+        "speed_limit_mps"
+      ],
+      "title": "MapEdge",
+      "type": "object"
+    },
+    "MapNode": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Node Id",
+          "type": "string"
+        },
+        "position_m": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "semantic": {
+          "enum": [
+            "launch",
+            "office",
+            "stairs",
+            "door",
+            "corridor",
+            "outdoor",
+            "pickup"
+          ],
+          "title": "Semantic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "position_m",
+        "semantic"
+      ],
+      "title": "MapNode",
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "asset_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "coordinate_frame": {
+      "const": "map_enu",
+      "default": "map_enu",
+      "title": "Coordinate Frame",
+      "type": "string"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/MapEdge"
+      },
+      "maxItems": 50000,
+      "minItems": 1,
+      "title": "Edges",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "named_entities": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 1000,
+      "minProperties": 1,
+      "title": "Named Entities",
+      "type": "object"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/MapNode"
+      },
+      "maxItems": 10000,
+      "minItems": 2,
+      "title": "Nodes",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "dronedream.map-graph.v1",
+      "default": "dronedream.map-graph.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_id",
+    "name",
+    "nodes",
+    "edges",
+    "named_entities"
+  ],
+  "title": "MapAsset",
+  "type": "object"
+}

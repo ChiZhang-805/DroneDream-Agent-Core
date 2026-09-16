@@ -1,0 +1,345 @@
+{
+  "contracts": [
+    {
+      "contract": "ControlApplicationRecord",
+      "file": "ControlApplicationRecord.schema.json",
+      "sha256": "23cd59b0eeaf0eda18dcb58145206b70727cf2264496f43e7d70cbfb0b15f9b8"
+    },
+    {
+      "contract": "BodyFrameControlIntent",
+      "file": "BodyFrameControlIntent.schema.json",
+      "sha256": "a37317e70e8bbdcbbdb4517a2f9a4168e6ff2299a89e30fa42e7b5b182c81c64"
+    },
+    {
+      "contract": "NormalizedPilotControl",
+      "file": "NormalizedPilotControl.schema.json",
+      "sha256": "c6904dac4173f3c70396265098f679c7c1545f42ee786cbf9249223ee0c4f3bf"
+    },
+    {
+      "contract": "RuntimeLocalSafetyCommand",
+      "file": "RuntimeLocalSafetyCommand.schema.json",
+      "sha256": "edcb61d434373c4596e597cb9c0863dab8937d97b60975a51efdda7da8218682"
+    },
+    {
+      "contract": "RuntimeLocalSafetyObservation",
+      "file": "RuntimeLocalSafetyObservation.schema.json",
+      "sha256": "acb4d108bac9611b525d9e2e1ec4f4e24a4e93ec63f1f1a3700fd55808a98d40"
+    },
+    {
+      "contract": "RealtimeFeatureSnapshot",
+      "file": "RealtimeFeatureSnapshot.schema.json",
+      "sha256": "a40eba744d0d4bd14ebe3d5af79cfaf73784baccf0727af9dc9fbdd70385579d"
+    },
+    {
+      "contract": "LocalPolicyQualificationReceipt",
+      "file": "LocalPolicyQualificationReceipt.schema.json",
+      "sha256": "150ced7a2f5ab7976d792c4fdad0b87d8dac20959fc245764e525a77d9d1c8f9"
+    },
+    {
+      "contract": "LocalPolicySimulationAdmissionReceipt",
+      "file": "LocalPolicySimulationAdmissionReceipt.schema.json",
+      "sha256": "c362e9644be8023c69b7f6601cecacc1db65b8ffb00b8b2597fb800df2bb0e7e"
+    },
+    {
+      "contract": "AssetIR",
+      "file": "AssetIR.schema.json",
+      "sha256": "e2880be1eff01e108d458ae08979cde1a1e4446b540b69db69b4cb1e6b30d1c7"
+    },
+    {
+      "contract": "DDPkgManifest",
+      "file": "DDPkgManifest.schema.json",
+      "sha256": "ce87587981ea19f4c86e8dd70078499f023648268532a45064b19c90ab2637b9"
+    },
+    {
+      "contract": "AssetImportJob",
+      "file": "AssetImportJob.schema.json",
+      "sha256": "39b220a8cb096492e10fc34ac6b09d58292f4deaba3cc7f7d1406340570f04fb"
+    },
+    {
+      "contract": "QualificationBinding",
+      "file": "QualificationBinding.schema.json",
+      "sha256": "72298653a9565756e414e4c45747b5ea7bed42f9e7aa1c27174011936dee17f9"
+    },
+    {
+      "contract": "AssetQualificationInputs",
+      "file": "AssetQualificationInputs.schema.json",
+      "sha256": "180d90ba6a4e475b7adbf0fbf07b8e2ad13e64f49265ac67fa43ab9ce1e1ee10"
+    },
+    {
+      "contract": "AssetPairQualificationPlan",
+      "file": "AssetPairQualificationPlan.schema.json",
+      "sha256": "c5dd6c7cfd607be30a785cf3d67bedd4d9513e11bdf614f6007f40066e603b0c"
+    },
+    {
+      "contract": "AssetQualificationPluginCheck",
+      "file": "AssetQualificationPluginCheck.schema.json",
+      "sha256": "73c08f06367f70fc8b1a9c99a3d3d663897e8a56945ce349d2c59a70976360b9"
+    },
+    {
+      "contract": "AssetPairQualificationReceipt",
+      "file": "AssetPairQualificationReceipt.schema.json",
+      "sha256": "4a3e838f84690892452e070127b041c6068d1769421885455596d78467558515"
+    },
+    {
+      "contract": "AssetPairQualificationJob",
+      "file": "AssetPairQualificationJob.schema.json",
+      "sha256": "858f183768c1e9a3bab9e92bdc16544e4ff5c8061b9712a061789195f269b46b"
+    },
+    {
+      "contract": "MapAsset",
+      "file": "MapAsset.schema.json",
+      "sha256": "8df52594a452dc72d20e8610167c0ecab8f69cc909a12ebe1d7478bb2d2d955c"
+    },
+    {
+      "contract": "MapRuntimeBindings",
+      "file": "MapRuntimeBindings.schema.json",
+      "sha256": "9c791da2e0482754bcedb6e4f5284830fc548d77a662b233aab012c95d8ff2aa"
+    },
+    {
+      "contract": "VehicleAsset",
+      "file": "VehicleAsset.schema.json",
+      "sha256": "a0ba635708cf804f7bb8410adad7bca3e661e77866778fffb509e8b68fa62855"
+    },
+    {
+      "contract": "MissionRequest",
+      "file": "MissionRequest.schema.json",
+      "sha256": "5f8de3439fe06a06db1349c2ecb7b2f4bc9a49ebb10501a5185979786a308559"
+    },
+    {
+      "contract": "MissionAssetPairQualificationBinding",
+      "file": "MissionAssetPairQualificationBinding.schema.json",
+      "sha256": "5779944e8c62f653603f9c382ce7d2eb33bef6ef7d31c65ae08e3c9ff3b8149f"
+    },
+    {
+      "contract": "IntentArtifact",
+      "file": "IntentArtifact.schema.json",
+      "sha256": "e864b6b2a5346809672414b3b20c029790c213663729d21f2b9da667f4f678b8"
+    },
+    {
+      "contract": "MissionContract",
+      "file": "MissionContract.schema.json",
+      "sha256": "ff4bbea7ba71519a09c8dd3879b4822d98a4d0524d159561a5ec6d9a27be61d3"
+    },
+    {
+      "contract": "TaskGraphArtifact",
+      "file": "TaskGraphArtifact.schema.json",
+      "sha256": "4303b765d09f585d7fe657aa4dc52576a45c412bf1b1cf0ca03a1c3c378a3cb9"
+    },
+    {
+      "contract": "SemanticPlan",
+      "file": "SemanticPlan.schema.json",
+      "sha256": "3ba5aecd426fc6ec0f8c8719a7ad7a900f68c1d6c0566dd8a3d4120aa8e78c65"
+    },
+    {
+      "contract": "PlannerContribution",
+      "file": "PlannerContribution.schema.json",
+      "sha256": "c66f6a14faafe63d272acc250fe3bab364390cc47d98d85454ca851ccc9e145a"
+    },
+    {
+      "contract": "PlannerValidation",
+      "file": "PlannerValidation.schema.json",
+      "sha256": "d45999d0eda5d09ddbcbdaa78d88484beaacfda0952c4c57b93bd1c36d01abfb"
+    },
+    {
+      "contract": "FlightPlan",
+      "file": "FlightPlan.schema.json",
+      "sha256": "b278d4eed736b0c875a481684245e07f26e202099929e8d44fed29352173cd15"
+    },
+    {
+      "contract": "RouteQuery",
+      "file": "RouteQuery.schema.json",
+      "sha256": "653c07872f1cf303f1888d9d60939b542f86ea2d19ace586fa647ffe210441f2"
+    },
+    {
+      "contract": "GraphRoute",
+      "file": "GraphRoute.schema.json",
+      "sha256": "e169138a2d67574ada9261b24af69b59b3dc2f5845aa26aa0089ffd0ce33da72"
+    },
+    {
+      "contract": "RouteClearanceReport",
+      "file": "RouteClearanceReport.schema.json",
+      "sha256": "ff840fc0d115749e5b60a3aba6b016fefb6eb2c72683809cf3f49ce997a10caf"
+    },
+    {
+      "contract": "RouteAlternativeCandidate",
+      "file": "RouteAlternativeCandidate.schema.json",
+      "sha256": "f6074ff906d566ad393f4f0e73484d0ac88331e11f4aaa759b29cba8dcb073ca"
+    },
+    {
+      "contract": "RouteAlternativeSet",
+      "file": "RouteAlternativeSet.schema.json",
+      "sha256": "e93b0819888bc460444c3343fa3f7c92f0f00050065652805e8544a286038f6b"
+    },
+    {
+      "contract": "RouteAlternativeDecision",
+      "file": "RouteAlternativeDecision.schema.json",
+      "sha256": "adf3b418a8e21b08102c15aff94a417b02187a72214aec3f904d06e99b4c17d3"
+    },
+    {
+      "contract": "CoveragePlanRequest",
+      "file": "CoveragePlanRequest.schema.json",
+      "sha256": "b7530ea2986ee06cdaedca41125dc135e401b590099312a9ff25182de8479132"
+    },
+    {
+      "contract": "CoveragePattern",
+      "file": "CoveragePattern.schema.json",
+      "sha256": "f6781cd6e666e192a84bf394ca08796f59f2c589f0704763fa246f0d5cf0ad4b"
+    },
+    {
+      "contract": "Px4TrackRequest",
+      "file": "Px4TrackRequest.schema.json",
+      "sha256": "0779a833003749e5d3483011cc975528eaafb45c77c8298694a2c3767815ed93"
+    },
+    {
+      "contract": "Px4Track",
+      "file": "Px4Track.schema.json",
+      "sha256": "1aeadac0d95e62c293f48c341aaa9599e8546859d5d24b66e24498e507e5049a"
+    },
+    {
+      "contract": "RuntimeCheckpointRequest",
+      "file": "RuntimeCheckpointRequest.schema.json",
+      "sha256": "05673c93472926247ef969ab798e7fc637dd58c068a7cc6be42229d0481ca53b"
+    },
+    {
+      "contract": "RuntimeCheckpointDecision",
+      "file": "RuntimeCheckpointDecision.schema.json",
+      "sha256": "042f945713f49cef8ab188185e818736aac1d566bff2767bf2fa418f6e6f5b8d"
+    },
+    {
+      "contract": "TaskThread",
+      "file": "TaskThread.schema.json",
+      "sha256": "fb124599b7e918bb9f87271d9bc028d705e8ed1a1fa7125a823e849cc19830a0"
+    },
+    {
+      "contract": "PlanRevisionRecord",
+      "file": "PlanRevisionRecord.schema.json",
+      "sha256": "3730ea70b611f961bee82ec57a6ac4744333f6503459963b2a6981a5ad621186"
+    },
+    {
+      "contract": "MissionLifecycleBinding",
+      "file": "MissionLifecycleBinding.schema.json",
+      "sha256": "d2075478a7534d79e0268ddcbb91da3f6a82d6050814bc5b56b82744eaa8652b"
+    },
+    {
+      "contract": "MissionVerificationRequirement",
+      "file": "MissionVerificationRequirement.schema.json",
+      "sha256": "80a3a4bd3d51a10d0d2c476e88281b26bf4aca56f944cb570f16752aee6614cd"
+    },
+    {
+      "contract": "MissionVerificationPlan",
+      "file": "MissionVerificationPlan.schema.json",
+      "sha256": "4a8c6c1cb05ea7d4f0c965fbd46b396d58d835cc12cc01c95df32ceee1f17b9e"
+    },
+    {
+      "contract": "PluginManifest",
+      "file": "PluginManifest.schema.json",
+      "sha256": "0d064914e675e116321d23e15b35c9a573cc2f3588737081e1eba06170a8f070"
+    },
+    {
+      "contract": "PluginSnapshot",
+      "file": "PluginSnapshot.schema.json",
+      "sha256": "719e28b6ae2dc7449af80e5d626df0d34fa50f1682622c3b4d13bc03d3a3c01b"
+    },
+    {
+      "contract": "PluginLifecycleReceipt",
+      "file": "PluginLifecycleReceipt.schema.json",
+      "sha256": "594f425d85e630044a294ad2389c31098154d2c67638682ccddb51570fe4ac45"
+    },
+    {
+      "contract": "CapabilityBrokerReceipt",
+      "file": "CapabilityBrokerReceipt.schema.json",
+      "sha256": "10df8f5e53367affc5d9bd1eeea7fb68ed9fa6bb79dd4517d16f80a9a75bc68f"
+    },
+    {
+      "contract": "PluginInvocationPlan",
+      "file": "PluginInvocationPlan.schema.json",
+      "sha256": "8c5fdb715ae900586385de83dee6ac51f23aa093d60cef72ac6426436f6a7928"
+    },
+    {
+      "contract": "RuntimeControlSession",
+      "file": "RuntimeControlSession.schema.json",
+      "sha256": "b2ddc092e1ee2f1b2db28efa41f8ca3948bb9798f8999abbe8c231dc8894524c"
+    },
+    {
+      "contract": "RuntimeUserMessage",
+      "file": "RuntimeUserMessage.schema.json",
+      "sha256": "4452afc31a2fcd25b590bad38c2ca294da994955580e2600f7e0906678a1fdc2"
+    },
+    {
+      "contract": "RuntimeHoldAcknowledgement",
+      "file": "RuntimeHoldAcknowledgement.schema.json",
+      "sha256": "b772e7cd71df3dd88a2b85e58499f62637c07a1346029f96ba8f606022293c8b"
+    },
+    {
+      "contract": "RuntimeMessageClassification",
+      "file": "RuntimeMessageClassification.schema.json",
+      "sha256": "98f7adc1f34a5f29dfb9c2d07cc5701443c35f1cd9d08e0116b2eecdd1e3c064"
+    },
+    {
+      "contract": "RuntimeAmendmentDirective",
+      "file": "RuntimeAmendmentDirective.schema.json",
+      "sha256": "a0c615f2e7ac47a6302e293ace2c943d964c4dd0d5772516bc60ea28eda929ca"
+    },
+    {
+      "contract": "RuntimeInterruptionDecision",
+      "file": "RuntimeInterruptionDecision.schema.json",
+      "sha256": "5280dd97e4e999bc66681675bbd3ea6edf4cbdc8ea84b763342b7c69d242a9d5"
+    },
+    {
+      "contract": "RuntimeAuthorizedCommand",
+      "file": "RuntimeAuthorizedCommand.schema.json",
+      "sha256": "66835fad0f58019b7f29d75f63a9275765a16b2235ae474b37d6551ea4e7927b"
+    },
+    {
+      "contract": "RuntimeCommandAdoption",
+      "file": "RuntimeCommandAdoption.schema.json",
+      "sha256": "e96e6f2303387e1b1007552d600cb208bd4c9c4e8baea0af3a3ce8a9467d2872"
+    },
+    {
+      "contract": "RuntimeOperatorTakeoverGrant",
+      "file": "RuntimeOperatorTakeoverGrant.schema.json",
+      "sha256": "abf25b137710ff4c32c6be90bb47585899ca1aa333aa03efbc4c6c584e89eb56"
+    },
+    {
+      "contract": "RuntimeOperatorControlCommand",
+      "file": "RuntimeOperatorControlCommand.schema.json",
+      "sha256": "75fb4cea4792b3230c6e42e506f64522aa8980f7ebd0c8966ca9eda79a88be42"
+    },
+    {
+      "contract": "RuntimeOperatorTakeoverAdoption",
+      "file": "RuntimeOperatorTakeoverAdoption.schema.json",
+      "sha256": "423c516f9adda8c1033b8387a6a98309e35d9a3b7de23f18378089b5f3fb6999"
+    },
+    {
+      "contract": "RuntimeReplacementTrack",
+      "file": "RuntimeReplacementTrack.schema.json",
+      "sha256": "a23f86377d97c6d13bd70625d4205c8d6d0ed51f4c003011268ebab4e0dfe0ac"
+    },
+    {
+      "contract": "ModelCallRecord",
+      "file": "ModelCallRecord.schema.json",
+      "sha256": "c4932c4298782272cbffec692364e1346f2784c53a9a552cd2d2cff9a513c776"
+    },
+    {
+      "contract": "ToolReceipt",
+      "file": "ToolReceipt.schema.json",
+      "sha256": "2872782cc9ec26c004e9209e20c034ed1bc38ecbfda85688d5d13596ecd64dc9"
+    },
+    {
+      "contract": "PreparedMission",
+      "file": "PreparedMission.schema.json",
+      "sha256": "0beb871edac07b6dce1a0cdebef5c7b093d93c5f7410d96b6433abb09e7e0167"
+    },
+    {
+      "contract": "Px4GazeboRunEvidence",
+      "file": "Px4GazeboRunEvidence.schema.json",
+      "sha256": "36dc73c96dc1f4551994997db6c1b6a3691996df517f67719d6d34f39c501076"
+    },
+    {
+      "contract": "SimulationWorkflowResult",
+      "file": "SimulationWorkflowResult.schema.json",
+      "sha256": "45e268e1da4b95b92b884e5c898933429de4306dc55a5846032cfb21f29f4477"
+    }
+  ],
+  "schema_version": "dronedream.schema-index.v1"
+}

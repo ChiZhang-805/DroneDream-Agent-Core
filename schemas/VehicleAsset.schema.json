@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "asset_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "body_height_m": {
+      "maximum": 3.0,
+      "minimum": 0.05,
+      "title": "Body Height M",
+      "type": "number"
+    },
+    "body_radius_m": {
+      "maximum": 3.0,
+      "minimum": 0.05,
+      "title": "Body Radius M",
+      "type": "number"
+    },
+    "collision_center_offset_model_m": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Vector3"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "coordinate_frame": {
+      "const": "base_link_frd",
+      "default": "base_link_frd",
+      "title": "Coordinate Frame",
+      "type": "string"
+    },
+    "dry_mass_kg": {
+      "exclusiveMinimum": 0.1,
+      "maximum": 50.0,
+      "title": "Dry Mass Kg",
+      "type": "number"
+    },
+    "max_acceleration_mps2": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 30.0,
+      "title": "Max Acceleration Mps2",
+      "type": "number"
+    },
+    "max_pickup_payload_kg": {
+      "maximum": 20.0,
+      "minimum": 0.0,
+      "title": "Max Pickup Payload Kg",
+      "type": "number"
+    },
+    "max_speed_mps": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 20.0,
+      "title": "Max Speed Mps",
+      "type": "number"
+    },
+    "max_takeoff_mass_kg": {
+      "exclusiveMinimum": 0.1,
+      "maximum": 70.0,
+      "title": "Max Takeoff Mass Kg",
+      "type": "number"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "qualified_range_m": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 1000000.0,
+      "title": "Qualified Range M",
+      "type": "number"
+    },
+    "reserve_battery_percent": {
+      "maximum": 90.0,
+      "minimum": 10.0,
+      "title": "Reserve Battery Percent",
+      "type": "number"
+    },
+    "schema_version": {
+      "const": "dronedream.vehicle.v1",
+      "default": "dronedream.vehicle.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sensors": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 24,
+      "minItems": 1,
+      "title": "Sensors",
+      "type": "array"
+    }
+  },
+  "required": [
+    "asset_id",
+    "name",
+    "dry_mass_kg",
+    "max_takeoff_mass_kg",
+    "body_radius_m",
+    "body_height_m",
+    "max_speed_mps",
+    "max_acceleration_mps2",
+    "qualified_range_m",
+    "reserve_battery_percent",
+    "max_pickup_payload_kg",
+    "sensors"
+  ],
+  "title": "VehicleAsset",
+  "type": "object"
+}

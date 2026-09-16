@@ -1,0 +1,146 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cancel_requested": {
+      "default": false,
+      "title": "Cancel Requested",
+      "type": "boolean"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "issue_codes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Issue Codes",
+      "type": "array"
+    },
+    "job_id": {
+      "pattern": "^asset-qualification-job-[0-9a-f]{24}$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "map_asset_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Map Asset Id",
+      "type": "string"
+    },
+    "map_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Map Content Sha256",
+      "type": "string"
+    },
+    "owner_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Owner Id",
+      "type": "string"
+    },
+    "progress_percent": {
+      "default": 0,
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Progress Percent",
+      "type": "integer"
+    },
+    "qualification_id": {
+      "anyOf": [
+        {
+          "pattern": "^asset-qualification-[0-9a-f]{24}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Qualification Id"
+    },
+    "result_map_content_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Map Content Sha256"
+    },
+    "result_vehicle_content_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Vehicle Content Sha256"
+    },
+    "revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "dronedream.asset-pair-qualification-job.v1",
+      "default": "dronedream.asset-pair-qualification-job.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "default": "created",
+      "enum": [
+        "created",
+        "preparing",
+        "running",
+        "validating",
+        "paused",
+        "qualified",
+        "failed",
+        "cancelled"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "vehicle_asset_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Vehicle Asset Id",
+      "type": "string"
+    },
+    "vehicle_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Vehicle Content Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "owner_id",
+    "map_asset_id",
+    "map_content_sha256",
+    "vehicle_asset_id",
+    "vehicle_content_sha256",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "AssetPairQualificationJob",
+  "type": "object"
+}

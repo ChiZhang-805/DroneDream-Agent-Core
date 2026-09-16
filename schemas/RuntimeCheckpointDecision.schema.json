@@ -1,0 +1,585 @@
+{
+  "$defs": {
+    "LocalExpertInferenceTrace": {
+      "additionalProperties": false,
+      "description": "Per-expert votes behind one conservative local-policy decision.",
+      "properties": {
+        "action_scores": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 3,
+          "title": "Action Scores",
+          "type": "array"
+        },
+        "advisory_risk_scores": {
+          "additionalProperties": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "maxProperties": 6,
+          "propertyNames": {
+            "enum": [
+              "risk-critic",
+              "perception-health-critic",
+              "settle-stability-critic",
+              "payload-dynamics-adapter",
+              "state-anomaly-detector",
+              "cross-modal-consistency-critic"
+            ]
+          },
+          "title": "Advisory Risk Scores",
+          "type": "object"
+        },
+        "aggregate_risk_score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Aggregate Risk Score",
+          "type": "number"
+        },
+        "candidate_scores": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 8,
+          "minItems": 8,
+          "title": "Candidate Scores",
+          "type": "array"
+        },
+        "controller_step_scale": {
+          "maximum": 1.0,
+          "minimum": 0.1,
+          "title": "Controller Step Scale",
+          "type": "number"
+        },
+        "expert_latency_ms": {
+          "additionalProperties": {
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "maxProperties": 8,
+          "title": "Expert Latency Ms",
+          "type": "object"
+        },
+        "fallback_used": {
+          "title": "Fallback Used",
+          "type": "boolean"
+        },
+        "navigation_action": {
+          "enum": [
+            "select-candidate",
+            "pilot-control",
+            "hold",
+            "request-new-scan",
+            "abort"
+          ],
+          "title": "Navigation Action",
+          "type": "string"
+        },
+        "navigation_risk_score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Navigation Risk Score",
+          "type": "number"
+        },
+        "navigation_selected_candidate_id": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Navigation Selected Candidate Id"
+        },
+        "pilot_control": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NormalizedPilotControl"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pipeline_latency_ms": {
+          "additionalProperties": {
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "maxProperties": 8,
+          "title": "Pipeline Latency Ms",
+          "type": "object"
+        },
+        "requested_navigation_role": {
+          "enum": [
+            "local-navigation-policy",
+            "precision-maneuver-policy",
+            "recovery-policy"
+          ],
+          "title": "Requested Navigation Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.local-expert-inference-trace.v1",
+          "default": "dronedream.local-expert-inference-trace.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_navigation_role": {
+          "enum": [
+            "local-navigation-policy",
+            "precision-maneuver-policy",
+            "recovery-policy"
+          ],
+          "title": "Selected Navigation Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requested_navigation_role",
+        "selected_navigation_role",
+        "fallback_used",
+        "navigation_action",
+        "candidate_scores",
+        "action_scores",
+        "navigation_risk_score",
+        "aggregate_risk_score",
+        "controller_step_scale"
+      ],
+      "title": "LocalExpertInferenceTrace",
+      "type": "object"
+    },
+    "ModelCallRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "call_id": {
+          "pattern": "^model-[0-9a-f]{24}$",
+          "title": "Call Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "latency_ms": {
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "local_expert_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalExpertInferenceTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_schema": {
+          "title": "Output Schema",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "previous_response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Response Id"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Id"
+        },
+        "role": {
+          "enum": [
+            "intent_parser",
+            "intent_critic",
+            "plugin_router",
+            "task_decomposer",
+            "global_planner",
+            "local_navigation_advisor",
+            "plan_critic",
+            "execution_monitor",
+            "runtime_message_classifier",
+            "completion_verifier",
+            "context_summarizer"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.model-call.v1",
+          "default": "dronedream.model-call.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "simulation_training_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SimulationTrainingTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "call_id",
+        "role",
+        "attempt",
+        "input_sha256",
+        "output_sha256",
+        "output_schema",
+        "provider",
+        "model",
+        "latency_ms",
+        "created_at"
+      ],
+      "title": "ModelCallRecord",
+      "type": "object"
+    },
+    "NormalizedPilotControl": {
+      "additionalProperties": false,
+      "description": "Controller-neutral, continuous output of a learned local pilot.\n\nThe four axes are deliberately dimensionless.  A vehicle-bound deterministic\nadapter maps them to body velocity and yaw-rate limits before the existing\nacceleration, jerk, collision and command-lease gates run.  This keeps a\nlearned model independent of PX4/ArduPilot transport details and prevents it\nfrom writing motor outputs or inventing world-frame coordinates.",
+      "properties": {
+        "forward_axis": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Forward Axis",
+          "type": "number"
+        },
+        "right_axis": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Right Axis",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.normalized-pilot-control.v1",
+          "default": "dronedream.normalized-pilot-control.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "up_axis": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Up Axis",
+          "type": "number"
+        },
+        "yaw_axis": {
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Yaw Axis",
+          "type": "number"
+        }
+      },
+      "required": [
+        "forward_axis",
+        "right_axis",
+        "up_axis",
+        "yaw_axis"
+      ],
+      "title": "NormalizedPilotControl",
+      "type": "object"
+    },
+    "PluginHookReceipt": {
+      "additionalProperties": false,
+      "description": "Hash-bound evidence for a non-tool Harness extension invocation.",
+      "properties": {
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hook": {
+          "pattern": "^[a-z][a-z0-9._-]{1,95}$",
+          "title": "Hook",
+          "type": "string"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "invocation_id": {
+          "pattern": "^hook-[0-9a-f]{24}$",
+          "title": "Invocation Id",
+          "type": "string"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "outcome": {
+          "enum": [
+            "accepted",
+            "skipped",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "plugin_id": {
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "plugin_package_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plugin Package Sha256",
+          "type": "string"
+        },
+        "plugin_version": {
+          "title": "Plugin Version",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "dronedream.plugin-hook-receipt.v1",
+          "default": "dronedream.plugin-hook-receipt.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "slot_id": {
+          "title": "Slot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "invocation_id",
+        "plugin_id",
+        "plugin_version",
+        "plugin_package_sha256",
+        "capability_id",
+        "slot_id",
+        "hook",
+        "outcome",
+        "input_sha256",
+        "output_sha256",
+        "created_at"
+      ],
+      "title": "PluginHookReceipt",
+      "type": "object"
+    },
+    "RuntimeAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "accept",
+            "retry",
+            "replan",
+            "hold",
+            "abort"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "repair_hint": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Hint"
+        },
+        "schema_version": {
+          "const": "dronedream.runtime-assessment.v1",
+          "default": "dronedream.runtime-assessment.v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "RuntimeAssessment",
+      "type": "object"
+    },
+    "SimulationTrainingTrace": {
+      "additionalProperties": false,
+      "description": "A learner proposal, not a qualified package or fabricated inference score.",
+      "properties": {
+        "flight_qualification_granted": {
+          "const": false,
+          "default": false,
+          "title": "Flight Qualification Granted",
+          "type": "boolean"
+        },
+        "policy_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Sha256",
+          "type": "string"
+        },
+        "request_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Request Sha256",
+          "type": "string"
+        },
+        "selected_navigation_role": {
+          "enum": [
+            "local-navigation-policy",
+            "precision-maneuver-policy",
+            "recovery-policy"
+          ],
+          "title": "Selected Navigation Role",
+          "type": "string"
+        },
+        "simulation_only": {
+          "const": true,
+          "default": true,
+          "title": "Simulation Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "request_sha256",
+        "policy_sha256",
+        "selected_navigation_role"
+      ],
+      "title": "SimulationTrainingTrace",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assessment": {
+      "$ref": "#/$defs/RuntimeAssessment"
+    },
+    "continue_authorized": {
+      "title": "Continue Authorized",
+      "type": "boolean"
+    },
+    "model_call": {
+      "$ref": "#/$defs/ModelCallRecord"
+    },
+    "plugin_hook_receipts": {
+      "items": {
+        "$ref": "#/$defs/PluginHookReceipt"
+      },
+      "title": "Plugin Hook Receipts",
+      "type": "array"
+    },
+    "request_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dronedream.runtime-checkpoint-decision.v1",
+      "default": "dronedream.runtime-checkpoint-decision.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_sha256",
+    "assessment",
+    "model_call",
+    "continue_authorized"
+  ],
+  "title": "RuntimeCheckpointDecision",
+  "type": "object"
+}

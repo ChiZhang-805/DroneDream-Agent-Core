@@ -1,0 +1,10 @@
+string contract_id
+string task_id
+string action
+string target_node
+string arguments_json
+---
+bool success
+string[] evidence
+string details_json
+string issue_code

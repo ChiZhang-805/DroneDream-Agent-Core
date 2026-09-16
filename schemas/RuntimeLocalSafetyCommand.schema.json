@@ -1,0 +1,558 @@
+{
+  "$defs": {
+    "BodyFrameControlIntent": {
+      "additionalProperties": false,
+      "description": "Short-lived, joystick-like motion request from one local control expert.\n\nThe local expert does not author a world coordinate or a motor command.  It\nrequests body-relative translational velocity and yaw rate inside an\nindependently enforced vehicle/safety envelope.  The explicit model call,\nnavigation snapshot and expiry bindings prevent a command from surviving a\ngoal change or being replayed against fresher sensor state.",
+      "properties": {
+        "control_origin": {
+          "default": "candidate-path-derived",
+          "enum": [
+            "candidate-path-derived",
+            "continuous-model-output"
+          ],
+          "title": "Control Origin",
+          "type": "string"
+        },
+        "forward_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Forward Velocity Mps",
+          "type": "number"
+        },
+        "generated_at_unix_ms": {
+          "minimum": 0,
+          "title": "Generated At Unix Ms",
+          "type": "integer"
+        },
+        "harness_control_scale": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.1,
+          "title": "Harness Control Scale",
+          "type": "number"
+        },
+        "maximum_acceleration_mps2": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 30.0,
+          "title": "Maximum Acceleration Mps2",
+          "type": "number"
+        },
+        "maximum_jerk_mps3": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 100.0,
+          "title": "Maximum Jerk Mps3",
+          "type": "number"
+        },
+        "model_call_id": {
+          "pattern": "^model-[0-9a-f]{24}$",
+          "title": "Model Call Id",
+          "type": "string"
+        },
+        "navigation_snapshot_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Navigation Snapshot Sha256",
+          "type": "string"
+        },
+        "right_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Right Velocity Mps",
+          "type": "number"
+        },
+        "schema_version": {
+          "const": "dronedream.body-frame-control-intent.v1",
+          "default": "dronedream.body-frame-control-intent.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_expert": {
+          "enum": [
+            "local-navigation-policy",
+            "precision-maneuver-policy",
+            "recovery-policy"
+          ],
+          "title": "Source Expert",
+          "type": "string"
+        },
+        "task_reference_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Task Reference Sha256",
+          "type": "string"
+        },
+        "up_velocity_mps": {
+          "maximum": 20.0,
+          "minimum": -20.0,
+          "title": "Up Velocity Mps",
+          "type": "number"
+        },
+        "valid_until_unix_ms": {
+          "minimum": 0,
+          "title": "Valid Until Unix Ms",
+          "type": "integer"
+        },
+        "yaw_control_mode": {
+          "default": "model-rate",
+          "enum": [
+            "model-rate",
+            "route-heading-assist"
+          ],
+          "title": "Yaw Control Mode",
+          "type": "string"
+        },
+        "yaw_rate_dps": {
+          "maximum": 180.0,
+          "minimum": -180.0,
+          "title": "Yaw Rate Dps",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_expert",
+        "model_call_id",
+        "navigation_snapshot_sha256",
+        "task_reference_sha256",
+        "generated_at_unix_ms",
+        "valid_until_unix_ms",
+        "forward_velocity_mps",
+        "right_velocity_mps",
+        "up_velocity_mps",
+        "yaw_rate_dps",
+        "maximum_acceleration_mps2",
+        "maximum_jerk_mps3"
+      ],
+      "title": "BodyFrameControlIntent",
+      "type": "object"
+    },
+    "ControlObservationBudget": {
+      "additionalProperties": false,
+      "description": "Why a checked proposal retained or lost its original observation lease.\n\nDiagnostic evidence, not an independent permission to execute a command.\nThe clearance belongs to the proposal, even if the resulting command brakes.",
+      "properties": {
+        "clearance_margin_m": {
+          "minimum": 0,
+          "title": "Clearance Margin M",
+          "type": "number"
+        },
+        "control_deadline_unix_ms": {
+          "minimum": 0,
+          "title": "Control Deadline Unix Ms",
+          "type": "integer"
+        },
+        "disposition": {
+          "enum": [
+            "control-eligible",
+            "context-only",
+            "reject"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "downstream_reserve_ms": {
+          "minimum": 0,
+          "title": "Downstream Reserve Ms",
+          "type": "integer"
+        },
+        "reason": {
+          "maxLength": 96,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "source_observed_at_unix_ms": {
+          "minimum": 0,
+          "title": "Source Observed At Unix Ms",
+          "type": "integer"
+        },
+        "uncertainty_margin_m": {
+          "minimum": 0,
+          "title": "Uncertainty Margin M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_observed_at_unix_ms",
+        "control_deadline_unix_ms",
+        "disposition",
+        "reason",
+        "clearance_margin_m",
+        "uncertainty_margin_m",
+        "downstream_reserve_ms"
+      ],
+      "title": "ControlObservationBudget",
+      "type": "object"
+    },
+    "PredictiveSafetyDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "continue",
+            "slow",
+            "hold",
+            "replan"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "braking_prediction_velocity_mps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vector3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "control_source": {
+          "default": "route-target",
+          "enum": [
+            "route-target",
+            "local-model-body-control",
+            "deterministic-safety-override",
+            "deterministic-brake"
+          ],
+          "title": "Control Source",
+          "type": "string"
+        },
+        "evaluated_candidate_count": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Evaluated Candidate Count",
+          "type": "integer"
+        },
+        "issue_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Issue Codes",
+          "type": "array"
+        },
+        "maximum_acceleration_mps2": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 30.0,
+          "title": "Maximum Acceleration Mps2",
+          "type": "number"
+        },
+        "maximum_jerk_mps3": {
+          "default": 100.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 100.0,
+          "title": "Maximum Jerk Mps3",
+          "type": "number"
+        },
+        "minimum_predicted_clearance_m": {
+          "title": "Minimum Predicted Clearance M",
+          "type": "number"
+        },
+        "predicted_path_m": {
+          "items": {
+            "$ref": "#/$defs/Vector3"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "title": "Predicted Path M",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "dronedream.predictive-safety-decision.v1",
+          "default": "dronedream.predictive-safety-decision.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_velocity_mps": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "selected_yaw_rate_dps": {
+          "default": 0.0,
+          "maximum": 180.0,
+          "minimum": -180.0,
+          "title": "Selected Yaw Rate Dps",
+          "type": "number"
+        },
+        "threat_obstacle_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threat Obstacle Id"
+        },
+        "time_to_minimum_clearance_seconds": {
+          "maximum": 15.0,
+          "minimum": 0.0,
+          "title": "Time To Minimum Clearance Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "selected_velocity_mps",
+        "predicted_path_m",
+        "minimum_predicted_clearance_m",
+        "time_to_minimum_clearance_seconds",
+        "evaluated_candidate_count"
+      ],
+      "title": "PredictiveSafetyDecision",
+      "type": "object"
+    },
+    "QuaternionWxyz": {
+      "additionalProperties": false,
+      "description": "Unit quaternion using an explicit scalar-first convention.",
+      "properties": {
+        "w": {
+          "title": "W",
+          "type": "number"
+        },
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "w",
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "QuaternionWxyz",
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "title": "Vector3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "command_position_m": {
+      "$ref": "#/$defs/Vector3"
+    },
+    "decision": {
+      "$ref": "#/$defs/PredictiveSafetyDecision"
+    },
+    "estimator_to_world_position_offset_m": {
+      "$ref": "#/$defs/Vector3"
+    },
+    "evaluated_body_orientation_world_from_body": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuaternionWxyz"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evaluated_target_position_m": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Vector3"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "generated_at_unix_ms": {
+      "minimum": 0,
+      "title": "Generated At Unix Ms",
+      "type": "integer"
+    },
+    "model_authority_reason": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Authority Reason"
+    },
+    "model_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Call Id"
+    },
+    "model_navigation_authorized": {
+      "default": false,
+      "title": "Model Navigation Authorized",
+      "type": "boolean"
+    },
+    "model_navigation_snapshot_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Navigation Snapshot Sha256"
+    },
+    "model_path_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Path Sha256"
+    },
+    "model_selected_candidate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Selected Candidate Id"
+    },
+    "navigation_control_authority": {
+      "default": "route-fallback",
+      "enum": [
+        "route-fallback",
+        "model-required"
+      ],
+      "title": "Navigation Control Authority",
+      "type": "string"
+    },
+    "navigation_goal_id": {
+      "anyOf": [
+        {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Navigation Goal Id"
+    },
+    "observation_budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControlObservationBudget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "observation_sequence": {
+      "minimum": 1,
+      "title": "Observation Sequence",
+      "type": "integer"
+    },
+    "observation_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observation Sha256",
+      "type": "string"
+    },
+    "requested_control_intent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BodyFrameControlIntent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "dronedream.runtime-local-safety-command.v1",
+      "default": "dronedream.runtime-local-safety-command.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "simulation-ground-truth",
+        "onboard",
+        "external"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "tracking_recovery_active": {
+      "default": false,
+      "title": "Tracking Recovery Active",
+      "type": "boolean"
+    },
+    "valid_until_unix_ms": {
+      "minimum": 0,
+      "title": "Valid Until Unix Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "observation_sha256",
+    "observation_sequence",
+    "generated_at_unix_ms",
+    "valid_until_unix_ms",
+    "source",
+    "command_position_m",
+    "decision"
+  ],
+  "title": "RuntimeLocalSafetyCommand",
+  "type": "object"
+}
