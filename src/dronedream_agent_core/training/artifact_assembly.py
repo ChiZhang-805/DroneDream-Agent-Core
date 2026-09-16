@@ -245,6 +245,8 @@ def validate_expert_training_receipt(role: str, digest: str, receipt: dict, mani
             receipt.get("expert_role") != role
             or receipt.get("artifact_sha256") != digest
             or receipt.get("architecture") != "causal-gru-control"
+            or manifest.navigation_architecture != "causal-gru-control"
+            or manifest.pilot_control_mode != "normalized-body-velocity"
             or receipt.get("feature_contract_sha256") != manifest.control_feature_contract_sha256
             or receipt.get("qualified_for_flight") is not False
             or type(config.get("history_length")) is not int

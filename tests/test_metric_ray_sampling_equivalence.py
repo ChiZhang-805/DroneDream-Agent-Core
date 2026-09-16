@@ -51,3 +51,26 @@ def test_sampling_preserves_reference_voxel_sequence(resolution):
         actual = world._ray_keys(ray)
         assert actual == reference(origin, endpoint, minimum, resolution)
         assert all(type(value) is int for key in actual for value in key)
+
+
+# 功能：
+#   核对最大合法地图偏移、分块边界和反向遍历，不允许整数溢出或块间重复体素。
+# 输入：
+#   offset：大地图坐标偏移。
+# 输出：
+#   None：逐键断言与独立标量公式完全相同。
+@pytest.mark.parametrize("offset", [-1e9, 1e9-100.])
+def test_chunked_sampling_preserves_large_map_offsets(offset):
+    minimum = (offset, offset, offset)
+    world = MetricVoxelMap(resolution_m=.025,
+        minimum_bound_m=Vector3(x=offset, y=offset, z=offset),
+        maximum_bound_m=Vector3(x=offset+100., y=offset+100., z=offset+100.))
+    origin, endpoint = minimum, (offset+70., offset+50., offset+1.)
+    for start, end in ((origin, endpoint), (endpoint, origin)):
+        ray = RangeRayObservation(origin_m=Vector3(x=start[0], y=start[1], z=start[2]),
+            endpoint_m=Vector3(x=end[0], y=end[1], z=end[2]), hit=True,
+            confidence=.95, observed_at_monotonic_seconds=1.)
+        actual = world._ray_keys(ray)
+        assert actual == reference(start, end, minimum, .025)
+        assert all(previous != current for previous, current in
+                   zip(actual, actual[1:], strict=False))

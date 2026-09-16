@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from test_local_policy_quality import _metrics
 
 from dronedream_agent_core.control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
@@ -374,3 +376,67 @@ def test_rebinding_preserves_every_model_and_requires_fresh_admission(tmp_path: 
     assert receipt["fresh_simulation_admission_required"] is True
     assert receipt["current_asset_closed_loop_required"] is True
     assert receipt["qualification_granted"] is False
+
+
+# 功能：
+#   验证只读预检不创建输出，旧控制包和缺少训练来源的占位权重不能冒充实载验证。
+# 输入：
+#   tmp_path：隔离模型和回执目录。
+# 输出：
+#   None：断言失败时测试报错。
+def test_readonly_preflight_checks_contract_and_requires_real_model_lineage(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    package = _package(tmp_path / "current", continuous_control=True)
+    admission = tmp_path / "admission.json"
+    _admission(admission, package, continuous_evidence=True, expert_evidence=True)
+    command = [sys.executable, str(repository / "scripts/stage_local_policy_runtime.py"),
+               "--package", str(tmp_path / "current"), "--simulation-admission", str(admission),
+               "--check-only"]
+    result = subprocess.run(command, cwd=repository, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["onnx_verified"] is False
+    result = subprocess.run([*command, "--verify-onnx"], cwd=repository,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "REQUIRES_COMPLETE_TRAINING_LINEAGE" in result.stderr
+    assert set(p.name for p in tmp_path.iterdir()) == {"current", "admission.json"}
+
+
+# 功能：
+#   验证分发记录逐个绑定专家字节，缺项、重复、未批准和替换权重均不能被忽略。
+# 输入：
+#   tmp_path：隔离模型与测试许可目录。
+#   problem：要注入的许可记录问题，none 表示正常测试记录。
+# 输出：
+#   None：断言失败时测试报错。
+@pytest.mark.parametrize("problem", ["none", "missing", "duplicate", "unapproved", "hash", "text"])
+def test_distribution_licenses_bind_every_expert(tmp_path: Path, problem: str) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/stage_local_policy_runtime.py"
+    spec = importlib.util.spec_from_file_location("stage_local_policy_for_test", script)
+    staging = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(staging)
+    package = _package(tmp_path / "package", continuous_control=True)
+    entries = [{"role": artifact.role, "sha256": artifact.sha256,
+                "license_id": "LicenseRef-Test-Only", "source": "non-executable test fixture",
+                "license_text": "Fixture license, not permission for any real model.",
+                "redistribution_approved": True} for artifact in package.manifest.artifacts]
+    if problem == "missing":
+        entries.pop()
+    elif problem == "duplicate":
+        entries.append(entries[0])
+    elif problem == "unapproved":
+        entries[0]["redistribution_approved"] = False
+    elif problem == "hash":
+        entries[0]["sha256"] = "f" * 64
+    elif problem == "text":
+        entries[0]["license_text"] = "  "
+    payload = {"schema_version": "dronedream.model-distribution-licenses.v1",
+               "package_sha256": package.package_sha256, "artifacts": entries}
+    path = tmp_path / "licenses.json"
+    content = json.dumps(payload).encode()
+    path.write_bytes(content)
+    if problem == "none":
+        assert staging._verified_distribution_licenses(path, package) == content
+    else:
+        with pytest.raises(ValueError, match="DISTRIBUTION_LICENSE"):
+            staging._verified_distribution_licenses(path, package)

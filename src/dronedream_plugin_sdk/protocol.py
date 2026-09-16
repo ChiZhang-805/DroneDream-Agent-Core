@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from functools import lru_cache
 from typing import Any, TextIO
 
 MAX_MESSAGE_BYTES = 2 * 1024 * 1024
@@ -16,6 +17,9 @@ MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 100_000
+# 只缓存小型声明的成功检查；不保留可变 Schema，也不让 2 MiB 消息占满缓存。
+MAX_CACHED_SCHEMA_BYTES = 16 * 1024
+MAX_CACHED_SCHEMAS = 128
 
 
 # 功能：
@@ -200,8 +204,8 @@ def valid_request_id(value: object) -> bool:
 
 # 功能：
 #   1. 复制并验证 JSON Schema，只允许文档内部引用，禁止验证时远程取回外部定义。
-#   2. 仅遍历承载 Schema 的关键字，避免把示例数据或名为 $ref 的业务字段当作引用。
-#   3. 此检查不约束正则或递归 Schema 的执行成本，执行方仍需进程资源限制。
+#   2. 对内容和校验器均未变化的小型声明复用成功检查，每次仍检查预算并返回独立副本。
+#   3. 此检查不验证具体工具参数，也不约束正则或递归的执行成本，调用方仍需相关检查。
 # 输入：
 #   schema：插件声明的工具输入或输出 Schema。
 # 输出：
@@ -209,8 +213,39 @@ def valid_request_id(value: object) -> bool:
 def validate_local_schema(schema: dict[str, Any]) -> dict[str, Any]:
     import jsonschema
 
-    detached = copy_json(schema)
-    jsonschema.validators.validator_for(detached).check_schema(detached)
+    rendered = encode_json(schema)
+    detached = json.loads(rendered)
+    validator = jsonschema.validators.validator_for(detached)
+    if len(rendered.encode("utf-8")) <= MAX_CACHED_SCHEMA_BYTES:
+        _check_cached_schema(rendered, validator)
+    else:
+        _check_schema(detached, validator)
+    return detached
+
+
+# 功能：
+#   1. 按完整 JSON 内容和当前选中的校验器缓存成功检查，失败结果不会进入缓存。
+#   2. 只缓存不可变文本与空返回值，不把某次调用修改过的字典传给后续调用。
+# 输入：
+#   rendered：通过 JSON 预算检查且符合缓存长度上限的 Schema 文本。
+#   validator：按 Schema 草案选中的当前校验器类。
+# 输出：
+#   None：不返回业务数据。
+@lru_cache(maxsize=MAX_CACHED_SCHEMAS)
+def _check_cached_schema(rendered: str, validator: type) -> None:
+    _check_schema(json.loads(rendered), validator)
+
+
+# 功能：
+#   1. 检查 Schema 语法以及所有承载 Schema 的关键字中的引用范围。
+#   2. 允许示例数据和名为 $ref 的业务属性，但禁止真正引用外部定义。
+# 输入：
+#   detached：与调用方可变对象隔离的 Schema。
+#   validator：按 Schema 草案选中的校验器类。
+# 输出：
+#   None：不返回业务数据。
+def _check_schema(detached: dict[str, Any], validator: type) -> None:
+    validator.check_schema(detached)
     pending: list[object] = [detached]
     while pending:
         item = pending.pop()
@@ -256,4 +291,3 @@ def validate_local_schema(schema: dict[str, Any]) -> dict[str, Any]:
                     pending.append(value)
         elif isinstance(item, list):
             pending.extend(item)
-    return detached

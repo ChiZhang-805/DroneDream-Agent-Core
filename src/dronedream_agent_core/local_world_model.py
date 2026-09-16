@@ -16,6 +16,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from itertools import islice, product
 
+import numpy as np
+
 from .contracts import (
     DynamicObstacleObservation,
     MetricVoxelMapSnapshot,
@@ -506,7 +508,8 @@ class MetricVoxelMap:
             self._observed_free_keys.discard(key)
 
     # 功能：
-    #   校验一条米制射线并保守记录采样实际经过的体素；遗漏单元仍保持未知。
+    #   1. 校验米制射线，按原采样公式与浮点运算顺序记录体素；遗漏单元仍保持未知。
+    #   2. 分块向量化取整并保留有序去重，限制临时数组大小，不改变端点或采样密度。
     # 输入：
     #   observation：标定后的原始时间射线。
     # 输出：
@@ -531,26 +534,21 @@ class MetricVoxelMap:
             raise ValueError("METRIC_SCAN_TRAVERSAL_BUDGET_EXCEEDED")
         count = max(1, math.ceil(distance / (self.resolution_m * 0.45)))
         traversed: list[VoxelKey] = []
-        delta = tuple(endpoint[axis] - origin[axis] for axis in range(3))
+        delta = np.asarray(tuple(endpoint[axis] - origin[axis] for axis in range(3)))
         inverse_resolution = 1.0 / self.resolution_m
-        ox, oy, oz = origin
-        dx, dy, dz = delta
-        mx, my, mz = self._minimum
-        floor = math.floor
-        for index in range(count + 1):
-            ratio = index / count
-            # Both endpoints are inside a convex axis-aligned map, so every
-            # interpolated sample is also inside. Inline key construction while
-            # retaining the original oversampled traversal and de-duplication.
-            # Same oversampling and arithmetic order, without constructing
-            # four Python generator calls for every ray sample.
-            key = (
-                floor((ox + dx * ratio - mx) * inverse_resolution),
-                floor((oy + dy * ratio - my) * inverse_resolution),
-                floor((oz + dz * ratio - mz) * inverse_resolution),
-            )
-            if not traversed or traversed[-1] != key:
-                traversed.append(key)
+        for start in range(0, count + 1, 4096):
+            ratio = np.arange(start, min(count + 1, start + 4096), dtype=np.float64) / count
+            # 各步独立执行，不合并乘加、不改用 linspace，避免体素边界上出现舍入差异。
+            coordinates = ratio[:, None] * delta
+            coordinates += origin
+            coordinates -= self._minimum
+            coordinates *= inverse_resolution
+            keys = np.floor(coordinates).astype(np.int64)
+            # 地图坐标已限 ±1e9、分辨率 > .02，网格索引落在 int64 可精确表示范围。
+            keep = np.empty(len(keys), dtype=np.bool_)
+            keep[0] = not traversed or tuple(keys[0]) != traversed[-1]
+            keep[1:] = np.any(keys[1:] != keys[:-1], axis=1)
+            traversed.extend(map(tuple, keys[keep].tolist()))
         return traversed
 
     # 功能：

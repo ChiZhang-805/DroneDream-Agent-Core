@@ -1,12 +1,15 @@
-param(
+﻿param(
     [switch]$SkipDependencyInstall,
-    [switch]$ReuseOfficialPluginBundle,
+    [switch]$StageOnly,
 
     [Parameter(Mandatory = $true)]
     [string]$LocalPolicyPackage,
 
     [Parameter(Mandatory = $true)]
     [string]$LocalPolicySimulationAdmission,
+
+    [Parameter(Mandatory = $true)]
+    [string]$LocalPolicyDistributionLicenses,
 
     [Parameter(Mandatory = $true)]
     [string]$NativeSensorRuntime
@@ -73,7 +76,8 @@ $brandSource = Join-Path $repoRoot "app\frontend\public\brand"
 if ($LASTEXITCODE -ne 0) { throw "Autonomy brand and installer asset generation failed" }
 
 if (-not $SkipDependencyInstall) {
-    & $python -m pip install -e "$repoRoot[dev]"
+    & $python -m pip install -e "$repoRoot[dev,local-policy]" `
+        -c (Join-Path $repoRoot 'runtime\requirements-linux.txt')
     if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed" }
     & npm.cmd --prefix (Join-Path $repoRoot "app\frontend") ci
     if ($LASTEXITCODE -ne 0) { throw "Frontend dependency installation failed" }
@@ -81,16 +85,20 @@ if (-not $SkipDependencyInstall) {
     if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed" }
 }
 
+# 模型/原生资源不兼容时在删除已有输出前停止；正式构建必须实际打开全部 ONNX。
+& $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
+    --package $LocalPolicyPackage --simulation-admission $LocalPolicySimulationAdmission `
+    --distribution-licenses $LocalPolicyDistributionLicenses --check-only --verify-onnx
+if ($LASTEXITCODE -ne 0) { throw "Current local expert package preflight failed; existing output preserved" }
+& $python (Join-Path $repoRoot "scripts\stage_native_sensor_runtime.py") `
+    --source $NativeSensorRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current native sensor preflight failed; existing output preserved" }
+
 $officialPluginResources = Join-Path $repoRoot "app\desktop\src-tauri\resources\official-plugins"
-if ($ReuseOfficialPluginBundle) {
-    if (-not (Test-Path -LiteralPath (Join-Path $officialPluginResources "index.json"))) {
-        throw "Existing official plugin bundle index is missing"
-    }
-} else {
-    & (Join-Path $repoRoot "scripts\build-official-plugins.ps1") `
-        -OutputRoot $officialPluginResources
-    if ($LASTEXITCODE -ne 0) { throw "Official plugin bundle build failed" }
-}
+# 索引存在不代表插件来自当前提交；每次组件构建都重新编译，不提供旧包复用入口。
+& (Join-Path $repoRoot "scripts\build-official-plugins.ps1") `
+    -OutputRoot $officialPluginResources
+if ($LASTEXITCODE -ne 0) { throw "Official plugin bundle build failed" }
 
 $runtimeSource = Join-Path $repoRoot "runtime"
 $runtimeResources = Join-Path $repoRoot "app\desktop\src-tauri\resources\runtime"
@@ -119,6 +127,8 @@ if ($LASTEXITCODE -ne 0) { throw "Current native sensor Runtime staging failed" 
 & $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
     --package $LocalPolicyPackage `
     --simulation-admission $LocalPolicySimulationAdmission `
+    --distribution-licenses $LocalPolicyDistributionLicenses `
+    --verify-onnx `
     --output (Join-Path $runtimeResources "local-policy")
 if ($LASTEXITCODE -ne 0) { throw "Admitted local expert Runtime staging failed" }
 & $python (Join-Path $repoRoot "scripts\write_runtime_provenance.py") `
@@ -253,6 +263,15 @@ $isolatorTarget = Join-Path $binaryRoot "dronedream-plugin-isolator-x86_64-pc-wi
 Copy-Item -LiteralPath (
     Join-Path $repoRoot "app\desktop\src-tauri\target\release\dronedream-plugin-isolator.exe"
 ) -Destination $isolatorTarget -Force
+
+# 同时固定全部组件摘要及构建起点，五款产品只能暂存复验成功的这一份产物。
+& $python (Join-Path $repoRoot "scripts\core_build_receipt.py") `
+    --repository $repoRoot --expected-commit $sourceCommit
+if ($LASTEXITCODE -ne 0) { throw "Core component source/binary binding failed" }
+if ($StageOnly) {
+    Write-Output "CORE_COMPONENT_RECEIPT=$(Join-Path $repoRoot 'artifacts\desktop\core-components-build.json')"
+    return
+}
 
 & npm.cmd --prefix (Join-Path $repoRoot "app\desktop") run build
 if ($LASTEXITCODE -ne 0) { throw "Tauri/NSIS build failed" }

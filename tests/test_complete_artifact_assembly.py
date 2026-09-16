@@ -183,6 +183,26 @@ def test_complete_current_package_requires_no_legacy_base(recipe, tmp_path):
 
 
 # 功能：
+#   即使训练回执声称使用新网络，也不能给旧架构或旧输出模式的清单背书。
+# 输入：
+#   recipe：含真实 ONNX 格式但无飞行资格的合成测试配方。
+#   field：要替换成旧协议值的清单字段。
+#   value：待拒绝的旧协议值。
+# 输出：
+#   None：断言失败时测试报错。
+@pytest.mark.parametrize("field,value", [("navigation_architecture", "feedforward"),
+                                        ("pilot_control_mode", None)])
+def test_training_receipt_cannot_attest_a_different_control_architecture(recipe, field, value):
+    source = next(item for item in recipe.sources if item.role == "local-navigation-policy")
+    receipt = json.loads(source.training_receipt_path.read_bytes())
+    artifact = next(item for item in recipe.manifest.artifacts if item.role == source.role)
+    # 模拟绕开配方加载器的调用者；独立的回执核验边界仍须拒绝清单错配。
+    manifest = recipe.manifest.model_copy(update={field: value})
+    with pytest.raises(ValueError, match="NAVIGATION_TRAINING_IDENTITY_MISMATCH"):
+        validate_expert_training_receipt(source.role, artifact.sha256, receipt, manifest)
+
+
+# 功能：
 #   验证重复角色、旧特征契约及占用清单路径的模型文件不能形成有效配方。
 # 输入：
 #   recipe：完整合成配方。

@@ -111,6 +111,126 @@ def test_actual_disarmed_check_is_strict_and_releases_subscription(armed):
 
 
 # 功能：
+#   1. 验证首条解锁遥测晚于旧的两秒限制时，仍可在总准备期限内通过。
+#   2. 验证传给真实检查的预算来自剩余准备时间，且通过后没有请求飞行。
+# 输入：
+#   tmp_path：本次测试日志目录。
+# 输出：
+#   None：断言冷启动等待和禁止提前解锁的约束。
+def test_disarmed_cold_start_uses_remaining_preflight_budget(tmp_path):
+    base = _base_module()
+    closed = []
+
+    # 功能：
+    #   模拟 MAVLink 首条状态延迟到达，不模拟实际飞行或感知结果。
+    # 输入：
+    #   无。
+    # 输出：
+    #   armed：明确的未解锁状态 False。
+    async def stream():
+        try:
+            await asyncio.sleep(2.1)
+            armed = False
+            yield armed
+        finally:
+            closed.append(True)
+
+    class Client(base.FakeOffboardClient):
+        verify_disarmed_before_preflight = (
+            base.MavsdkOffboardClient.verify_disarmed_before_preflight)
+
+        # 功能：
+        #   为真实检查方法提供本测试的异步遥测接口。
+        # 输入：
+        #   self：本测试客户端。
+        # 输出：
+        #   system：仅提供解锁状态的夹具。
+        def _require_system(self):
+            system = SimpleNamespace(telemetry=SimpleNamespace(armed=stream))
+            return system
+
+    client, evidence = Client(), {}
+    client._flight_command_requested = False
+    health_result = asyncio.run(base.connect_preflight_with_recovery(client,
+        connection="test-only", readiness_timeout_seconds=5., abort_check=lambda: None,
+        log_path=tmp_path / "log", evidence=evidence))
+    assert health_result.armable is True
+    assert 2. < evidence["attempts"][0]["disarmed_timeout_seconds"] <= 5.
+    assert evidence["attempts"][0]["disarmed_check"]["disarmed"] is True
+    assert len(evidence["attempts"]) == 1
+    assert client._flight_command_requested is False
+    assert closed == [True]
+
+
+# 功能：
+#   首帧永远不到或调用被取消时，检查必须退出并回收订阅，不能生成通过回执。
+# 输入：
+#   cancel：是否通过外部取消中止，而非等待检查超时。
+# 输出：
+#   None：断言失败类型、明确超时代码和订阅回收结果。
+@pytest.mark.parametrize("cancel", [False, True])
+def test_disarmed_wait_timeout_and_cancellation_release_subscription(cancel):
+    base = _base_module()
+
+    # 功能：
+    #   在隔离事件循环中注入未到达的解锁遥测。
+    # 输入：
+    #   无。
+    # 输出：
+    #   None：执行失败与回收断言。
+    async def scenario():
+        started, closed = asyncio.Event(), []
+
+        # 功能：
+        #   阻塞首条状态并记录订阅是否被实际关闭。
+        # 输入：
+        #   无。
+        # 输出：
+        #   armed：不会在本测试期限内产生的状态。
+        async def stream():
+            try:
+                started.set()
+                await asyncio.Event().wait()
+                armed = False
+                yield armed
+            finally:
+                closed.append(True)
+
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._flight_command_requested = False
+        client._system = SimpleNamespace(telemetry=SimpleNamespace(armed=stream))
+        task = asyncio.create_task(client.verify_disarmed_before_preflight(
+            timeout_seconds=1. if cancel else .03))
+        await started.wait()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(TimeoutError, match="PREFLIGHT_DISARMED_TELEMETRY_TIMEOUT"):
+                await task
+        assert closed == [True]
+        assert client._flight_command_requested is False
+
+    asyncio.run(scenario())
+
+
+# 功能：
+#   无效等待参数必须在订阅遥测之前失败，不能产生无界等待。
+# 输入：
+#   timeout：非法的准备预算。
+# 输出：
+#   None：断言参数被拒绝。
+@pytest.mark.parametrize("timeout", [0., -1., float("nan"), float("inf"), True])
+def test_disarmed_check_rejects_invalid_budget_before_subscribing(timeout):
+    base = _base_module()
+    client = object.__new__(base.MavsdkOffboardClient)
+    client._flight_command_requested = False
+    with pytest.raises((ValueError, TypeError)):
+        asyncio.run(client.verify_disarmed_before_preflight(timeout_seconds=timeout))
+
+
+# 功能：
 #   解锁回执丢失后保留命令尝试锁，不能再次运行起飞前连接恢复。
 # 输入：
 #   tmp_path：私有测试日志目录。

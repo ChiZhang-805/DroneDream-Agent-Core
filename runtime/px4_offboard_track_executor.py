@@ -1723,17 +1723,23 @@ class MavsdkOffboardClient:
         await asyncio.wait_for(self._require_system().action.arm(), CLEANUP_COMMAND_TIMEOUT_SECONDS)
 
     # 功能：
-    #   从飞控实际解锁状态确认可以进行起飞前恢复，不以本地命令标志代替物理状态。
+    #   1. 在给定准备预算内等待实际解锁遥测，不把冷启动时尚未收到数据当成已知状态。
+    #   2. 只有严格 False 可以通过，已有解锁请求、已解锁或非法数据均立即拒绝。
     # 输入：
     #   self：已经连接且尚未请求解锁的客户端。
+    #   timeout_seconds：首条真实解锁状态的最大等待秒数，外层仍约束整个准备期限。
     # 输出：
     #   receipt：飞控明确报告未解锁时的检查回执。
-    async def verify_disarmed_before_preflight(self) -> dict:
+    async def verify_disarmed_before_preflight(self, *, timeout_seconds: float = 2.) -> dict:
+        timeout_seconds = _timeout_budget(timeout_seconds)
         if getattr(self, "_flight_command_requested", False) is not False:
             raise RuntimeError("PREFLIGHT_RECOVERY_FORBIDDEN_AFTER_MOTION_REQUEST")
         stream = self._require_system().telemetry.armed()
         try:
-            armed = await asyncio.wait_for(anext(stream), timeout=2.)
+            try:
+                armed = await asyncio.wait_for(anext(stream), timeout=timeout_seconds)
+            except TimeoutError as error:
+                raise TimeoutError("PREFLIGHT_DISARMED_TELEMETRY_TIMEOUT") from error
             if armed is not False:
                 raise RuntimeError("PREFLIGHT_VEHICLE_ALREADY_ARMED_OR_STATE_INVALID")
             receipt = {"disarmed": True, "confirmed_at_unix_ms": int(time.time()*1000)}
@@ -5137,8 +5143,11 @@ async def connect_preflight_with_recovery(
         disarmed_check = getattr(client, "verify_disarmed_before_preflight", None)
         if callable(disarmed_check):
             row["stage"] = "disarmed-check"
+            # gRPC 已连接不代表 MAVLink 首帧已到；使用共享准备预算，不复用飞行中 2 秒采样限。
+            disarmed_timeout = min(30., max(.001, deadline-time.monotonic()))
+            row["disarmed_timeout_seconds"] = disarmed_timeout
             row["disarmed_check"] = await _await_with_abort_polling(
-                disarmed_check(), abort_check=abort_check)
+                disarmed_check(timeout_seconds=disarmed_timeout), abort_check=abort_check)
         row["stage"] = "readiness"
         health = await _await_with_abort_polling(
             client.wait_until_ready(max(.001, deadline-time.monotonic())),
