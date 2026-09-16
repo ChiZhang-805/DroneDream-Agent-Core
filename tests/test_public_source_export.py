@@ -23,6 +23,7 @@ from scripts.export_public_source import APPROVED_ASSETS, exclusion_reason, expo
     "runtime/model.onnx", "src/data/accounts.json", "app/account.sqlite",
     "signing.pfx", "runtime/runtime.vhdx", "app/node_modules/a/index.js",
     "docs/CODE_ANNOTATION_HANDOFF.md",
+    ".github/workflows/windows-installer.yml",
 ])
 def test_private_material_is_excluded(name: str) -> None:
     assert exclusion_reason(name)

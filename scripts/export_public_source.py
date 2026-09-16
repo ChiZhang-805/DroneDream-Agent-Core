@@ -58,6 +58,8 @@ def exclusion_reason(name: str) -> str:
     parts = tuple(part.casefold() for part in path.parts)
     if name == "docs/CODE_ANNOTATION_HANDOFF.md":
         return "private-development-handoff"
+    if name == ".github/workflows/windows-installer.yml":
+        return "retired-standalone-installer-workflow"
     if any(part in PRIVATE_PARTS for part in parts):
         return "private-or-generated-directory"
     if path.name.startswith(".env") and name != ".env.example":

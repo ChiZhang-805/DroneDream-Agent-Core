@@ -55,3 +55,15 @@ A public source snapshot is not a signed installer or a flight-qualified release
 Keep model admission, exact asset identity, current Runtime checks, and explicit
 mission confirmation enabled. The product repository owns the updater channel;
 source publication alone must not advance it.
+
+The obsolete standalone `windows-installer.yml` was retired from the public
+snapshot: it supplied none of the three mandatory qualified-resource inputs and
+still uploaded `0.1.0` filenames although the builder emits `1.0.0`. Its first
+public commit and the private incubation repository preserve it for recovery.
+Use the local `scripts/build-autonomy-windows.ps1` only with explicit current
+model, admission, and native-sensor inputs. Formal signing and update channels
+belong to the DroneDream product repository, not a second Core release workflow.
+
+`PUBLIC_SOURCE_SNAPSHOT.json` is the inventory of the initial raw file export,
+not a live Git-tree manifest. Later Git commits and line-ending normalization can
+change files; release provenance must bind the actual commit and built file hashes.

@@ -77,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           # Unit tests exercise the Rust integration without packaging resources. The
-          # separate Windows installer workflow builds and verifies the real sidecar.
+          # product repository owns formal installers; this is not a packaging check.
           New-Item -ItemType Directory -Force -Path app/desktop/src-tauri/resources/runtime | Out-Null
           New-Item -ItemType Directory -Force -Path app/desktop/src-tauri/resources/official-plugins | Out-Null
           $env:TAURI_CONFIG = '{"bundle":{"externalBin":[]}}'
