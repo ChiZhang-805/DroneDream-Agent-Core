@@ -631,9 +631,15 @@ class MetricVoxelMap:
             # Low-confidence hits are not negative occupancy measurements.
             # The upstream quality gate controls whether motion is permitted.
             for key in keys[:-1] if ray.hit else keys:
-                frees[key] = max(frees.get(key, 0.0), strength)
+                previous = frees.get(key)
+                # 相邻像素多次经过同一体素时保留最强证据，不重复写入相等值。
+                if previous is None or strength > previous:
+                    frees[key] = strength
             if ray.hit:
-                hits[keys[-1]] = max(hits.get(keys[-1], 0.0), strength)
+                endpoint = keys[-1]
+                previous = hits.get(endpoint)
+                if previous is None or strength > previous:
+                    hits[endpoint] = strength
             count += 1
             if count > 250_000 or len(frees) + len(hits) > 2_000_000:
                 raise ValueError("METRIC_SCAN_EVIDENCE_BUDGET_EXCEEDED")

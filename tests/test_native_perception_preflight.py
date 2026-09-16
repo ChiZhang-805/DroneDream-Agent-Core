@@ -174,47 +174,44 @@ def test_route_budget_rejects_unavailable_uncertainty_and_original_stale_time(va
 
 
 # 功能：
-#   验证实际健康文件中的方差进入就绪回执，并保持来源时刻加二百五十毫秒的期限。
+#   用受控来源时钟和真实文件验证方差进入就绪回执，避免 CI 调度延迟伪装为传感器故障。
 # 输入：
 #   tmp_path：测试私有目录。
+#   monkeypatch：只替换本测试的时钟和后台读任务调度，不修改实际读取及就绪判定。
 # 输出：
 #   None：不返回业务数据。
-def test_live_route_budget_is_included_in_actual_file_readiness_receipt(tmp_path):
+def test_live_route_budget_is_included_in_actual_file_readiness_receipt(tmp_path, monkeypatch):
+    from dronedream_agent_core import native_preflight
+
+    clock = [1000]
+    sequence = [0]
+    monkeypatch.setattr(native_preflight, "time", SimpleNamespace(
+        time=lambda: clock[0] / 1000, monotonic=lambda: clock[0] / 1000))
+
     # 功能：
-    #   运行带定位方差的发布与等待流程，检查返回预算后回收发布任务。
+    #   在读任务执行时发布下一份来源独立的合成记录，然后调用真实的有界文件读取函数。
     # 输入：
-    #   无，使用外层测试目录。
+    #   reader：生产代码传入的健康文件读取函数。
+    #   path：实际测试健康文件路径。
     # 输出：
-    #   None：不返回业务数据。
-    async def scenario():
-        path = tmp_path / "health.json"
+    #   payload：实际读取并解析的当前记录。
+    async def read_next(reader, path):
+        clock[0] += 70
+        sequence[0] += 1
+        path.write_text(json.dumps({**health(sequence[0], clock[0]),
+            "localization_covariance_m2": .001,
+            "localization_observed_at_unix_ms": clock[0] - 10}))
+        payload = reader(path)
+        return payload
 
-        # 功能：
-        #   发布六份带独立定位来源时刻的合成健康记录。
-        # 输入：
-        #   无，使用当前场景路径。
-        # 输出：
-        #   None：不返回业务数据。
-        async def publisher():
-            for sequence in range(1, 7):
-                now = int(time.time() * 1000)
-                path.write_text(json.dumps({**health(sequence, now),
-                    "localization_covariance_m2": .001,
-                    "localization_observed_at_unix_ms": now - 10}))
-                await asyncio.sleep(.07)
-
-        writer = asyncio.create_task(publisher())
-        try:
-            result = await wait_for_native_perception(path, timeout_seconds=1,
-                                                      minimum_route_clearance_m=.435)
-            assert result["uncertainty_basis"] == "live-native-localization"
-            assert result["tracking_budget"]["reserved_uncertainty_m"] > .09
-            assert result["valid_until_unix_ms"] == result["source_observed_at_unix_ms"] + 250
-            assert_native_preflight_current(result, now_unix_ms=int(time.time() * 1000))
-        finally:
-            await writer
-
-    asyncio.run(scenario())
+    monkeypatch.setattr(native_preflight.asyncio, "to_thread", read_next)
+    result = asyncio.run(wait_for_native_perception(tmp_path / "health.json", timeout_seconds=1,
+                                                   minimum_route_clearance_m=.435))
+    assert result["uncertainty_basis"] == "live-native-localization"
+    assert result["tracking_budget"]["reserved_uncertainty_m"] > .09
+    assert result["valid_until_unix_ms"] == result["source_observed_at_unix_ms"] + 250
+    assert result["independent_frames"] == sequence[0] == 3
+    assert_native_preflight_current(result, now_unix_ms=clock[0])
 
 
 # 功能：
