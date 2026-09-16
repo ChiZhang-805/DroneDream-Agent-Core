@@ -1036,7 +1036,8 @@ def test_asset_qualification_cancel_writes_scoped_abort_request(tmp_path):
 
     assert manager.cancel_asset_pair_qualification(job_id) is True
     request = json.loads((run_dir / "live_abort.request.json").read_text(encoding="utf-8"))
-    assert request["job_id"] == job_id
+    assert request["source"] == f"desktop:asset-qualification:{job_id}"
+    assert request["world_paused"] is False
     assert request["reason"] == "qualification_cancelled_by_user"
 
 

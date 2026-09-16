@@ -129,7 +129,7 @@ def _sha256(path: Path) -> str:
 # 功能：
 #   1. 核验完整专家包及资格、仿真范围和延迟，复制时固定已验证的回执字节。
 #   2. 无覆盖发布 Runtime 目录；只准备资源，不安装、不训练，也不扩大原回执资格。
-#   3. 只读预检不写输出；生产构建额外实载 ONNX 并验证训练来源。
+#   3. 只读预检不写输出；生产构建实际计算全部 ONNX 的接口探针并验证训练来源。
 # 输入：
 #   无：命令行提供模型包、互斥的资格或仿真回执及新输出目录。
 # 输出：
@@ -221,12 +221,16 @@ def main() -> int:
 
     # 安装预检必须实际加载当前推理接口，不能只凭清单中的名称和摘要认定图可执行。
     training_evidence = {}
+    io_report = None
     if args.verify_onnx:
         from dronedream_agent_core.local_policy_port import OnnxLocalPolicyBackend
 
         training_evidence = _verified_training_evidence(package)
         backend = OnnxLocalPolicyBackend(package, execution_providers=["CPUExecutionProvider"])
-        backend.close()
+        try:
+            io_report = backend.verify_runtime_io()
+        finally:
+            backend.close()
         if args.distribution_licenses is None:
             raise ValueError("LOCAL_POLICY_DISTRIBUTION_LICENSES_REQUIRED")
     license_content = None
@@ -240,6 +244,7 @@ def main() -> int:
             "expert_count": len(roles),
             "model_bytes": package_bytes,
             "onnx_verified": args.verify_onnx,
+            "computed_expert_count": io_report["expert_count"] if io_report is not None else 0,
         }, sort_keys=True))
         status = 0
         return status

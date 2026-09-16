@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from dronedream_agent_core.contracts import (
     MissionAssetPairQualificationBinding,
     PreparedMission,
+    Px4RuntimeAbortRequest,
     RuntimeHoldAcknowledgement,
     RuntimeOperatorControlCommand,
     RuntimeOperatorTakeoverGrant,
@@ -823,7 +824,7 @@ class RuntimeManager:
             process.wait(timeout=15)
 
     # 功能：
-    #   向已登记运行写入带任务身份的中止请求，不把请求送达冒称为已经停止。
+    #   向已登记运行写入执行器可读取的中止请求，来源保留任务身份，不冒称已经停止。
     # 输入：
     #   self：持有活动运行索引的桥接器。
     #   job_id：需要中止的配对验收任务标识。
@@ -835,17 +836,35 @@ class RuntimeManager:
         requested = False
         if active is None:
             return requested
-        self._atomic_json(
-            active.run_dir / "live_abort.request.json",
-            {
-                "schema_version": "dronedream.runtime-abort-request.v1",
-                "reason": "qualification_cancelled_by_user",
-                "job_id": job_id,
-                "requested_at": datetime.now(UTC).isoformat(),
-            },
+        self._request_runtime_abort(
+            active.run_dir,
+            reason="qualification_cancelled_by_user",
+            source=f"desktop:asset-qualification:{job_id}",
         )
         requested = True
         return requested
+
+    # 功能：
+    #   1. 用执行器与证据读取器共用的字段发布合作停止请求，明确世界没有被本请求暂停。
+    #   2. 已有停止请求保持原样，避免把安全模块的已暂停状态覆盖为可继续降落。
+    # 输入：
+    #   self：负责本地运行文件发布的管理器。
+    #   run_dir：已登记任务的独占运行目录。
+    #   reason：内部停止原因，非空且不超过执行器允许的 240 个字符。
+    #   source：发起入口及其任务身份，仅作为审计来源，不作为文件路径。
+    # 输出：
+    #   None：不返回业务数据。
+    def _request_runtime_abort(self, run_dir: Path, *, reason: str, source: str) -> None:
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 240:
+            raise ValueError("RUNTIME_ABORT_REASON_INVALID")
+        request = Px4RuntimeAbortRequest(reason=reason, world_paused=False, source=source)
+        # 原子独占发布，不能在存在性检查与替换之间覆盖另一线程刚写下的安全停止。
+        with suppress(FileExistsError):
+            self._atomic_json(
+                run_dir / "live_abort.request.json",
+                request.model_dump(mode="json", exclude_unset=True),
+                replace_existing=False,
+            )
 
     # 功能：
     #   在锁内更新安装阶段、百分比、活动状态与错误，保持查询获得一致快照。
@@ -1772,14 +1791,10 @@ class RuntimeManager:
             try:
                 # 脚本可能已开始运行；先投递中止请求，留出合作退出时间再回收宿主。
                 with suppress(OSError, ValueError):
-                    self._atomic_json(
-                        run_dir / "live_abort.request.json",
-                        {
-                            "schema_version": "dronedream.runtime-abort-request.v1",
-                            "reason": "execution_tracking_failed",
-                            "execution_id": execution_id,
-                            "requested_at": datetime.now(UTC).isoformat(),
-                        },
+                    self._request_runtime_abort(
+                        run_dir,
+                        reason="execution_tracking_failed",
+                        source=f"desktop:execution:{execution_id}",
                     )
                 try:
                     process.wait(timeout=15)
@@ -2256,9 +2271,10 @@ class RuntimeManager:
             except (KeyError, RuntimeError, OSError, ValueError):
                 # 中断消息链不可用时仍投递已有执行器支持的退出请求，不能直接跳过。
                 with suppress(OSError, ValueError):
-                    self._atomic_json(
-                        _run.run_dir / "live_abort.request.json",
-                        {"reason": "application_shutdown", "execution_id": _run.execution_id},
+                    self._request_runtime_abort(
+                        _run.run_dir,
+                        reason="application_shutdown",
+                        source=f"desktop:execution:{_run.execution_id}",
                     )
         deadline = time.monotonic() + 5.0
         failures = []

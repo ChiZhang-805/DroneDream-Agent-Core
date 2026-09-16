@@ -326,7 +326,7 @@ def validate_expert_training_receipt(role: str, digest: str, receipt: dict, mani
 
 # 功能：
 #   1. 从十份独立来源组装候选包，绑定模型与训练证据并检查跨专家留出泄漏。
-#   2. 用实际生产后端检查图接口后无覆盖发布，不修改当前模型选择或继承飞行资格。
+#   2. 用实际生产后端计算十专家接口探针后无覆盖发布，不修改当前选择或继承飞行资格。
 # 输入：
 #   recipe：已明确模型角色、摘要、输入输出和训练回执的完整配方。
 #   source_root：相对来源路径的基准目录；显式绝对路径保持原含义。
@@ -387,7 +387,10 @@ def assemble_complete_ensemble(
         from ..local_policy_port import OnnxLocalPolicyBackend
 
         backend = OnnxLocalPolicyBackend(package, execution_providers=["CPUExecutionProvider"])
-        backend.close()
+        try:
+            io_report = backend.verify_runtime_io()
+        finally:
+            backend.close()
         del backend
         lineage = {
             "purpose": "complete-current-ensemble-assembly",
@@ -395,6 +398,7 @@ def assemble_complete_ensemble(
             "package_sha256": package.package_sha256,
             "control_feature_contract_sha256": recipe.manifest.control_feature_contract_sha256,
             "expert_evidence": evidence,
+            "runtime_io_probe": io_report,
             "control_expert_training_groups": sorted(training_groups),
             "control_expert_validation_groups": sorted(validation_groups),
             "inherited_admission": False,

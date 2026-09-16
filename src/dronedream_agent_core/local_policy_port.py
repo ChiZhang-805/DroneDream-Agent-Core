@@ -52,6 +52,8 @@ from .local_policy_packages import (
     LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH,
     LoadedLocalPolicyPackage,
 )
+from .local_policy_tensors import bounded_scalar as _bounded_scalar
+from .local_policy_tensors import float_output as _float_output
 from .model_harness.model_port import (
     ModelInvocationError,
     ProviderSettings,
@@ -271,47 +273,6 @@ class LocalPolicyInferenceBackend(Protocol):
         *,
         multimodal: list[dict[str, object]],
     ) -> LocalPolicyRawInference: ...
-
-
-# 功能：
-#   验证实际 float32 单向量或单批次张量，不通过隐式转换、任意展平接受错误接口。
-# 输入：
-#   output：ONNX 会话返回的原始数组。
-#   count：合同规定的元素数量。
-#   role：用于定位错误的角色名称。
-# 输出：
-#   values：已经验证的有限一维视图，不修改原数组。
-def _float_output(output: object, count: int, role: str):
-    import numpy as np
-
-    shapes = {(count,), (1, count)}
-    if count == 1:
-        shapes.add(())
-    if (
-        not isinstance(output, np.ndarray)
-        or output.dtype != np.dtype("float32")
-        or output.shape not in shapes
-        or not np.isfinite(output).all()
-    ):
-        raise RuntimeError(f"LOCAL_POLICY_{role}_OUTPUT_INVALID")
-    values = output.reshape(count)
-    return values
-
-
-# 功能：
-#   读取一个有界概率或缩放系数，拒绝错误类型、秩、非有限值和越界值。
-# 输入：
-#   output：会话实际返回的标量张量。
-#   role：错误定位的顾问角色。
-#   minimum：该标量的合法下界，概率为零、负载缩放为零点一。
-# 输出：
-#   value：通过校验的 Python 浮点值。
-def _bounded_scalar(output: object, role: str, *, minimum: float = 0.0) -> float:
-    values = _float_output(output, 1, role)
-    value = float(values[0])
-    if not minimum <= value <= 1.0:
-        raise RuntimeError(f"LOCAL_POLICY_{role}_OUTPUT_OUT_OF_RANGE")
-    return value
 
 
 # 功能：
@@ -1147,6 +1108,28 @@ class OnnxLocalPolicyBackend:
                     )
                 ),
             )
+
+    # 功能：
+    #   对全部已加载专家做安装前的真实张量计算检查，不注入历史、不发送飞控指令。
+    # 输入：
+    #   self：已绑定权重及当前清单的后端，只能在进入任务前调用。
+    # 输出：
+    #   report：各专家接口检查结果，不表示模型质量、延迟准入或飞行资格。
+    def verify_runtime_io(self) -> dict:
+        from .local_policy_runtime_probe import verify_ensemble_io
+
+        sessions = {
+            **self._navigation_sessions,
+            "perception-encoder": self._perception_session,
+            "risk-critic": self._risk_session,
+            "perception-health-critic": self._perception_health_session,
+            "settle-stability-critic": self._settle_session,
+            "payload-dynamics-adapter": self._payload_session,
+            "state-anomaly-detector": self._anomaly_session,
+            "cross-modal-consistency-critic": self._cross_modal_session,
+        }
+        report = verify_ensemble_io(self._manifest, sessions)
+        return report
 
     # 功能：
     #   在异步任务开始前同时绑定 RGB 内容、预处理参数和当前编码器身份。
