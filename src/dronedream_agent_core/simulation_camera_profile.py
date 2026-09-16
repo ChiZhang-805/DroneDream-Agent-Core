@@ -445,7 +445,8 @@ class CameraProfileReadback:
         return accepted
 
     # 功能：
-    #   要求两路流都实际出现且无配置错误；实际频率仍需独立测量，不声明飞行资格。
+    #   1. 要求两路流都实际出现且无配置错误；实际频率仍需独立测量，不声明飞行资格。
+    #   2. 输出独立的 JSON 数组，避免内部元组导致跨进程发布失败或外部修改回读基线。
     # 输入：
     #   self：由传感器锁保护的回读器。
     # 输出：
@@ -455,7 +456,8 @@ class CameraProfileReadback:
             raise ValueError(self.error)
         if self.seen != set(self._expected):
             raise ValueError("SIMULATION_CAMERA_PROFILE_READBACK_PENDING")
-        result = {"verified_dimensions": dict(self._expected),
+        dimensions = {kind: list(size) for kind, size in self._expected.items()}
+        result = {"verified_dimensions": dimensions,
                 "receipt_sha256": self.receipt_sha256,
                 "field_of_view_source": "unchanged source-bound camera SDF",
                 "rate_verification": "configured; actual arrival timing is measured separately",

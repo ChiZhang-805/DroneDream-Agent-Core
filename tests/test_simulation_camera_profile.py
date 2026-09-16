@@ -4,6 +4,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from dronedream_agent_core.runtime_control_io import publish_runtime_json
 from dronedream_agent_core.simulation_camera_profile import (
     CameraProfileReadback,
     camera_configuration,
@@ -193,8 +194,8 @@ def test_actual_camera_streams_must_match_and_both_be_present(tmp_path):
         profile.require_ready()
     assert profile.observe("rgb", 640, 360)
     proof = profile.require_ready()
-    assert proof["verified_dimensions"] == {"depth": (320, 240), "rgb": (640, 360)}
-    proof["verified_dimensions"]["rgb"] = (1, 1)
+    assert proof["verified_dimensions"] == {"depth": [320, 240], "rgb": [640, 360]}
+    proof["verified_dimensions"]["rgb"][0] = 1
     assert profile.expected["rgb"] == (640, 360)
     assert not profile.observe("rgb", 1920, 1080)  # Native model won search order instead.
     assert not profile.observe("rgb", 640, 360)  # Configuration mismatch stays failed.
@@ -265,7 +266,7 @@ def test_compact_profile_requires_its_own_actual_readback(tmp_path):
     assert reader.observe("rgb", 320, 180)
     assert reader.observe("depth", 160, 120)
     assert reader.require_ready()["verified_dimensions"] == {
-        "rgb": (320, 180), "depth": (160, 120)}
+        "rgb": [320, 180], "depth": [160, 120]}
     assert not reader.observe("depth", 320, 240)
     with pytest.raises(ValueError, match="ACTUAL_STREAM_PROFILE_MISMATCH"):
         reader.require_ready()
@@ -567,3 +568,24 @@ def test_output_created_during_preparation_is_not_merged(tmp_path, monkeypatch):
                                expected_source_sha256=hashlib.sha256(source).hexdigest())
     assert (output / "keep.txt").read_text() == "preserve"
     assert sorted(path.name for path in output.iterdir()) == ["keep.txt"]
+
+
+# 功能：
+#   将双流回读结果经实际运行时 JSON 发布器落盘，防止 Python 内存对象测试遗漏协议错误。
+# 输入：
+#   tmp_path：独立来源、派生和回读文件目录。
+#   profile：三种显式训练相机配置。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize("profile", ["low-latency", "compact-control", "responsive-control"])
+def test_actual_runtime_publisher_accepts_camera_readback(tmp_path, profile):
+    reader = CameraProfileReadback(readback_fixture(tmp_path, profile=profile))
+    for kind, size in reader.expected.items():
+        assert reader.observe(kind, *size)
+    proof = reader.require_ready()
+    target = tmp_path / "camera-profile-readback.json"
+    publish_runtime_json(target, proof)
+    assert json.loads(target.read_text(encoding="utf-8")) == proof
+    # 调用方修改内层数组也不能改写后续回读，不能只测试字典的浅层复制。
+    proof["verified_dimensions"]["depth"][0] = 0
+    assert reader.require_ready()["verified_dimensions"]["depth"][0] > 0
