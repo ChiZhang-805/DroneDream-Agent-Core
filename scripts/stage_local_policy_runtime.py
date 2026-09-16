@@ -133,7 +133,7 @@ def _sha256(path: Path) -> str:
 # 输入：
 #   无：命令行提供模型包、互斥的资格或仿真回执及新输出目录。
 # 输出：
-#   status：整套资源及目录索引发布成功时为零。
+#   status：所选的只读预检或资源暂存完整成功时为零。
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", type=Path, required=True)
@@ -241,7 +241,8 @@ def main() -> int:
             "model_bytes": package_bytes,
             "onnx_verified": args.verify_onnx,
         }, sort_keys=True))
-        return 0
+        status = 0
+        return status
 
     assert args.output is not None
     args.output.parent.mkdir(parents=True, exist_ok=True)

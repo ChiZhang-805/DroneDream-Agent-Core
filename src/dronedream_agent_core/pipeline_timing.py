@@ -69,18 +69,23 @@ class PhaseTimings:
     """Bounded sequential CPU/wall-time diagnostics for one processing pass."""
 
     # 功能：
-    #   校验计时函数并固定初始纳秒基线，为一次处理流程建立有界阶段统计。
+    #   校验计时函数并固定基线，可分开测量墙钟耗时与当前处理线程的 CPU 用时。
     # 输入：
     #   self：待初始化的计时器。
     #   clock_ns：同一单调纳秒时钟，默认使用 perf_counter_ns。
+    #   cpu_clock_ns：可选当前线程 CPU 纳秒计数，不将等待或其他线程用时计入。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, clock_ns: Callable[[], int] = time.perf_counter_ns) -> None:
-        if not callable(clock_ns):
+    def __init__(self, clock_ns: Callable[[], int] = time.perf_counter_ns,
+                 *, cpu_clock_ns: Callable[[], int] | None = None) -> None:
+        if not callable(clock_ns) or (cpu_clock_ns is not None and not callable(cpu_clock_ns)):
             raise ValueError("PIPELINE_TIMING_CLOCK_INVALID")
         self._clock = clock_ns
         self._last = _phase_clock_ns(clock_ns)
         self._values: dict[str, float] = {}
+        self._cpu_clock = cpu_clock_ns
+        self._last_cpu = _phase_clock_ns(cpu_clock_ns) if cpu_clock_ns is not None else None
+        self._cpu_values: dict[str, float] = {}
 
     # 功能：
     #   结束上一阶段并记录毫秒耗时；名称、数量或时钟失败均不写入结果或推进基线。
@@ -94,11 +99,17 @@ class PhaseTimings:
                 or name in self._values or len(self._values) >= 32):
             raise ValueError("PIPELINE_TIMING_PHASE_INVALID")
         now = _phase_clock_ns(self._clock)
+        cpu_now = _phase_clock_ns(self._cpu_clock) if self._cpu_clock is not None else None
         if now < self._last:
             raise ValueError("PIPELINE_TIMING_CLOCK_REGRESSED")
+        if cpu_now is not None and cpu_now < self._last_cpu:
+            raise ValueError("PIPELINE_TIMING_CPU_CLOCK_REGRESSED")
         # 先完成全部校验再推进基线；重试成功时仍涵盖从上一成功阶段以来的真实间隔。
         self._values[name] = (now - self._last) / 1_000_000
         self._last = now
+        if cpu_now is not None:
+            self._cpu_values[name] = (cpu_now - self._last_cpu) / 1_000_000
+            self._last_cpu = cpu_now
 
     # 功能：
     #   返回已完成阶段的独立统计副本，不将阶段耗时解释为观测时间或控制有效期。
@@ -108,6 +119,16 @@ class PhaseTimings:
     #   values：阶段名称到毫秒耗时的独立字典。
     def snapshot(self) -> dict[str, float]:
         values = dict(self._values)
+        return values
+
+    # 功能：
+    #   返回本处理线程实际 CPU 用时，不把墙钟差值具体归因为 GIL、磁盘或操作系统调度。
+    # 输入：
+    #   self：本次阶段计时器。
+    # 输出：
+    #   values：已测阶段的 CPU 毫秒；未启用 CPU 计时则为空字典。
+    def cpu_snapshot(self) -> dict[str, float]:
+        values = dict(self._cpu_values)
         return values
 
 
@@ -122,6 +143,7 @@ class PhaseTimingSummary:
     #   None：不返回业务数据。
     def __init__(self) -> None:
         self._phases: dict[str, tuple[int, float, float]] = {}
+        self._cpu_phases: dict[str, tuple[int, float, float]] = {}
         self._outcomes = {"awaiting-target": 0, "control": 0, "rejected": 0}
 
     # 功能：
@@ -138,11 +160,15 @@ class PhaseTimingSummary:
                 or outcome not in self._outcomes):
             raise ValueError("PIPELINE_TIMING_SUMMARY_INPUT_INVALID")
         values = timings.snapshot()
+        cpu_values = timings.cpu_snapshot()
         if len(self._phases.keys() | values.keys()) > 32:
             raise ValueError("PIPELINE_TIMING_SUMMARY_PHASE_LIMIT")
         for name, duration in values.items():
             count, total, maximum = self._phases.get(name, (0, 0., 0.))
             self._phases[name] = (count + 1, total + duration, max(maximum, duration))
+        for name, duration in cpu_values.items():
+            count, total, maximum = self._cpu_phases.get(name, (0, 0., 0.))
+            self._cpu_phases[name] = (count + 1, total + duration, max(maximum, duration))
         self._outcomes[outcome] += 1
 
     # 功能：
@@ -159,4 +185,8 @@ class PhaseTimingSummary:
                          for name, (count, total, maximum) in self._phases.items()},
             "qualification_granted": False,
         }
+        if self._cpu_phases:
+            result["thread_cpu_phase_ms"] = {
+                name: {"count": count, "mean": total / count, "max": maximum}
+                for name, (count, total, maximum) in self._cpu_phases.items()}
         return result

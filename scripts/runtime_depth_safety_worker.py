@@ -2820,7 +2820,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 sensor_arrival_scheduler.record_attempt(now_monotonic=now)
         else:
             ready_control_scheduler.consume(sequence)
-        cycle_timing = PhaseTimings()
+        cycle_timing = PhaseTimings(cpu_clock_ns=time.thread_time_ns)
         with lock:
             pose_item = latest_pose
             image_item = latest_image

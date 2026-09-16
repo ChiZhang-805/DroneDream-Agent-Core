@@ -16,8 +16,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from itertools import islice, product
 
-import numpy as np
-
 from .contracts import (
     DynamicObstacleObservation,
     MetricVoxelMapSnapshot,
@@ -25,6 +23,12 @@ from .contracts import (
     Vector3,
 )
 from .hashing import sha256_json
+from .metric_ray_sampling import (
+    MAX_BATCH_POINTS,
+    MAX_BATCH_RAYS,
+    MetricRaySample,
+    sample_metric_rays,
+)
 from .occupancy_collision import bounded_occupied_cell_boxes
 from .perception_evidence import FrozenVector3
 
@@ -508,13 +512,13 @@ class MetricVoxelMap:
             self._observed_free_keys.discard(key)
 
     # 功能：
-    #   1. 校验米制射线，按原采样公式与浮点运算顺序记录体素；遗漏单元仍保持未知。
-    #   2. 分块向量化取整并保留有序去重，限制临时数组大小，不改变端点或采样密度。
+    #   1. 校验米制射线的坐标、时间、置信度和遍历预算，不改变地图。
+    #   2. 在推进外部迭代器前固定标量副本，调用者复用或修改消息不改变已经读取的射线。
     # 输入：
     #   observation：标定后的原始时间射线。
     # 输出：
-    #   traversed：按射线顺序去重的体素键。
-    def _ray_keys(self, observation: RangeRayObservation) -> list[VoxelKey]:
+    #   sample：包含原始时间与精确采样步数的不可变标量记录。
+    def _ray_sample(self, observation: RangeRayObservation) -> MetricRaySample:
         if not isinstance(observation, RangeRayObservation) or type(observation.hit) is not bool:
             raise ValueError("METRIC_SCAN_SAMPLE_INVALID")
         origin = _point(observation.origin_m)
@@ -533,23 +537,52 @@ class MetricVoxelMap:
         if not math.isfinite(distance) or distance / (self.resolution_m * 0.45) > 2_000_000:
             raise ValueError("METRIC_SCAN_TRAVERSAL_BUDGET_EXCEEDED")
         count = max(1, math.ceil(distance / (self.resolution_m * 0.45)))
-        traversed: list[VoxelKey] = []
-        delta = np.asarray(tuple(endpoint[axis] - origin[axis] for axis in range(3)))
-        inverse_resolution = 1.0 / self.resolution_m
-        for start in range(0, count + 1, 4096):
-            ratio = np.arange(start, min(count + 1, start + 4096), dtype=np.float64) / count
-            # 各步独立执行，不合并乘加、不改用 linspace，避免体素边界上出现舍入差异。
-            coordinates = ratio[:, None] * delta
-            coordinates += origin
-            coordinates -= self._minimum
-            coordinates *= inverse_resolution
-            keys = np.floor(coordinates).astype(np.int64)
-            # 地图坐标已限 ±1e9、分辨率 > .02，网格索引落在 int64 可精确表示范围。
-            keep = np.empty(len(keys), dtype=np.bool_)
-            keep[0] = not traversed or tuple(keys[0]) != traversed[-1]
-            keep[1:] = np.any(keys[1:] != keys[:-1], axis=1)
-            traversed.extend(map(tuple, keys[keep].tolist()))
+        sample = MetricRaySample(origin, endpoint, count,
+            distance / (self.resolution_m * 0.45) + 2, observation.hit,
+            observation.confidence, observation.observed_at_monotonic_seconds)
+        return sample
+
+    # 功能：
+    #   复用有界数值内核采样一条独立射线，不交换坐标轴、采样顺序或原始端点。
+    # 输入：
+    #   observation：尚未通过地图边界检查的米制射线。
+    # 输出：
+    #   traversed：按原射线顺序去重的体素键。
+    def _ray_keys(self, observation: RangeRayObservation) -> list[VoxelKey]:
+        sample = self._ray_sample(observation)
+        traversed = sample_metric_rays([sample], self._minimum, self.resolution_m)[0]
         return traversed
+
+    # 功能：
+    #   1. 按总射线及遍历预算有界读取整帧，以小批量降低反复数组调用的开销。
+    #   2. 极长射线独立分块，防止为了对齐长度放大短射线的计算量；不提前提交地图。
+    # 输入：
+    #   observations：可能复用可变消息的原始射线迭代器。
+    # 输出：
+    #   sampled：依原顺序产生射线标量副本和体素键列表的迭代器。
+    def _sample_scan(self, observations: Iterable[RangeRayObservation]):
+        batch: list[MetricRaySample] = []
+        work, maximum_steps = 0., 0
+        for count, observation in enumerate(observations, start=1):
+            if count > 250_000:
+                raise ValueError("METRIC_SCAN_EVIDENCE_BUDGET_EXCEEDED")
+            sample = self._ray_sample(observation)
+            work += sample.traversal_work
+            if not math.isfinite(work) or work > 2_000_000:
+                raise ValueError("METRIC_SCAN_TRAVERSAL_BUDGET_EXCEEDED")
+            next_maximum = max(maximum_steps, sample.steps)
+            if batch and (len(batch) == MAX_BATCH_RAYS
+                          or (len(batch) + 1) * (next_maximum + 1) > MAX_BATCH_POINTS):
+                sampled = zip(batch, sample_metric_rays(batch, self._minimum, self.resolution_m),
+                              strict=True)
+                yield from sampled
+                batch, maximum_steps = [], 0
+            batch.append(sample)
+            maximum_steps = max(maximum_steps, sample.steps)
+        if batch:
+            sampled = zip(batch, sample_metric_rays(batch, self._minimum, self.resolution_m),
+                          strict=True)
+            yield from sampled
 
     # 功能：
     #   顺序融合独立射线；同一幅图的相关像素必须使用 integrate_scan。
@@ -610,8 +643,8 @@ class MetricVoxelMap:
     def prepare_scan(self, observations: Iterable[RangeRayObservation]) -> PreparedMetricScan:
         hits: dict[VoxelKey, float] = {}
         frees: dict[VoxelKey, float] = {}
-        stamp, count, work = None, 0, 0
-        for ray in observations:
+        stamp, count = None, 0
+        for ray, keys in self._sample_scan(observations):
             if stamp is None:
                 stamp = ray.observed_at_monotonic_seconds
             if ray.observed_at_monotonic_seconds != stamp:
@@ -621,11 +654,6 @@ class MetricVoxelMap:
                 and stamp <= self.latest_observation_monotonic_seconds
             ):
                 raise ValueError("METRIC_SCAN_SOURCE_NOT_NEW")
-            distance = math.dist(_point(ray.origin_m), _point(ray.endpoint_m))
-            work += distance / (self.resolution_m * 0.45) + 2
-            if not math.isfinite(work) or work > 2_000_000:
-                raise ValueError("METRIC_SCAN_TRAVERSAL_BUDGET_EXCEEDED")
-            keys = self._ray_keys(ray)
             bounded = max(0.5, min(0.99, ray.confidence))
             strength = math.log(bounded / (1.0 - bounded))
             # Low-confidence hits are not negative occupancy measurements.
