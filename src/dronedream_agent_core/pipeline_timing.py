@@ -109,3 +109,54 @@ class PhaseTimings:
     def snapshot(self) -> dict[str, float]:
         values = dict(self._values)
         return values
+
+
+class PhaseTimingSummary:
+    """Constant-space diagnostics for completed, waiting and rejected processing passes."""
+
+    # 功能：
+    #   初始化最多 32 个阶段的累计诊断，不保存无限增长的逐帧列表。
+    # 输入：
+    #   self：待初始化的统计器。
+    # 输出：
+    #   None：不返回业务数据。
+    def __init__(self) -> None:
+        self._phases: dict[str, tuple[int, float, float]] = {}
+        self._outcomes = {"awaiting-target": 0, "control": 0, "rejected": 0}
+
+    # 功能：
+    #   1. 累计真实已测阶段的次数、总时长及最大值，不将缺失阶段记作零延迟。
+    #   2. 分开记录等待任务、控制周期和拒绝周期，不修改传感器时钟或授予飞行资格。
+    # 输入：
+    #   self：当前统计器。
+    #   timings：一次流程的阶段计时器。
+    #   outcome：该次流程实际结束于等待任务、控制或拒绝。
+    # 输出：
+    #   None：不返回业务数据。
+    def record(self, timings: PhaseTimings, *, outcome: str) -> None:
+        if (not isinstance(timings, PhaseTimings) or type(outcome) is not str
+                or outcome not in self._outcomes):
+            raise ValueError("PIPELINE_TIMING_SUMMARY_INPUT_INVALID")
+        values = timings.snapshot()
+        if len(self._phases.keys() | values.keys()) > 32:
+            raise ValueError("PIPELINE_TIMING_SUMMARY_PHASE_LIMIT")
+        for name, duration in values.items():
+            count, total, maximum = self._phases.get(name, (0, 0., 0.))
+            self._phases[name] = (count + 1, total + duration, max(maximum, duration))
+        self._outcomes[outcome] += 1
+
+    # 功能：
+    #   生成独立且可序列化的累计统计，不把最大值或平均值冒充 P99，也不声称飞行通过。
+    # 输入：
+    #   self：当前统计器。
+    # 输出：
+    #   result：周期分类及各阶段实际采样次数、平均毫秒和最大毫秒。
+    def snapshot(self) -> dict:
+        result = {
+            "schema_version": "dronedream.perception-phase-timing-summary.v1",
+            "cycle_outcomes": dict(self._outcomes),
+            "phase_ms": {name: {"count": count, "mean": total / count, "max": maximum}
+                         for name, (count, total, maximum) in self._phases.items()},
+            "qualification_granted": False,
+        }
+        return result

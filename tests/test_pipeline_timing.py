@@ -2,8 +2,76 @@ from dataclasses import replace
 
 import pytest
 
-from dronedream_agent_core.pipeline_timing import PhaseTimings, sensor_processing_timing
+from dronedream_agent_core.pipeline_timing import (
+    PhaseTimings,
+    PhaseTimingSummary,
+    sensor_processing_timing,
+)
 from dronedream_agent_core.sensor_frame_clock import SensorFrameTime
+from dronedream_plugin_sdk.protocol import encode_json
+
+
+# 功能：
+#   对照等待、控制和拒绝周期的聚合结果，确保缺失阶段不参与均值且结果不共享可变对象。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_summary_counts_waiting_and_rejected_passes_without_zero_filling():
+    summary = PhaseTimingSummary()
+    for outcome, elapsed in [("awaiting-target", 1), ("control", 3), ("rejected", 8)]:
+        ticks = iter([0, elapsed * 1_000_000])
+        timings = PhaseTimings(ticks.__next__)
+        timings.mark("fusion" if outcome != "rejected" else "cycle_tail")
+        summary.record(timings, outcome=outcome)
+    result = summary.snapshot()
+    assert result["phase_ms"] == {
+        "fusion": {"count": 2, "mean": 2., "max": 3.},
+        "cycle_tail": {"count": 1, "mean": 8., "max": 8.},
+    }
+    assert result["cycle_outcomes"] == {"awaiting-target": 1, "control": 1, "rejected": 1}
+    encode_json(result)
+    result["cycle_outcomes"]["control"] = 100
+    result["phase_ms"]["fusion"]["max"] = 0
+    assert summary.snapshot()["phase_ms"]["fusion"]["max"] == 3.
+    assert summary.snapshot()["cycle_outcomes"]["control"] == 1
+
+
+# 功能：
+#   验证跨周期的阶段名称也有固定预算，拒绝后不会留下部分计数。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_summary_phase_budget_is_atomic_across_passes():
+    summary = PhaseTimingSummary()
+    for index in range(32):
+        ticks = iter([0, 1_000_000])
+        timings = PhaseTimings(ticks.__next__)
+        timings.mark(str(index))
+        summary.record(timings, outcome="rejected")
+    before = summary.snapshot()
+    ticks = iter([0, 1_000_000])
+    extra = PhaseTimings(lambda: next(ticks))
+    extra.mark("extra")
+    with pytest.raises(ValueError, match="SUMMARY_PHASE_LIMIT"):
+        summary.record(extra, outcome="control")
+    assert summary.snapshot() == before
+
+
+# 功能：
+#   确认非法周期分类被稳定拒绝且不修改累计统计。
+# 输入：
+#   outcome：错误类型或未知的周期分类。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize("outcome", [None, [], {}, True, "qualified"])
+def test_summary_invalid_outcome_does_not_change_counts(outcome):
+    summary = PhaseTimingSummary()
+    before = summary.snapshot()
+    with pytest.raises(ValueError, match="SUMMARY_INPUT_INVALID"):
+        summary.record(PhaseTimings(), outcome=outcome)
+    assert summary.snapshot() == before
 
 
 # 功能：

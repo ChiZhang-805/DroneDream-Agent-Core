@@ -77,7 +77,11 @@ from dronedream_agent_core.perception_runtime import (
     EventDrivenIndoorNavigationCoordinator,
     RuntimePerceptionFusion,
 )
-from dronedream_agent_core.pipeline_timing import PhaseTimings, sensor_processing_timing
+from dronedream_agent_core.pipeline_timing import (
+    PhaseTimings,
+    PhaseTimingSummary,
+    sensor_processing_timing,
+)
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 from dronedream_agent_core.plugin_values import plugin_json_value
 from dronedream_agent_core.realtime_feature_encoders import (
@@ -2728,6 +2732,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     interpreter_pause_monitor = InterpreterPauseMonitor()
     close_pause_monitor = _register_resource_close(cleanup, interpreter_pause_monitor)
     previous_tick_timing = None
+    perception_timing_summary = PhaseTimingSummary()
     while not stop_requested.is_set():
         if runtime_evidence_writer.issue is not None or runtime_snapshot_writer.issue is not None:
             raise RuntimeError("RUNTIME_CONTROL_RECORDING_FAILED")
@@ -2860,6 +2865,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     )
                 previous_pose = pose_received_at, truth_position
         now_unix_ms = int(time.time() * 1_000)
+        cycle_outcome = "rejected"
         try:
             cycle_timing.mark("image_selection")
             if camera_profile_readback is not None:
@@ -3166,6 +3172,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     args.target, now_unix_ms=int(time.time() * 1000), reader=target_reader,
                     receiver=phase_receiver)
             except FileNotFoundError:
+                cycle_outcome = "awaiting-target"
                 continue
             cycle_timing.mark("target_read")
             route_target = Vector3.model_validate(target_payload["target_position_m"], strict=True)
@@ -4002,6 +4009,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 "new_depth_frame": new_depth_frame,
                 "phase_ms": cycle_timing.snapshot(),
             }
+            cycle_outcome = "control"
         except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
             error_kind = f"{type(error).__name__}:{error}"
             log_key = error_kind.splitlines()[0]
@@ -4020,7 +4028,14 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 health_publisher.send(failed_health)
             # 异常期间也不得让挂载盘写入阻塞采样恢复，证据仍由有界写入器落盘。
             runtime_snapshot_writer.submit_json(args.health, failed_health)
+        finally:
+            # 起飞前无任务目标或校验拒绝也必须计时，不能只留下成功控制周期的耗时。
+            # 常量空间内累计，磁盘发布推迟至关闭，不在关键路径增加同步 I/O。
+            cycle_timing.mark("cycle_tail")
+            perception_timing_summary.record(cycle_timing, outcome=cycle_outcome)
     subscription_summary = subscriptions.close()
+    _atomic_json(args.command.with_name("perception-phase-timing-summary.json"),
+                 perception_timing_summary.snapshot())
     _atomic_json(args.command.with_name("sensor-subscription-shutdown.json"), subscription_summary)
     _atomic_json(args.command.with_name("sensor-interpreter-pauses.json"),
                  close_pause_monitor())

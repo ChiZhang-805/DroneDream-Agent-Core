@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sys
 
 import onnx
 import pytest
@@ -39,6 +40,70 @@ from dronedream_agent_core.training.visual_lineage import VisualInputContract
 def recipe(base_package, tmp_path):  # noqa: F811 - imported pytest fixture
     value = build_recipe(base_package, tmp_path)
     return value
+
+
+# 功能：
+#   经真实命令行入口组装合成十专家包，并核对输出摘要和不授予飞行资格的声明。
+# 输入：
+#   recipe：仅用于接口测试的合成模型配方。
+#   tmp_path：独立输入与输出目录。
+#   monkeypatch：设置本次测试的命令行参数。
+#   capsys：读取实际命令行 JSON 输出。
+# 输出：
+#   None：不返回业务数据。
+def test_cli_assembles_bound_recipe(recipe, tmp_path, monkeypatch, capsys):
+    from scripts.assemble_complete_control_ensemble import main
+
+    recipe_path = tmp_path / "recipe.json"
+    recipe_path.write_text(recipe.model_dump_json(), encoding="utf-8")
+    output = tmp_path / "cli-assembled"
+    monkeypatch.setattr(sys, "argv", ["assemble", "--recipe", str(recipe_path),
+                                    "--output", str(output)])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["expert_count"] == 10 and result["qualified_for_flight"] is False
+    assert load_local_policy_package(output).package_sha256 == result["package_sha256"]
+
+
+# 功能：
+#   拒绝包含重复顶层键的完整配方，避免后一个值静默覆盖前一个来源声明。
+# 输入：
+#   recipe：语义有效的合成配方。
+#   tmp_path：独立文件目录。
+#   monkeypatch：本次测试的命令行参数。
+# 输出：
+#   None：不返回业务数据。
+def test_cli_rejects_duplicate_recipe_keys_before_output(recipe, tmp_path, monkeypatch):
+    from scripts.assemble_complete_control_ensemble import main
+
+    recipe_path = tmp_path / "duplicate-recipe.json"
+    recipe_path.write_text('{"sources":[],' + recipe.model_dump_json()[1:], encoding="utf-8")
+    output = tmp_path / "must-not-exist"
+    monkeypatch.setattr(sys, "argv", ["assemble", "--recipe", str(recipe_path),
+                                    "--output", str(output)])
+    with pytest.raises(ValueError, match="DUPLICATE"):
+        main()
+    assert not output.exists()
+
+
+# 功能：
+#   验证超预算配方在构造任何候选模型包之前拒绝。
+# 输入：
+#   tmp_path：独立文件目录。
+#   monkeypatch：本次测试的命令行参数。
+# 输出：
+#   None：不返回业务数据。
+def test_cli_bounds_recipe_bytes_before_output(tmp_path, monkeypatch):
+    from scripts.assemble_complete_control_ensemble import main
+
+    recipe_path = tmp_path / "oversized-recipe.json"
+    recipe_path.write_bytes(b" " * (4 * 1024 * 1024 + 1))
+    output = tmp_path / "must-not-exist"
+    monkeypatch.setattr(sys, "argv", ["assemble", "--recipe", str(recipe_path),
+                                    "--output", str(output)])
+    with pytest.raises(ValueError):
+        main()
+    assert not output.exists()
 
 
 # 功能：
