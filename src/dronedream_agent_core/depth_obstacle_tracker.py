@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
-from .collision import _finite, _validated_primitive, primitive_bounds, vehicle_clearance
+from .collision import _clearance, _finite, _validated_primitive, primitive_bounds
 from .contracts import DynamicObstacleObservation, OnboardPerceptionFrame, Vector3
 
 Point = tuple[float, float, float]
 VoxelKey = tuple[int, int, int]
+QueryKey = tuple[VoxelKey, VoxelKey]
 
 
 # 功能：
@@ -31,9 +33,12 @@ class _StaticPrimitiveIndex:
     _MAX_BINS_PER_PRIMITIVE = 4096
     _MAX_BIN_ENTRIES = 1_000_000
     _MAX_QUERY_BINS = 4096
+    _MAX_CACHED_QUERIES = 128
+    _MAX_CACHED_CANDIDATES = 512
 
     # 功能：
-    #   验证并独立保存静态几何，建立有总条目上限的空间索引；超预算基元保留为直接查询。
+    #   1. 验证并只读保存静态几何，建立有总条目上限的空间索引；超预算基元保留为直接查询。
+    #   2. 有界缓存格范围对应的候选编号，不缓存点的距离或是否落在障碍内。
     # 输入：
     #   primitives：最多十万个地图基元。
     #   exclusion_m：静态结构附近的非负排除余量，单位米。
@@ -47,14 +52,16 @@ class _StaticPrimitiveIndex:
             or exclusion_m < 0
         ):
             raise ValueError("DEPTH_TRACK_STATIC_GEOMETRY_INVALID")
-        self.primitives = [_validated_primitive(primitive) for primitive in primitives]
-        self.exclusion_m = exclusion_m
+        # 物理字段已规范为独立浮点值；只读快照禁止后续调用修改尺寸而沿用旧索引。
+        self._primitives = tuple(MappingProxyType(_validated_primitive(p)) for p in primitives)
+        self._exclusion_m = float(exclusion_m)
         self._bins: dict[VoxelKey, list[int]] = defaultdict(list)
         self._large_primitives: list[int] = []
+        self._candidate_cache: OrderedDict[QueryKey, tuple[int, ...]] = OrderedDict()
         entries = 0
         for index, primitive in enumerate(self.primitives):
             # 宽阶段索引也要包含最终净空查询的一毫米探针，否则格边界会漏选基元。
-            low, high = primitive_bounds(primitive, exclusion_m + self._PROBE_M)
+            low, high = primitive_bounds(dict(primitive), exclusion_m + self._PROBE_M)
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[i] > high[i] for i in range(3)
             ):
@@ -73,6 +80,28 @@ class _StaticPrimitiveIndex:
                         self._bins[(x, y, z)].append(index)
 
     # 功能：
+    #   暴露不可替换的只读几何序列，避免外部修改物理字段破坏初始化时的索引。
+    # 输入：
+    #   self：已建立空间索引的对象。
+    # 输出：
+    #   primitives：参与净空计算的只读几何快照元组。
+    @property
+    def primitives(self):
+        primitives = self._primitives
+        return primitives
+
+    # 功能：
+    #   保持净空查询与建索引时使用同一排除余量，禁止只改查询余量而不重建索引。
+    # 输入：
+    #   self：已建立空间索引的对象。
+    # 输出：
+    #   exclusion_m：初始化时验证并固定的非负排除距离。
+    @property
+    def exclusion_m(self) -> float:
+        exclusion_m = self._exclusion_m
+        return exclusion_m
+
+    # 功能：
     #   将有限世界坐标映射到两米宽索引格，负坐标向下取整保持边界一致。
     # 输入：
     #   point：世界三轴米坐标。
@@ -81,6 +110,40 @@ class _StaticPrimitiveIndex:
     def _key(self, point: Point) -> VoxelKey:
         key = tuple(math.floor(value / self._BIN_M) for value in point)
         return key
+
+    # 功能：
+    #   1. 按完整膨胀格范围复用候选编号，始终纳入未建立格索引的大基元。
+    #   2. 缓存同时限制查询数和单项编号数；大查询仍全量计算，不因缓存预算遗漏障碍。
+    # 输入：
+    #   self：当前不可变地图的索引。
+    #   low、high：包含定位余量的三轴起止格编号。
+    # 输出：
+    #   candidates：需要逐点计算距离的基元编号序列。
+    def _candidates(self, low: VoxelKey, high: VoxelKey) -> tuple[int, ...] | range:
+        key = low, high
+        cached = self._candidate_cache.get(key)
+        if cached is not None:
+            self._candidate_cache.move_to_end(key)
+            candidates = cached
+            return candidates
+        if math.prod(high[i] - low[i] + 1 for i in range(3)) > self._MAX_QUERY_BINS:
+            # range 不为极大查询额外分配十万个整数，仍保留完整地图。
+            candidates = range(len(self.primitives))
+            return candidates
+        indices = {
+            index
+            for x in range(low[0], high[0] + 1)
+            for y in range(low[1], high[1] + 1)
+            for z in range(low[2], high[2] + 1)
+            for index in self._bins.get((x, y, z), ())
+        }
+        indices.update(self._large_primitives)
+        candidates = tuple(sorted(indices))
+        if len(candidates) <= self._MAX_CACHED_CANDIDATES:
+            self._candidate_cache[key] = candidates
+            if len(self._candidate_cache) > self._MAX_CACHED_QUERIES:
+                self._candidate_cache.popitem(last=False)
+        return candidates
 
     # 功能：
     #   判断端点是否可由静态几何及定位余量解释；大范围查询退为有界全扫描而不漏检。
@@ -105,27 +168,20 @@ class _StaticPrimitiveIndex:
         # 定位不确定度可能跨格；不能只查端点中心所在的单格。
         low = self._key(tuple(value - uncertainty_m for value in point))
         high = self._key(tuple(value + uncertainty_m for value in point))
-        if math.prod(high[i] - low[i] + 1 for i in range(3)) > self._MAX_QUERY_BINS:
-            candidates = set(range(len(self.primitives)))
-        else:
-            candidates = {
-                index
-                for x in range(low[0], high[0] + 1)
-                for y in range(low[1], high[1] + 1)
-                for z in range(low[2], high[2] + 1)
-                for index in self._bins.get((x, y, z), ())
-            }
-        candidates.update(self._large_primitives)
-        contained = any(
-            vehicle_clearance(
+        contained = False
+        for index in self._candidates(low, high):
+            # 地图只在初始化验证，当前点和不确定度在本次入口验证；不跳过数值溢出检查。
+            clearance = _clearance(
                 point,
                 self.primitives[index],
                 radius_m=self._PROBE_M,
                 half_height_m=self._PROBE_M,
             )
-            <= self.exclusion_m + uncertainty_m
-            for index in candidates
-        )
+            if not math.isfinite(clearance):
+                raise ValueError("collision clearance overflow")
+            if clearance <= self.exclusion_m + uncertainty_m:
+                contained = True
+                break
         return contained
 
 

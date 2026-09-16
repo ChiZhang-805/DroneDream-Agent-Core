@@ -66,7 +66,7 @@ from dronedream_agent_core.model_harness.model_port import (
     StructuredModelPort,
 )
 from dronedream_agent_core.model_image_cache import ModelImageCache, require_model_image_runtime
-from dronedream_agent_core.model_image_worker import LatestModelImageWorker
+from dronedream_agent_core.model_image_worker import LatestModelImageWorker, PreparedCameraSample
 from dronedream_agent_core.native_pose import NativeMapPose, native_map_pose
 from dronedream_agent_core.native_state_stream import NativeStateSampler
 from dronedream_agent_core.navigation_context import build_navigation_context
@@ -1793,22 +1793,50 @@ def _learning_visual_current(
 
 
 # 功能：
-#   编码并缓存带原始时钟的学习视觉输入，只保存新图像，生成可追溯的内容摘要和引用。
+#   复用同一来源、同一尺寸的工作器编码，避免学习线程再次解码、缩放及压缩同一帧。
+# 输入：
+#   image：本次学习引用的原始消息对象。
+#   output_size：缓存要求的模型像素宽高。
+#   sample：同一回调消息对应的已完成编码。
+# 输出：
+#   encoded：原始 PNG 与 RGB 不可变字节二元组。
+def _reuse_learning_image(image, *, output_size, sample: PreparedCameraSample):
+    if image is not sample.message or tuple(output_size) != sample.image.size:
+        raise ValueError("LEARNING_PREPARED_IMAGE_SOURCE_MISMATCH")
+    encoded = sample.image.png, sample.image.rgb
+    return encoded
+
+
+# 功能：
+#   1. 编码并缓存带原始时钟的学习视觉输入，只保存新图像，生成可追溯的内容摘要和引用。
+#   2. 同源同尺寸时复用已完成编码；尺寸不同时重新编码，来源或时钟不一致时拒绝。
 # 输入：
 #   cache、image：图像缓存与由接收方持有的消息。
 #   received_monotonic、received_utc_ms：此样本对应的单调和 UNIX 时间。
 #   size、directory：学习图像尺寸与归档目录。
 #   frame_time：摄像头来源时钟绑定。
+#   prepared_sample：可选的同一消息编码结果，不提供时按原路径编码。
 # 输出：
 #   references：学习记录使用的图像路径、摘要、尺寸及来源时间列表。
 def _prepare_learning_visual(
     *, cache: ModelImageCache, image: Any, received_monotonic: float,
     received_utc_ms: int, size: tuple[int, int], directory: Path,
     frame_time: SensorFrameTime | None = None,
+    prepared_sample: PreparedCameraSample | None = None,
 ) -> list[dict]:
+    decoder = _gazebo_image_model_payload
+    if prepared_sample is not None:
+        if (not isinstance(prepared_sample, PreparedCameraSample)
+                or prepared_sample.message is not image
+                or prepared_sample.image.received_monotonic_seconds != received_monotonic
+                or prepared_sample.image.received_at_unix_ms != received_utc_ms
+                or prepared_sample.image.frame_time != frame_time):
+            raise ValueError("LEARNING_PREPARED_IMAGE_SOURCE_MISMATCH")
+        if prepared_sample.image.size == size:
+            decoder = partial(_reuse_learning_image, sample=prepared_sample)
     prepared, new_frame = cache.prepare(
         image, received_monotonic_seconds=received_monotonic,
-        received_at_unix_ms=received_utc_ms, size=size, decoder=_gazebo_image_model_payload,
+        received_at_unix_ms=received_utc_ms, size=size, decoder=decoder,
         frame_time=frame_time,
     )
     payload = prepared.multimodal(directory)
@@ -3863,7 +3891,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                 _prepare_learning_visual, cache=learning_image_cache,
                                 image=rgb_item[0], received_monotonic=rgb_item[1],
                                 received_utc_ms=rgb_received_at_unix_ms,
-                                frame_time=image_ingress.lookup("rgb", rgb_item[1]),
+                                frame_time=(prepared_rgb_sample.image.frame_time
+                                    if prepared_rgb_sample is not None
+                                    else image_ingress.lookup("rgb", rgb_item[1])),
+                                prepared_sample=prepared_rgb_sample,
                                 size=tuple(args.learning_image_size),
                                 directory=args.command.parent / "learning-observation-frames",
                             ) if args.rgb_topic and rgb_item is not None else None))
