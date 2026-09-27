@@ -147,7 +147,7 @@ def test_prepared_input_compiles_once_but_rechecks_identity_and_source_expiry(mo
     from dronedream_agent_core.training import observations as module
 
     request = current_request()
-    original = module.compile_training_observation
+    original = module.compile_training_input
     calls = []
 
     # 功能：
@@ -162,7 +162,7 @@ def test_prepared_input_compiles_once_but_rechecks_identity_and_source_expiry(mo
         result = original(*args, **kwargs)
         return result
 
-    monkeypatch.setattr(module, "compile_training_observation", counted)
+    monkeypatch.setattr(module, "compile_training_input", counted)
     prepared = module.PreparedTrainingInput.from_request(request)
     admitted = prepared.admit(request, now_unix_ms=1100)
     assert len(calls) == 1

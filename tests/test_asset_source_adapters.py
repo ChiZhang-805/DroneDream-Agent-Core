@@ -116,6 +116,33 @@ def test_normalizes_gazebo_bundle_and_rejects_executable_members(tmp_path: Path)
         normalize_asset_source(unsafe, unsafe_detection, tmp_path / "unsafe.ddpkg")
 
 
+def test_release_normalization_can_retain_provenance_without_embedding_source_zip(
+    tmp_path: Path,
+) -> None:
+    """Reviewed bundled resources keep an immutable source digest, not a nested archive."""
+
+    bundle = tmp_path / "map.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("world.sdf", '<sdf version="1.10"><world name="map"/></sdf>')
+    detection = detect_asset_source(bundle)
+    output = normalize_asset_source(
+        bundle,
+        detection,
+        tmp_path / "map.ddpkg",
+        expected_kind="map",
+        embed_source_snapshot=False,
+    )
+    inspected = inspect_ddpkg(output)
+
+    paths = {entry.path for entry in inspected.manifest.files}
+    assert "source/source-reference.json" in paths
+    assert not any(path.casefold().endswith(".zip") for path in paths)
+    with zipfile.ZipFile(output) as archive:
+        reference = json.loads(archive.read("source/source-reference.json"))
+    assert reference["embedded"] is False
+    assert reference["sha256"] == inspected.asset_ir.source.source_sha256
+
+
 def test_migrates_legacy_zip_into_ddpkg_and_invalidates_old_qualification(tmp_path: Path) -> None:
     """Compatibility is an explicit conversion boundary, never reuse of old flight approval."""
     bundle = tmp_path / "school-map.zip"

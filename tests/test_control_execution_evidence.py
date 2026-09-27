@@ -84,6 +84,35 @@ def test_actual_model_command_binds_input_deadline_and_transport():
     assert result["maximum_model_input_age_ms"] == 100
 
 
+@pytest.mark.parametrize("fault", [None, "velocity", "position", "late"])
+def test_hybrid_receipt_is_verified_without_counting_as_model(fault):
+    """功能：核对衔接实际发送；输入：合法/篡改回执；输出：独立计数及对应拒绝。"""
+    from test_bounded_hybrid_control import bridge_command
+    record, inputs = evidence()
+    command = bridge_command()
+    record = control_application_record(command, sequence=1, accepted_at_unix_ms=1100,
+        transport="velocity-ned", velocity_ned_mps=(.1, .1, 0.), yaw_heading_deg=0.).model_dump(mode="json")
+    inputs["command_records"] = [{"command": command.model_dump(mode="json")}]
+    if fault == "velocity":
+        record["velocity_ned_mps"] = [10., 0., 0.]
+    elif fault == "position":
+        record.update(transport="position-velocity-ned", position_ned_m=[2., 0., 0.])
+    elif fault == "late":
+        record["accepted_at_unix_ms"] = 2501
+    result = verify_control_applications([record], **inputs)
+    assert result["model_motion_record_count"] == 0
+    assert result["bounded_hybrid_motion_record_count"] == 1
+    expected = {"CONTROL_APPLICATION_HAS_NO_MODEL_MOTION"}
+    if fault == "velocity":
+        expected.add("CONTROL_APPLICATION_VELOCITY_DIFFERS_FROM_APPROVED_COMMAND")
+    elif fault == "position":
+        expected.add("CONTROL_APPLICATION_HYBRID_TRANSPORT_INVALID")
+    elif fault == "late":
+        expected.update(("CONTROL_APPLICATION_TRANSPORT_DEADLINE_VIOLATION",
+                         "CONTROL_APPLICATION_HYBRID_AUTHORITY_EXPIRED"))
+    assert set(result["issue_codes"]) == expected
+
+
 # 功能：
 #   明确未发布的过期计算不污染有效回执；它也不能补出缺失的已执行命令。
 # 输入：

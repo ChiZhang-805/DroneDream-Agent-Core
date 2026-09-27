@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 from test_causal_policy import samples
 from test_native_action_risk_artifacts import native_episode
 from test_px4_training_lifecycle import environment
@@ -32,7 +33,7 @@ def adopting_environment(tmp_path, monkeypatch):
     env._prepared_input = module.PreparedTrainingInput.from_request(request)
     env.config.expert_role = env._prepared_input.sample.navigation_expert_role
     stamp = request["snapshot"]["control_reference_observed_at_unix_ms"]
-    monkeypatch.setattr(module.time, "time", lambda: stamp / 1000.0)
+    isolate_time(monkeypatch, module, time=lambda: stamp / 1000.0)
     return env, request
 
 
@@ -199,13 +200,18 @@ def test_reward_step_limit_precedes_submission(tmp_path):
 # 输入：
 #   tmp_path：合成资产目录。
 #   monkeypatch：只替换平台检查，不执行原生运行器的测试工具。
+#   mode：启动前明确选择的采集语义，None 保留自动选择行为。
 # 输出：
 #   None：不返回业务数据。
-def test_constructor_owns_configuration(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', [None, 'stream-imitation', 'reward-step'])
+def test_constructor_owns_configuration(tmp_path, monkeypatch, mode):
     episode, _ = native_episode(tmp_path)
     config = module.Px4TrainingConfig.model_validate_json(
         json.dumps(json.loads((episode / "reset.json").read_text())["config"])
     )
+    config.initial_collection_mode = mode
+    with pytest.raises(ValueError):
+        module.Px4TrainingConfig.model_validate({**config.model_dump(), 'initial_collection_mode': 'skip-deadlines'})
     config.runner = (
         Path(module.__file__).resolve().parents[3]
         / "scripts"
@@ -213,6 +219,12 @@ def test_constructor_owns_configuration(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
     env = module.Px4GazeboTrainingEnvironment(config)
+    assert env._collection_mode == mode
+    # 流式派发为20毫秒执行周期+20毫秒传输余量；同步另留50毫秒准备时间。
+    assert env._input_admission_budget_ms() == (40 if mode == 'stream-imitation' else 90)
+    if mode is not None:
+        with pytest.raises(ValueError, match='MODE_CHANGED'):
+            env._select_collection_mode('reward-step' if mode == 'stream-imitation' else 'stream-imitation')
     original = env.config.asset_sha256["semantic"]
     config.asset_sha256["semantic"] = "f" * 64
     config.speed_limit_mps = 1.5

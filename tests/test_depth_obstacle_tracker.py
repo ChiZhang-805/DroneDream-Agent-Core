@@ -73,6 +73,29 @@ def test_static_depth_cluster_is_not_misreported_as_moving() -> None:
     assert tracks == []
 
 
+# 功能：天花板可见斑块的横向质心变化不足以证明物体移动；输入：平面合成深度；输出：无伪速度。
+def test_planar_tangential_visibility_shift_does_not_confirm_motion():
+    tracker = DepthMotionTracker(minimum_dynamic_speed_mps=0.1)
+    for sequence in range(1, 8):
+        frame = _frame(sequence, 3.0)
+        for ray, offset in zip(frame.range_rays, (-0.12, 0.0, 0.12), strict=True):
+            ray.endpoint_m = Vector3(x=3.0 + offset, y=sequence * 0.1 + offset, z=3.618)
+        original = frame.model_dump(mode="json")
+        assert tracker.update(frame, observed_at_monotonic_seconds=sequence * 0.1) == []
+        assert frame.model_dump(mode="json") == original
+
+
+# 功能：同一平面若沿法向接近仍能确认运动；输入：真实法向位移的合成簇；输出：动态假设。
+def test_planar_normal_approach_remains_observable():
+    tracker = DepthMotionTracker(minimum_dynamic_speed_mps=0.1)
+    for sequence in (1, 2):
+        frame = _frame(sequence, 3.0)
+        for ray, offset in zip(frame.range_rays, (-0.12, 0.0, 0.12), strict=True):
+            ray.endpoint_m = Vector3(x=3.0 + offset, y=offset, z=3.8 - sequence * 0.2)
+        result = tracker.update(frame, observed_at_monotonic_seconds=sequence * 0.1)
+    assert len(result) == 1 and result[0].velocity_mps.z < 0
+
+
 # 功能：
 #   验证已移动目标停下后身份连续、年龄刷新且速度衰减，而非留下继续运动的旧影。
 # 输入：

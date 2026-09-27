@@ -23,6 +23,8 @@ from ..local_expert_harness import requested_navigation_expert
 from ..local_policy_port import compile_local_policy_features
 from ..local_policy_training import LocalPolicyObservation, LocalPolicyTrainingSample
 from ..pilot_control_mapping import PilotControlLimits
+from ..precision_heading_input import current_precision_heading_input
+from ..simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from ..plugin_files import (
     check_plain_plugin_path,
     hash_plugin_file,
@@ -112,6 +114,7 @@ class DemonstrationCorpus:
     receipts: list[dict]
     counts: dict[str, int]
     observations: list[LocalPolicyObservation] = field(default_factory=list)
+    heading_sources: list[dict] = field(default_factory=list)
 
 
 # 功能：
@@ -168,21 +171,28 @@ def _visual(root: Path, snapshot: dict, *, required: bool) -> str | None:
 # 功能：
 #   1. 读取明确通过独立验证的教师运行，固定原始字节、路线划分及当前控制特征契约。
 #   2. 仅由已接受的速度执行回执生成四轴标签，未执行观测只保留为感知历史。
-#   3. 安全覆盖不作为模仿标签；文件摘要证明内容一致，不证明外部伪造运行的真实性。
+#   3. 无指令观测必须绑定同轮安全日志，只入历史；有因果依据的纯速度避让才允许恢复标签。
+#   4. 文件摘要证明内容一致，不证明外部伪造运行的真实性。
 # 输入：
 #   roots：1 至 128 个本机运行目录。
 #   require_visual：是否要求逐帧核对原相机图像。
+#   allow_nonvisual_history：是否保留缺图数值历史；缺图帧不生成视觉动作标签。
+#   include_heading_sources：是否保留精细及巡航控制的原始快照；不补造旧记录缺失的几何。
 # 输出：
 #   corpus：已执行样本、无标签历史、空间组、来源回执和计数。
 def collect_demonstrations(
-    roots: list[Path], *, require_visual: bool = True
+    roots: list[Path], *, require_visual: bool = True, allow_nonvisual_history: bool = False,
+    include_heading_sources: bool = False,
 ) -> DemonstrationCorpus:
     if type(roots) not in (list, tuple) or not 1 <= len(roots) <= 128:
         raise ValueError("DEMONSTRATION_ROOTS_INVALID")
-    if type(require_visual) is not bool:
+    if any(type(flag) is not bool for flag in (
+        require_visual, allow_nonvisual_history, include_heading_sources
+    )):
         raise ValueError("DEMONSTRATION_VISUAL_MODE_INVALID")
     roots = tuple(Path(directory).absolute() for directory in roots)
     samples, receipts, groups, observations = [], [], {}, []
+    heading_sources = []
     total_bytes = 0
     counts = Counter()
     seen_roots, seen_sources, seen_snapshots = set(), set(), set()
@@ -213,6 +223,10 @@ def collect_demonstrations(
             or learning.get("model_control_qualification_granted") is not False
         ):
             raise ValueError("DEMONSTRATION_EXPLICIT_TEACHER_REQUIRED")
+        # 相同传感器张量并不意味着相同示范规则：旧的路线朝向不能混成观察障碍物监督。
+        # 原始运行不重写身份；缺少契约的历史数据只能留作明确版本的研究回放。
+        if learning.get("teacher_contract_sha256") != SIMULATION_TEACHER_CONTRACT_SHA256:
+            raise ValueError("DEMONSTRATION_TEACHER_CONTRACT_MISMATCH")
         assets = evidence.get("artifacts", {})
         if type(assets) is not dict:
             raise ValueError("DEMONSTRATION_ASSET_IDENTITY_MISSING")
@@ -258,10 +272,19 @@ def collect_demonstrations(
         split = recorded_mission_group(root, assets)
         group = split.group_sha256
         commands = {}
+        no_command_observations = set()
         for row in _rows(contents["commands"]):
             if row.get("command") is not None:
                 command = RuntimeLocalSafetyCommand.model_validate(row["command"])
                 commands[sha256_json(command)] = command
+            elif ("command" in row and row.get("identity_accepted") is True
+                  and type(row.get("recorded_at_unix_ms")) is int
+                  and isinstance(row.get("realtime_feature_snapshot"), dict)
+                  and isinstance(row.get("navigation_goal_id"), str)):
+                # 无指令历史必须在原始安全日志找到同一时刻、目标和编码内容，
+                # 不能把缺失的指令文件、任意空摘要或旧数据损坏解释成合法历史。
+                no_command_observations.add((row["recorded_at_unix_ms"], row["navigation_goal_id"],
+                                            sha256_json(row["realtime_feature_snapshot"])))
         applications = {}
         previous_sequence, previous_time = 0, -1
         for row in _rows(contents["applications"]):
@@ -273,7 +296,7 @@ def collect_demonstrations(
                 raise ValueError("DEMONSTRATION_EXECUTION_ORDER_INVALID")
             previous_sequence, previous_time = application.sequence, application.accepted_at_unix_ms
             applications.setdefault(application.command_sha256, application)
-        row_count, previous_source_time = 0, {}
+        row_count, previous_sources = 0, {}
         for row in _rows(contents["observations"]):
             row_count += 1
             if len(observations) >= MAX_TRAINING_ROWS:
@@ -300,21 +323,52 @@ def collect_demonstrations(
             if digest in seen_snapshots:
                 raise ValueError("DEMONSTRATION_REPEATED_OBSERVATION")
             seen_snapshots.add(digest)
-            command_hash = _digest(row.get("evaluated_command_sha256"))
-            command = commands.get(command_hash)
-            if command is None:
-                raise ValueError("DEMONSTRATION_EVALUATED_COMMAND_MISSING")
-            if (
+            task = snapshot.get("strategic_context", {}).get("task", {})
+            if task.get("simulation_teacher_contract_sha256") != SIMULATION_TEACHER_CONTRACT_SHA256:
+                raise ValueError("DEMONSTRATION_OBSERVATION_TEACHER_CONTRACT_MISMATCH")
+            history_only = row.get("control_evaluation_status") == "no-command"
+            if history_only:
+                if not isinstance(task.get("navigation_goal_id"), str):
+                    raise ValueError("DEMONSTRATION_NO_COMMAND_HISTORY_UNBOUND")
+                binding = (row["recorded_at_unix_ms"], task.get("navigation_goal_id"),
+                           sha256_json(snapshot.get("realtime_feature_snapshot")))
+                if ("evaluated_command_sha256" not in row
+                        or row["evaluated_command_sha256"] is not None
+                        or binding not in no_command_observations):
+                    raise ValueError("DEMONSTRATION_NO_COMMAND_HISTORY_UNBOUND")
+                command_hash, command = None, None
+            else:
+                if row.get("control_evaluation_status") not in (None, "command-bound"):
+                    raise ValueError("DEMONSTRATION_CONTROL_EVALUATION_STATUS_INVALID")
+                command_hash = _digest(row.get("evaluated_command_sha256"))
+                command = commands.get(command_hash)
+                if command is None:
+                    raise ValueError("DEMONSTRATION_EVALUATED_COMMAND_MISSING")
+            if command is not None and (
                 command.requested_control_intent is not None
                 or command.model_navigation_authorized
                 or command.navigation_control_authority != "route-fallback"
             ):
                 raise ValueError("DEMONSTRATION_MIXED_MODEL_AUTHORITY")
-            task = snapshot.get("strategic_context", {}).get("task", {})
+            # 历史版本只凭最近物体标注恢复；没有原动作避让原因的动态标签拒绝整次输入，
+            # 不通过重写历史、静默改角色或减少统计来掩盖错误监督。
+            if task.get("decision_trigger") == "dynamic-obstacle":
+                cause = command.decision.avoidance_obstacle_id if command is not None else None
+                if cause is None:
+                    raise ValueError("DEMONSTRATION_DYNAMIC_RECOVERY_CAUSE_MISSING")
+                matches = [item for item in snapshot.get("dynamic_obstacles", [])
+                           if isinstance(item, dict) and item.get("obstacle_id") == cause]
+                if (len(matches) != 1 or type(matches[0].get("confidence")) not in (int, float)
+                        or not .35 <= matches[0]["confidence"] <= 1.
+                        or type(matches[0].get("observation_age_seconds")) not in (int, float)
+                        or not 0 <= matches[0]["observation_age_seconds"] <= .25):
+                    raise ValueError("DEMONSTRATION_DYNAMIC_RECOVERY_CAUSE_UNBOUND")
             if (
                 task.get("local_navigation_output_mode") != "normalized-body-velocity"
                 or not task.get("control_session_id")
-                or task.get("navigation_goal_id") != command.navigation_goal_id
+                or not isinstance(task.get("navigation_goal_id"), str)
+                or not task.get("navigation_goal_id")
+                or (command is not None and task.get("navigation_goal_id") != command.navigation_goal_id)
             ):
                 raise ValueError("DEMONSTRATION_TASK_REFERENCE_MISMATCH")
             limits = PilotControlLimits(**task["normalized_pilot_control_limits"])
@@ -326,17 +380,25 @@ def collect_demonstrations(
             ):
                 raise ValueError("DEMONSTRATION_CURRENT_DEPLOYMENT_INPUT_REQUIRED")
             temporal = batch.temporal_evidence
+            previous = previous_sources.get(temporal.stream_id)
             if (
                 temporal.sample_sha256 in seen_sources
-                or temporal.observed_at_unix_ms <= previous_source_time.get(temporal.stream_id, -1)
+                or (previous is not None and (
+                    temporal.observed_at_unix_ms < previous.observed_at_unix_ms
+                    or (temporal.observed_at_unix_ms == previous.observed_at_unix_ms and (
+                        temporal.history_slot_revision <= previous.history_slot_revision
+                        or temporal.reset_history != previous.reset_history))))
             ):
                 raise ValueError("DEMONSTRATION_SOURCE_REPLAY_OR_CLOCK_CONFLICT")
             seen_sources.add(temporal.sample_sha256)
-            previous_source_time[temporal.stream_id] = temporal.observed_at_unix_ms
+            # 同槽修订保留独立记录与动作绑定，但不会在因果窗口中增加独立时间行。
+            previous_sources[temporal.stream_id] = temporal
             if temporal.stream_id in groups and groups[temporal.stream_id] != group:
                 raise ValueError("DEMONSTRATION_STREAM_MISSION_CONFLICT")
             groups[temporal.stream_id] = group
-            visual = _visual(root, snapshot, required=require_visual)
+            # 相机缺帧不删除因果状态历史；只允许显式模式保留无图历史，
+            # 已存在但损坏或过期的图像依然由 _visual 拒绝，不能降级掩盖。
+            visual = _visual(root, snapshot, required=require_visual and not allow_nonvisual_history)
             observation = LocalPolicyObservation(
                 temporal_evidence=temporal,
                 pilot_control_limits=limits,
@@ -353,18 +415,38 @@ def collect_demonstrations(
             # Unexecuted proposals have no action label, but their authentic
             # observations still belong in the causal sensory history.
             observations.append(observation)
+            if history_only:
+                counts["no_command_history"] += 1
+                continue
             application = applications.get(command_hash)
             if application is None:
                 counts["not_executed"] += 1
                 continue
-            if command.decision.action not in {"continue", "slow"}:
+            # 新教师恢复使用真实纯速度回执；旧位置恢复或悬停仍只保留感知历史。
+            velocity_recovery = (command.decision.action == "replan"
+                                 and application.transport == "velocity-ned")
+            if command.decision.action not in {"continue", "slow"} and not velocity_recovery:
                 counts["safety_override"] += 1
                 continue
             if application.transport != "velocity-ned":
                 raise ValueError("DEMONSTRATION_POSITION_CONTROL_IS_NOT_A_VELOCITY_LABEL")
             # Expired execution is an integrity failure, not a row to hide.
             target = executed_pilot_control(snapshot, command, application, limits=limits)
+            if require_visual and visual is None:
+                counts["executed_without_visual_label"] += 1
+                continue
             axes = [target.forward_axis, target.right_axis, target.up_axis, target.yaw_axis]
+            if (include_heading_sources
+                    and observation.navigation_expert_role in (
+                        "precision-maneuver-policy", "local-navigation-policy")):
+                # 额外分支只在有执行标签的计分帧推理；不要求无标签历史帧拥有偏航输入，
+                # 也不删除这些真实历史。若计分帧本身过期或缺少几何，整次构建仍失败。
+                # 原记录时刻是观测参考时间，不冒充编译完成或飞控接受时间。
+                current_precision_heading_input(snapshot, now_unix_ms=row["recorded_at_unix_ms"])
+                heading_sources.append({
+                    "snapshot": snapshot,
+                    "recorded_at_unix_ms": row["recorded_at_unix_ms"],
+                })
             samples.append(
                 LocalPolicyTrainingSample(
                     **observation.model_dump(),
@@ -385,6 +467,7 @@ def collect_demonstrations(
                 "mission_group": group,
                 "mission_split": split.model_dump(mode="json"),
                 "mission_evidence_sha256": evidence_digest,
+                "teacher_contract_sha256": SIMULATION_TEACHER_CONTRACT_SHA256,
                 "files": file_hashes,
                 "observation_count": row_count,
                 "observation_summary": summary,
@@ -392,7 +475,9 @@ def collect_demonstrations(
         )
     if not samples:
         raise ValueError("DEMONSTRATION_NO_EXECUTED_SAMPLES")
-    corpus = DemonstrationCorpus(samples, groups, receipts, dict(counts), observations)
+    corpus = DemonstrationCorpus(
+        samples, groups, receipts, dict(counts), observations, heading_sources
+    )
     return corpus
 
 

@@ -14,6 +14,8 @@ from dronedream_agent_app.asset_import_service import AssetImportService
 from dronedream_agent_app.server import create_app
 from dronedream_agent_app.storage import AppStore, AssetImportError
 
+pytestmark = pytest.mark.usefixtures("isolated_server_credentials", "isolated_wsl_host_paths")
+
 
 # 功能：
 #   建立隔离运行桥接器，只声明测试资源就绪，不连接真实 WSL 环境。

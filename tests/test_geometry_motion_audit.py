@@ -31,6 +31,10 @@ def synthetic_fixture(tmp_path):
 
     (tmp_path / "raw").mkdir()
     semantic = tmp_path / "semantic.json"
+    world = tmp_path / "world.sdf"
+    world.write_text('<sdf><world name="w"><model name="m"><static>true</static><link name="l">'
+                     '<visual name="wall"><pose>2.05 0 0 0 0 0</pose><geometry><box>'
+                     '<size>.1 10 10</size></box></geometry></visual></link></model></world></sdf>')
     write_json(semantic, {"collision_primitives": [{"center_x": 2.05, "center_y": 0.,
         "center_z": 0., "size_x": .1, "size_y": 10., "size_z": 10.}]})
     poses = [{"simulation_time_ns": stamp, "position_m": [0., i*.4, 0.],
@@ -57,6 +61,8 @@ def synthetic_fixture(tmp_path):
         "calibration_sha256": calibration.sha256, "files": {name:
             bytes_digest((tmp_path / name).read_bytes())
             for name in ("poses.json", "frames.json", "commands.json")}}
+    write_json(tmp_path / "capture.json", report)
+    report['sources']['world'] = {'path': str(world), 'sha256': bytes_digest(world.read_bytes())}
     write_json(tmp_path / "capture.json", report)
     result = tmp_path, semantic
     return result
@@ -126,6 +132,24 @@ def test_joint_pose_mode_is_explicit_and_retains_degeneracy_and_scope(synthetic_
         assert result["summary"][condition]["observed_translation_ranks"] == {1: 3}
     with pytest.raises(ValueError, match="MODE_INVALID"):
         compare_moving_fixture(root, semantic, joint_pose="true")
+
+
+# 功能：检验连续配准显式启用、条件隔离、原始文件绑定和时间空洞退役记录。
+# 输入：合成夹具；帧间隔故意超过连续状态缓存预算。
+# 输出：保留每帧失败/历史，不把回放当飞行资格。
+def test_temporal_audit_is_explicit_and_preserves_gaps(synthetic_fixture):
+    root, semantic = synthetic_fixture
+    with pytest.raises(ValueError, match="MODE_INVALID"):
+        compare_moving_fixture(root, semantic, temporal_pose=True)
+    report = compare_moving_fixture(root, semantic, joint_pose=True, temporal_pose=True)
+    assert report["temporal_pose"] is True
+    assert len(report["temporal_implementation_sha256"]) == 64
+    assert report["frame_count"] == 3
+    for condition in ("exact_attitude", "biased_attitude"):
+        history = [row["conditions"][condition]["temporal_history"] for row in report["frames"]]
+        assert not history[0]["history_used"]
+        assert all(row["history_retired_reason"] == "SOURCE_GAP" for row in history[1:])
+    assert not report["covariance_qualified"] and not report["model_control_qualification"]
 
 
 # 功能：

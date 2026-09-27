@@ -14,6 +14,8 @@ from dronedream_agent_app.runtime_manager import RuntimeBridgeError
 from tests.test_runtime_manager import _manager, _runtime_resources
 from tests.test_runtime_qualification_boundaries import _StubbornProcess
 
+pytestmark = pytest.mark.usefixtures("isolated_wsl_host_paths")
+
 
 # 功能：
 #   验证整数配置只接受范围内的整数，不通过隐式转换接受错误类型。

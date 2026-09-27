@@ -10,8 +10,9 @@ not a claim that this geometric label proves the action safe.
 import math
 from dataclasses import asdict, dataclass, replace
 from itertools import product
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from ..contracts import (
     DynamicObstacleObservation,
@@ -20,6 +21,7 @@ from ..contracts import (
     StrictModel,
     Vector3,
 )
+from ..control_timing import LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
 from ..hashing import sha256_json
 from ..pilot_control_mapping import PilotControlLimits, physical_pilot_request
 from ..realtime_feature_encoders import body_to_world_enu, world_enu_to_body
@@ -29,6 +31,12 @@ from .evidence_snapshot import detach_evidence
 from .flight_environment import FlightObservation, PilotAction
 from .geometry_inputs import finite_metric, metric_vector
 from .outcome_verifier import OutcomeEnvelope, swept_clearance_bound
+from .risk_clearance_contract import (
+    LEGACY_CLEARANCE_LABELS,
+    OBSERVED_CLEARANCE_LABELS,
+    observation_clearance_label,
+)
+from .risk_latency_contract import decision_latency_contract
 from .swept_geometry import SweptMapGeometry
 
 
@@ -45,6 +53,24 @@ class CounterfactualConfig(StrictModel):
     dynamic_acceleration_bound_mps2: float = Field(default=2.0, ge=0, le=10)
     maximum_horizon_seconds: float = Field(default=5.0, gt=0, le=10)
     correction_refinement_passes: int = Field(default=4, ge=1, le=8, strict=True)
+    risk_label_semantics: Literal["configured-clearance-v1", "observation-clearance-v2"] = (
+        LEGACY_CLEARANCE_LABELS
+    )
+    decision_latency_policy: Literal["measured-actuation-v1", "bounded-source-age-v1"] = (
+        "measured-actuation-v1"
+    )
+
+    # 功能：保留旧教师配置摘要；新语义显式写入身份，禁止把旧标签静默解释成新版。
+    # 输入：handler：标准序列化器。
+    # 输出：config：旧格式或带显式版本的新配置。
+    @model_serializer(mode="wrap")
+    def preserve_legacy_identity(self, handler):
+        config = handler(self)
+        if self.risk_label_semantics == LEGACY_CLEARANCE_LABELS:
+            config.pop("risk_label_semantics", None)
+        if self.decision_latency_policy == "measured-actuation-v1":
+            config.pop("decision_latency_policy", None)
+        return config
 
 
 @dataclass(frozen=True)
@@ -196,7 +222,12 @@ class CounterfactualTeacher:
         ):
             raise ValueError("COUNTERFACTUAL_OBSERVED_LATENCY_INVALID")
         # Bounded comparisons also reject NaN/inf without converting huge Python ints to float.
-        latency = max(config.latency_seconds, state.observed_action_latency_seconds)
+        bounded_latency = config.decision_latency_policy == "bounded-source-age-v1"
+        latency = (
+            LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+            if bounded_latency
+            else max(config.latency_seconds, state.observed_action_latency_seconds)
+        )
         control = NormalizedPilotControl(
             forward_axis=action.axes[0],
             right_axis=action.axes[1],
@@ -256,10 +287,29 @@ class CounterfactualTeacher:
         integration_margin = (
             max(config.acceleration_mps2, config.braking_acceleration_mps2) * dt * dt
         )
+        # 固定源状态后，学生事前不知道本次执行最终耗时。新版只使用共同源年龄上界，
+        # 不把已执行后的延迟当作可观测特征。名义恒速等待期间，不同延迟的启动位置
+        # 相差至多 |v0|*预算；动态障碍也按其速度覆盖这段相对时间差。
+        # 较晚执行不一定更危险（例如先远离障碍），所以不能只取最大延迟而不扩张。
+        # 额外保留离散切换相位的两个时间格位移；仍只是名义包络，不是真机安全证明。
+        latency_uncertainty = 0.0
+        latency_contract = None
+        if bounded_latency:
+            obstacle_speed = max(
+                (math.hypot(*_vector(o.velocity_mps)) for o in state.dynamic_obstacles), default=0.0
+            )
+            latency_contract = decision_latency_contract(
+                math.hypot(*_vector(state.velocity)),
+                math.hypot(forward, right, up),
+                obstacle_speed,
+                config.integration_seconds,
+            )
+            latency_uncertainty = latency_contract["additional_swept_uncertainty_m"]
         uncertainty = (
             config.position_uncertainty_m
             + integration_margin
             + state.additional_position_uncertainty_m
+            + latency_uncertainty
         )
         minimum = self.geometry.clearance(positions) - uncertainty
         for obstacle in state.dynamic_obstacles:
@@ -345,6 +395,8 @@ class CounterfactualTeacher:
             "goal_progress_m": goal_progress,
             "qualification_granted": False,
         }
+        if bounded_latency:
+            receipt["decision_latency_contract"] = latency_contract
         return receipt
 
     # 功能：
@@ -474,6 +526,13 @@ class CounterfactualTeacher:
         receipt = self.evaluate(
             state, action.model_copy(deep=True), observation.sample.pilot_control_limits
         )
+        if self.config.risk_label_semantics == OBSERVED_CLEARANCE_LABELS:
+            # 只替换风险监督的定义，几何积分、原始输入、不确定度和行为纠正均不改写。
+            score, contract = observation_clearance_label(
+                observation.sample.state_features, receipt["clearance_lower_bound_m"]
+            )
+            receipt["risk_target"] = score
+            receipt["risk_label_contract"] = contract
         risk = ProposedActionRisk(
             observation_sha256=sha256_json(observation),
             proposed_action_sha256=sha256_json(action),

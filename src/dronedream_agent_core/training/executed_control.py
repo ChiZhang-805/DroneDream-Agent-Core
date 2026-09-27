@@ -149,6 +149,7 @@ def transport_command_change_squared(previous: ControlApplicationRecord | None,
 # 功能：
 #   1. 验证快照身份、特征期限、实际 NED 速度与偏航积分，恢复连续手柄四轴标签。
 #   2. 明确区分源姿态下的教师模仿和执行姿态下的动作归因，拒绝越界标签而不裁剪。
+#   3. 教师恢复仅接纳真实纯速度传输及安全层零偏航；历史位置恢复仍不能变成手柄标签。
 # 输入：
 #   snapshot：原始模型输入的严格 JSON 对象。
 #   command：经批准的速度命令。
@@ -208,7 +209,16 @@ def executed_pilot_control(snapshot: dict, command: RuntimeLocalSafetyCommand,
         if encoding.encoder_role in features.required_roles
     ):
         raise ValueError("DEMONSTRATION_CONTROL_INPUT_STALE")
-    if command.decision.action not in {"continue", "slow"}:
+    teacher_velocity_recovery = (
+        command.decision.action == "replan"
+        and command.navigation_control_authority == "route-fallback"
+        and not command.model_navigation_authorized
+        and command.requested_control_intent is None
+        and command.decision.control_source == "deterministic-brake"
+        and command.decision.selected_yaw_rate_dps == 0.0
+        and application.yaw_rate_application.clockwise_rate_dps == 0.0
+    )
+    if command.decision.action not in {"continue", "slow"} and not teacher_velocity_recovery:
         raise ValueError("DEMONSTRATION_SAFETY_OVERRIDE_IS_NOT_TEACHER_BEHAVIOR")
     yaw_rate = application.yaw_rate_application.clockwise_rate_dps
     approved_yaw = command.decision.selected_yaw_rate_dps

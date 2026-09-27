@@ -9,6 +9,35 @@ from dronedream_agent_core.training import evidence_publication as publication
 from dronedream_agent_core.training import px4_environment
 
 
+# 功能：多帧归档显式申请容量后可写，默认单行上限不变；输入：超过4MiB对象；输出：受限文件。
+def test_episode_archive_can_request_larger_byte_budget(tmp_path):
+    value = {"part-a": "a" * (3 * 1024**2), "part-b": "b" * (2 * 1024**2)}
+    with pytest.raises(ValueError):
+        publication.write_evidence_object(tmp_path / "default.json", value)
+    publication.write_evidence_object(tmp_path / "episode.json", value, limit=16 * 1024**2)
+    assert json.loads((tmp_path / "episode.json").read_bytes()) == value
+    assert not (tmp_path / "default.json").exists()
+
+
+# 功能：长回合节点预算只在显式归档调用增加，不取消复杂度限制或容许环引用。
+def test_episode_archive_node_budget_is_explicit(tmp_path):
+    value = {"frames": [list(range(1000)) for _ in range(1100)]}
+    with pytest.raises(ValueError, match="COMPLEXITY"):
+        publication.write_evidence_object(tmp_path / "default.json", value)
+    publication.write_evidence_object(tmp_path / "episode.json", value,
+                                      limit=16 * 1024**2, node_limit=2_000_000)
+    assert len(json.loads((tmp_path / "episode.json").read_bytes())["frames"]) == 1100
+
+
+# 功能：拒绝布尔、无界或非正预算；输出：没有发布任何文件。
+@pytest.mark.parametrize("options", [dict(limit=True), dict(limit=0), dict(limit=17*1024**2),
+                                    dict(node_limit=True), dict(node_limit=2_000_001)])
+def test_object_archive_rejects_unbounded_budget(tmp_path, options):
+    with pytest.raises(ValueError):
+        publication.write_evidence_object(tmp_path / "bad.json", {}, **options)
+    assert not list(tmp_path.iterdir())
+
+
 # 功能：
 #   检查运行环境与命令行共用唯一对象发布实现，并允许合法元组明确编码为数组。
 # 输入：

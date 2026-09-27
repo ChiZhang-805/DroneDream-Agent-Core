@@ -28,6 +28,29 @@ from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.runtime_commands import build_runtime_command
 
 
+# 功能：
+#   用完整安全命令契约构造执行测试输入，保留真实序列化与摘要，不再使用残缺命名空间。
+# 输入：
+#   values：本测试明确覆盖的指令字段；decision 为对应安全决策的字段命名空间。
+# 输出：
+#   command：通过正式字段校验的独立测试指令，不来自实际飞行。
+def _safety_command_fixture(**values):
+    decision = vars(values.pop('decision'))
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    zero = Vector3(x=0., y=0., z=0.)
+    data = dict(observation_sha256='f' * 64, observation_sequence=1,
+                generated_at_unix_ms=now_ms, valid_until_unix_ms=now_ms + 1500,
+                source='onboard', command_position_m=zero)
+    data.update(values)
+    data['decision'] = dict(selected_velocity_mps=zero, predicted_path_m=[zero],
+        minimum_predicted_clearance_m=2., time_to_minimum_clearance_seconds=0.,
+        evaluated_candidate_count=1,
+        control_source='deterministic-brake' if decision['action'] == 'hold' else 'route-target')
+    data['decision'].update(decision)
+    command = RuntimeLocalSafetyCommand.model_validate(data)
+    return command
+
+
 def _load_executor() -> Any:
     path = Path(__file__).parents[1] / "scripts" / "px4_checkpoint_executor.py"
     spec = importlib.util.spec_from_file_location("test_px4_checkpoint_executor", path)
@@ -96,6 +119,12 @@ def test_px4_world_transform_uses_complete_vehicle_collision_offset() -> None:
     assert restored.yaw_deg == pytest.approx(17.0)
 
 
+# 功能：
+#   未发送候选和迟到回执不推进偏航；同命令的及时纯速度接收才提交有界积分。
+# 输入：
+#   无。
+# 输出：
+#   无。
 def test_model_body_yaw_rate_is_integrated_and_bounded_at_control_rate() -> None:
     executor = _load_executor()
     base = SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values))
@@ -162,7 +191,23 @@ def test_model_body_yaw_rate_is_integrated_and_bounded_at_control_rate() -> None
     )
 
     assert first.yaw_deg == pytest.approx(1.0)
-    assert second.yaw_deg == pytest.approx(2.0)
+    assert second.yaw_deg == pytest.approx(1.0)
+    assert getattr(args, "_model_body_control_yaw_deg", None) is None
+    with pytest.raises(executor.UserDirectedLanding, match="EXCEEDED_INPUT_DEADLINE"):
+        executor._record_model_control_application(
+            args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
+            accepted_at_unix_ms=1501,
+        )
+    assert getattr(args, "_model_body_control_yaw_deg", None) is None
+    executor._record_model_control_application(
+        args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
+        accepted_at_unix_ms=1100,
+    )
+    third = executor._setpoint_with_model_body_yaw(
+        base=base, args=args, setpoint=setpoint, command=command,
+    )
+    assert third.yaw_deg == pytest.approx(2.0)
+    assert args._model_body_control_yaw_deg == pytest.approx(1.0)
 
 
 def test_local_safety_target_uses_stable_content_identity_without_route_context(
@@ -883,7 +928,7 @@ def test_local_safety_slowdown_advances_after_one_safe_controller_tick(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
-    command = SimpleNamespace(
+    command = _safety_command_fixture(
         decision=SimpleNamespace(
             action="slow",
             threat_obstacle_id="person-crossing",
@@ -962,7 +1007,7 @@ def test_static_clearance_recovery_freezes_schedule_until_margin_restored(
     executor = _load_executor()
     commands = iter(
         (
-            SimpleNamespace(
+            _safety_command_fixture(
                 decision=SimpleNamespace(
                     action="slow",
                     threat_obstacle_id="static:door-leaf",
@@ -974,7 +1019,7 @@ def test_static_clearance_recovery_freezes_schedule_until_margin_restored(
                 estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
                 observation_sequence=1,
             ),
-            SimpleNamespace(
+            _safety_command_fixture(
                 decision=SimpleNamespace(action="continue"),
                 estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
             ),
@@ -1057,7 +1102,7 @@ def test_local_safety_continue_preserves_controller_rate(
         return None
 
     monkeypatch.setattr(executor, "_refresh_px4_identity_telemetry", ignore_identity_refresh)
-    executor._read_local_safety_command = lambda _args: SimpleNamespace(
+    executor._read_local_safety_command = lambda _args: _safety_command_fixture(
         decision=SimpleNamespace(
             action="continue",
             threat_obstacle_id=None,
@@ -1139,7 +1184,7 @@ def test_tracking_recovery_settles_fixed_target_with_bounded_radial_feedforward(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
-    executor._read_local_safety_command = lambda _args: SimpleNamespace(
+    executor._read_local_safety_command = lambda _args: _safety_command_fixture(
         decision=SimpleNamespace(
             action="continue",
             selected_velocity_mps=Vector3(x=0.25, y=-0.4, z=0.15),
@@ -1292,6 +1337,153 @@ def test_ordinary_safety_lease_is_compatible_only_when_entering_slower_recovery(
         "executor_tracking_recovery_active": False,
         "evaluated_target_distance_m": None,
     }
+
+
+def test_stationary_route_hold_completes_only_the_already_reached_setpoint() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        decision=SimpleNamespace(
+            action="hold",
+            selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        ),
+        navigation_control_authority="route-fallback",
+        evaluated_target_position_m=Vector3(x=6.35198, y=11.64242, z=1.4),
+        command_position_m=Vector3(x=6.31237, y=11.60313, z=1.41301),
+    )
+    observed = SimpleNamespace(
+        north_m_s=0.001,
+        east_m_s=0.012,
+        down_m_s=-0.013,
+    )
+
+    assert executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=observed,
+        tracking_recovery_active=False,
+    )
+
+    command.command_position_m = Vector3(x=6.1, y=11.4, z=1.4)
+    assert not executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=observed,
+        tracking_recovery_active=False,
+    )
+
+
+def test_stationary_route_hold_never_bypasses_recovery_or_model_authority() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        decision=SimpleNamespace(
+            action="hold",
+            selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        ),
+        navigation_control_authority="route-fallback",
+        evaluated_target_position_m=Vector3(x=1.0, y=2.0, z=1.0),
+        command_position_m=Vector3(x=1.0, y=2.0, z=1.0),
+    )
+    stopped = SimpleNamespace(north_m_s=0.0, east_m_s=0.0, down_m_s=0.0)
+
+    assert not executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=stopped,
+        tracking_recovery_active=True,
+    )
+    command.navigation_control_authority = "model-required"
+    assert not executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=stopped,
+        tracking_recovery_active=False,
+    )
+
+
+def test_stationary_route_hold_requires_low_speed_and_finite_complete_state() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        decision=SimpleNamespace(
+            action="hold",
+            selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        ),
+        navigation_control_authority="route-fallback",
+        evaluated_target_position_m=Vector3(x=1.0, y=2.0, z=1.0),
+        command_position_m=Vector3(x=1.0, y=2.0, z=1.0),
+    )
+
+    assert not executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=SimpleNamespace(north_m_s=0.06, east_m_s=0.0, down_m_s=0.0),
+        tracking_recovery_active=False,
+    )
+    assert not executor._stationary_route_setpoint_is_complete(
+        command=command,
+        observed=SimpleNamespace(
+            north_m_s=float("nan"), east_m_s=0.0, down_m_s=0.0
+        ),
+        tracking_recovery_active=False,
+    )
+
+
+def test_controlled_landing_holds_xy_until_near_ground_handoff(monkeypatch) -> None:
+    executor = _load_executor()
+    monkeypatch.setattr(executor, "_CONTROLLED_LANDING_DESCENT_RATE_MPS", 20.0)
+    monkeypatch.setattr(executor, "_CONTROLLED_LANDING_STABLE_WINDOW_SECONDS", 0.01)
+
+    class Client:
+        def __init__(self) -> None:
+            self.commands: list[Any] = []
+
+        async def set_position_ned(self, setpoint) -> None:
+            self.commands.append(setpoint)
+
+        async def sample_position_velocity_ned(self, _timeout_seconds: float):
+            command = self.commands[-1]
+            return SimpleNamespace(
+                north_m=command.north_m,
+                east_m=command.east_m,
+                down_m=command.down_m,
+                north_m_s=0.0,
+                east_m_s=0.0,
+                down_m_s=0.0,
+            )
+
+    client = Client()
+    base = SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values))
+    terminal = SimpleNamespace(north_m=1.25, east_m=-2.5, down_m=-0.92, yaw_deg=37.0)
+    timing: dict[str, Any] = {}
+
+    handoff = asyncio.run(
+        executor._controlled_offboard_landing_handoff(
+            base=base,
+            client=client,
+            landing_setpoint=terminal,
+            rate_hz=100.0,
+            timeout_seconds=1.0,
+            timing=timing,
+        )
+    )
+
+    assert len(client.commands) >= 2
+    assert all(command.north_m == pytest.approx(1.25) for command in client.commands)
+    assert all(command.east_m == pytest.approx(-2.5) for command in client.commands)
+    assert handoff.down_m == pytest.approx(-executor._CONTROLLED_LANDING_HANDOFF_HEIGHT_M)
+    assert timing["controlled_offboard_landing"]["status"] == "handoff-ready"
+
+
+def test_controlled_landing_timeout_scales_with_route_altitude() -> None:
+    executor = _load_executor()
+    terminal = SimpleNamespace(down_m=-5.52)
+
+    timeout_seconds = executor._controlled_landing_handoff_timeout_seconds(
+        landing_setpoint=terminal,
+        landing_timeout_seconds=90.0,
+    )
+
+    assert timeout_seconds > 30.0
+    assert timeout_seconds < 40.0
+    with pytest.raises(ValueError, match="cannot fund controlled descent"):
+        executor._controlled_landing_handoff_timeout_seconds(
+            landing_setpoint=terminal,
+            landing_timeout_seconds=15.0,
+        )
 
 
 def test_model_safety_lease_rejects_a_previous_navigation_goal_epoch() -> None:
@@ -1533,7 +1725,7 @@ def test_required_local_safety_staleness_holds_measured_position_until_refresh(
         calls += 1
         if calls == 1:
             return None
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(action="continue"),
             estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
         )
@@ -1603,7 +1795,7 @@ def test_required_local_safety_refresh_hold_latches_first_measured_position(
         command_calls += 1
         if command_calls <= 2:
             return None
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(action="continue"),
             estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
         )
@@ -1677,19 +1869,19 @@ def test_local_safety_hold_latches_first_repair_position(tmp_path: Path) -> None
     )
     commands = iter(
         (
-            SimpleNamespace(
+            _safety_command_fixture(
                 decision=hold_decision,
                 command_position_m=Vector3(x=1.0, y=2.0, z=1.2),
                 estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
                 observation_sequence=1,
             ),
-            SimpleNamespace(
+            _safety_command_fixture(
                 decision=hold_decision,
                 command_position_m=Vector3(x=5.0, y=6.0, z=2.0),
                 estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
                 observation_sequence=2,
             ),
-            SimpleNamespace(
+            _safety_command_fixture(
                 decision=SimpleNamespace(action="continue"),
                 estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
             ),
@@ -1753,7 +1945,7 @@ def test_required_local_safety_startup_holds_measured_position_until_first_comma
         calls += 1
         if calls == 1:
             return None
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(action="continue"),
             estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
         )
@@ -1818,7 +2010,7 @@ def test_established_local_safety_missing_file_brakes_and_recovers_within_grace(
         calls += 1
         if calls == 1:
             return None
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(action="continue"),
             estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
             tracking_recovery_active=False,
@@ -1951,7 +2143,7 @@ def test_runtime_stale_default_holds_through_measured_publication_jitter(
         calls += 1
         if calls == 1:
             return None
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(action="continue"),
             estimator_to_world_position_offset_m=Vector3(x=0.0, y=0.0, z=0.0),
             tracking_recovery_active=False,
@@ -2643,12 +2835,46 @@ def test_schedule_velocity_feedforward_is_bounded_and_zero_during_recovery() -> 
     ) == (0.0, 0.0, 0.0)
 
 
+def test_route_velocity_feedforward_is_suppressed_when_vehicle_leads_reference() -> None:
+    executor = _load_executor()
+    planned = SimpleNamespace(north_m=1.0, east_m=0.0, down_m=-1.0)
+    observed = SimpleNamespace(north_m=1.08, east_m=0.0, down_m=-1.0)
+
+    velocity, suppressed, lead_m = executor._lead_aware_route_velocity_feedforward(
+        observed=observed,
+        planned_setpoint=planned,
+        planned_velocity_ned_mps=(0.5, 0.0, 0.0),
+        estimator_offset_world_enu_m=Vector3(x=0.0, y=0.0, z=0.0),
+    )
+
+    assert velocity == (0.0, 0.0, 0.0)
+    assert suppressed is True
+    assert lead_m == pytest.approx(0.08)
+
+
+def test_route_velocity_feedforward_remains_available_behind_reference() -> None:
+    executor = _load_executor()
+    planned = SimpleNamespace(north_m=1.0, east_m=0.0, down_m=-1.0)
+    observed = SimpleNamespace(north_m=0.92, east_m=0.0, down_m=-1.0)
+
+    velocity, suppressed, lead_m = executor._lead_aware_route_velocity_feedforward(
+        observed=observed,
+        planned_setpoint=planned,
+        planned_velocity_ned_mps=(0.5, 0.0, 0.0),
+        estimator_offset_world_enu_m=Vector3(x=0.0, y=0.0, z=0.0),
+    )
+
+    assert velocity == (0.5, 0.0, 0.0)
+    assert suppressed is False
+    assert lead_m == 0.0
+
+
 def test_model_required_continue_applies_model_command_instead_of_route_setpoint(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
-    command = SimpleNamespace(
-        valid_until_unix_ms=int(datetime.now(UTC).timestamp() * 1000) + 10_000,
+    command = _safety_command_fixture(
+        valid_until_unix_ms=int(datetime.now(UTC).timestamp() * 1000) + 1_500,
         decision=SimpleNamespace(
             action="continue",
             threat_obstacle_id=None,
@@ -2663,6 +2889,8 @@ def test_model_required_continue_applies_model_command_instead_of_route_setpoint
         model_navigation_authorized=True,
         model_call_id="call-authority",
         model_selected_candidate_id="candidate-authority",
+        navigation_goal_id="goal-authority",
+        evaluated_target_position_m=Vector3(x=9.0, y=8.0, z=3.0),
         requested_control_intent=None,
         model_path_sha256="b" * 64,
         model_authority_reason="model-path-lease-active",
@@ -2747,10 +2975,10 @@ def test_model_authority_gap_holds_live_px4_position_not_corrected_gazebo_pose(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
-    command = SimpleNamespace(
+    command = _safety_command_fixture(
         decision=SimpleNamespace(
             action="hold",
-            control_source="route-target",
+            control_source="deterministic-brake",
             threat_obstacle_id=None,
             minimum_predicted_clearance_m=0.3,
             selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
@@ -2758,18 +2986,18 @@ def test_model_authority_gap_holds_live_px4_position_not_corrected_gazebo_pose(
         # Deliberately far from the measured PX4 position. A fail-closed model
         # gap must never fly toward this separately corrected Gazebo value.
         command_position_m=Vector3(x=20.0, y=30.0, z=40.0),
-        estimator_to_world_position_offset_m=Vector3(x=1.0, y=1.0, z=1.0),
+        estimator_to_world_position_offset_m=Vector3(x=0.5, y=0.5, z=0.5),
         observation_sequence=12,
         navigation_control_authority="model-required",
         model_navigation_authorized=False,
         model_call_id=None,
         model_selected_candidate_id=None,
         model_path_sha256=None,
-            model_authority_reason="model-lease-not-established",
-            requested_control_intent=None,
+        model_authority_reason="model-lease-not-established",
+        requested_control_intent=None,
         # A runtime command always carries its immutable input deadline.
         # Keep this hold-position fixture valid without bypassing that field.
-        valid_until_unix_ms=int(datetime.now(UTC).timestamp() * 1000) + 60_000,
+        valid_until_unix_ms=int(datetime.now(UTC).timestamp() * 1000) + 1_500,
     )
     executor._read_local_safety_command = lambda _args: command
 
@@ -3832,7 +4060,7 @@ def test_depth_worker_publishes_safety_command_before_model_orchestration() -> N
 
     command_publish = loop.index("_atomic_json(args.command, command.model_dump")
     early_poll = loop.index("completed_model_cycle = _poll_ready_navigation_cycle(")
-    directive = loop.index("model_directive = model_navigation.controller_directive(")
+    directive = loop.index("model_directive, now_unix_ms = _current_navigation_directive(")
     model_poll = loop.index("completed_model_cycle if early_model_poll else")
     rgb_encode = loop.index("model_image_cache.prepare(")
 

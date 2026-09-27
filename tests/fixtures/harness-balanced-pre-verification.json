@@ -1,0 +1,1599 @@
+{
+  "activated_at": "2026-08-27T08:02:21.614286+00:00",
+  "applies_next_run": true,
+  "candidate": {
+    "base_revision": 0,
+    "edges": [
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.request-ingest:control.out->mission.context-prepare:control.in.mission-request-ingest",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.request-ingest",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.context-prepare",
+          "port_id": "control.in.mission-request-ingest"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.context-prepare:control.out->mission.intent-parse:control.in.mission-context-prepare",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.context-prepare",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.intent-parse",
+          "port_id": "control.in.mission-context-prepare"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.intent-parse:control.out->mission.intent-review-1:control.in.mission-intent-parse",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.intent-parse",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.intent-review-1",
+          "port_id": "control.in.mission-intent-parse"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.intent-review-1:control.out->mission.intent-consensus:control.in.mission-intent-review-1",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.intent-review-1",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.intent-consensus",
+          "port_id": "control.in.mission-intent-review-1"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.intent-consensus:control.out->mission.contract-freeze:control.in.mission-intent-consensus",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.intent-consensus",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.contract-freeze",
+          "port_id": "control.in.mission-intent-consensus"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.contract-freeze:control.out->mission.tool-advice:control.in.mission-contract-freeze",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.contract-freeze",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.tool-advice",
+          "port_id": "control.in.mission-contract-freeze"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.contract-freeze:control.out->mission.task-decompose:control.in.mission-contract-freeze",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.contract-freeze",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.task-decompose",
+          "port_id": "control.in.mission-contract-freeze"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.tool-advice:control.out->mission.task-decompose:control.in.mission-tool-advice",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.tool-advice",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.task-decompose",
+          "port_id": "control.in.mission-tool-advice"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.task-decompose:control.out->mission.semantic-plan:control.in.mission-task-decompose",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.task-decompose",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.semantic-plan",
+          "port_id": "control.in.mission-task-decompose"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.semantic-plan:control.out->mission.route-resolve:control.in.mission-semantic-plan",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.semantic-plan",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.route-resolve",
+          "port_id": "control.in.mission-semantic-plan"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.route-resolve:control.out->mission.clearance-gate:control.in.mission-route-resolve",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.route-resolve",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.clearance-gate",
+          "port_id": "control.in.mission-route-resolve"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.clearance-gate:control.out->mission.track-export:control.in.mission-clearance-gate",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.clearance-gate",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.track-export",
+          "port_id": "control.in.mission-clearance-gate"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.track-export:control.out->mission.plan-evaluation:control.in.mission-track-export",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.track-export",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.plan-evaluation",
+          "port_id": "control.in.mission-track-export"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.plan-evaluation:control.out->mission.plan-review:control.in.mission-plan-evaluation",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.plan-evaluation",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.plan-review",
+          "port_id": "control.in.mission-plan-evaluation"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.plan-review:control.out->mission.runtime-checkpoints:control.in.mission-plan-review",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.plan-review",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.runtime-checkpoints",
+          "port_id": "control.in.mission-plan-review"
+        },
+        "transform_plugin_id": null
+      },
+      {
+        "binding_mode": "control",
+        "edge_id": "mission.runtime-checkpoints:control.out->mission.evidence-finalize:control.in.mission-runtime-checkpoints",
+        "schema_ref": "dronedream.harness-control.v1",
+        "schema_version": "dronedream.harness-edge-binding.v1",
+        "source": {
+          "node_id": "mission.runtime-checkpoints",
+          "port_id": "control.out"
+        },
+        "target": {
+          "node_id": "mission.evidence-finalize",
+          "port_id": "control.in.mission-runtime-checkpoints"
+        },
+        "transform_plugin_id": null
+      }
+    ],
+    "layout": {
+      "collapsed_node_ids": [],
+      "positions": {
+        "mission.clearance-gate": {
+          "pinned": false,
+          "x": 3000.0,
+          "y": 0.0
+        },
+        "mission.context-prepare": {
+          "pinned": false,
+          "x": 300.0,
+          "y": 0.0
+        },
+        "mission.contract-freeze": {
+          "pinned": false,
+          "x": 1500.0,
+          "y": 0.0
+        },
+        "mission.evidence-finalize": {
+          "pinned": false,
+          "x": 4500.0,
+          "y": 0.0
+        },
+        "mission.intent-consensus": {
+          "pinned": false,
+          "x": 1200.0,
+          "y": 0.0
+        },
+        "mission.intent-parse": {
+          "pinned": false,
+          "x": 600.0,
+          "y": 0.0
+        },
+        "mission.intent-review-1": {
+          "pinned": false,
+          "x": 900.0,
+          "y": 0.0
+        },
+        "mission.plan-evaluation": {
+          "pinned": false,
+          "x": 3600.0,
+          "y": 0.0
+        },
+        "mission.plan-review": {
+          "pinned": false,
+          "x": 3900.0,
+          "y": 0.0
+        },
+        "mission.request-ingest": {
+          "pinned": false,
+          "x": 0.0,
+          "y": 0.0
+        },
+        "mission.route-resolve": {
+          "pinned": false,
+          "x": 2700.0,
+          "y": 0.0
+        },
+        "mission.runtime-checkpoints": {
+          "pinned": false,
+          "x": 4200.0,
+          "y": 0.0
+        },
+        "mission.semantic-plan": {
+          "pinned": false,
+          "x": 2400.0,
+          "y": 0.0
+        },
+        "mission.task-decompose": {
+          "pinned": false,
+          "x": 2100.0,
+          "y": 0.0
+        },
+        "mission.tool-advice": {
+          "pinned": false,
+          "x": 1800.0,
+          "y": 0.0
+        },
+        "mission.track-export": {
+          "pinned": false,
+          "x": 3300.0,
+          "y": 0.0
+        }
+      },
+      "selected_node_id": null,
+      "viewport": {
+        "x": 0.0,
+        "y": 0.0,
+        "zoom": 1.0
+      }
+    },
+    "loops": [],
+    "maximum_parallelism": 4,
+    "metadata": {
+      "review_strategy": "single-specialist",
+      "visual_editor": "dronedream.harness-designer.v1"
+    },
+    "name": "Balanced closed loop",
+    "nodes": [
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.request-ingest",
+        "handler_id": "core.request-ingest",
+        "icon": "input",
+        "input_ports": [],
+        "node_id": "mission.request-ingest",
+        "node_kind": "input",
+        "output_key": "request_context",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "request"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Task input",
+        "title_zh": "接收任务"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.context-prepare",
+        "handler_id": "core.context-prepare",
+        "icon": "transform",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-request-ingest",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.context-prepare",
+        "node_kind": "transform",
+        "output_key": "context",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": true,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "request_context"
+        ],
+        "runtime_node_kind": "plugin",
+        "title": "Context preparation",
+        "title_zh": "准备上下文"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.intent-parse",
+        "handler_id": "core.intent-parse",
+        "icon": "model_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-context-prepare",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.intent-parse",
+        "node_kind": "model_call",
+        "output_key": "intent",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "context"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Intent parsing",
+        "title_zh": "解析意图"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": true,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.intent-review-1",
+        "handler_id": "core.intent-review",
+        "icon": "model_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-intent-parse",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.intent-review-1",
+        "node_kind": "model_call",
+        "output_key": "intent_review_1",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 1,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "intent"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Intent review 1",
+        "title_zh": "意图审查 1"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.intent-consensus",
+        "handler_id": "core.intent-consensus",
+        "icon": "safety_barrier",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-intent-review-1",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.intent-consensus",
+        "node_kind": "safety_barrier",
+        "output_key": "accepted_intent",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [],
+        "runtime_node_kind": "barrier",
+        "title": "Intent consensus",
+        "title_zh": "意图共识"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.contract-freeze",
+        "handler_id": "core.contract-freeze",
+        "icon": "safety_barrier",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-intent-consensus",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.contract-freeze",
+        "node_kind": "safety_barrier",
+        "output_key": "contract",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "accepted_intent"
+        ],
+        "runtime_node_kind": "barrier",
+        "title": "Mission contract",
+        "title_zh": "冻结任务合同"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node",
+            "remove_node",
+            "replace_node"
+          ],
+          "branchable": false,
+          "protected": false,
+          "removable": true,
+          "replaceable": true,
+          "wrappable_in_loop": true
+        },
+        "category": "optional",
+        "descriptor_id": "mission.tool-advice",
+        "handler_id": "core.tool-advice",
+        "icon": "tool_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-contract-freeze",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.tool-advice",
+        "node_kind": "tool_call",
+        "output_key": "tool_advice",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "isolate",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 1,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "contract"
+        ],
+        "runtime_node_kind": "plugin",
+        "title": "Tool advisor",
+        "title_zh": "工具顾问"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.task-decompose",
+        "handler_id": "core.task-decompose",
+        "icon": "model_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-contract-freeze",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          },
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-tool-advice",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.task-decompose",
+        "node_kind": "model_call",
+        "output_key": "task_graph",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "contract"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Task decomposition",
+        "title_zh": "拆分任务"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.semantic-plan",
+        "handler_id": "core.semantic-plan",
+        "icon": "model_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-task-decompose",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.semantic-plan",
+        "node_kind": "model_call",
+        "output_key": "semantic_plan",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 3,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "task_graph"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Semantic planning",
+        "title_zh": "生成语义计划"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.route-resolve",
+        "handler_id": "core.route-resolve",
+        "icon": "tool_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-semantic-plan",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.route-resolve",
+        "node_kind": "tool_call",
+        "output_key": "route",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "semantic_plan"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Route resolution",
+        "title_zh": "求解路线"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.clearance-gate",
+        "handler_id": "core.clearance-gate",
+        "icon": "safety_barrier",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-route-resolve",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.clearance-gate",
+        "node_kind": "safety_barrier",
+        "output_key": "clearance",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "route"
+        ],
+        "runtime_node_kind": "barrier",
+        "title": "Clearance gate",
+        "title_zh": "净空安全门"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.track-export",
+        "handler_id": "core.track-export",
+        "icon": "transform",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-clearance-gate",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.track-export",
+        "node_kind": "transform",
+        "output_key": "track",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "clearance"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Track export",
+        "title_zh": "导出航迹"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node",
+            "remove_node",
+            "replace_node"
+          ],
+          "branchable": false,
+          "protected": false,
+          "removable": true,
+          "replaceable": true,
+          "wrappable_in_loop": true
+        },
+        "category": "optional",
+        "descriptor_id": "mission.plan-evaluation",
+        "handler_id": "core.plan-evaluation",
+        "icon": "stage",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-track-export",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.plan-evaluation",
+        "node_kind": "stage",
+        "output_key": "evaluation",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "isolate",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "track"
+        ],
+        "runtime_node_kind": "plugin",
+        "title": "Plan evaluation",
+        "title_zh": "评估计划"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.plan-review",
+        "handler_id": "core.plan-review",
+        "icon": "model_call",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-plan-evaluation",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.plan-review",
+        "node_kind": "model_call",
+        "output_key": "plan_review",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "track"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Plan review",
+        "title_zh": "审查计划"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.runtime-checkpoints",
+        "handler_id": "core.runtime-checkpoints",
+        "icon": "stage",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-plan-review",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.runtime-checkpoints",
+        "node_kind": "stage",
+        "output_key": "checkpoints",
+        "output_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 64,
+            "port_id": "control.out",
+            "required": false,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "plan_review"
+        ],
+        "runtime_node_kind": "core",
+        "title": "Runtime checkpoints",
+        "title_zh": "生成运行检查点"
+      },
+      {
+        "capabilities": {
+          "allowed_operations": [
+            "move_node",
+            "inspect",
+            "dry_run",
+            "update_node"
+          ],
+          "branchable": false,
+          "protected": true,
+          "removable": false,
+          "replaceable": false,
+          "wrappable_in_loop": false
+        },
+        "category": "mission-stage",
+        "descriptor_id": "mission.evidence-finalize",
+        "handler_id": "core.evidence-finalize",
+        "icon": "output",
+        "input_ports": [
+          {
+            "cardinality": "event",
+            "confidentiality": "task",
+            "maximum_connections": 1,
+            "port_id": "control.in.mission-runtime-checkpoints",
+            "required": true,
+            "schema_ref": "dronedream.harness-control.v1"
+          }
+        ],
+        "node_id": "mission.evidence-finalize",
+        "node_kind": "output",
+        "output_key": "prepared_mission",
+        "output_ports": [],
+        "plugin": null,
+        "policy": {
+          "authority": "plan",
+          "cacheable": false,
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "maximum_model_calls": null,
+          "maximum_tool_calls": null,
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        "required_inputs": [
+          "checkpoints"
+        ],
+        "runtime_node_kind": "barrier",
+        "title": "Evidence finalization",
+        "title_zh": "固化验收证据"
+      }
+    ],
+    "profile_id": "harness.profile-balanced",
+    "schema_version": "dronedream.harness-topology-candidate.v2",
+    "topology_id": "topology.balanced-closed-loop"
+  },
+  "created_at": "2026-08-27T08:02:21.614286+00:00",
+  "operations": [],
+  "parent_revision": null,
+  "revision": 1,
+  "schema_version": "dronedream.harness-revision.v1",
+  "state": "active",
+  "validation": {
+    "compiled_topology": {
+      "maximum_parallelism": 4,
+      "metadata": {
+        "bounded_loops": [],
+        "profile_id": "harness.profile-balanced",
+        "review_strategy": "single-specialist",
+        "visual_editor": "dronedream.harness-designer.v1"
+      },
+      "name": "Balanced closed loop",
+      "nodes": [
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.request-ingest",
+          "node_id": "mission.request-ingest",
+          "node_kind": "core",
+          "output_key": "request_context",
+          "required_inputs": [
+            "request"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": true,
+          "depends_on": [
+            "mission.request-ingest"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.context-prepare",
+          "node_id": "mission.context-prepare",
+          "node_kind": "plugin",
+          "output_key": "context",
+          "required_inputs": [
+            "request_context"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.context-prepare"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.intent-parse",
+          "node_id": "mission.intent-parse",
+          "node_kind": "core",
+          "output_key": "intent",
+          "required_inputs": [
+            "context"
+          ],
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.intent-parse"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.intent-review",
+          "node_id": "mission.intent-review-1",
+          "node_kind": "core",
+          "output_key": "intent_review_1",
+          "required_inputs": [
+            "intent"
+          ],
+          "retry_limit": 1,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.intent-review-1"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.intent-consensus",
+          "node_id": "mission.intent-consensus",
+          "node_kind": "barrier",
+          "output_key": "accepted_intent",
+          "required_inputs": [],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.intent-consensus"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.contract-freeze",
+          "node_id": "mission.contract-freeze",
+          "node_kind": "barrier",
+          "output_key": "contract",
+          "required_inputs": [
+            "accepted_intent"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.contract-freeze"
+          ],
+          "failure_mode": "isolate",
+          "fallback_handler_id": null,
+          "handler_id": "core.tool-advice",
+          "node_id": "mission.tool-advice",
+          "node_kind": "plugin",
+          "output_key": "tool_advice",
+          "required_inputs": [
+            "contract"
+          ],
+          "retry_limit": 1,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.contract-freeze",
+            "mission.tool-advice"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.task-decompose",
+          "node_id": "mission.task-decompose",
+          "node_kind": "core",
+          "output_key": "task_graph",
+          "required_inputs": [
+            "contract"
+          ],
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.task-decompose"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.semantic-plan",
+          "node_id": "mission.semantic-plan",
+          "node_kind": "core",
+          "output_key": "semantic_plan",
+          "required_inputs": [
+            "task_graph"
+          ],
+          "retry_limit": 3,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.semantic-plan"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.route-resolve",
+          "node_id": "mission.route-resolve",
+          "node_kind": "core",
+          "output_key": "route",
+          "required_inputs": [
+            "semantic_plan"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.route-resolve"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.clearance-gate",
+          "node_id": "mission.clearance-gate",
+          "node_kind": "barrier",
+          "output_key": "clearance",
+          "required_inputs": [
+            "route"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.clearance-gate"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.track-export",
+          "node_id": "mission.track-export",
+          "node_kind": "core",
+          "output_key": "track",
+          "required_inputs": [
+            "clearance"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.track-export"
+          ],
+          "failure_mode": "isolate",
+          "fallback_handler_id": null,
+          "handler_id": "core.plan-evaluation",
+          "node_id": "mission.plan-evaluation",
+          "node_kind": "plugin",
+          "output_key": "evaluation",
+          "required_inputs": [
+            "track"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.plan-evaluation"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.plan-review",
+          "node_id": "mission.plan-review",
+          "node_kind": "core",
+          "output_key": "plan_review",
+          "required_inputs": [
+            "track"
+          ],
+          "retry_limit": 2,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.plan-review"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.runtime-checkpoints",
+          "node_id": "mission.runtime-checkpoints",
+          "node_kind": "core",
+          "output_key": "checkpoints",
+          "required_inputs": [
+            "plan_review"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        },
+        {
+          "authority": "plan",
+          "cacheable": false,
+          "depends_on": [
+            "mission.runtime-checkpoints"
+          ],
+          "failure_mode": "fail-closed",
+          "fallback_handler_id": null,
+          "handler_id": "core.evidence-finalize",
+          "node_id": "mission.evidence-finalize",
+          "node_kind": "barrier",
+          "output_key": "prepared_mission",
+          "required_inputs": [
+            "checkpoints"
+          ],
+          "retry_limit": 0,
+          "timeout_seconds": 30.0
+        }
+      ],
+      "schema_version": "dronedream.harness-topology.v1",
+      "topology_id": "topology.balanced-closed-loop"
+    },
+    "issues": [],
+    "layout_sha256": "3225d4346fcc0a13fe984daa22c3b4619d7816187e7a49b359370da22d9a943e",
+    "semantic_sha256": "e088b580ca40b3c6da72bc89f523065deb49dc8596b461671d865dad3df99c5e",
+    "valid": true
+  }
+}

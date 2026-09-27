@@ -4,17 +4,18 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
-import stat
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from tempfile import mkdtemp
 
 from dronedream_agent_core.asset_package_storage import publish_asset_file
 from dronedream_agent_core.local_vision_training import (
+    LOCAL_VISION_ARCHITECTURE,
+    LOCAL_VISION_EMBEDDING_SUPERVISION,
+    LOCAL_VISION_SPLIT_METHOD,
     LocalVisionTrainingConfig,
     LocalVisionTrainingSample,
     benchmark_local_vision_onnx,
@@ -24,12 +25,19 @@ from dronedream_agent_core.local_vision_training import (
     export_local_vision_onnx,
     local_vision_feature_count,
     local_vision_semantic_class_weights,
+    local_vision_training_device,
     resolve_local_vision_samples,
     train_local_vision_model,
 )
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, hash_plugin_file
 from dronedream_agent_core.runtime_control_io import publish_runtime_json
-from dronedream_plugin_sdk.protocol import MAX_MESSAGE_BYTES, decode_json, encode_json
+from dronedream_agent_core.training.vision_initialization import VISION_INITIALIZATIONS
+from dronedream_agent_core.training.vision_manifest import read_vision_manifest
+from dronedream_agent_core.training.vision_session import (
+    TrainingBudgetReached,
+    VisionTrainingSession,
+)
+from dronedream_plugin_sdk.protocol import encode_json
 
 MAX_DATASET_BYTES = 256 * 1024**2
 MAX_SAMPLES = 100_000
@@ -43,45 +51,7 @@ MAX_MODEL_BYTES = 256 * 1024**2
 # 输出：
 #   samples、digest：实际读取的类型化样本及同一字节流的摘要。
 def _samples(path: Path) -> tuple[list[LocalVisionTrainingSample], str]:
-    check_plain_plugin_path(path)
-    before = path.stat()
-    if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_DATASET_BYTES:
-        raise ValueError("LOCAL_VISION_DATASET_SIZE_OR_TYPE_INVALID")
-    samples = []
-    hasher = hashlib.sha256()
-    total = 0
-    with path.open("rb") as stream:
-        opened = os.fstat(stream.fileno())
-        if not os.path.samestat(before, opened) or before.st_size != opened.st_size:
-            raise ValueError("LOCAL_VISION_DATASET_CHANGED")
-        # 逐行读取本身带上限，不先为异常长行分配任意大小的内存。
-        while line := stream.readline(MAX_MESSAGE_BYTES + 1):
-            total += len(line)
-            if total > min(opened.st_size, MAX_DATASET_BYTES):
-                raise ValueError("LOCAL_VISION_DATASET_CHANGED_OR_OVERSIZED")
-            if len(line) > MAX_MESSAGE_BYTES or not line.endswith(b"\n"):
-                raise ValueError("LOCAL_VISION_DATASET_LINE_INVALID")
-            hasher.update(line)
-            if not line.strip():
-                continue
-            if len(samples) >= MAX_SAMPLES:
-                raise ValueError("LOCAL_VISION_DATASET_SAMPLE_BUDGET_EXCEEDED")
-            samples.append(LocalVisionTrainingSample.model_validate(decode_json(line)))
-        after = os.fstat(stream.fileno())
-    check_plain_plugin_path(path)
-    current = path.stat()
-    if (
-        total != opened.st_size
-        or after.st_size != opened.st_size
-        or after.st_mtime_ns != opened.st_mtime_ns
-        or not os.path.samestat(after, current)
-        or current.st_size != after.st_size
-        or current.st_mtime_ns != after.st_mtime_ns
-    ):
-        raise ValueError("LOCAL_VISION_DATASET_CHANGED")
-    if not samples:
-        raise ValueError("local vision dataset is empty")
-    digest = hasher.hexdigest()
+    samples, digest = read_vision_manifest(path)
     return samples, digest
 
 
@@ -119,7 +89,7 @@ def _verify_sources(manifests: tuple, datasets: tuple) -> None:
 # 输入：
 #   命令行参数：清单与制品路径、训练超参数、评测轮数和开发初始化开关。
 # 输出：
-#   exit_code：门控通过为 0，保留拒绝回执时为 1。
+#   exit_code：门控通过为 0，保留拒绝回执为 1，预算停止并保存检查点为 2。
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--training-root", type=Path, required=True)
@@ -130,6 +100,16 @@ def main() -> int:
     parser.add_argument("--training-receipt", type=Path, required=True)
     parser.add_argument("--width", type=int, default=224)
     parser.add_argument("--height", type=int, default=128)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--pretrained-source", choices=VISION_INITIALIZATIONS,
+                        default="coco-voc-segmentation")
+    parser.add_argument("--pretrained-weights", type=Path)
+    parser.add_argument("--pretrained-sha256")
+    parser.add_argument("--run-directory", type=Path)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--checkpoint-batches", type=int, default=100)
+    parser.add_argument("--max-training-seconds", type=float, default=3600.0)
+    parser.add_argument("--early-stop-patience", type=int, default=5)
     parser.add_argument("--embedding-feature-count", type=int, default=128)
     parser.add_argument("--epoch-count", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -143,6 +123,16 @@ def main() -> int:
         help="Development smoke test only; an uninitialized backbone cannot be admitted.",
     )
     args = parser.parse_args()
+    if args.resume and args.run_directory is None:
+        raise ValueError("LOCAL_VISION_RESUME_DIRECTORY_REQUIRED")
+    if (args.pretrained_weights is None) != (args.pretrained_sha256 is None):
+        raise ValueError("VISION_PRETRAINED_FILE_BINDING_REQUIRED")
+    if args.pretrained_weights is not None:
+        if args.allow_uninitialized_backbone or args.pretrained_source != "coco-voc-segmentation":
+            raise ValueError("VISION_PRETRAINED_FILE_SOURCE_MISMATCH")
+        file_hash = hash_plugin_file(args.pretrained_weights, limit=MAX_MODEL_BYTES)
+        if file_hash != args.pretrained_sha256:
+            raise ValueError("VISION_PRETRAINED_FILE_HASH_MISMATCH")
     # 固定绝对路径但不解析掉符号链接，所有检查先于依赖加载和可能的权重下载。
     for name in (
         "training_root",
@@ -175,8 +165,16 @@ def main() -> int:
     validation_images = {sample.image_sha256 for sample in validation_samples}
     if training_images & validation_images:
         raise RuntimeError("LOCAL_VISION_IMAGE_CONTENT_SPLIT_OVERLAP")
+    training_groups = {sample.scene_group_id for sample in training_samples
+                       if sample.scene_group_id is not None}
+    validation_groups = {sample.scene_group_id for sample in validation_samples
+                         if sample.scene_group_id is not None}
+    if training_groups & validation_groups:
+        raise RuntimeError("LOCAL_VISION_SPATIAL_GROUP_SPLIT_OVERLAP")
 
     config = LocalVisionTrainingConfig(
+        device=args.device,
+        pretrained_source=args.pretrained_source,
         width=args.width,
         height=args.height,
         embedding_feature_count=args.embedding_feature_count,
@@ -186,14 +184,72 @@ def main() -> int:
         random_seed=args.random_seed,
         freeze_backbone_epochs=args.freeze_backbone_epochs,
     )
+    # 在可能下载预训练权重之前确认训练设备；不能把 CUDA 请求静默降为 CPU。
+    local_vision_training_device(config)
     training = resolve_local_vision_samples(args.training_root, training_samples)
     validation = resolve_local_vision_samples(args.validation_root, validation_samples)
     semantic_class_weights = local_vision_semantic_class_weights(training, config)
-    model = build_local_vision_model(
-        config,
-        pretrained_backbone=not args.allow_uninitialized_backbone,
-    )
-    model, training_metrics = train_local_vision_model(model, training, config)
+    session = None
+    if args.run_directory is not None:
+        # 使用真实训练实现摘要绑定恢复点；修改实现之后不复用旧优化器状态。
+        import dronedream_agent_core.local_vision_training as training_module
+        import dronedream_agent_core.training.vision_initialization as initialization_module
+        import dronedream_agent_core.training.vision_manifest as manifest_module
+        import dronedream_agent_core.training.vision_session as session_module
+
+        binding = {
+            "architecture": LOCAL_VISION_ARCHITECTURE, "config": config.model_dump(mode="json"),
+            "training_sha256": training_digest, "validation_sha256": validation_digest,
+            "allow_uninitialized": args.allow_uninitialized_backbone,
+            "pretrained_file_sha256": args.pretrained_sha256,
+            "patience": args.early_stop_patience,
+            "implementation": {
+                **{module.__name__: hash_plugin_file(Path(module.__file__), limit=1024**2)
+                   for module in (training_module, session_module, initialization_module,
+                                  manifest_module)},
+                "entrypoint": hash_plugin_file(Path(__file__), limit=1024**2),
+            },
+        }
+        session = VisionTrainingSession(args.run_directory, binding, resume=args.resume,
+            checkpoint_batches=args.checkpoint_batches, max_seconds=args.max_training_seconds,
+            patience=args.early_stop_patience)
+    model = build_local_vision_model(config,
+        pretrained_backbone=not args.allow_uninitialized_backbone and not args.resume,
+        weights_path=args.pretrained_weights if not args.resume else None,
+        weights_sha256=args.pretrained_sha256 if not args.resume else None)
+    try:
+        with session.writer() if session else nullcontext():
+            if session is None:
+                model, training_metrics = train_local_vision_model(model, training, config)
+            else:
+                model, training_metrics = train_local_vision_model(model, training, config,
+                    session=session, validation_samples=validation)
+            # 验证、导出与回执发布仍属于本次作业，不能提前释放锁让恢复进程抢跑。
+            return _publish_training_result(args, model, config, (training, validation),
+                                            manifests, training_metrics, semantic_class_weights,
+                                            session)
+    except TrainingBudgetReached:
+        print(json.dumps({"status": "paused-at-completed-batch", "checkpoint": session.last_record,
+                          "training_accepted": False, "flight_qualification_granted": False}))
+        return 2
+
+
+# 功能：
+#   在调用者持有作业锁期间评估和导出完成的网络，复查来源后发布模型及最后回执。
+# 输入：
+#   args、model、config：已校验的输出参数、完成的网络及训练配置。
+#   datasets、manifests：训练和验证样本路径及原始清单摘要。
+#   training_metrics、semantic_class_weights、session：训练指标、类别权重及可选会话。
+# 输出：
+#   exit_code：通过全部模型门控为零；拒绝回执为一，不授予飞行资格。
+def _publish_training_result(args, model, config, datasets, manifests, training_metrics,
+                             semantic_class_weights, session):
+    training, validation = datasets
+    training_samples = [entry[0] for entry in training]
+    validation_samples = [entry[0] for entry in validation]
+    training_digest, validation_digest = (entry[1] for entry in manifests)
+    training_flights = {sample.flight_id for sample in training_samples}
+    validation_flights = {sample.flight_id for sample in validation_samples}
     validation_metrics = evaluate_local_vision_model(model, validation, config)
     check_plain_plugin_path(args.output_model)
     args.output_model.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +272,12 @@ def main() -> int:
         if type(latency) not in (int, float) or not math.isfinite(latency) or latency < 0:
             raise ValueError("LOCAL_VISION_BENCHMARK_LATENCY_INVALID")
         issues = []
+        for split_name, samples in (("TRAINING", training_samples),
+                                     ("VALIDATION", validation_samples)):
+            coverage = [sum([*sample.scene_target_weights, *sample.quality_target_weights][i] > 0
+                            for sample in samples) for i in range(10)]
+            if any(count == 0 for count in coverage):
+                issues.append(f"LOCAL_VISION_{split_name}_AUXILIARY_SUPERVISION_MISSING")
         if args.allow_uninitialized_backbone:
             issues.append("LOCAL_VISION_BACKBONE_UNINITIALIZED")
         if validation_metrics.sample_count < 20:
@@ -240,7 +302,8 @@ def main() -> int:
             or validation_metrics.semantic_mean_iou < 0.5
         ):
             issues.append("LOCAL_VISION_SEMANTIC_MEAN_IOU_TOO_LOW")
-        critical_class_ious = validation_metrics.semantic_class_iou[3:]
+        # 背景以外的所有类别都直接影响导航；平均 IoU 不能掩盖障碍或可通行面的失效。
+        critical_class_ious = validation_metrics.semantic_class_iou[1:]
         if any(value is None or value < 0.3 for value in critical_class_ious):
             issues.append("LOCAL_VISION_CRITICAL_SEMANTIC_CLASS_IOU_TOO_LOW")
         if validation_metrics.traversability_mean_absolute_error > 0.2:
@@ -252,16 +315,20 @@ def main() -> int:
         if latency > 100.0:
             issues.append("LOCAL_VISION_CPU_P99_EXCEEDS_HARD_BOUND")
         receipt = {
-            "backbone_initialization": (
-                "uninitialized-development-only"
-                if args.allow_uninitialized_backbone
-                else "mobilenet-v3-large-imagenet1k-v2"
-            ),
+            "architecture": LOCAL_VISION_ARCHITECTURE,
+            "training_device": config.device,
+            "embedding_supervision": LOCAL_VISION_EMBEDDING_SUPERVISION,
+            "backbone_initialization": model.initialization_record["source"],
+            "initialization": model.initialization_record,
+            "session_checkpoint": session.last_record if session else None,
+            "selected_validation_loss": session.best_score if session else None,
             "training_data_sha256": training_digest,
             "validation_data_sha256": validation_digest,
             "training_flight_count": len(training_flights),
             "validation_flight_count": len(validation_flights),
-            "split_method": "held-out-complete-flight",
+            "split_method": LOCAL_VISION_SPLIT_METHOD,
+            "source_kinds": sorted({sample.source_kind for sample in training_samples}),
+            "spatial_group_disjoint": True,
             "config": config.model_dump(mode="json"),
             "parameter_count": count_trainable_parameters(model),
             "visual_feature_count": local_vision_feature_count(config.embedding_feature_count),

@@ -40,8 +40,15 @@ def test_actual_capture_replays_calibration_but_does_not_qualify_covariance(tmp_
     scan, kwargs = _scan()
     assert capture.record(scan, **kwargs)
     assert capture.close()["complete"]
+    world = tmp_path / 'world.sdf'
+    world.write_text('<sdf><world name="w"><model name="m"><static>true</static><link name="l">'
+                     '<visual name="wall"><pose>2.04 0 0 0 0 0</pose><geometry><box>'
+                     '<size>.08 20 20</size></box></geometry></visual></link></model></world></sdf>')
+    optical = dict(optical_world=world, expected_world_sha256=hashlib.sha256(world.read_bytes()).hexdigest())
+    with pytest.raises(ValueError, match='BOUND_OPTICAL_WORLD_REQUIRED'):
+        analyze_geometry_capture(capture.path, semantic, fit_translation=True)
     result = analyze_geometry_capture(capture.path, semantic, fit_translation=True,
-                                       check_perturbations=True)
+                                       check_perturbations=True, **optical)
     assert result["frame_count"] == 1
     assert result["frames"][0]["hit_count"] == 300
     assert result["frames"][0]["translation_normal_gram_eigenvalues"][0] < 1e-9
@@ -59,7 +66,7 @@ def test_actual_capture_replays_calibration_but_does_not_qualify_covariance(tmp_
     assert max(p["observed_shift_recovery_error_m"] for p in perturbations) < .00001
     assert max(p["unobserved_correction_change_m"] for p in perturbations) == 0
     joint = analyze_geometry_capture(capture.path, semantic, fit_joint_pose=True,
-                                     check_perturbations=True)
+                                     check_perturbations=True, **optical)
     assert joint["solver"] == "joint-position-attitude"
     assert "translation_fit" not in joint["frames"][0]
     assert joint["frames"][0]["pose_fit"]["usable_candidate"]

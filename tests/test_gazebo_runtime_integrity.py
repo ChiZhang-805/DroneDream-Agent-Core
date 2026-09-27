@@ -2,7 +2,9 @@
 
 import ast
 import inspect
+import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,29 @@ import pytest
 from dronedream_agent_core import contracts
 from dronedream_agent_core import gazebo_adapter as adapter
 from dronedream_plugin_sdk.protocol import encode_json
+
+
+# 功能：
+#   新运行在任何进程启动前具有合法阶段；旧运行的阶段和证据不能被重新初始化覆盖。
+# 输入：
+#   tmp_path：独占运行目录；existing：是否已有控制通道目录。
+# 输出：
+#   无。
+@pytest.mark.parametrize("existing", [False, True])
+def test_initial_phase_exists_before_observer_launch(tmp_path, existing):
+    run_dir = tmp_path / "run"
+    if existing:
+        (run_dir / "runtime-control").mkdir(parents=True)
+    adapter._initialize_run_directory(run_dir)
+    phase = run_dir / "runtime-phase.json"
+    assert json.loads(phase.read_bytes()) == {"phase": "PREFLIGHT", "checkpoint_id": None}
+    adapter._write_json(phase, {"phase": "TRACKING", "checkpoint_id": None})
+    with pytest.raises(FileExistsError):
+        adapter._initialize_run_directory(run_dir)
+    assert json.loads(phase.read_bytes())["phase"] == "TRACKING"
+    source = inspect.getsource(inspect.unwrap(adapter.run_px4_gazebo_track))
+    assert (source.index("_initialize_run_directory(run_dir)")
+            < source.index("native_preflight_marker ="))
 
 
 # 功能：
@@ -286,6 +311,20 @@ def test_current_diagnostics_and_authority_types():
 def test_executor_options_cannot_replace_frozen_inputs(arguments):
     with pytest.raises(ValueError):
         adapter._validated_executor_options(arguments)
+
+
+# 功能：验证本地模式准备是显式运行选项，不得借扩展参数替代源链路或关闭检查。
+# 输入：严格布尔及缺失来源；输出：固定选项或明确拒绝。
+def test_local_reference_prearm_requires_explicit_bound_source():
+    assert adapter._local_reference_arguments(False, None, None) == []
+    assert adapter._local_reference_arguments(True, Path('source.json'), 'px4-gz-sitl:test') == [
+        '--local-reference-prearm']
+    for enabled, channel, clock in ((1, None, None), ('true', None, None),
+                                  (True, None, 'clock'), (True, Path('source'), None)):
+        with pytest.raises(ValueError):
+            adapter._local_reference_arguments(enabled, channel, clock)
+    with pytest.raises(ValueError):
+        adapter._validated_executor_options(['--local-reference-prearm', 'true'])
 
 
 # 功能：

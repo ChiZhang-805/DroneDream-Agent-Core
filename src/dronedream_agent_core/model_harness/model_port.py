@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..contracts import ModelCallRecord, ModelRole
 from ..hashing import canonical_json, sha256_json
+from .progress import progress_sink, report_model_progress
 
 ProviderName: TypeAlias = str
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -121,7 +122,7 @@ class ProviderSettings:
                 name=name,
                 model=os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash",
                 api_key_env="DEEPSEEK_API_KEY",
-                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+                base_url=(os.getenv("DEEPSEEK_BASE_URL") or "").strip() or "https://api.deepseek.com",
                 api_style="chat-completions",
                 supports_image_input=False,
             )
@@ -131,7 +132,7 @@ class ProviderSettings:
                 name=name,
                 model=os.getenv("KIMI_MODEL") or "kimi-k2.6",
                 api_key_env="KIMI_API_KEY",
-                base_url=os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
+                base_url=(os.getenv("KIMI_BASE_URL") or "").strip() or "https://api.moonshot.ai/v1",
                 api_style="chat-completions",
                 supports_image_input=False,
             )
@@ -179,6 +180,15 @@ def _safe_attempt_diagnostic(error: Exception) -> str:
             }
             for entry in error.errors()
         ][:12]
+        # 只补充内建长度校验的整数边界，不转发输入内容或自定义错误正文。
+        # 仅返回 too_long 会让模型重复产生同样的超长数组。
+        for detail, entry in zip(details, error.errors()[:12]):
+            if detail["type"] in {"too_long", "too_short", "string_too_long", "string_too_short"}:
+                context = entry.get("ctx", {})
+                for name in ("max_length", "min_length"):
+                    bound = context.get(name)
+                    if type(bound) is int and 0 <= bound <= 1_000_000_000:
+                        detail[name] = bound
         encoded = json.dumps(details, ensure_ascii=True, separators=(",", ":"))
         diagnostic = f"ValidationError:{encoded[:1600]}"
     elif isinstance(error, APIStatusError):
@@ -239,6 +249,7 @@ class StructuredModelPort:
         if type(max_attempts) is not int or not 1 <= max_attempts <= 5:
             raise ValueError("max_attempts must be between 1 and 5")
         timeout_seconds = _positive_timeout(timeout_seconds)
+        self._progress_sink = progress_sink.get()
         self.settings = settings or ProviderSettings.from_env(provider)
         if self.settings.name != provider:
             raise ValueError("provider settings do not match the selected provider")
@@ -530,6 +541,7 @@ class StructuredModelPort:
             )
         errors: list[str] = []
         for attempt in range(1, attempt_limit + 1):
+            report_model_progress(getattr(self, "_progress_sink", None), role, attempt, "started")
             started_at = datetime.now(UTC)
             started = time.monotonic()
             try:
@@ -553,6 +565,7 @@ class StructuredModelPort:
                         transport_generation=generation,
                     )
             except Exception as exc:  # provider and validation failures share retry policy
+                report_model_progress(getattr(self, "_progress_sink", None), role, attempt, "failed")
                 with self._transport_lock:
                     retired = self._transport_closed or generation != self._transport_generation
                 if retired:
@@ -561,7 +574,8 @@ class StructuredModelPort:
                         attempts_used=attempt,
                         reason_code="MODEL_TRANSPORT_RETIRED",
                     ) from exc
-                if isinstance(exc, APIStatusError) and exc.status_code in {400, 401, 403, 404, 422}:
+                # 额度耗尽或授权冲突不能通过重复相同请求恢复，交回调用方处理授权。
+                if isinstance(exc, APIStatusError) and exc.status_code in {400, 401, 402, 403, 404, 409, 422}:
                     raise ModelInvocationError(
                         f"{self.settings.name}/{role} rejected request with "
                         f"{type(exc).__name__} status={exc.status_code}",
@@ -606,6 +620,9 @@ class StructuredModelPort:
                 result = StructuredCallResult(
                     artifact=artifact, record=record, attempt_failures=tuple(errors)
                 )
+                report_model_progress(getattr(self, "_progress_sink", None), role, attempt, "completed", record.latency_ms)
+                from .progress import report_artifact_progress
+                report_artifact_progress(getattr(self, "_progress_sink", None), artifact)
                 return result
         raise AssertionError("unreachable bounded model loop")
 

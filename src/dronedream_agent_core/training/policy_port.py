@@ -15,9 +15,7 @@ from ..contracts import (
 )
 from ..hashing import sha256_json
 from ..model_harness.model_port import ProviderSettings, StructuredCallResult
-from ..realtime_feature_encoders import RealtimeFeatureSnapshot
-from ..simulation_teacher import teacher_input_deadline
-from .observations import compile_training_observation
+from .observations import compile_training_input
 from .policy_exchange import MAX_PACKET_BYTES, TrainingPolicyClient, _clock_seconds
 
 
@@ -74,8 +72,7 @@ class SimulationTrainingPolicyPort:
                 or not isinstance(input_artifact.get("text_navigation_snapshot"), dict)):
             raise ValueError("SIMULATION_TRAINING_SNAPSHOT_REQUIRED")
         snapshot = input_artifact["text_navigation_snapshot"]
-        observation = compile_training_observation(snapshot, now_unix_ms=now)
-        realtime = RealtimeFeatureSnapshot.model_validate(snapshot["realtime_feature_snapshot"])
+        observation, _, source_deadline = compile_training_input(snapshot, now_unix_ms=now)
         visual = []
         if multimodal is not None and (
             not isinstance(multimodal, (list, tuple)) or len(multimodal) > 1
@@ -96,7 +93,7 @@ class SimulationTrainingPolicyPort:
             raise ValueError("SIMULATION_TRAINING_CLOCK_REGRESSED")
         request = {"snapshot": snapshot, "observation": observation.model_dump(mode="json"),
                    "multimodal": visual,
-                   "valid_until_unix_ms": teacher_input_deadline(realtime, now_ms=now),
+                   "valid_until_unix_ms": source_deadline,
                    "runtime_timing": {
                        "port_started_at_unix_ms": now,
                        "request_prepared_at_unix_ms": int(_clock_seconds(time.time()) * 1000),

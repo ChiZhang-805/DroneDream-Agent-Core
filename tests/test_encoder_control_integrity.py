@@ -97,6 +97,25 @@ def test_snapshot_freshness_rejects_mutated_content(mutation):
     assert snapshot.control_deadline_unix_ms(now_unix_ms=1000) == 0
 
 
+# 功能：截止计算必须只读刚刚验证的副本，避免校验后重新读取调用方可变容器。
+# 输入：monkeypatch：在副本生成后改变原对象；输出：保留原截止，不采用被改写的时间。
+def test_deadline_uses_the_verified_detached_snapshot(monkeypatch):
+    snapshot = complete_feature_snapshot(1000)
+    original_copy = encoders._strict_copy
+
+    # 功能：模拟验证后的原容器变动；输入：原对象和契约；输出：已验证且未修改的副本。
+    def copy_then_mutate(value, contract):
+        copied = original_copy(value, contract)
+        if value is snapshot:
+            for encoding in snapshot.encodings:
+                encoding.__dict__["observed_at_unix_ms"] = 999999
+        return copied
+
+    monkeypatch.setattr(encoders, "_strict_copy", copy_then_mutate)
+    assert snapshot.control_deadline_unix_ms(now_unix_ms=1100) == 1250
+    assert snapshot.control_deadline_unix_ms(now_unix_ms=1100) == 0
+
+
 # 功能：
 #   更新飞行状态不能给已损坏的历史几何快照重新签出有效散列。
 # 输入：

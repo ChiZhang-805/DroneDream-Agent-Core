@@ -81,7 +81,11 @@ def _jsonable(value: Any) -> Any:
         if isinstance(item, BaseModel):
             # 先检查 Python 值，避免 JSON 序列化把非法键或非有限数改写后掩盖问题。
             # 正式摘要仍沿用模型 JSON 模式的日期等表示，不能改变既有合法回执字节。
+            # 两种表示是同一棵模型树：各自受剩余预算限制，但不能重复扣减输出节点额度。
+            # 否则合法的约五万节点任务加上运行证据会被误算成超过十万节点。
+            model_budget = remaining
             convert(item.model_dump(mode="python"), depth + 1)
+            remaining = model_budget
             converted = convert(item.model_dump(mode="json"), depth + 1)
         elif isinstance(item, Path):
             converted = str(item)

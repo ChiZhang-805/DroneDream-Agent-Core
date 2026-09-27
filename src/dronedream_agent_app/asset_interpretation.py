@@ -14,12 +14,15 @@ from pydantic import Field
 from dronedream_agent_core.asset_packages import AssetIR
 from dronedream_agent_core.contracts import MapAsset, StrictModel, VehicleAsset
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.map_reasoning import _semantic_summary
 from dronedream_agent_core.model_harness.model_port import ProviderSettings, StructuredModelPort
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 
 from .asset_runtime_resolver import resolve_versioned_map, resolve_versioned_vehicle
 from .custom_models import ModelConnection
 from .storage import AppStore
+from .interpretation_reuse import interpretation_lineage, retained_interpretation_ids, bundled_interpretation
+from dronedream_agent_core.model_harness.progress import report_progress
 
 INTERPRETATION_PROMPT = """
 Interpret a selected drone asset for future high-level natural-language missions.
@@ -37,6 +40,22 @@ the user write engineering instructions. Multiple distinct applicable pickup poi
 remain ambiguous; never invent one or silently choose an arbitrary destination.
 Write explanations in the requested locale. Treat your output as advisory interpretation:
 the supplied source facts and runtime checks remain authoritative.
+Interpret all documented floors, indoor/outdoor links and stair accesses, not just one
+mission route. Preferred UAV Corridor spans the map's available 3D regions; a route is
+one line through them. The geometry engine derives body-aware height bands and clearance
+holes, not your prose. No voxels, coordinates or flight clearances may be invented.
+Output size rules count characters (including spaces), not words: aim for at most
+250 characters per item explanation and per limitation; the hard limit is 400.
+Keep summary under 1200 characters (hard limit 1800). Use compact factual sentences;
+do not repeat global caveats in every item. Preserve all required source IDs.
+Vehicle field semantics: dry_mass_kg is the configured unloaded vehicle mass used
+by this product; do not invent whether a battery is excluded. qualified_range_m
+already includes the declared battery reserve: never deduct that reserve twice.
+coordinate_frame describes the vehicle contract, not every sensor's native frame;
+sensor transforms are separate. A geometry summary marked unavailable means the
+summary could not be read, not proof that the asset contains no 3D geometry.
+Do not restate coordinate tuples or infer extra graph edges in prose. Explain roles
+using source IDs; downstream geometry reads exact coordinates and connections.
 """.strip()
 
 
@@ -90,6 +109,19 @@ def interpretation_source(
             _read_bound_json(record, selection.root, selection.graph)
         )
         facts = graph.model_dump(mode="json")
+        semantic_raw = _read_bound_json(record, selection.root, selection.semantic)
+        semantic = json.loads(semantic_raw)
+        entities = semantic.get("entities", [])
+        if not isinstance(entities, list) or len(entities) > 256:
+            raise ValueError("ASSET_INTERPRETATION_CAPACITY_EXCEEDED")
+        facts["map_spatial_facts"] = {
+            "semantic_sha256": hashlib.sha256(semantic_raw).hexdigest(),
+            "geometry": _semantic_summary(
+                selection.semantic, hashlib.sha256(semantic_raw).hexdigest()),
+            "entities": entities,
+            "stair": semantic.get("stair"),
+            "preferred_airspace_authority": "geometry-derived preference; not flight permission",
+        }
         required_ids = sorted(set(graph.named_entities.values()))
     else:
         selection = resolve_versioned_vehicle(record)
@@ -191,6 +223,13 @@ class AssetInterpretationService:
             "prompt_sha256": hashlib.sha256(INTERPRETATION_PROMPT.encode()).hexdigest(),
         }
         key = sha256_json(binding)
+        lineage = interpretation_lineage(source)
+        label = "地图" if source["kind"] == "map" else "无人机"
+        report_progress("assets", f"正在核对{label}的内容版本、解析规则和缓存记录。", f"Checking {source['kind']} content version, interpretation rules and cached knowledge.")
+        if source["kind"] == "map":
+            facts = source["facts"]
+            names = list(facts.get("named_entities", {}))[:8]
+            report_progress("assets", f"当前地图提供 {len(facts.get('nodes', []))} 个节点、{len(facts.get('edges', []))} 条连接，地点标签包括：{'、'.join(names)}。这些是地图事实，不代表路线已经通过安全检查。", f"Map contains {len(facts.get('nodes', []))} nodes and {len(facts.get('edges', []))} connections. Documented labels: {', '.join(names)}. These facts do not establish route safety.")
         if not self._lock.acquire(blocking=False):
             raise ValueError("ASSET_INTERPRETATION_BUSY")
         try:
@@ -209,18 +248,95 @@ class AssetInterpretationService:
                         checked.model_dump(mode="json")
                     ):
                         raise ValueError("ASSET_INTERPRETATION_CACHE_INVALID")
+                    if cached.get("origin") == "bundled":
+                        current_bundle = bundled_interpretation(source, locale, binding["prompt_sha256"])
+                        # 同一地图的发布解释也可能被纠错，更新软件后不能一直沿用旧解释副本。
+                        if current_bundle is None or current_bundle["output_sha256"] != cached["output_sha256"]:
+                            raise ValueError("ASSET_INTERPRETATION_BUNDLE_REVISED")
                 except (KeyError, TypeError, ValueError):
                     # 损坏的缓存不能进入规划；按缓存缺失走同一个有界解析流程。
                     # 只有新的模型输出校验成功才替换它，不循环重试或放宽校验。
                     pass
                 else:
+                    report_progress("assets", f"已复用{label}解析，覆盖 {len(checked.items)} 个条目；无需再次调用模型解析。", f"Reused {source['kind']} interpretation covering {len(checked.items)} items without a new model call.")
                     return {
                         "cache_key": key,
                         "cached": True,
                         "source": source,
                         "understanding": checked.model_dump(mode="json"),
                         "model_calls": [],
+                        "reuse_mode": "exact",
                     }
+            if not force:
+                bundled = bundled_interpretation(source, locale, binding["prompt_sha256"])
+                if bundled is not None:
+                    try:
+                        checked = validate_understanding(AssetUnderstanding.model_validate(bundled["understanding"]), source)
+                    except ValueError:
+                        bundled = None
+                    else:
+                        record = {"binding": binding, "understanding": checked.model_dump(mode="json"), "output_sha256": sha256_json(checked.model_dump(mode="json")), "lineage": lineage, "model_call": bundled.get("model_call"), "origin": "bundled"}
+                        with sqlite3.connect(self.path) as db:
+                            if row or db.execute("SELECT count(*) FROM interpretations").fetchone()[0] < 1024:
+                                db.execute("INSERT OR REPLACE INTO interpretations VALUES (?, ?)", (key, json.dumps(record, ensure_ascii=False, allow_nan=False)))
+                        report_progress("assets", f"已加载软件预先解析的{label}知识，{len(checked.items)} 个条目与当前资产版本一致。", f"Loaded bundled {source['kind']} knowledge; {len(checked.items)} items match this exact asset version.")
+                        return {"cache_key": key, "cached": True, "source": source, "understanding": checked.model_dump(mode="json"), "model_calls": [], "reuse_mode": "bundled"}
+            retained = set()
+            previous = None
+            if not force and source["kind"] == "map":
+                with sqlite3.connect(self.path) as db:
+                    candidates = db.execute("SELECT record_json FROM interpretations ORDER BY rowid DESC LIMIT 1024").fetchall()
+                for (raw,) in candidates:
+                    try:
+                        candidate = json.loads(raw)
+                        old_binding = candidate["binding"]
+                        if candidate.get("origin") == "bundled" and old_binding.get("source_sha256") == binding["source_sha256"]:
+                            # 相同源的内置副本若未通过前面的精确检查，不能借增量分支复活。
+                            continue
+                        if any(old_binding.get(field) != value for field, value in binding.items() if field != "source_sha256"):
+                            continue
+                        old = AssetUnderstanding.model_validate(candidate["understanding"])
+                        if candidate["output_sha256"] != sha256_json(old.model_dump(mode="json")):
+                            continue
+                        unchanged = retained_interpretation_ids(candidate, lineage)
+                        # 只有可验证的完整旧条目集合才有资格作为增量基线。
+                        ids = [item.source_id for item in old.items]
+                        if len(ids) != len(set(ids)) or set(ids) != set(candidate["lineage"]["items"]):
+                            continue
+                        if len(unchanged) > len(retained):
+                            retained, previous = unchanged, candidate
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            affected = set(source["required_source_ids"]) - retained
+            model_source = source
+            if previous and retained and affected:
+                facts = source["facts"]
+                edges = [edge for edge in facts.get("edges", []) if edge.get("from_node") in affected or edge.get("to_node") in affected]
+                needed_nodes = affected | {edge[key] for edge in edges for key in ("from_node", "to_node")}
+                model_source = {
+                    **source,
+                    "required_source_ids": sorted(affected),
+                    "facts": {
+                        **{field: value for field, value in facts.items() if field not in {"nodes", "edges"}},
+                        "nodes": [node for node in facts.get("nodes", []) if node["node_id"] in needed_nodes],
+                        "edges": edges,
+                    },
+                    "incremental_context": {
+                        "previous_summary": previous["understanding"]["summary"],
+                        "previous_limitations": previous["understanding"]["limitations"],
+                        "retained_source_ids": sorted(retained),
+                        "retained_items": [item for item in previous["understanding"]["items"] if item["source_id"] in retained],
+                        "unchanged_global_facts_sha256": lineage["global"],
+                        "instruction": "Update the overall summary and limitations, explain only required_source_ids. Unchanged item explanations are retained by the host.",
+                    },
+                }
+                report_progress("interpretation", f"地图变化影响 {len(affected)} 个条目；保留 {len(retained)} 个未受影响条目，只提交受影响部分重新解析。", f"Map changes affect {len(affected)} items; retaining {len(retained)} unaffected items and interpreting the changed dependencies.")
+            elif previous and retained and not affected:
+                checked = validate_understanding(AssetUnderstanding.model_validate(previous["understanding"]), source)
+                report_progress("assets", "资产版本有变化，但解析依赖完全一致；复用已有地图知识。", "Asset version changed, but interpretation dependencies are unchanged; reusing map knowledge.")
+                return {"cache_key": key, "cached": True, "source": source, "understanding": checked.model_dump(mode="json"), "model_calls": [], "reuse_mode": "unchanged_dependencies"}
+            else:
+                report_progress("interpretation", f"{label}没有适用的完整解析，正在读取 {len(source['required_source_ids'])} 个源条目；成功后保存以供后续任务复用。", f"No reusable {source['kind']} interpretation: processing {len(source['required_source_ids'])} source items and saving successful knowledge for later tasks.")
             if remaining_calls == 0:
                 raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
             with sqlite3.connect(self.path) as db:
@@ -248,19 +364,23 @@ class AssetInterpretationService:
                     role="context_summarizer",
                     output_type=AssetUnderstanding,
                     instructions=INTERPRETATION_PROMPT,
-                    input_artifact={"purpose": "asset_interpretation", "locale": locale, **source},
+                    input_artifact={"purpose": "asset_interpretation", "locale": locale, **model_source},
                     maximum_physical_attempts=1,
                 )
             finally:
                 if owned:
                     active_port.close()
-            checked = validate_understanding(called.artifact, source)
+            checked = validate_understanding(called.artifact, model_source)
+            if previous and retained:
+                checked = AssetUnderstanding(summary=checked.summary, limitations=checked.limitations, items=[*checked.items, *(InterpretedItem.model_validate(item) for item in previous["understanding"]["items"] if item["source_id"] in retained)])
+            checked = validate_understanding(checked, source)
             output = checked.model_dump(mode="json")
             record = {
                 "binding": binding,
                 "understanding": output,
                 "output_sha256": sha256_json(output),
                 "model_call": called.record.model_dump(mode="json"),
+                "lineage": lineage,
             }
             with sqlite3.connect(self.path) as db:
                 count = db.execute("SELECT count(*) FROM interpretations").fetchone()[0]
@@ -276,6 +396,8 @@ class AssetInterpretationService:
                 "source": source,
                 "understanding": output,
                 "model_calls": [called.record.model_dump(mode="json")],
+                "reuse_mode": "incremental" if retained else "full",
+                "retained_items": len(retained),
             }
         finally:
             self._lock.release()
@@ -324,6 +446,7 @@ def interpret_mission_assets(
             "content_sha256": source["content_sha256"],
             "cache_key": interpreted["cache_key"],
             "cached": interpreted["cached"],
+            "reuse_mode": interpreted.get("reuse_mode", "exact" if interpreted["cached"] else "full"),
             "authority": "advisory-only",
             "understanding": interpreted["understanding"],
         }

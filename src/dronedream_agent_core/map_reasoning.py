@@ -76,7 +76,10 @@ def _semantic_summary(path: Path, expected_sha256: str) -> dict[str, object]:
             for item in active_primitives
         )
         geometry_scope = value.get("geometry_scope")
-        if geometry_scope is not None:
+        if isinstance(geometry_scope, list):
+            # 当前地图编译器输出几何类别列表；旧的单段描述也仍是有效契约。
+            geometry_scope = _text_list(geometry_scope, field="GEOMETRY_SCOPE", maximum=64)
+        elif geometry_scope is not None:
             geometry_scope = _text(geometry_scope, field="GEOMETRY_SCOPE", maximum=240)
     except ValueError:
         return {"available": False, "issue_codes": ["MAP_SEMANTIC_CONTEXT_INVALID"]}

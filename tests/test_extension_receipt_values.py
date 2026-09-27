@@ -154,3 +154,21 @@ def test_receipt_value_budget_precedes_handler_execution(shape):
     with pytest.raises(ValueError, match="TOO_COMPLEX"):
         registry.invoke_pipeline("harness.test-pipeline", "transform", value)
     assert not calls
+
+
+# 功能：
+#   同一模型的 Python 校验和 JSON 转换不能重复扣除输出节点预算；实际超限仍被拒绝。
+# 输入：
+#   无。
+# 输出：
+#   无。
+def test_model_nodes_are_counted_once_per_representation():
+    from pydantic import BaseModel
+
+    class LargeEvidence(BaseModel):
+        rows: list[int]
+
+    value = LargeEvidence(rows=list(range(60_000)))
+    assert _jsonable({"evidence": value, "gate": True}) == {"evidence": value.model_dump(), "gate": True}
+    with pytest.raises(ValueError, match="TOO_COMPLEX"):
+        _jsonable(LargeEvidence(rows=[0] * MAX_JSON_NODES))

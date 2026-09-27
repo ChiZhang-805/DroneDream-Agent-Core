@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -66,6 +67,9 @@ class GazeboPoseObserver(Node):
             raise ValueError("gazebo_pose_topic, entity_name and contract_id are required")
         runtime_phase_path = str(self.get_parameter("runtime_phase_path").value)
         self._runtime_phase_path = Path(runtime_phase_path) if runtime_phase_path else None
+        self._last_valid_phase = None
+        self._last_valid_phase_at = None
+        self._phase_read_issue = None
         publish_hz = float(self.get_parameter("publish_hz").value)
         if not 1.0 <= publish_hz <= 100.0:
             raise ValueError("publish_hz must be between 1 and 100")
@@ -183,7 +187,9 @@ class GazeboPoseObserver(Node):
         self._published_sequence = sequence
 
     # 功能：
-    #   读取有界运行阶段；未配置时是起飞前，已配置但损坏或未知时必须显式拒绝。
+    #   阶段是执行元数据，不是姿态或控制指令。临时 I/O/截断读取最多沿用
+    #   100ms 内已验证阶段；不能刷新期限、重放传感器或把未知阶段当作起飞前。
+    #   无缓存、持续故障、时钟倒退或显式非法结构仍拒绝，日志保留具体故障类别。
     # 输入：
     #   self：包含当前运行阶段路径的节点。
     # 输出：
@@ -191,12 +197,25 @@ class GazeboPoseObserver(Node):
     def _runtime_phase(self) -> str:
         if self._runtime_phase_path is None:
             return "PREFLIGHT"
+        now = time.monotonic()
         try:
             payload = read_object(self._runtime_phase_path)
-        except (OSError, ValueError):
+        except (OSError, json.JSONDecodeError) as error:
+            issue = type(error).__name__
+            if getattr(self, "_phase_read_issue", None) != issue:
+                self.get_logger().warning(f"runtime phase read interrupted: {issue}; bounded recovery only")
+            self._phase_read_issue = issue
+            previous_at = getattr(self, "_last_valid_phase_at", None)
+            if previous_at is not None and 0 <= now - previous_at <= .1:
+                return self._last_valid_phase
+            self._last_valid_phase_at = None
+            return "UNRECOGNIZED:INVALID_PHASE_RECORD"
+        except ValueError:
+            self._last_valid_phase_at = None
             return "UNRECOGNIZED:INVALID_PHASE_RECORD"
         phase = payload.get("phase")
         if not isinstance(phase, str) or not 0 < len(phase) <= 128:
+            self._last_valid_phase_at = None
             return "UNRECOGNIZED:INVALID_PHASE_LABEL"
         allowed = {
             "PREFLIGHT",
@@ -221,7 +240,14 @@ class GazeboPoseObserver(Node):
         # An unknown live phase is a schema drift, not preflight.  Surface a
         # value that the native capability rejects so the host fails closed
         # instead of silently widening its deadline during flight.
-        return phase if phase in allowed else f"UNRECOGNIZED:{phase}"
+        if phase not in allowed:
+            self._last_valid_phase_at = None
+            return f"UNRECOGNIZED:{phase}"
+        if getattr(self, "_phase_read_issue", None) is not None:
+            self.get_logger().info("runtime phase read recovered from transient transport failure")
+        self._phase_read_issue = None
+        self._last_valid_phase, self._last_valid_phase_at = phase, now
+        return phase
 
 
 # 功能：

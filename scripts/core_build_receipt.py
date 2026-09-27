@@ -118,11 +118,22 @@ def component_files(root: Path) -> dict:
     for entry in runtime["files"]:
         add(f"{RESOURCE_ROOT}/runtime/{entry['path']}", entry["sha256"], entry["bytes"])
     required_runtime = {f"{RESOURCE_ROOT}/runtime/{name}" for name in (
-        "local-policy/catalog.json", "provenance.json", "native-sensors/native-sensor-runtime.json",
-        "licenses/LICENSE", "licenses/default-assets-licenses.json", "local-policy/licenses.json",
+        "provenance.json", "native-sensors/native-sensor-runtime.json",
+        "licenses/LICENSE", "licenses/default-assets-licenses.json",
+        "payload-placement/payload-placement-runtime.json",
+        "payload-placement/libdronedream-payload-placement.so",
+        "camera-clock/camera-clock-runtime.json", "camera-clock/libdronedream-camera-clock.so",
     )}
     if not required_runtime <= files.keys():
         raise ValueError("CORE_BUILD_REQUIRED_RUNTIME_FILES_MISSING")
+    local_policy_prefix = f"{RESOURCE_ROOT}/runtime/local-policy/"
+    local_policy_files = {name for name in files if name.startswith(local_policy_prefix)}
+    required_local_policy = {
+        f"{local_policy_prefix}catalog.json",
+        f"{local_policy_prefix}licenses.json",
+    }
+    if local_policy_files and not required_local_policy <= local_policy_files:
+        raise ValueError("CORE_BUILD_LOCAL_POLICY_INCOMPLETE")
     provenance = read_object(bound_file(root, f"{RESOURCE_ROOT}/runtime/provenance.json"))
     if (provenance.get("source_commit") != git_value(root, "rev-parse", "HEAD")
             or provenance.get("source_tree") != git_value(root, "rev-parse", "HEAD^{tree}")
@@ -135,11 +146,37 @@ def component_files(root: Path) -> dict:
     for entry in plugins["plugins"]:
         add(f"{RESOURCE_ROOT}/official-plugins/{entry['file']}", entry["sha256"])
     assets = read_object(add(f"{RESOURCE_ROOT}/default-assets/index.json"))
-    entries = assets["qualified_pair"]["packages"]
-    if len(entries) != 2 or {entry["kind"] for entry in entries} != {"map", "vehicle"}:
+    if assets.get("schema_version") == "dronedream.bundled-assets.v2":
+        pairs = [assets.get("qualified_pair")]
+    elif assets.get("schema_version") == "dronedream.bundled-assets.v3":
+        pairs = assets.get("qualified_pairs")
+        if (
+            not isinstance(pairs, list)
+            or assets.get("qualified_pair") not in pairs
+            or assets.get("default_qualification_id")
+            != assets.get("qualified_pair", {}).get("qualification_id")
+        ):
+            raise ValueError("CORE_BUILD_DEFAULT_ASSETS_INCOMPLETE")
+    else:
         raise ValueError("CORE_BUILD_DEFAULT_ASSETS_INCOMPLETE")
-    for entry in entries:
-        add(f"{RESOURCE_ROOT}/default-assets/{entry['file']}", entry["sha256"])
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("CORE_BUILD_DEFAULT_ASSETS_INCOMPLETE")
+    seen_files: set[str] = set()
+    for pair in pairs:
+        entries = pair.get("packages") if isinstance(pair, dict) else None
+        if (
+            not isinstance(entries, list)
+            or len(entries) != 2
+            or {entry.get("kind") for entry in entries if isinstance(entry, dict)}
+            != {"map", "vehicle"}
+        ):
+            raise ValueError("CORE_BUILD_DEFAULT_ASSETS_INCOMPLETE")
+        for entry in entries:
+            filename = entry["file"]
+            if filename in seen_files:
+                raise ValueError("CORE_BUILD_DEFAULT_ASSET_FILE_DUPLICATE")
+            seen_files.add(filename)
+            add(f"{RESOURCE_ROOT}/default-assets/{filename}", entry["sha256"])
     return files
 
 

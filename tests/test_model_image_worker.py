@@ -11,12 +11,14 @@ from dronedream_agent_core.model_image_worker import LatestModelImageWorker
 # 输入：
 #   worker：被测试的异步编码器。
 #   source_time：需要匹配的来源单调钟秒数。
+#   now：可选的消费者快照时刻；省略时与来源时刻相同。
 # 输出：
 #   sample：来源时刻精确匹配的已完成图像。
-def wait_sample(worker, source_time):
+def wait_sample(worker, source_time, now=None):
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        sample = worker.latest(now_monotonic_seconds=source_time, maximum_age_seconds=.2)
+        sample = worker.latest(now_monotonic_seconds=source_time if now is None else now,
+                               maximum_age_seconds=.2)
         if sample is not None and sample.image.received_monotonic_seconds == source_time:
             return sample
         time.sleep(.001)

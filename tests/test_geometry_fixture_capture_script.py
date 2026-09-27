@@ -249,6 +249,20 @@ def test_acknowledged_server_exits_without_forcing():
     assert process.waits == [8]
 
 
+# 功能：服务停止回执不等于进程退出；宽限期耗尽后向自有进程补发正常中断。
+# 输入：monkeypatch：替换系统信号和只读诊断。
+# 输出：无。
+def test_acknowledged_but_lingering_server_gets_graceful_interrupt(monkeypatch):
+    module, process, errors = script(), SimulatedProcess(2), []
+    signals = []
+    monkeypatch.setattr(module, "stop_diagnostic", lambda target: {"pid": target.pid})
+    monkeypatch.setattr(module, "signal_owned_process", lambda target, signum: signals.append(signum))
+    result = module.stop_owned_simulator(process, True, errors)
+    assert result == {"pid": process.pid}
+    assert signals == [module.signal.SIGINT]
+    assert process.waits == [8, 12] and errors == []
+
+
 # 功能：
 #   虚拟诊断读取也必须保持真实字节上限，不允许负预算退化为无限量读取。
 # 输入：

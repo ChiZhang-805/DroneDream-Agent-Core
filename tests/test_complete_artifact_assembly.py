@@ -17,6 +17,7 @@ from dronedream_agent_core.local_policy_composition import (
     load_local_advisor_artifact_evidence,
 )
 from dronedream_agent_core.local_policy_packages import load_local_policy_package
+from dronedream_agent_core.local_vision_training import LOCAL_VISION_ARCHITECTURE
 from dronedream_agent_core.training.artifact_assembly import (
     CompleteEnsembleRecipe,
     assemble_complete_ensemble,
@@ -40,6 +41,20 @@ from dronedream_agent_core.training.visual_lineage import VisualInputContract
 def recipe(base_package, tmp_path):  # noqa: F811 - imported pytest fixture
     value = build_recipe(base_package, tmp_path)
     return value
+
+
+# 功能：
+#   拒绝把缺少机动与速度历史的旧负载接口放进当前完整飞行配方，即使一般读取器能识别旧包。
+# 输入：
+#   recipe：当前十专家合成配方。
+# 输出：
+#   None：通过独立的完整配方门槛错误断言给出结果。
+def test_complete_recipe_rejects_payload_without_observable_motion(recipe):
+    changed = recipe.model_dump(mode='python')
+    payload = next(a for a in changed['manifest']['artifacts'] if a['role'] == 'payload-dynamics-adapter')
+    payload['input_names'] = ['payload_features', 'payload_history', 'history_mask']
+    with pytest.raises(ValueError, match='ENSEMBLE_PAYLOAD_REQUIRES_CURRENT_MOTION_INPUT'):
+        CompleteEnsembleRecipe.model_validate(changed)
 
 
 # 功能：
@@ -114,8 +129,19 @@ def test_cli_bounds_recipe_bytes_before_output(tmp_path, monkeypatch):
 # 输出：
 #   value：通过配方结构验证的完整测试配方。
 def build_recipe(base_root, tmp_path):
+    from dronedream_agent_core.local_advisor_training import (
+        LocalAdvisorTrainingConfig,
+        _new_model,
+        export_local_advisor_onnx,
+    )
+
     base = load_local_policy_package(base_root)
     paths = {**base.artifact_paths, **replacements(tmp_path)}
+    # 通用旧包夹具仍用于兼容性读取测试；完整新配方必须使用真实导出的当前负载接口。
+    payload_path = tmp_path / "current-motion-payload.onnx"
+    export_local_advisor_onnx(_new_model("payload-dynamics-adapter",
+        LocalAdvisorTrainingConfig(hidden_feature_count=8)), payload_path)
+    paths["payload-dynamics-adapter"] = payload_path
     manifest = base.manifest.model_dump(mode="json")
     manifest.update(
         package_id="test.complete-current",
@@ -182,9 +208,14 @@ def build_recipe(base_root, tmp_path):
                 training_accepted=True,
                 flight_qualification_granted=False,
                 visual_feature_count=1,
-                backbone_initialization="mobilenet-v3-large-imagenet1k-v2",
-                split_method="held-out-complete-flight",
-                config={"width": 32, "height": 32},
+                architecture=LOCAL_VISION_ARCHITECTURE,
+                embedding_supervision="traversability-scene-quality-through-embedding",
+                backbone_initialization="lraspp-mobilenet-v3-large-coco-voc-v1",
+                initialization={"source": "lraspp-mobilenet-v3-large-coco-voc-v1",
+                                "tensor_sha256": "e" * 64},
+                split_method="held-out-complete-flight-and-render-spatial-group",
+                spatial_group_disjoint=True,
+                config={"width": 32, "height": 32, "pretrained_source": "coco-voc-segmentation"},
             )
         else:
             record = dict(
@@ -245,6 +276,29 @@ def test_complete_current_package_requires_no_legacy_base(recipe, tmp_path):
     with pytest.raises(FileExistsError):
         assemble_complete_ensemble(recipe=recipe, source_root=tmp_path, output_root=output)
     assert not list(tmp_path.glob(".complete-ensemble-*"))
+
+
+# 功能：
+#   当前视觉生产契约可组装，但旧分割版本、旁路嵌入、缺少初始化身份或混用划分不得进入。
+# 输入：
+#   recipe、field、value：当前十专家夹具及要注入的不兼容回执字段。
+# 输出：
+#   None：每种契约漂移均应在加载任何运行端会话前被拒绝。
+@pytest.mark.parametrize("field,value", [
+    ("architecture", "mobilenet-v3-large-lraspp-v1"),
+    ("embedding_supervision", "bypass-embedding"),
+    ("split_method", "held-out-complete-flight"),
+    ("spatial_group_disjoint", False),
+    ("backbone_initialization", "uninitialized-development-only"),
+    ("initialization", {"source": "lraspp-mobilenet-v3-large-coco-voc-v1"}),
+])
+def test_visual_assembly_rejects_obsolete_or_unbound_receipts(recipe, field, value):
+    source = next(item for item in recipe.sources if item.role == "perception-encoder")
+    receipt = json.loads(source.training_receipt_path.read_bytes())
+    artifact = next(item for item in recipe.manifest.artifacts if item.role == source.role)
+    receipt[field] = value
+    with pytest.raises(ValueError, match="VISUAL_TRAINING_IDENTITY_MISMATCH"):
+        validate_expert_training_receipt(source.role, artifact.sha256, receipt, recipe.manifest)
 
 
 # 功能：

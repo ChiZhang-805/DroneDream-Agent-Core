@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +66,12 @@ from .pilot_control_mapping import (
     action_risk_features,
 )
 from .plugin_files import read_plugin_file
+from .policy_observation_buffer import PolicyObservationBuffer
+from .precision_heading_input import (
+    PRECISION_HEADING_ARCHITECTURE,
+    current_precision_heading_input,
+    validate_current_precision_heading_input,
+)
 from .realtime_feature_encoders import (
     POLICY_CONTROL_REFERENCE_FEATURE_COUNT,
     POLICY_REALTIME_FEATURE_COUNT,
@@ -234,6 +241,7 @@ class LocalPolicyFeatureBatch:
     navigation_expert_role: NavigationExpertRole = "local-navigation-policy"
     expert_routing: LocalExpertRoutingDecision | None = None
     pilot_control_limits: PilotControlLimits | None = None
+    precision_heading_context: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -665,6 +673,7 @@ def compile_local_policy_features(
                     }
                 ),
                 sample_sha256=flight_state.source_sha256,
+                history_slot_revision=flight_state.history_slot_revision,
                 observed_at_unix_ms=flight_state.observed_at_unix_ms,
                 reset_history=any(
                     code in flight_state.issue_codes
@@ -875,6 +884,7 @@ class OnnxLocalPolicyBackend:
         )
         self._history_lock = Lock()
         self._payload_history_input_name: str | None = None
+        self._payload_uses_maneuver_features = False
         observed_inputs = {item.name for item in self._session.get_inputs()}
         observed_outputs = {item.name for item in self._session.get_outputs()}
         base_navigation_inputs = {
@@ -887,6 +897,8 @@ class OnnxLocalPolicyBackend:
             expected_inputs = {"state_features", "control_history", "control_history_mask"}
         if package.manifest.realtime_feature_count is not None:
             expected_inputs.update({"realtime_features", "realtime_valid_mask"})
+        if package.manifest.heading_context_for_role('local-navigation-policy') is not None:
+            expected_inputs.add('heading_context')
         expected_outputs = {"candidate_scores", "action_scores", "risk_score"}
         if package.manifest.pilot_control_mode is not None:
             expected_outputs.add("pilot_control")
@@ -897,15 +909,27 @@ class OnnxLocalPolicyBackend:
             expert_session = load_session(expert_path)
             expert_inputs = {item.name for item in expert_session.get_inputs()}
             expert_outputs = {item.name for item in expert_session.get_outputs()}
-            if expert_inputs != observed_inputs or not expected_outputs.issubset(expert_outputs):
+            expected_expert_inputs = set(observed_inputs) - {'heading_context'}
+            if package.manifest.heading_context_for_role(expert_role) is not None:
+                expected_expert_inputs.add('heading_context')
+            if expert_inputs != expected_expert_inputs or not expected_outputs.issubset(expert_outputs):
                 raise RuntimeError("LOCAL_POLICY_EXPERT_TENSOR_CONTRACT_MISMATCH")
             self._navigation_sessions[expert_role] = expert_session
         if self._control_history is not None:
-            for session in self._navigation_sessions.values():
+            for role, session in self._navigation_sessions.items():
                 metadata = session.get_modelmeta().custom_metadata_map
                 shapes = {item.name: item.shape for item in session.get_inputs()}
+                heading_contract = package.manifest.heading_context_for_role(role)
+                composed_heading = heading_contract is not None
+                expected_architecture = PRECISION_HEADING_ARCHITECTURE if composed_heading else 'causal-gru-control'
+                if composed_heading and (
+                    metadata.get('heading_context_sha256') != heading_contract
+                    or metadata.get('yaw_limit_dps') != '20.0'
+                    or shapes.get('heading_context') != [1, 23]
+                ):
+                    raise RuntimeError('LOCAL_POLICY_PRECISION_HEADING_CONTRACT_MISMATCH')
                 if (
-                    metadata.get("architecture") != "causal-gru-control"
+                    metadata.get("architecture") != expected_architecture
                     or metadata.get("history_contract_sha256") != CONTROL_HISTORY_CONTRACT_SHA256
                     or metadata.get("history_length")
                     != str(package.manifest.navigation_history_length)
@@ -1005,6 +1029,7 @@ class OnnxLocalPolicyBackend:
             accepted_payload_inputs = {
                 frozenset({"payload_features", "state_history", "history_mask"}),
                 frozenset({"payload_features", "payload_history", "history_mask"}),
+                frozenset({"payload_features", "maneuver_features", "payload_history", "state_history", "history_mask"}),
             }
             if frozenset(payload_inputs) not in accepted_payload_inputs or payload_outputs != {
                 "risk_score",
@@ -1014,6 +1039,14 @@ class OnnxLocalPolicyBackend:
             payload_shape = payload_input_items["payload_features"].shape
             if len(payload_shape) != 2 or payload_shape[1:] != [LOCAL_POLICY_PAYLOAD_FEATURE_COUNT]:
                 raise RuntimeError("LOCAL_POLICY_PAYLOAD_TENSOR_SHAPE_MISMATCH")
+            self._payload_uses_maneuver_features = "maneuver_features" in payload_input_items
+            if self._payload_uses_maneuver_features:
+                shape = payload_input_items["maneuver_features"].shape
+                if len(shape) != 2 or shape[1:] != [LOCAL_POLICY_MANEUVER_FEATURE_COUNT]:
+                    raise RuntimeError("LOCAL_POLICY_PAYLOAD_MOTION_TENSOR_SHAPE_MISMATCH")
+                shape = payload_input_items["state_history"].shape
+                if len(shape) != 3 or shape[1:] != [LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_STATE_FEATURE_COUNT]:
+                    raise RuntimeError("LOCAL_POLICY_PAYLOAD_MOTION_HISTORY_SHAPE_MISMATCH")
             self._payload_history_input_name = (
                 "payload_history" if "payload_history" in payload_input_items else "state_history"
             )
@@ -1398,11 +1431,19 @@ class OnnxLocalPolicyBackend:
         navigation_output_names = ["candidate_scores", "action_scores", "risk_score"]
         if self._manifest.pilot_control_mode is not None:
             navigation_output_names.append("pilot_control")
+        navigation_feeds = feeds
+        if self._manifest.heading_context_for_role(batch.navigation_expert_role) is not None:
+            if batch.pilot_control_limits is None:
+                raise RuntimeError('LOCAL_POLICY_PRECISION_HEADING_LIMITS_MISSING')
+            heading_values = validate_current_precision_heading_input(batch.precision_heading_context,
+                yaw_limit_dps=batch.pilot_control_limits.yaw_rate_dps)
+            # 额外输入仅交给显式声明的当前控制分支；不能污染独立风险图或其他专家。
+            navigation_feeds = {**feeds, 'heading_context': np.asarray([heading_values], dtype=np.float32)}
         outputs = timed_run(
             batch.navigation_expert_role,
             navigation_session,
             navigation_output_names,
-            feeds,
+            navigation_feeds,
         )
         navigation_risk_score = _bounded_scalar(outputs[2], "NAVIGATION_RISK")
         candidate_scores = _float_output(outputs[0], LOCAL_POLICY_MAXIMUM_CANDIDATES, "CANDIDATE")
@@ -1523,6 +1564,9 @@ class OnnxLocalPolicyBackend:
                     self._payload_history_input_name: payload_temporal_input,
                     "history_mask": temporal_inputs["history_mask"],
                     "payload_features": np.asarray([batch.payload_features], dtype=np.float32),
+                    **({"maneuver_features": np.asarray([batch.maneuver_features], dtype=np.float32),
+                        "state_history": temporal_inputs["state_history"]}
+                       if self._payload_uses_maneuver_features else {}),
                 },
             )
             payload_risk = _bounded_scalar(payload_outputs[0], "PAYLOAD")
@@ -1671,6 +1715,9 @@ class LocalPolicyPort:
             )
         )
         self.development_payload_collection = development_payload_collection
+        self._observations = PolicyObservationBuffer()
+        self._prepared_inputs: OrderedDict[str, LocalPolicyFeatureBatch] = OrderedDict()
+        self._prepared_inputs_lock = Lock()
         self.scheduling_jitter_grace_ms = float(scheduling_jitter_grace_ms)
         self.settings = ProviderSettings(
             name="local-policy",
@@ -1690,6 +1737,36 @@ class LocalPolicyPort:
     def invocation_timeout_seconds(self) -> float:
         timeout_seconds = self.package.manifest.maximum_inference_latency_ms / 1_000.0
         return timeout_seconds
+
+    # 功能：声明端口可独立接收真实连续观测；输入：当前包；输出：只对因果操纵模式启用。
+    @property
+    def supports_observation_history(self) -> bool:
+        return self.package.manifest.pilot_control_mode is not None
+
+    # 功能：仅连续本地策略可使用上游原始来源截止时间；不会把云端超时作为动作寿命。
+    # 输入：当前模型包；输出：是否接受本次调用独立的单调时钟期限。
+    @property
+    def supports_control_deadline(self) -> bool:
+        return self.package.manifest.pilot_control_mode is not None
+
+    # 功能：校验并积累真实观测，不推理、不刷新源钟、不授权动作；模型忙时也可调用。
+    # 输入：地图所有者线程生成的独立导航快照；输出：是否保存一条新的来源观测。
+    def observe_navigation_snapshot(self, snapshot: dict) -> bool:
+        if snapshot.get('snapshot_sha256') != sha256_json(
+                {key: value for key, value in snapshot.items() if key != 'snapshot_sha256'}):
+            raise ValueError('LOCAL_POLICY_SNAPSHOT_HASH_INVALID')
+        batch = compile_local_policy_features(snapshot, include_candidate_features=False)
+        accepted = self._observations.stage(batch)
+        if self.supports_observation_history:
+            # 历史队列已复制其需要的字段；该完整 batch 只由本缓存持有，
+            # 后续相同内容的推理一次性移交所有权，不反复编译同一张量。
+            with self._prepared_inputs_lock:
+                key = snapshot['snapshot_sha256']
+                self._prepared_inputs[key] = batch
+                self._prepared_inputs.move_to_end(key)
+                while len(self._prepared_inputs) > 4:
+                    self._prepared_inputs.popitem(last=False)
+        return accepted
 
     # 功能：
     #   声明本地因果历史按传感器来源维护，不支持云端会话缓存接口。
@@ -1749,25 +1826,46 @@ class LocalPolicyPort:
     #   self：声明时间预算与显式宽限的端口。
     #   started：本次调用的原始单调时钟起点。
     #   raw：已有推理结果时附上模型耗时证据，缺省表示尚未发生实际调用。
+    #   control_deadline_monotonic：已扣除发令余量的原始来源期限；不允许给旧帧续期。
     # 输出：
     #   elapsed_ms：仍处于本次调用预算内的毫秒耗时。
     def _check_call_budget(
         self,
         started: float,
         raw: LocalPolicyRawInference | None = None,
+        *, control_deadline_monotonic: float | None = None,
     ) -> float:
-        elapsed_ms = (time.monotonic() - started) * 1_000.0
+        now = time.monotonic()
+        elapsed_ms = (now - started) * 1_000.0
         limit_ms = float(self.package.manifest.maximum_inference_latency_ms)
-        if elapsed_ms > limit_ms + self.scheduling_jitter_grace_ms:
+        grace_ms = self.scheduling_jitter_grace_ms
+        if control_deadline_monotonic is not None:
+            # 性能标称值不是新鲜度截止时间。最多容纳 50 ms 调度波动，且必须
+            # 在上游扣除发令保留时间后的原期限内完成；旧传感器不会因此续龄。
+            grace_ms = min(50., max(0., (control_deadline_monotonic - started) * 1000 - limit_ms))
+            if now >= control_deadline_monotonic:
+                error = TimeoutError("LOCAL_POLICY_CONTROL_DEADLINE_EXPIRED")
+                error.reason_code = "LOCAL_POLICY_CONTROL_DEADLINE_EXPIRED"
+                error.diagnostic_metrics = {
+                    'total-latency-ms': elapsed_ms,
+                    'source-budget-at-entry-ms': (control_deadline_monotonic - started) * 1000,
+                    'inference-completed': int(raw is not None),
+                    **({f'pipeline-{k}-ms': v for k, v in raw.pipeline_latency_ms.items()}
+                       if raw is not None else {}),
+                }
+                raise error
+        if elapsed_ms > limit_ms + grace_ms:
             if raw is None:
                 # No network was invoked. Do not report a physical model call.
-                raise TimeoutError(
+                error = TimeoutError(
                     f"LOCAL_POLICY_INPUT_PREPARATION_EXCEEDED_LATENCY_BOUND: {elapsed_ms:.3f} ms"
                 )
+                error.reason_code = "LOCAL_POLICY_INPUT_PREPARATION_EXCEEDED_LATENCY_BOUND"
+                raise error
             metrics = {
                 "total-latency-ms": elapsed_ms,
                 "qualified-limit-ms": limit_ms,
-                "scheduling-jitter-grace-ms": self.scheduling_jitter_grace_ms,
+                "scheduling-jitter-grace-ms": grace_ms,
             }
             if raw is not None:
                 metrics.update({f"pipeline-{k}-ms": v for k, v in raw.pipeline_latency_ms.items()})
@@ -1792,6 +1890,7 @@ class LocalPolicyPort:
     #   context_id：通用云端上下文标识，本地不使用。
     #   multimodal：可选的当前图像来源。
     #   maximum_physical_attempts：省略或显式整数一，不自动重试。
+    #   control_deadline_monotonic：连续控制传入的剩余来源期限，省略时维持包声明时限。
     # 输出：
     #   result：本次导航决策及来源、角色、耗时的完整调用记录。
     def call(
@@ -1804,6 +1903,7 @@ class LocalPolicyPort:
         context_id: str | None = None,
         multimodal: list[dict[str, object]] | None = None,
         maximum_physical_attempts: int | None = None,
+        control_deadline_monotonic: float | None = None,
     ) -> StructuredCallResult[TextNavigationDecision]:
         del instructions, context_id
         if role != "local_navigation_advisor" or output_type is not TextNavigationDecision:
@@ -1814,6 +1914,13 @@ class LocalPolicyPort:
             raise ValueError("local policy inference permits one physical attempt")
         started_at = datetime.now(UTC)
         started = time.monotonic()
+        if control_deadline_monotonic is not None and (
+            not self.supports_control_deadline
+            or type(control_deadline_monotonic) not in (int, float)
+            or not started < control_deadline_monotonic <= started + .25
+            or not math.isfinite(control_deadline_monotonic)
+        ):
+            raise ValueError("LOCAL_POLICY_CONTROL_DEADLINE_INVALID")
         payload = copy_json(
             (
                 input_artifact.model_dump(mode="json")
@@ -1830,13 +1937,23 @@ class LocalPolicyPort:
         }
         if snapshot.get("snapshot_sha256") != sha256_json(snapshot_payload):
             raise ValueError("LOCAL_POLICY_SNAPSHOT_HASH_INVALID")
-        batch = compile_local_policy_features(
-            snapshot,
-            include_candidate_features=self.package.manifest.pilot_control_mode is None,
-        )
+        # 上方已对本次输入独立复制并重新计算内容摘要。缓存不保存权限或
+        # 到期判定；当前时钟、路由、历史及调用期限仍在每次推理重新检查。
+        # pop 将唯一的可变子对象所有权交给本次调用，后端不能污染下次输入。
+        with self._prepared_inputs_lock:
+            batch = (self._prepared_inputs.pop(snapshot['snapshot_sha256'], None)
+                     if self.supports_observation_history else None)
+        if batch is None:
+            batch = compile_local_policy_features(
+                snapshot,
+                include_candidate_features=self.package.manifest.pilot_control_mode is None,
+            )
         available_roles = set(self.package.artifact_paths)
         prepare_context = getattr(self.backend, "prepare_temporal_context", None)
         if callable(prepare_context):
+            # 仅推理线程修改后端历史。传感器线程保存的新帧最多排队，不能越过本次来源时刻。
+            for observation in self._observations.take_through(batch.temporal_evidence):
+                prepare_context(observation)
             prepare_context(batch)
         not_ready_roles = set()
         readiness = getattr(self.backend, "not_ready_advisory_roles", None)
@@ -1868,7 +1985,10 @@ class LocalPolicyPort:
             navigation_expert_role=routing.selected_navigation_role,
             expert_routing=routing,
         )
-        preparation_ms = self._check_call_budget(started)
+        if self.package.manifest.heading_context_for_role(routing.selected_navigation_role) is not None:
+            batch = replace(batch, precision_heading_context=current_precision_heading_input(
+                snapshot, now_unix_ms=int(time.time() * 1000)))
+        preparation_ms = self._check_call_budget(started, control_deadline_monotonic=control_deadline_monotonic)
         try:
             raw = self.backend.infer(batch, multimodal=list(multimodal or []))
             # Pydantic assignment checks do not cover model_copy(update=...) or
@@ -1907,7 +2027,7 @@ class LocalPolicyPort:
             raw = raw.model_copy(
                 update={"controller_step_scale": min(raw.controller_step_scale, 0.2)}
             )
-        inference_finished_ms = self._check_call_budget(started, raw)
+        inference_finished_ms = self._check_call_budget(started, raw, control_deadline_monotonic=control_deadline_monotonic)
         navigation_risk_score = (
             raw.navigation_risk_score if raw.navigation_risk_score is not None else raw.risk_score
         )
@@ -1951,6 +2071,8 @@ class LocalPolicyPort:
                 requested_navigation_role=routing.requested_navigation_role,
                 selected_navigation_role=routing.selected_navigation_role,
                 fallback_used=routing.fallback_used,
+                decision_reason_codes=list(decision.risk_notes),
+                temporal_history_ready=motion_history_ready and not not_ready_roles,
                 navigation_action=navigation_decision.action,
                 navigation_selected_candidate_id=(
                     navigation_decision.selected_candidate_id
@@ -1969,17 +2091,19 @@ class LocalPolicyPort:
             ),
         )
         result = StructuredCallResult(artifact=decision, record=record)
-        elapsed_ms = self._check_call_budget(started, raw)
+        elapsed_ms = self._check_call_budget(started, raw, control_deadline_monotonic=control_deadline_monotonic)
         # These are nested wall intervals, not independently additive P99s.
         record.local_expert_trace.pipeline_latency_ms = {
             **raw.pipeline_latency_ms,
             "port-input-preparation": preparation_ms,
             "port-decision-record": elapsed_ms - inference_finished_ms,
             "port-wall": elapsed_ms,
+            "qualified-latency-limit": float(self.package.manifest.maximum_inference_latency_ms),
+            "deadline-bound-scheduling-grace": max(0., elapsed_ms - self.package.manifest.maximum_inference_latency_ms),
         }
         # Include trace validation as well; only the final scalar stamp/return
         # remain outside the measured interval. Never round before admission.
-        record.latency_ms = round(self._check_call_budget(started, raw))
+        record.latency_ms = round(self._check_call_budget(started, raw, control_deadline_monotonic=control_deadline_monotonic))
         return result
 
     # 功能：

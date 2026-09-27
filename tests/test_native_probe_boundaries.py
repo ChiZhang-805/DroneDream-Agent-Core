@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 from dronedream_agent_core import native_process_diagnostics as diagnostics
 from dronedream_agent_core.native_cpu_sampling import decode_samples, symbolize_mappings
@@ -85,7 +86,7 @@ def test_background_failure_is_preserved_in_the_close_receipt(monkeypatch):
     probe._stop = OneIteration()
     probe._last_source = 1.
     probe._processes = {"gazebo": 123}
-    monkeypatch.setattr(diagnostics.time, "monotonic", lambda: 2.)
+    isolate_monotonic(monkeypatch, diagnostics, lambda: 2.)
     monkeypatch.setattr(diagnostics, "sample_process_waits", fail)
     escaped = None
     try:
@@ -157,7 +158,7 @@ def test_probe_clock_failures_are_explicit(monkeypatch, clock):
     probe.close()
     probe._stop = threading.Event()
     probe._last_source = 1.
-    monkeypatch.setattr(diagnostics.time, "monotonic", lambda: clock)
+    isolate_monotonic(monkeypatch, diagnostics, lambda: clock)
     probe._run()
     receipt = probe.close()
     assert receipt["read_error"] == "ValueError"

@@ -351,7 +351,100 @@ def test_crossing_obstacle_changes_local_motion() -> None:
     decision = predictive_safety_decision(_request(obstacles=[crossing]), [])
     assert decision.action in {"slow", "replan"}
     assert decision.threat_obstacle_id == "person-1"
+    assert decision.avoidance_obstacle_id == "person-1"
     assert decision.minimum_predicted_clearance_m >= 0.3
+
+
+# 功能：
+#   区分最近物体与避让起因，旧格式在缺少新证据时保持原序列化身份。
+# 输入：
+#   fault：远处物体、过期感知或过期轨迹场景。
+# 输出：
+#   None：断言这些场景不能给出动态恢复监督证据。
+@pytest.mark.parametrize("fault", ["far", "stale-perception", "stale-track"])
+def test_nearest_obstacle_is_not_automatically_an_avoidance_cause(fault):
+    obstacle = DynamicObstacleObservation(obstacle_id="moving-person", position_m=Vector3(x=10, y=0, z=1),
+        velocity_mps=Vector3(x=0, y=.3, z=0), radius_m=.3, height_m=1.7, confidence=.9, age_seconds=0.)
+    request = _request(obstacles=[obstacle])
+    if fault == "stale-perception":
+        request.perception_stream_age_seconds = 2.
+    elif fault == "stale-track":
+        request.dynamic_obstacles[0].age_seconds = 2.
+    decision = predictive_safety_decision(request, [])
+    assert decision.threat_obstacle_id == "moving-person"
+    assert decision.avoidance_obstacle_id is None
+    payload = decision.model_dump(mode="json")
+    assert "avoidance_obstacle_id" not in payload
+    assert PredictiveSafetyDecision.model_validate(payload).model_dump(mode="json") == payload
+
+
+# 功能：
+#   验证动态原因身份能够不同于避让后最近物体，且只在实际受限时产生。
+# 输入：
+#   无：合成横穿场景，不产生物理训练数据。
+# 输出：
+#   None：断言证据序列化保留正确的原动作约束身份。
+def test_dynamic_avoidance_identity_survives_serialization():
+    crossing = DynamicObstacleObservation(obstacle_id="crossing", position_m=Vector3(x=2, y=-1, z=1),
+        velocity_mps=Vector3(x=0, y=1, z=0), radius_m=.3, height_m=1.7, confidence=.95, age_seconds=.05)
+    decision = predictive_safety_decision(_request(obstacles=[crossing]), [])
+    assert decision.avoidance_obstacle_id == "crossing"
+    decision.threat_obstacle_id = "static:different-nearest-after-avoidance"
+    restored = PredictiveSafetyDecision.model_validate_json(decision.model_dump_json())
+    assert restored.avoidance_obstacle_id == "crossing"
+
+
+# 功能：
+#   名义动作被附加时效门拒绝时重新选择候选，而不是选中后反复刹停。
+# 输入：
+#   无：合成常量谓词，不证明真实时效或物理安全。
+# 输出：
+#   None：断言选出的动作满足附加门且保留原速度/净空限制。
+def test_candidate_budget_filters_before_ranking():
+    request = _request()
+    original = predictive_safety_decision(request, [])
+    assert original.selected_velocity_mps.x > .5
+    selected = predictive_safety_decision(request, [], candidate_check=lambda v, clearance, yaw: v[0] <= .5)
+    assert selected.action != "hold"
+    assert selected.selected_velocity_mps.x <= .5
+    assert math.hypot(*selected.selected_velocity_mps.model_dump().values()) <= request.max_speed_mps
+    assert selected.minimum_predicted_clearance_m >= request.required_clearance_m
+
+
+# 功能：
+#   全部候选过期时保持；错误回调值不能按 Python 真值被接纳。
+# 输入：
+#   value：拒绝或非法返回值。
+# 输出：
+#   None：断言无可执行候选不会泄漏运动。
+@pytest.mark.parametrize("value", [False, 1, None, "yes"])
+def test_candidate_budget_requires_explicit_boolean(value):
+    check = lambda v, clearance, yaw: value
+    if value is False:
+        decision = predictive_safety_decision(_request(), [], candidate_check=check)
+        assert decision.action == "hold"
+        assert "CANDIDATE_TIME_BUDGET_EXHAUSTED" in decision.issue_codes
+    else:
+        with pytest.raises(ValueError, match="CANDIDATE_CHECK_INVALID"):
+            predictive_safety_decision(_request(), [], candidate_check=check)
+
+
+# 功能：
+#   最终完整几何复核仍再次经过时效门，早先接纳不能永久授权。
+# 输入：
+#   无：回调按调用顺序模拟随后失效，不产生真实控制证据。
+# 输出：
+#   None：断言最终失效转为保持。
+def test_selected_candidate_budget_is_rechecked():
+    counts = {}
+
+    def check(velocity, clearance, yaw):
+        counts[velocity] = counts.get(velocity, 0) + 1
+        return velocity[0] <= .5 and counts[velocity] == 1
+
+    decision = predictive_safety_decision(_request(), [], candidate_check=check)
+    assert decision.action == "hold"
+    assert "CANDIDATE_TIME_BUDGET_EXHAUSTED" in decision.issue_codes
 
 
 # 功能：

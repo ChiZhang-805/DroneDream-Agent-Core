@@ -99,11 +99,11 @@ def test_invalid_clock_cannot_create_a_scheduling_budget(clock):
             clock_consumer(now_unix_ms=clock)
 
 
-@pytest.mark.parametrize("now", [1180, 1181, 1200])
+@pytest.mark.parametrize("now", [1210, 1211, 1240])
 def test_wait_for_pending_model_cannot_consume_new_scan_time_after_action_lease(now):
     features = retained_features(captured=1100)
     coordinator = pending_coordinator()
-    # The old freshness check passed even when less than 70 ms of the action
+    # The old freshness check passed even when less than 40 ms of the action
     # budget remained. This used to allow another 35 ms wait for that reply.
     assert features.fresh_at(now + LOCAL_DISPATCH_RESERVE_MS)
     budget_ready = (
@@ -117,7 +117,7 @@ def test_wait_for_pending_model_cannot_consume_new_scan_time_after_action_lease(
         perception_healthy=True, features_retain_dispatch_budget=budget_ready,
         depth_processing_failed=False, fault_active=False,
     )
-    assert waiting is (now == 1180)
+    assert waiting is (now == 1210)
 
 
 def test_fresh_features_cannot_promote_older_pending_request():

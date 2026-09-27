@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,7 +103,8 @@ def run_state(cli, tmp_path, monkeypatch):
         quality_binary_accuracy=0.9,
     )
     monkeypatch.setattr(cli, "local_vision_semantic_class_weights", lambda *_: [1.0] * 8)
-    monkeypatch.setattr(cli, "build_local_vision_model", lambda *_, **__: object())
+    monkeypatch.setattr(cli, "build_local_vision_model", lambda *_, **__: SimpleNamespace(
+        initialization_record={"source": "isolated-test-initialization"}))
     monkeypatch.setattr(cli, "train_local_vision_model", lambda model, *_: (model, metrics))
     monkeypatch.setattr(cli, "evaluate_local_vision_model", lambda *_: metrics)
     monkeypatch.setattr(cli, "count_trainable_parameters", lambda *_: 1)
@@ -153,6 +155,68 @@ def test_publication_binds_original_inputs(cli, run_state):
     )
     assert receipt["artifact_sha256"] == hashlib.sha256(run_state["model"].read_bytes()).hexdigest()
     assert receipt["flight_qualification_granted"] is False
+    assert receipt["architecture"] == cli.LOCAL_VISION_ARCHITECTURE
+    assert receipt["training_device"] == "cpu"
+    assert receipt["embedding_supervision"] == "traversability-scene-quality-through-embedding"
+
+
+# 功能：
+#   作业在模型导出及回执发布期间仍持有写锁，另一恢复进程不能开始优化。
+# 输入：
+#   cli、run_state、monkeypatch：真实 CLI、隔离计算夹具及并发恢复注入点。
+# 输出：
+#   None：完成输出之前第二个写入者必须被拒绝。
+def test_session_lock_covers_export_and_publication(cli, run_state, monkeypatch):
+    from dronedream_agent_core.training.vision_session import VisionTrainingSession
+
+    run = run_state["model"].parent / "checkpoint-run"
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--run-directory", str(run)])
+    original = cli.train_local_vision_model
+    monkeypatch.setattr(cli, "train_local_vision_model", lambda model, *args, **kwargs:
+                        original(model, *args))
+
+    # 功能：
+    #   在实际导出后的基准环节请求同一目录的恢复锁。
+    # 输入：
+    #   无。
+    # 输出：
+    #   None：锁必须持续到最终回执发布结束。
+    def try_second_writer():
+        second = VisionTrainingSession(run, {}, resume=True)
+        with pytest.raises(OSError), second.writer():
+            pytest.fail("session lock released before publication")
+
+    run_state["hook"] = try_second_writer
+    assert cli.main() == 0
+
+
+# 功能：
+#   显式要求 GPU 但 CUDA 不可用时，在构建模型或下载骨干前失败，避免空耗资源。
+# 输入：
+#   cli、run_state：真实入口和隔离的发布测试环境。
+#   monkeypatch：模拟没有 CUDA 的机器，不执行真实远端租卡或训练。
+# 输出：
+#   None：不返回业务数据。
+def test_cuda_checked_before_model_construction(cli, run_state, monkeypatch):
+    import torch
+
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--device", "cuda"])
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    # 功能：
+    #   将设备检查前的模型构建尝试转成明确测试失败。
+    # 输入：
+    #   args、kwargs：本测试不应实际使用的模型构建参数。
+    # 输出：
+    #   None：不返回业务数据。
+    def unexpected_build(*args, **kwargs):
+        pytest.fail("CUDA availability must be checked before model construction")
+
+    monkeypatch.setattr(cli, "build_local_vision_model", unexpected_build)
+    with pytest.raises(RuntimeError, match="CUDA_UNAVAILABLE"):
+        cli.main()
+    assert not run_state["model"].exists()
+    assert not run_state["receipt"].exists()
 
 
 # 功能：
@@ -238,6 +302,25 @@ def test_failed_gate_retains_rejection_only(cli, run_state):
     receipt = json.loads(run_state["receipt"].read_text())
     assert not receipt["training_accepted"]
     assert receipt["artifact_sha256"] is None
+
+
+# 功能：
+#   即使整体分割指标很好，可通行面或普通障碍识别失败也必须阻止模型发布。
+# 输入：
+#   cli、run_state、monkeypatch：真实发布入口、隔离文件及验证指标注入工具。
+#   class_id：不可被平均成绩掩盖的关键语义类别。
+# 输出：
+#   None：拒绝回执包含关键类别错误，且不发布模型文件。
+@pytest.mark.parametrize("class_id", [1, 2])
+def test_navigation_semantics_cannot_hide_behind_mean_iou(cli, run_state, monkeypatch, class_id):
+    metrics = cli.evaluate_local_vision_model(None, None, None)
+    metrics.semantic_class_iou[class_id] = 0.0
+    metrics.semantic_mean_iou = sum(metrics.semantic_class_iou) / 8
+    monkeypatch.setattr(cli, "evaluate_local_vision_model", lambda *_: metrics)
+    assert cli.main() == 1
+    receipt = json.loads(run_state["receipt"].read_text())
+    assert "LOCAL_VISION_CRITICAL_SEMANTIC_CLASS_IOU_TOO_LOW" in receipt["issue_codes"]
+    assert not run_state["model"].exists()
 
 
 # 功能：

@@ -233,6 +233,31 @@ def test_role_transition_retains_prior_specialist_sensor_history():
 
 
 # 功能：
+#   仅为有效且属于所选专家的窗口复制历史，仍验证其他专家和未填满窗口的真实观测。
+# 输入：
+#   无：用合成夹具跟踪复制次数，不替换实际历史构造与校验逻辑。
+# 输出：
+#   None：断言只有一个实际输出窗口触发复制，非法前序观测仍被拒绝。
+def test_history_materializes_only_for_selected_complete_windows():
+    from unittest.mock import patch
+
+    rows = samples()[:4]
+    rows[-1] = rows[-1].model_copy(update={'navigation_expert_role': 'precision-maneuver-policy'})
+    original = CausalControlHistory.values
+    with patch.object(CausalControlHistory, 'values', autospec=True, side_effect=original) as values:
+        examples = causal_examples(rows, stream_groups={'train': 'route-a'}, history_length=4,
+                                   navigation_role='precision-maneuver-policy')
+        assert values.call_count == 1
+        assert len(examples) == 1
+        assert examples[0].history_mask == [1.] * 4
+        assert examples[0].source_sha256 == tuple(row.temporal_evidence.sample_sha256 for row in rows)
+    malformed = rows[0].model_copy(update={'realtime_valid_mask': [2.] * len(rows[0].realtime_valid_mask)})
+    with pytest.raises(ValueError):
+        causal_examples([malformed, *rows[1:]], stream_groups={'train': 'route-a'}, history_length=4,
+                        navigation_role='precision-maneuver-policy')
+
+
+# 功能：
 #   控制历史使用真实来源时间差，超过最大间隔后与窗口一起归零，而不是使用轮询时长。
 # 输入：
 #   无。

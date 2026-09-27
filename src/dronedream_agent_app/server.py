@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import hmac
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -13,7 +14,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import anyio
@@ -48,6 +49,7 @@ from dronedream_agent_core.plugin_contracts import (
 )
 
 from . import __version__
+from .airspace_service import AirspaceRequest, AirspaceService
 from .asset_import_service import AssetImportService
 from .asset_issue_catalog import asset_job_issue_report
 from .asset_qualification_service import (
@@ -57,8 +59,10 @@ from .asset_qualification_service import (
 from .asset_remote_sources import RemoteAssetSourceService
 from .connector_credentials import ConnectorCredentialService
 from .custom_models import CredentialVault, CustomModelService, ModelConnection
+from .error_reporting import error_handler
 from .harness_design_service import HarnessDesignService, HarnessDesignServiceError
 from .identity import SupabaseJwtVerifier, VerifiedIdentity
+from .map_resource_catalog import map_resource_catalog
 from .mission_service import MissionService, _validate_gateway
 from .models import (
     AccountMemoryCandidateDecisionRequest,
@@ -69,6 +73,7 @@ from .models import (
     AssetPairQualificationCreateRequest,
     AssetRemoteImportRequest,
     ConnectorCredentialCreateRequest,
+    ConversationTitleRequest,
     CustomModelCreateRequest,
     CustomModelDiscoverRequest,
     HarnessRevisionActionRequest,
@@ -88,6 +93,7 @@ from .models import (
 )
 from .plugin_manager import PluginManager, PluginManagerError
 from .plugin_marketplace import PluginMarketplaceError, PluginMarketplaceService
+from .preparation_progress import PreparationProgress
 from .runtime_manager import RuntimeBridgeError, RuntimeManager
 from .storage import AppStore, AssetImportError
 
@@ -157,6 +163,7 @@ def create_app(
     harness_design = HarnessDesignService(store, plugin_manager)
     custom_models = CustomModelService(store)
     connector_credentials = ConnectorCredentialService(store, connector_credential_vault)
+    airspace_service = AirspaceService(store)
     mission_service = MissionService(
         store,
         plugin_manager,
@@ -200,6 +207,10 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+    report_error = error_handler(store.root)
+    app.add_exception_handler(HarnessDesignServiceError, report_error)
+    app.add_exception_handler(ModelInvocationError, report_error)
+    app.add_exception_handler(Exception, report_error)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["tauri://localhost", "http://tauri.localhost", "http://127.0.0.1:5173"],
@@ -244,7 +255,8 @@ def create_app(
         payload: AccountMemoryScopeRequest
         | MissionPrepareRequest
         | MissionExecuteRequest
-        | AssetInterpretationRequest,
+        | AssetInterpretationRequest
+        | ConversationTitleRequest,
         identity: VerifiedIdentity,
     ) -> None:
         mismatched = (
@@ -668,6 +680,16 @@ def create_app(
     def list_asset_import_jobs() -> list[dict[str, object]]:
         return store.list_asset_import_jobs()
 
+    # 功能：
+    #   返回经过许可证和来源固定审查的默认地图目录；目录条目不等同于飞行认证。
+    # 输入：
+    #   无。接口只返回随当前版本发布的只读目录。
+    # 输出：
+    #   catalog：来源、许可、预解析结构和各层就绪状态。
+    @app.get("/v1/map-resource-catalog", dependencies=[local])
+    def list_map_resources() -> dict[str, object]:
+        return map_resource_catalog()
+
     @app.get("/v1/asset-source-adapters", dependencies=[local])
     def list_asset_source_adapters() -> list[dict[str, object]]:
         return plugin_manager.source_adapter_catalog()
@@ -959,13 +981,28 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     # 功能：
-    #   在真实账户及模型授权下解析指定资产并保存可复用理解，不创建计划或启动飞行。
+    #   使用已验证账户和本机令牌读取选定资产对的全图空间，不创建任务或启动飞行。
     # 输入：
-    #   thread_id：承载调用记录的任务标识。
-    #   payload：精确资产、模型及账户范围。
+    #   payload：精确地图／无人机版本。
     #   identity：已经验证的账户身份。
     # 输出：
-    #   result：解析结果、内容绑定与本次模型调用记录。
+    #   snapshot：内容绑定的静态偏好空间。
+    @app.post("/v1/assets/preferred-airspace", dependencies=[local])
+    def preferred_airspace(payload: AirspaceRequest,
+                           identity: VerifiedIdentity = verified_identity):
+        try:
+            return airspace_service.snapshot(payload)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="AIRSPACE_ASSET_NOT_FOUND") from error
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail="AIRSPACE_SOURCE_INVALID") from error
+
+    # 功能：
+    #   在真实账户及模型授权下解析指定资产；解析结果不授予飞行权限。
+    # 输入：
+    #   thread_id、payload、identity：任务、解析请求和已验证账户。
+    # 输出：
+    #   result：模型理解与调用记录。
     @app.post("/v1/threads/{thread_id}/interpret", dependencies=[local])
     def interpret_asset(
         thread_id: str,
@@ -1047,6 +1084,54 @@ def create_app(
             if not code.startswith("ASSET_INTERPRETATION_"):
                 code = "ASSET_INTERPRETATION_FAILED"
             raise HTTPException(status_code=409, detail=code) from error
+
+    # 功能：
+    #   验证账户、会话与模型授权后生成短标题，不授予任何飞行权限。
+    # 输入：
+    #   thread_id：会话；payload：命名请求；identity：已验证身份。
+    # 输出：
+    #   result：已保存标题和真实模型调用证据。
+    @app.post("/v1/threads/{thread_id}/title", dependencies=[local])
+    def name_conversation(thread_id: str, payload: ConversationTitleRequest, identity: VerifiedIdentity = verified_identity) -> dict[str, object]:
+        from .conversation_title import generate_conversation_title
+        from .mission_service import _assert_model_connections_in_plugin_snapshot
+
+        require_identity_match(payload, identity)
+        try:
+            thread = store.get_thread(thread_id)
+            scope = MemoryOwnerScope(owner_account_id=identity.owner_account_id, tenant_id=identity.tenant_id, organization_id=identity.organization_id, source_edition=payload.source_edition)
+            mission_service.account_memory.bind_thread(scope, thread_id)
+            if thread["selected_model"] != payload.model_id:
+                raise ValueError("CONVERSATION_TITLE_MODEL_MISMATCH")
+            if payload.model_grant.startswith("ddc_"):
+                connection = custom_models.consume_grant(payload.model_grant, thread_id, payload.model_id)
+            else:
+                if payload.gateway_base_url is None:
+                    raise ValueError("MODEL_GATEWAY_REQUIRED")
+                provider, _plugin_id, capability_id = plugin_manager.model_binding_for_model(payload.model_id)
+                connection = ModelConnection(selection_id=payload.model_id, provider=provider, model_id=payload.model_id, api_key=payload.model_grant, base_url=_validate_gateway(str(payload.gateway_base_url), identity.issuer), api_style="chat-completions", capability_id=capability_id, source="default")
+            _assert_model_connections_in_plugin_snapshot(plugin_manager.snapshot(thread_id=thread_id), connection, {})
+            result = generate_conversation_title(connection, payload.message, payload.locale)
+            store.patch_thread(thread_id, {"title": result["title"]})
+            return result
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="CONVERSATION_NOT_FOUND") from error
+        except (ValueError, OSError, sqlite3.Error, ModelInvocationError) as error:
+            raise HTTPException(status_code=409, detail="CONVERSATION_TITLE_UNAVAILABLE") from error
+
+    preparation_progress = PreparationProgress()
+
+    # 功能：
+    #   读取当前登录账户的一次准备请求的公开进度，不包含模型内部思维或其他会话数据。
+    # 输入：
+    #   thread_id：会话；request_id：请求；after：事件游标；identity：已验证身份。
+    # 输出：
+    #   snapshot：新增进度事件。
+    @app.get("/v1/threads/{thread_id}/preparation-progress", dependencies=[local])
+    def read_preparation_progress(thread_id: str, request_id: str, after: int = 0, identity: VerifiedIdentity = verified_identity) -> dict:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id) or after < 0:
+            raise HTTPException(status_code=422, detail="INVALID_PROGRESS_CURSOR")
+        return preparation_progress.read((identity.owner_account_id, identity.tenant_id, identity.organization_id, thread_id, request_id), after)
 
     @app.post("/v1/threads/{thread_id}/prepare", dependencies=[local])
     def prepare(
@@ -1132,7 +1217,8 @@ def create_app(
                 },
             )
             store.append_message(thread_id, role="user", kind="text", content=payload.message)
-            result = mission_service.prepare(
+            progress_key = (identity.owner_account_id, identity.tenant_id, identity.organization_id, thread_id, payload.progress_request_id)
+            result = preparation_progress.run(progress_key, lambda: mission_service.prepare(
                 thread_id=thread_id,
                 message=payload.message,
                 map_id=payload.map_id,
@@ -1152,7 +1238,7 @@ def create_app(
                 source_edition=payload.source_edition,
                 memory_projection_credentials=projection_credentials,
                 memory_projection_configuration_issue=projection_configuration_issue,
-            )
+            ))
             notifications = result.get("notifications")
             if not isinstance(notifications, list) or not notifications:
                 notifications = [
@@ -1212,7 +1298,7 @@ def create_app(
         except MissionPreparationBlocked as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ModelInvocationError as error:
-            raise HTTPException(status_code=409, detail="MODEL_INVOCATION_FAILED") from error
+            raise error
         except KeyError as error:
             raise HTTPException(status_code=404, detail="RESOURCE_NOT_FOUND") from error
         except ValueError as error:
@@ -1734,20 +1820,30 @@ def create_app(
         return runtime_manager.live_sources(thread_id)
 
     @app.get("/v1/threads/{thread_id}/live-frame", dependencies=[local])
-    def live_frame(thread_id: str, identity: VerifiedIdentity = verified_identity) -> Response:
+    # 功能：
+    #   在账号权限核验后返回选定仿真相机帧，来源只允许固定白名单。
+    # 输入：
+    #   thread_id：任务标识；identity：登录身份；source_id：仿真相机标识。
+    # 输出：
+    #   response：禁止缓存的真实 PNG；尚无帧时返回 404。
+    def live_frame(thread_id: str, identity: VerifiedIdentity = verified_identity,
+                   source_id: Literal["gazebo-render", "gazebo-onboard"] = "gazebo-render"
+                   ) -> Response:
         require_runtime_thread_scope(thread_id, identity)
-        path = runtime_manager.live_frame(thread_id)
+        path = (runtime_manager.live_frame(thread_id) if source_id == "gazebo-render"
+                else runtime_manager.live_frame(thread_id, source_id=source_id))
         if path is None:
             raise HTTPException(status_code=404, detail="LIVE_FRAME_NOT_READY")
         try:
             body = path.read_bytes()
         except OSError as error:
             raise HTTPException(status_code=404, detail="LIVE_FRAME_NOT_READY") from error
-        return Response(
+        response = Response(
             content=body,
             media_type="image/png",
             headers={"Cache-Control": "no-store, max-age=0"},
         )
+        return response
 
     @app.get("/v1/threads/{thread_id}/live-telemetry", dependencies=[local])
     def live_telemetry(

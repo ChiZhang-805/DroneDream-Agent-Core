@@ -157,7 +157,12 @@ class AssetImportService:
         )
         destination_directory = self.store.asset_quarantine_root / job.job_id
         destination_directory.mkdir(parents=False)
-        suffix = Path(display_name).suffix.casefold()
+        lowered_name = display_name.casefold()
+        suffix = (
+            ".building.yaml"
+            if lowered_name.endswith(".building.yaml")
+            else Path(display_name).suffix.casefold()
+        )
         if (
             not suffix
             or len(suffix) > 16
@@ -602,8 +607,44 @@ class AssetImportService:
         if not isinstance(index, dict):
             raise AssetImportError("BUNDLED_ASSET_INDEX_INVALID")
         schema_version = index.get("schema_version")
-        if schema_version != "dronedream.bundled-assets.v2":
+        if schema_version not in {
+            "dronedream.bundled-assets.v2",
+            "dronedream.bundled-assets.v3",
+        }:
             raise AssetImportError("BUNDLED_ASSET_INDEX_INVALID")
+        current_pair = index.get("qualified_pair")
+        if not isinstance(current_pair, dict):
+            raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
+        if schema_version == "dronedream.bundled-assets.v2":
+            qualified_pairs = [current_pair]
+        else:
+            qualified_pairs = index.get("qualified_pairs")
+            default_qualification_id = index.get("default_qualification_id")
+            if (
+                not isinstance(qualified_pairs, list)
+                or not 1 <= len(qualified_pairs) <= 64
+                or not isinstance(default_qualification_id, str)
+                or current_pair.get("qualification_id") != default_qualification_id
+            ):
+                raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
+            qualification_ids: list[str] = []
+            resource_ids: list[str] = []
+            for pair in qualified_pairs:
+                if not isinstance(pair, dict):
+                    raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
+                qualification_id = pair.get("qualification_id")
+                resource_id = pair.get("resource_id")
+                if not isinstance(qualification_id, str) or not isinstance(resource_id, str):
+                    raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
+                qualification_ids.append(qualification_id)
+                resource_ids.append(resource_id)
+            if (
+                len(qualification_ids) != len(set(qualification_ids))
+                or len(resource_ids) != len(set(resource_ids))
+                or default_qualification_id not in qualification_ids
+                or not any(pair == current_pair for pair in qualified_pairs)
+            ):
+                raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
         # 历史迁移声明也必须在任何安装/入库之前验证，不能先安装再发现索引损坏。
         superseded_pairs = index.get("superseded_qualified_pairs", [])
         if not isinstance(superseded_pairs, list):
@@ -626,17 +667,19 @@ class AssetImportService:
                 digest = superseded.get(field)
                 if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                     raise AssetImportError("BUNDLED_SUPERSEDED_PAIR_INVALID")
-            current_pair = index.get("qualified_pair")
             if isinstance(current_pair, dict) and qualification_id == current_pair.get(
                 "qualification_id"
             ):
                 raise AssetImportError("BUNDLED_SUPERSEDED_PAIR_IS_CURRENT")
-        rows = self._seed_bundled_qualified_pair(
-            bundle_directory=bundle_directory,
-            index=index,
-        )
-        pair = index.get("qualified_pair")
-        packages = pair.get("packages") if isinstance(pair, dict) else None
+        rows: list[dict[str, object]] = []
+        for pair in qualified_pairs:
+            rows.extend(
+                self._seed_bundled_qualified_pair(
+                    bundle_directory=bundle_directory,
+                    pair=pair,
+                )
+            )
+        packages = current_pair.get("packages")
         if not isinstance(packages, list):
             raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
         replacements = {
@@ -690,10 +733,9 @@ class AssetImportService:
         self,
         *,
         bundle_directory: Path,
-        index: dict[str, object],
+        pair: dict[str, object],
     ) -> list[dict[str, object]]:
-        pair = index.get("qualified_pair")
-        if not isinstance(pair, dict) or pair.get("schema_version") != (
+        if pair.get("schema_version") != (
             "dronedream.bundled-qualified-pair.v1"
         ):
             raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")

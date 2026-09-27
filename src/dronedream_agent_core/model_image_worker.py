@@ -100,6 +100,7 @@ class LatestModelImageWorker:
 
     # 功能：
     #   返回工作器仍开放且原始年龄有效的最近结果；编码失败或线程终止不能暴露旧图像。
+    #   接收时刻晚于调用方快照时刻的帧留待下一周期，避免跨线程读取引入未来观测。
     # 输入：
     #   self：当前图像工作器。
     #   now_monotonic_seconds：消费者的当前单调钟秒数。
@@ -125,6 +126,9 @@ class LatestModelImageWorker:
             sample = self._latest
         if sample is None:
             return sample
+        clock = sample.image.frame_time
+        if clock is not None and clock.received_monotonic_seconds > now_monotonic_seconds:
+            return None
         age = now_monotonic_seconds - sample.image.received_monotonic_seconds
         if not 0 <= age <= maximum_age_seconds:
             sample = None

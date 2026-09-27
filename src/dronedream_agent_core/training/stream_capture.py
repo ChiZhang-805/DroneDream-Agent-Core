@@ -223,7 +223,7 @@ def _records(path: Path):
 # 输出：
 #   joined：调用标识到原始命令和首次执行回执的映射。
 def grounded_control_index(simulation: Path, call_ids: set[str]):
-    if (type(call_ids) not in (set, frozenset) or not 1 <= len(call_ids) <= 256
+    if (type(call_ids) not in (set, frozenset) or not 1 <= len(call_ids) <= 512
             or any(type(value) is not str or not value for value in call_ids)):
         raise ValueError("STREAM_CAPTURE_CALL_SET_INVALID")
     call_ids = frozenset(call_ids)
@@ -349,7 +349,7 @@ def stream_visit(capture, packed, command, application) -> StreamControlVisit:
 def finalize_stream_captures(episode: Path, captures, *, write_new):
     reset, terminal = require_grounded_stream(episode)
     if (
-        type(captures) not in (list, tuple) or not 1 <= len(captures) <= 256
+        type(captures) not in (list, tuple) or not 1 <= len(captures) <= 512
         or any(type(c) is not PackedStreamCapture or type(c.content) is not bytes for c in captures)
     ):
         raise ValueError("STREAM_CAPTURE_ARCHIVE_INVALID")

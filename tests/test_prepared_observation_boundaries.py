@@ -13,6 +13,7 @@ from dronedream_agent_core.training import policy_port
 from dronedream_agent_core.training.observations import (
     PreparedTrainingInput,
     compile_training_observation,
+    compile_training_input,
     load_policy_observations,
 )
 
@@ -58,6 +59,19 @@ def test_prepared_input_rejects_invalid_clock(now):
 def test_compilation_rejects_nan_clock():
     with pytest.raises(ValueError, match="CLOCK"):
         compile_training_observation(current_request()["snapshot"], now_unix_ms=float("nan"))
+
+
+# 功能：合并解析不改变输入内容、截止时间和观测，也不共享可变特征；输出：严格相等验证。
+def test_single_parse_preserves_deadline_and_ownership():
+    snapshot = current_request()["snapshot"]
+    original = sha256_json(snapshot)
+    observation, features, deadline = compile_training_input(snapshot, now_unix_ms=1000)
+    assert observation == compile_training_observation(snapshot, now_unix_ms=1000)
+    assert deadline == features.control_deadline_unix_ms(now_unix_ms=1000)
+    features.fused_features[0] += 1
+    assert sha256_json(snapshot) == original
+    with pytest.raises(ValueError, match="EXPIRED"):
+        compile_training_input(snapshot, now_unix_ms=deadline)
 
 
 # 功能：

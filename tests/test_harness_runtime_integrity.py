@@ -5,6 +5,7 @@ import threading
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 from dronedream_agent_core.model_harness import graph as graph_module
 from dronedream_agent_core.model_harness.graph import (
@@ -337,7 +338,7 @@ def test_breaker_rejects_invalid_configuration(settings):
 #   None：不返回业务数据。
 def test_breaker_recovers_at_deadline_and_success_clears_failures(monkeypatch):
     clock = Mock(return_value=100.0)
-    monkeypatch.setattr(graph_module.time, "monotonic", clock)
+    isolate_monotonic(monkeypatch, graph_module, clock)
     breaker = HarnessCircuitBreaker(failure_threshold=2, recovery_seconds=30.0)
     breaker.failure("reader")
     assert breaker.allow("reader")

@@ -1,0 +1,8 @@
+# Torch CUDA wheel is selected explicitly in bootstrap.sh, not a CPU environment freeze.
+numpy==2.4.6
+pydantic==2.13.5
+transformers==5.17.0
+safetensors==0.8.0
+huggingface_hub==1.33.0
+pytest==9.1.1
+laya @ git+https://github.com/NandhaKishorM/laya@970dc8c5f63d7b886a68409493f37d569424f933

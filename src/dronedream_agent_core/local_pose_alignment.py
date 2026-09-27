@@ -104,6 +104,12 @@ class MapPoseFit:
     attitude_held_fixed: bool = False
     covariance_qualified: bool = False
     motion_permission_granted: bool = False
+    # Unit-noise, normalized point-to-plane information after eliminating
+    # unknown attitude. This is NOT a calibrated covariance or authority.
+    translation_information_shape: tuple[tuple[float, float, float], ...] | None = None
+    # Normalized physical Jacobian information: translation metres, rotation
+    # exponential coordinates radians. Only populated for a full-rank fit.
+    pose_information_shape: tuple[tuple[float, ...], ...] | None = None
 
 
 # 功能：
@@ -154,19 +160,40 @@ def _observable(jacobian, weights, limits):
 # 输出：
 #   observability：平移秩和未约束方向，不是融合后的协方差。
 def _translation_observability(jacobian, weights, limits):
-    weighted = np.sqrt(weights[:, None]) * jacobian
+    # Use EXACTLY the spectrum retained by the actual six-dimensional solver.
+    # Reusing the raw Jacobian here used to resurrect a weak mixed position/
+    # attitude mode that the solver had deliberately removed. That could label
+    # position as fully observable while leaving centimetres of correction in
+    # the discarded pose direction.
+    eigenvalues, observed_basis, _ = _observable(jacobian, weights, limits)
+    if not len(eigenvalues):
+        return 0, np.eye(3), np.zeros((3, 3))
+    weighted = np.sqrt(eigenvalues[:, None]) * observed_basis.T
     translation, angular = weighted[:, :3], weighted[:, 3:]
     u, singular, _ = np.linalg.svd(angular, full_matrices=False)
     basis = u[:, singular > 1e-10]
     remaining = translation - basis @ (basis.T @ translation)
     eigenvalues, vectors = np.linalg.eigh(remaining.T @ remaining)
     observed = eigenvalues >= limits.minimum_scaled_eigenvalue
-    observability = int(np.count_nonzero(observed)), vectors[:, ~observed].T
+    information = (vectors[:, observed] * eigenvalues[observed]) @ vectors[:, observed].T
+    observability = int(np.count_nonzero(observed)), vectors[:, ~observed].T, information
     return observability
 
 
+# 功能：只在本轮可观测方向求解增量，不因零空间随迭代旋转而删除已有状态、造成上升步。
+# 输入：state：当前六维缩放状态；gradient：同一鲁棒目标梯度；
+#       eigenvalues、basis：该目标保留的正特征值和正交可观测基。
+# 输出：下一候选状态；未观测方向保持当前猜测而非被当作准确值，资格仍由独立信息矩阵决定。
+def _observable_proposal(state, gradient, eigenvalues, basis):
+    # g.T @ delta = -sum((B.T @ g)**2 / eigenvalues) <= 0.
+    # Projecting the TOTAL state instead adds -(I-BB.T)@state, which can
+    # point uphill when a weak, position/attitude-coupled mode changes.
+    return state - basis @ ((basis.T @ gradient) / eigenvalues)
+
+
 # 功能：
-#   联合拟合平移和姿态，逐轮重新核对可见性；每轮去除总状态中的不可观测分量，不授予运动权限。
+#   联合拟合平移和姿态，逐轮重新核对可见性；仅更新可观测增量，不授予运动权限。
+#   不可观测方向仍是未验证的初始/迭代猜测，调用方不能把部分约束候选当作完整精确位姿。
 #   候选超出包络时拒绝而非裁剪后宣称成功，失败不回退为虚假的零误差定位。
 # 输入：
 #   value：世界坐标系观测点阵。
@@ -174,6 +201,8 @@ def _translation_observability(jacobian, weights, limits):
 #   sensor_origins_world_m：每条射线的真实采样起点。
 #   reference_position_world_m：旋转所围绕的输入机体参考点。
 #   limits：可选的几何、旋转和迭代上限。
+#   initial_correction_world_m、initial_rotation_vector_world_rad：可选成对初始迭代值；
+#       不更改原始参考系，后续仍校验总修正包络，不能分阶段绕过上限。
 # 输出：
 #   fit：六维修正候选、可观测子空间、支持度、残差和原因。
 def fit_map_pose(
@@ -183,6 +212,8 @@ def fit_map_pose(
     sensor_origins_world_m,
     reference_position_world_m,
     limits: MapPoseAlignmentLimits | None = None,
+    initial_correction_world_m=None,
+    initial_rotation_vector_world_rad=None,
 ):
     points = _points(value)
     reference = _points([reference_position_world_m])[0]
@@ -196,7 +227,21 @@ def fit_map_pose(
     geometry, length = limits.geometry, limits.rotation_length_scale_m
     relative, origin_relative = points - reference, origins - reference
     state, rank, null, translation_rank, translation_null = np.zeros(6), 0, np.eye(6), 0, np.eye(3)
+    # A coarse map search may supply a starting iterate, not a new origin.
+    # Every reported correction and envelope remains relative to the ORIGINAL
+    # input pose, so splitting a correction into stages cannot bypass limits.
+    if (initial_correction_world_m is None) != (initial_rotation_vector_world_rad is None):
+        raise ValueError("MAP_POSE_INITIAL_STATE_INCOMPLETE")
+    if initial_correction_world_m is not None:
+        initial_position = _points([initial_correction_world_m])[0]
+        initial_rotation = _points([initial_rotation_vector_world_rad])[0]
+        if (np.linalg.norm(initial_position) > geometry.maximum_translation_m
+                or np.linalg.norm(initial_rotation) > limits.maximum_rotation_rad):
+            raise ValueError("MAP_POSE_INITIAL_STATE_OUTSIDE_ENVELOPE")
+        state = np.concatenate((initial_position, initial_rotation * length))
     count, iteration, retired, residual = 0, 0, 0, None
+    translation_information = None
+    pose_information = None
     eligible = None
 
     # 功能：
@@ -210,20 +255,28 @@ def fit_map_pose(
         rotation = rotation_exp_and_left_jacobian(state[3:] / length)[0] if accepted else np.eye(3)
         fit = MapPoseFit(
             accepted,
-            tuple(state[:3] if accepted else np.zeros(3)),
-            tuple(state[3:] / length if accepted else np.zeros(3)),
-            tuple(map(tuple, rotation)),
-            tuple(reference),
+            tuple(float(v) for v in (state[:3] if accepted else np.zeros(3))),
+            tuple(float(v) for v in (state[3:] / length if accepted else np.zeros(3))),
+            tuple(tuple(float(v) for v in row) for row in rotation),
+            tuple(float(v) for v in reference),
             rank,
-            tuple(map(tuple, null)),
+            tuple(tuple(float(v) for v in row) for row in null),
             translation_rank,
-            tuple(map(tuple, translation_null)),
+            tuple(tuple(float(v) for v in row) for row in translation_null),
             length,
             count,
             residual,
             iteration,
             issue,
             retired,
+            translation_information_shape=(
+                tuple(tuple(float(v) for v in row) for row in translation_information)
+                if accepted and translation_information is not None else None
+            ),
+            pose_information_shape=(
+                tuple(tuple(float(v) for v in row) for row in pose_information)
+                if accepted and rank == 6 and pose_information is not None else None
+            ),
         )
         return fit
 
@@ -254,11 +307,14 @@ def fit_map_pose(
         weights /= np.sum(weights)
         eigenvalues, basis, null = _observable(jacobian, weights, limits)
         rank = len(eigenvalues)
-        translation_rank, translation_null = _translation_observability(jacobian, weights, limits)
+        physical_jacobian = jacobian * np.array([1., 1., 1., length, length, length])
+        pose_information = physical_jacobian.T @ (weights[:, None] * physical_jacobian)
+        translation_rank, translation_null, translation_information = _translation_observability(
+            jacobian, weights, limits)
         if not rank:
             return result("MAP_POSE_NO_OBSERVABLE_DIRECTION")
         gradient = jacobian.T @ (weights * errors)
-        proposal = basis @ (basis.T @ state - (basis.T @ gradient) / eigenvalues)
+        proposal = _observable_proposal(state, gradient, eigenvalues, basis)
         # Do not turn an out-of-envelope minimum into a clipped 'success'.
         if (
             np.linalg.norm(proposal[:3]) > geometry.maximum_translation_m

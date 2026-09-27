@@ -1,0 +1,21 @@
+{
+  "schema": "dronedream.heading-stability-plan.v1",
+  "purpose": "Bounded research comparison; never promote on reused development validation alone",
+  "seed": 806,
+  "repeat_seeds": [805, 807],
+  "epochs": 180,
+  "batch_size": 128,
+  "learning_rate": 0.001,
+  "variants": ["circular", "context", "context-noise", "context-regularized"],
+  "noise_degrees": 0.25,
+  "noise_policy": "declared stress bound, not claimed measured sensor calibration; shared current bearing rotation, half-correlated previous rotation",
+  "history_dropout": 0.2,
+  "spatial_regularization": 0.5,
+  "temporal_regularization": 0.2,
+  "maximum_job_seconds": 600,
+  "maximum_jobs": 6,
+  "selection": "Require compatible MAE <= frozen baseline *1.05, p95 <= frozen baseline*1.05; noise P95 and maximum below frozen baseline; reject missing export or nonfinite outputs. Rank eligible by noise P95, then worst-group MAE. Repeat only winner without changing chosen seed.",
+  "formal_data_increment": 0,
+  "flight_authority": false,
+  "final_test_read": false
+}

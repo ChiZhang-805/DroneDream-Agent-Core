@@ -96,7 +96,7 @@ def source_snapshot(args):
             raise ValueError("FIXTURE_ROUTE_ORIGIN_INVALID")
     origin = [positions[0][axis] for axis in "xyz"]
     direction = [positions[1][axis] - positions[0][axis] for axis in "xyz"]
-    fixture_pose(origin, direction, 0)
+    fixture_pose(origin, direction, 0, base_yaw_deg=getattr(args, 'base_yaw_deg', 0.))
     calibration = camera_calibration(contents["camera"])
     fixture_sensor_mount(calibration)
     snapshot = {"sources": sources, "contents": contents, "origin": origin,
@@ -218,7 +218,7 @@ def signal_owned_process(process, signum):
 
 # 功能：
 #   1. 给已确认停止的服务器退出时间；未收到确认时向自有进程组发送中断信号。
-#   2. 分阶段等待并采集诊断，诊断失败仍执行强制回收，强制退出明确记录为失败。
+#   2. 服务已确认但进程未退出时补发正常中断；仍卡住则强制回收并明确记录失败。
 # 输入：
 #   process：本次自有仿真进程或 None。
 #   server_stop_acknowledged：是否已收到当前服务器停止确认。
@@ -236,6 +236,9 @@ def stop_owned_simulator(process, server_stop_acknowledged, errors):
         process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         diagnostic = cleanup_step("STOP_DIAGNOSTIC", lambda: stop_diagnostic(process), errors)
+        if server_stop_acknowledged:
+            cleanup_step("SIMULATOR_INTERRUPT_AFTER_ACK",
+                         lambda: signal_owned_process(process, signal.SIGINT), errors)
         try:
             process.wait(timeout=12)
         except subprocess.TimeoutExpired:
@@ -266,7 +269,8 @@ def run(args):
     rendered = load_source(render_world, 32*1024*1024)
     if bytes_digest(rendered) != render_receipt["render_world_sha256"]:
         raise ValueError("FIXTURE_RENDER_WORLD_CHANGED")
-    fixture = build_fixture_world(rendered, camera, origin)
+    fixture = build_fixture_world(rendered, camera, origin,
+                                  base_yaw_deg=getattr(args, 'base_yaw_deg', 0.))
     fixture_path = render_world.with_name("camera-fixture.sdf")
     with fixture_path.open("xb") as stream:
         stream.write(fixture)
@@ -398,7 +402,8 @@ def run(args):
                     completed_sweep = True
                     break
                 if now >= next_command and stamp > last_command_stamp:
-                    wanted = fixture_pose(origin, direction, elapsed / args.duration)
+                    wanted = fixture_pose(origin, direction, elapsed / args.duration,
+                                          base_yaw_deg=getattr(args, 'base_yaw_deg', 0.))
                     requested = time.monotonic()
                     response = command_transport.request(wanted)
                     commands.append({"source_pose_time_ns_at_request": stamp, "wanted": wanted,
@@ -460,6 +465,7 @@ def run(args):
         "calibration": asdict(calibration), "calibration_sha256": calibration.sha256,
         "partition": partition, "world_name": world_name, "rig_name": RIG_NAME,
         "origin_m": origin, "direction": direction, "motion_epoch_simulation_ns": epoch,
+        "base_yaw_deg": getattr(args, 'base_yaw_deg', 0.),
         "requested_simulation_duration_seconds": args.duration,
         "elapsed_wall_seconds": time.monotonic()-started,
         "measured_position_span_m": span, "maximum_measured_rotation_rad": max(angles, default=0),
@@ -511,6 +517,8 @@ def main():
         parser.add_argument(name, type=Path)
     parser.add_argument("--duration", type=float, default=16.)
     parser.add_argument("--wall-timeout", type=float, default=180.)
+    parser.add_argument("--base-yaw-deg", type=float, default=0.,
+                        help="Declared camera-only scan orientation; never changes an aircraft")
     parser.add_argument("--debugger", action="store_true",
                         help="Capture a native crash backtrace; never mark debugger run qualified")
     parser.add_argument("--retain-wsl-d3d12", action="store_true",

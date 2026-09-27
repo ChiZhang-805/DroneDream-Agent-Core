@@ -54,6 +54,7 @@ from .asset_packages import (
 )
 from .contracts import StrictModel
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
+from .rmf_building_conversion import RmfBuildingConversionError, convert_rmf_building_map
 from .xml_values import parse_xml
 from .zip_index import validate_zip_index
 
@@ -163,6 +164,18 @@ _ADAPTERS = (
         asset_kinds=["vehicle"],
         execution_boundary="isolated-local-companion",
         required_application="DroneDreamRuntime / ROS 2 Xacro",
+    ),
+    AssetSourceAdapterDescriptor(
+        adapter_id="open-rmf.building-map",
+        name="Open-RMF Building Map",
+        version="1.0.0",
+        availability="builtin",
+        source_formats=["rmf-building-map", "rmf-building-map-package"],
+        file_extensions=[".yaml", ".zip"],
+        asset_kinds=["map", "world"],
+        execution_boundary="declarative-parser",
+        required_application=None,
+        documentation_url="https://github.com/open-rmf/rmf_traffic_editor",
     ),
     AssetSourceAdapterDescriptor(
         adapter_id="blender.phobos",
@@ -482,6 +495,15 @@ def _zip_detection(source: Path) -> AssetSourceDetection:
         except (KeyError, TypeError, json.JSONDecodeError):
             pass
     suffixes = {PurePosixPath(name).suffix.casefold() for name in names}
+    if any(name.casefold().endswith(".building.yaml") for name in names):
+        return AssetSourceDetection(
+            source_format="rmf-building-map-package",
+            adapter_id="open-rmf.building-map",
+            asset_kind="map",
+            confidence="exact",
+            can_normalize_locally=True,
+            required_inputs=[],
+        )
     if any(name.endswith("model.config") for name in lowered) and any(
         name.endswith("model.sdf") for name in lowered
     ):
@@ -554,6 +576,17 @@ def detect_asset_source(source: Path, declared_format: str = "auto") -> AssetSou
         detected = None if is_archive else _xml_detection(source)
         if detected is None:
             suffix = source.suffix.casefold()
+            if source.name.casefold().endswith(".building.yaml"):
+                detected = AssetSourceDetection(
+                    source_format="rmf-building-map",
+                    adapter_id="open-rmf.building-map",
+                    asset_kind="map",
+                    confidence="exact",
+                    can_normalize_locally=True,
+                    required_inputs=[],
+                )
+            if detected is not None:
+                suffix = ""
             native: dict[str, tuple[str, str, SourceKind | None, str]] = {
                 ".blend": ("blender-blend", "blender.phobos", None, "blender_phobos_companion"),
                 ".smurf": ("phobos-smurf", "blender.phobos", "vehicle", "blender_phobos_companion"),
@@ -615,18 +648,19 @@ def detect_asset_source(source: Path, declared_format: str = "auto") -> AssetSou
                 ".las": ("las-laz", "gis.geospatial", "map", "gis_connector"),
                 ".laz": ("las-laz", "gis.geospatial", "map", "gis_connector"),
             }
-            value = native.get(suffix)
-            if value is None:
-                raise AssetSourceAdapterError("ASSET_SOURCE_FORMAT_UNRECOGNIZED")
-            source_format, adapter_id, kind, required = value
-            detected = AssetSourceDetection(
-                source_format=source_format,
-                adapter_id=adapter_id,
-                asset_kind=kind,
-                confidence="extension",
-                can_normalize_locally=False,
-                required_inputs=[required],
-            )
+            if detected is None:
+                value = native.get(suffix)
+                if value is None:
+                    raise AssetSourceAdapterError("ASSET_SOURCE_FORMAT_UNRECOGNIZED")
+                source_format, adapter_id, kind, required = value
+                detected = AssetSourceDetection(
+                    source_format=source_format,
+                    adapter_id=adapter_id,
+                    asset_kind=kind,
+                    confidence="extension",
+                    can_normalize_locally=False,
+                    required_inputs=[required],
+                )
     if declared_format not in {"", "auto", detected.source_format}:
         raise AssetSourceAdapterError("ASSET_SOURCE_FORMAT_MISMATCH")
     return detected
@@ -957,12 +991,118 @@ def _store_source_snapshot(
     )
 
 
+def _store_source_reference(
+    source: Path, output_bundle: zipfile.ZipFile, *, source_sha256: str
+) -> AssetFile:
+    """Retain immutable provenance without embedding the complete upstream archive."""
+
+    reference = (
+        json.dumps(
+            {
+                "schema_version": "dronedream.asset-source-reference.v1",
+                "display_name": source.name,
+                "size_bytes": source.stat().st_size,
+                "sha256": source_sha256,
+                "embedded": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    source_name = "source/source-reference.json"
+    output_bundle.writestr(source_name, reference)
+    return AssetFile(
+        path=source_name,
+        role="source_reference",
+        media_type="application/json",
+        sha256=hashlib.sha256(reference).hexdigest(),
+        size_bytes=len(reference),
+    )
+
+
 def _normalization_inputs(
     source: Path,
     detection: AssetSourceDetection,
     output_bundle: zipfile.ZipFile,
 ) -> tuple[list[AssetFile], str, bytes, list[tuple[str, bytes]]]:
     """Copy declarative files; ambiguous entrypoints require an explicit selection."""
+    if detection.adapter_id == "open-rmf.building-map":
+        files: list[AssetFile] = []
+        if zipfile.is_zipfile(source):
+            names = _validated_zip_names(source)
+            yaml_names = sorted(
+                name for name in names if name.casefold().endswith(".building.yaml")
+            )
+            if len(yaml_names) != 1:
+                raise AssetSourceAdapterError(
+                    "ASSET_SOURCE_ENTRYPOINT_MISSING"
+                    if not yaml_names
+                    else "ASSET_SOURCE_ENTRYPOINT_AMBIGUOUS"
+                )
+            if any(PurePosixPath(name).suffix.casefold() in _EXECUTABLE_SUFFIXES for name in names):
+                raise AssetSourceAdapterError("ASSET_SOURCE_EXECUTABLE_MEMBER_FORBIDDEN")
+            with zipfile.ZipFile(source) as input_bundle:
+                yaml_name = yaml_names[0]
+                info = input_bundle.getinfo(yaml_name)
+                if info.file_size > _MAX_XML_SOURCE_BYTES:
+                    raise AssetSourceAdapterError("ASSET_SOURCE_XML_SIZE_EXCEEDED")
+                yaml_payload = input_bundle.read(yaml_name)
+                for name in sorted(names):
+                    output_name = normalized_member_path(f"normalized/rmf/source/{name}")
+                    files.append(_stream_zip_member(input_bundle, name, output_bundle, output_name))
+        else:
+            yaml_name = source.name
+            yaml_payload = read_plugin_file(source, limit=_MAX_XML_SOURCE_BYTES)
+            output_name = normalized_member_path(f"normalized/rmf/source/{source.name}")
+            output_bundle.writestr(output_name, yaml_payload)
+            files.append(
+                AssetFile(
+                    path=output_name,
+                    role="metadata",
+                    media_type="application/yaml",
+                    sha256=hashlib.sha256(yaml_payload).hexdigest(),
+                    size_bytes=len(yaml_payload),
+                )
+            )
+        try:
+            conversion = convert_rmf_building_map(yaml_payload, source_name=yaml_name)
+        except RmfBuildingConversionError as error:
+            raise AssetSourceAdapterError(str(error)) from error
+        generated = (
+            ("normalized/rmf/generated/world.sdf", "sdf", "application/xml", conversion.sdf),
+            (
+                "normalized/rmf/generated/map-semantic.json",
+                "semantic",
+                "application/json",
+                conversion.semantic,
+            ),
+            (
+                "normalized/rmf/generated/navigation-semantic-graph.json",
+                "metadata",
+                "application/json",
+                conversion.topology,
+            ),
+            (
+                "normalized/rmf/generated/conversion-evidence.json",
+                "evidence",
+                "application/json",
+                conversion.report,
+            ),
+        )
+        for path, role, media_type, content in generated:
+            output_bundle.writestr(path, content)
+            files.append(
+                AssetFile(
+                    path=path,
+                    role=role,
+                    media_type=media_type,
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    size_bytes=len(content),
+                )
+            )
+        entrypoint = "normalized/rmf/generated/world.sdf"
+        return files, entrypoint, conversion.sdf, [(entrypoint, conversion.sdf)]
     if zipfile.is_zipfile(source):
         names = _validated_zip_names(source)
         if any(PurePosixPath(name).suffix.casefold() in _EXECUTABLE_SUFFIXES for name in names):
@@ -1074,6 +1214,7 @@ def normalize_asset_source(
     destination: Path,
     *,
     expected_kind: AssetKind | None = None,
+    embed_source_snapshot: bool = True,
 ) -> Path:
     """Normalize to an inspected, unqualified package without replacing existing output.
 
@@ -1104,6 +1245,7 @@ def normalize_asset_source(
     if detection.adapter_id not in {
         "dronedream.legacy-bundle",
         "gazebo.sdf",
+        "open-rmf.building-map",
         "ros2.urdf",
     }:
         raise AssetSourceAdapterError("ASSET_SOURCE_ADAPTER_UNAVAILABLE")
@@ -1127,7 +1269,11 @@ def normalize_asset_source(
             files, entrypoint, entrypoint_payload, xml_payloads = _normalization_inputs(
                 source, detection, output
             )
-            source_file = _store_source_snapshot(source, output, source_sha256=source_sha256)
+            source_file = (
+                _store_source_snapshot(source, output, source_sha256=source_sha256)
+                if embed_source_snapshot
+                else _store_source_reference(source, output, source_sha256=source_sha256)
+            )
             files = [source_file, *files]
             # Preserved raw XML is also inspected at package admission. Keep its
             # disabled plugin declarations without double-counting its physics.
@@ -1160,7 +1306,11 @@ def normalize_asset_source(
                         candidate = source_model.removeprefix("model://")
                         if candidate.replace("_", "").replace("-", "").isalnum():
                             px4_sitl_model = candidate
-            if detection.adapter_id in {"dronedream.legacy-bundle", "gazebo.sdf"}:
+            if detection.adapter_id in {
+                "dronedream.legacy-bundle",
+                "gazebo.sdf",
+                "open-rmf.building-map",
+            }:
                 targets.append(
                     SimulationTarget(
                         target_id="gazebo-harmonic",
@@ -1174,9 +1324,11 @@ def normalize_asset_source(
                 ["gazebo", "legacy-migrated"]
                 if detection.adapter_id == "dronedream.legacy-bundle"
                 else ["gazebo"]
-                if detection.adapter_id == "gazebo.sdf"
+                if detection.adapter_id in {"gazebo.sdf", "open-rmf.building-map"}
                 else ["ros2"]
             )
+            if detection.adapter_id == "open-rmf.building-map":
+                capabilities.extend(["rmf-semantic-topology", "uav-airspace-source"])
             if px4_sitl_model is not None:
                 capabilities.append(f"px4.sitl-model={px4_sitl_model}")
             (
@@ -1194,6 +1346,27 @@ def normalize_asset_source(
                 targets=targets,
                 capabilities=capabilities,
             )
+            if detection.adapter_id == "open-rmf.building-map":
+                # Gazebo static world geometry does not need dynamic-link mass
+                # or inertia.  Runtime and aircraft-pair qualification remain
+                # mandatory and are represented independently.
+                graph_path = "normalized/rmf/generated/navigation-semantic-graph.json"
+                semantics = semantics.model_copy(update={"navigation_graph_path": graph_path})
+                readiness = readiness.model_copy(
+                    update={
+                        "maturity_ceiling": "physics_ready",
+                        "missing_fields": [
+                            field
+                            for field in readiness.missing_fields
+                            if field
+                            not in {
+                                "physics.mass",
+                                "physics.inertia",
+                                "semantics.navigation",
+                            }
+                        ],
+                    }
+                )
             if detection.adapter_id == "dronedream.legacy-bundle" and kind in {
                 "map",
                 "world",
@@ -1233,6 +1406,8 @@ def normalize_asset_source(
                     application=(
                         "DroneDream Legacy"
                         if detection.adapter_id == "dronedream.legacy-bundle"
+                        else "Open-RMF / DroneDream Built-in Converter"
+                        if detection.adapter_id == "open-rmf.building-map"
                         else "Gazebo"
                         if detection.adapter_id == "gazebo.sdf"
                         else "ROS 2"

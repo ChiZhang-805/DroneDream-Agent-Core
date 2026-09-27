@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 from test_px4_training_lifecycle import environment
 from test_stream_collection import StreamLifecycle, collect, stream_fixture
 
@@ -23,7 +24,7 @@ from dronedream_agent_core.training.observations import TrainingObservationError
 # 输出：
 #   None：不返回业务数据。
 @pytest.mark.parametrize(
-    "mode,budget", [(None, 120), ("reward-step", 120), ("stream-imitation", 70)]
+    "mode,budget", [(None, 90), ("reward-step", 90), ("stream-imitation", 40)]
 )
 def test_only_stream_preparation_uses_actual_instead_of_predicted_cost(
     tmp_path, monkeypatch, mode, budget
@@ -64,7 +65,7 @@ def test_stream_preparation_expiry_has_no_reply_capture_or_sequence_advance(tmp_
     env._application = Mock()
     original_deadline = capture.request["valid_until_unix_ms"]
     # An expensive computation has already spent the admitted reserve.
-    monkeypatch.setattr(native.time, "time", lambda: (original_deadline - 69) / 1000.0)
+    isolate_time(monkeypatch, native, time=lambda: (original_deadline - 39) / 1000.0)
     with pytest.raises(ControlPreparationExpired):
         env.submit_stream_action(PilotAction(mode="pilot-control", axes=[0.2, 0.0, 0.0, 0.0]))
     env._exchange.reply.assert_not_called()
@@ -272,7 +273,7 @@ def test_expired_progress_deadline_stays_expired(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError, match="NEXT_OBSERVATION_TIMEOUT"):
         env.next_stream_observation(deadline=9.0)
     env._receive_source_request.assert_not_called()
-    assert env._rollout_stop_reason["required_remaining_input_ms"] == 70
+    assert env._rollout_stop_reason["required_remaining_input_ms"] == 40
 
 
 # 功能：

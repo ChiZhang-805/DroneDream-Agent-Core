@@ -14,7 +14,7 @@ import time
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
-from itertools import islice, product
+from itertools import chain, islice, product
 
 from .contracts import (
     DynamicObstacleObservation,
@@ -29,6 +29,8 @@ from .metric_ray_sampling import (
     MetricRaySample,
     sample_metric_rays,
 )
+from .metric_scan_native import NATIVE_SCAN_AVAILABLE, prepare_native_scan
+from .navigation_sectors import pack_navigation_sector_block, reduce_navigation_sector_blocks, select_navigation_keys
 from .occupancy_collision import bounded_occupied_cell_boxes
 from .perception_evidence import FrozenVector3
 
@@ -47,6 +49,26 @@ SECTOR_LABELS = (
 _OCCUPIED_LOG_ODDS_THRESHOLD = math.log(0.65 / 0.35)
 _FREE_LOG_ODDS_THRESHOLD = math.log(0.35 / 0.65)
 _MAX_GRID_WORK = 2_000_000
+
+
+# 功能：
+#   统一实时索引与导航摘要的概率分类；远离阈值时直接比较，阈值附近保留原指数公式的浮点结果。
+# 输入：
+#   odds：地图内部已验证、饱和在 [-6, 6] 的对数几率。
+# 输出：
+#   kind：1 为空地，2 为占用，0 为不确定。
+def _evidence_kind(odds: float) -> int:
+    if odds < _FREE_LOG_ODDS_THRESHOLD - 1e-12:
+        kind = 1
+    elif odds > _OCCUPIED_LOG_ODDS_THRESHOLD + 1e-12:
+        kind = 2
+    elif (abs(odds - _FREE_LOG_ODDS_THRESHOLD) <= 1e-12
+          or abs(odds - _OCCUPIED_LOG_ODDS_THRESHOLD) <= 1e-12):
+        probability = 1. / (1. + math.exp(-odds))
+        kind = 1 if probability <= .35 else (2 if probability >= .65 else 0)
+    else:
+        kind = 1 if odds < _FREE_LOG_ODDS_THRESHOLD else (2 if odds > _OCCUPIED_LOG_ODDS_THRESHOLD else 0)
+    return kind
 
 
 # 功能：
@@ -341,6 +363,10 @@ class MetricVoxelMap:
         # nearby evidence instead of every voxel accumulated over a long
         # mission.  The safety-rate map itself remains complete.
         self._evidence_keys_by_chunk: dict[VoxelKey, set[VoxelKey]] = {}
+        # 仅缓存桶内坐标与分类；证据增删、分类变化、静态覆盖时失效。
+        # 查询位置、方向、距离和时间有效性从不缓存，不能借复用延长观测寿命。
+        self._navigation_blocks: dict = {}
+        self._navigation_block_geometry = (minimum, resolution_m)
         # Keep exact threshold indexes alongside the evidence dictionary.  The
         # live depth safety loop needs recent occupied endpoints at sensor rate;
         # rescanning every observed free-space voxel makes that loop slower as a
@@ -477,6 +503,7 @@ class MetricVoxelMap:
                 self._non_static_evidence_count += 1
             chunk = self._chunk_for_key(key)
             self._evidence_keys_by_chunk.setdefault(chunk, set()).add(key)
+            self._navigation_blocks.pop(chunk, None)
         elif evidence.owner is not self._evidence_owner:
             # A navigation snapshot shares this value. Detach only the first
             # time it is changed, not every voxel on every model request.
@@ -496,18 +523,22 @@ class MetricVoxelMap:
         evidence.observations += 1
         if observed_at > evidence.latest_monotonic_seconds:
             evidence.latest_monotonic_seconds = observed_at
-        # Logistic probability is monotonic in log odds. Comparing in log-odds
-        # space preserves the occupancy thresholds without evaluating an
-        # exponential for every traversed voxel (tens of thousands per frame).
-        if evidence.log_odds >= _OCCUPIED_LOG_ODDS_THRESHOLD:
-            if previous < _OCCUPIED_LOG_ODDS_THRESHOLD:
+        # 概率舍入可能把阈值下方的相邻浮点数仍判为 0.65；索引必须服从同一分类。
+        # 以实际索引判断转换，不能再次用近似阈值推断此前的集合成员。
+        kind = _evidence_kind(evidence.log_odds)
+        if kind == 2:
+            if key not in self._occupied_keys:
+                self._navigation_blocks.pop(self._chunk_for_key(key), None)
                 self._occupied_keys.add(key)
                 self._observed_free_keys.discard(key)
-        elif evidence.log_odds <= _FREE_LOG_ODDS_THRESHOLD:
-            if previous > _FREE_LOG_ODDS_THRESHOLD:
+        elif kind == 1:
+            if key not in self._observed_free_keys:
+                self._navigation_blocks.pop(self._chunk_for_key(key), None)
                 self._observed_free_keys.add(key)
                 self._occupied_keys.discard(key)
-        elif previous >= _OCCUPIED_LOG_ODDS_THRESHOLD or previous <= _FREE_LOG_ODDS_THRESHOLD:
+        else:
+            if key in self._occupied_keys or key in self._observed_free_keys:
+                self._navigation_blocks.pop(self._chunk_for_key(key), None)
             self._occupied_keys.discard(key)
             self._observed_free_keys.discard(key)
 
@@ -641,9 +672,33 @@ class MetricVoxelMap:
     # 输出：
     #   prepared：绑定当前地图代次的不可变待提交更新。
     def prepare_scan(self, observations: Iterable[RangeRayObservation]) -> PreparedMetricScan:
+        if NATIVE_SCAN_AVAILABLE:
+            return self._prepare_native_scan(observations)
         hits: dict[VoxelKey, float] = {}
         frees: dict[VoxelKey, float] = {}
         stamp, count = None, 0
+        strongest_free = -1.0
+        pending_free: list[VoxelKey] = []
+        pending_strength = -1.0
+
+        # 功能：
+        #   合并连续同置信度的有界键批次，保留首次出现顺序和逐体素最大证据。
+        # 输入：
+        #   无；读取本次整帧准备过程中尚未提交的键和强度。
+        # 输出：
+        #   None：更新本地自由证据字典并清空暂存，不修改地图。
+        def flush_free() -> None:
+            nonlocal strongest_free
+            if pending_strength >= strongest_free:
+                frees.update(dict.fromkeys(pending_free, pending_strength))
+                strongest_free = pending_strength
+            else:
+                for key in pending_free:
+                    previous = frees.get(key)
+                    if previous is None or pending_strength > previous:
+                        frees[key] = pending_strength
+            pending_free.clear()
+
         for ray, keys in self._sample_scan(observations):
             if stamp is None:
                 stamp = ray.observed_at_monotonic_seconds
@@ -658,11 +713,17 @@ class MetricVoxelMap:
             strength = math.log(bounded / (1.0 - bounded))
             # Low-confidence hits are not negative occupancy measurements.
             # The upstream quality gate controls whether motion is permitted.
-            for key in keys[:-1] if ray.hit else keys:
-                previous = frees.get(key)
-                # 相邻像素多次经过同一体素时保留最强证据，不重复写入相等值。
-                if previous is None or strength > previous:
-                    frees[key] = strength
+            free_keys = keys[:-1] if ray.hit else keys
+            if pending_free and strength != pending_strength:
+                flush_free()
+            pending_strength = strength
+            # 同强度射线常占一整帧；按固定块合并，避免每条射线反复构造字典。
+            # 极长单射线也分块，暂存最多 65536 个既有键引用，不扩大扫描工作预算。
+            for offset in range(0, len(free_keys), MAX_BATCH_POINTS):
+                block = free_keys[offset:offset + MAX_BATCH_POINTS]
+                if len(pending_free) + len(block) > MAX_BATCH_POINTS:
+                    flush_free()
+                pending_free.extend(block)
             if ray.hit:
                 endpoint = keys[-1]
                 previous = hits.get(endpoint)
@@ -673,6 +734,10 @@ class MetricVoxelMap:
                 raise ValueError("METRIC_SCAN_EVIDENCE_BUDGET_EXCEEDED")
         if not count:
             raise ValueError("METRIC_SCAN_EMPTY")
+        if pending_free:
+            flush_free()
+        if len(frees) + len(hits) > 2_000_000:
+            raise ValueError("METRIC_SCAN_EVIDENCE_BUDGET_EXCEEDED")
         prepared = PreparedMetricScan(
             self._evidence_owner,
             self.observation_count,
@@ -682,6 +747,37 @@ class MetricVoxelMap:
             tuple(hits.items()),
             tuple((key, strength) for key, strength in frees.items() if key not in hits),
         )
+        return prepared
+
+    # 功能：
+    #   验证并冻结完整射线输入后使用本地 CPU 归约，保留原时间、预算和地图代次绑定。
+    # 输入：
+    #   observations：同一原始时间的射线帧。
+    # 输出：
+    #   prepared：未修改地图的完整待提交更新。
+    def _prepare_native_scan(self, observations: Iterable[RangeRayObservation]) -> PreparedMetricScan:
+        rays, stamp, work = [], None, 0.
+        for count, observation in enumerate(observations, start=1):
+            if count > 250_000:
+                raise ValueError('METRIC_SCAN_EVIDENCE_BUDGET_EXCEEDED')
+            ray = self._ray_sample(observation)
+            work += ray.traversal_work
+            if not math.isfinite(work) or work > 2_000_000:
+                raise ValueError('METRIC_SCAN_TRAVERSAL_BUDGET_EXCEEDED')
+            if stamp is None:
+                stamp = ray.observed_at_monotonic_seconds
+            if ray.observed_at_monotonic_seconds != stamp:
+                raise ValueError('METRIC_SCAN_SOURCE_TIMES_DIFFER')
+            if self.latest_observation_monotonic_seconds is not None and stamp <= self.latest_observation_monotonic_seconds:
+                raise ValueError('METRIC_SCAN_SOURCE_NOT_NEW')
+            bounded = max(.5, min(.99, ray.confidence))
+            strength = math.log(bounded / (1. - bounded))
+            rays.append((ray.origin, ray.endpoint, ray.steps, strength, ray.hit))
+        if not rays:
+            raise ValueError('METRIC_SCAN_EMPTY')
+        occupied, free = prepare_native_scan(rays, self._minimum, self.resolution_m)
+        prepared = PreparedMetricScan(self._evidence_owner, self.observation_count,
+            self.latest_observation_monotonic_seconds, stamp, len(rays), occupied, free)
         return prepared
 
     # 功能：
@@ -697,8 +793,7 @@ class MetricVoxelMap:
             or prepared.previous_source_time != self.latest_observation_monotonic_seconds
         ):
             raise ValueError("METRIC_SCAN_PREPARED_STATE_CHANGED")
-        for key, strength in prepared.free_strengths:
-            self._update_log_odds(key, measurement=-strength, observed_at=prepared.observed_at)
+        self._commit_free_scan(prepared.free_strengths, prepared.observed_at)
         for key, strength in prepared.occupied_strengths:
             previous = self._evidence.get(key)
             old = previous.log_odds if previous is not None else 0.0
@@ -708,6 +803,36 @@ class MetricVoxelMap:
             )
         self.observation_count += prepared.ray_count
         self.latest_observation_monotonic_seconds = prepared.observed_at
+
+    # 功能：
+    #   1. 对已确认空闲体素直接累加新的负证据，省去不可能触发的占用索引转换。
+    #   2. 保留逐次饱和、真实时间和观测次数；共享证据仍先分离，不能改写导航快照。
+    #   3. 新体素、占用或模糊体素及零强度均走完整更新，保留静态空地撤销规则。
+    # 输入：
+    #   strengths：已经整帧验证且命中优先去重的空地键与强度。
+    #   observed_at：该帧原始单调时钟时间。
+    # 输出：
+    #   无：更新当前地图的空地证据。
+    def _commit_free_scan(self, strengths: tuple[tuple[VoxelKey, float], ...], observed_at: float) -> None:
+        evidence_by_key, owner = self._evidence, self._evidence_owner
+        lookup, update = evidence_by_key.get, self._update_log_odds
+        for key, strength in strengths:
+            evidence = lookup(key)
+            if strength > 0.0 and evidence is not None and evidence.log_odds <= _FREE_LOG_ODDS_THRESHOLD:
+                # 负证据只会继续降低已为空闲的概率，阈值集合及空间桶无需变动。
+                updated = evidence.log_odds - strength
+                updated = -6.0 if updated < -6.0 else updated
+                # 已验证的有限标量只需一次比较；每帧数万个体素不再调用 max。
+                previous_stamp = evidence.latest_monotonic_seconds
+                stamp = observed_at if observed_at > previous_stamp else previous_stamp
+                if evidence.owner is owner:
+                    evidence.log_odds = updated
+                    evidence.observations += 1
+                    evidence.latest_monotonic_seconds = stamp
+                else:
+                    evidence_by_key[key] = _VoxelEvidence(updated, evidence.observations + 1, stamp, owner)
+            else:
+                update(key, measurement=-strength, observed_at=observed_at)
 
     # 功能：
     #   淘汰超龄或远离局部范围的实时证据，已被否定的旧空地不会因此恢复通行。
@@ -752,16 +877,23 @@ class MetricVoxelMap:
             if not inside_local_cube:
                 removable = tuple(chunk_keys)
             else:
+                # 整桶严格位于保留球内时只检查年龄；球面附近仍使用原逐体素
+                # 平方距离公式，不能用近似包围盒扩大保留区域或延长来源寿命。
+                edge = self._NAVIGATION_CHUNK_EDGE_VOXELS
+                low = self._center_point_for_key(tuple(value * edge for value in chunk))
+                high = self._center_point_for_key(tuple((value + 1) * edge - 1 for value in chunk))
+                farthest = math.hypot(*(max(abs(low[i] - center[i]), abs(high[i] - center[i]))
+                                        for i in range(3)))
+                wholly_inside = farthest < retained_radius - max(1e-9, retained_radius * 1e-12)
                 local_removable: list[VoxelKey] = []
                 for key in chunk_keys:
                     evidence = self._evidence[key]
-                    voxel_center = self._center_point_for_key(key)
-                    if (
-                        evidence.latest_monotonic_seconds < cutoff
-                        or sum((voxel_center[axis] - center[axis]) ** 2 for axis in range(3))
-                        > maximum_distance_squared
-                    ):
+                    if evidence.latest_monotonic_seconds < cutoff:
                         local_removable.append(key)
+                    elif not wholly_inside:
+                        voxel_center = self._center_point_for_key(key)
+                        if sum((voxel_center[axis] - center[axis]) ** 2 for axis in range(3)) > maximum_distance_squared:
+                            local_removable.append(key)
                 removable = tuple(local_removable)
             for key in removable:
                 self._evidence.pop(key, None)
@@ -773,6 +905,8 @@ class MetricVoxelMap:
                 self._occupied_keys.discard(key)
                 self._observed_free_keys.discard(key)
                 chunk_keys.discard(key)
+            if removable:
+                self._navigation_blocks.pop(chunk, None)
             if not chunk_keys:
                 self._evidence_keys_by_chunk.pop(chunk, None)
             removed += len(removable)
@@ -855,6 +989,8 @@ class MetricVoxelMap:
         # Navigation clones share these priors. Replace sets rather than mutate
         # an already published model's frozen view.
         self._known_static_occupied_keys = self._known_static_occupied_keys | occupied
+        # 静态占用可覆盖既有实时空地；克隆的独立缓存字典不随此处失效。
+        self._navigation_blocks.clear()
         self._known_static_free_keys = (
             self._known_static_free_keys | free
         ) - self._known_static_occupied_keys
@@ -924,14 +1060,16 @@ class MetricVoxelMap:
         if radius_m <= 0.0:
             raise ValueError("navigation clone radius must be positive")
         center = self.key_for(center_m)
-        voxel_radius = math.ceil(radius_m / self.resolution_m)
+        radius_with_voxel_m = radius_m + math.sqrt(3.0) * self.resolution_m / 2.0
+        # 桶包围盒也必须覆盖体素外接球余量，不能在精确筛选前遗漏跨桶边界的体素。
+        voxel_radius = math.ceil(radius_with_voxel_m / self.resolution_m) + 1
         minimum = tuple(value - voxel_radius for value in center)
         maximum = tuple(value + voxel_radius for value in center)
         minimum_chunk = self._chunk_for_key(minimum)
         maximum_chunk = self._chunk_for_key(maximum)
-        radius_with_voxel_m = radius_m + math.sqrt(3.0) * self.resolution_m / 2.0
         center_point = _point(center_m)
         selected: set[VoxelKey] = set()
+        boundary_members = []
         volume = math.prod(maximum_chunk[i] - minimum_chunk[i] + 1 for i in range(3))
         chunks = (
             (
@@ -943,10 +1081,30 @@ class MetricVoxelMap:
             else product(*(range(minimum_chunk[i], maximum_chunk[i] + 1) for i in range(3)))
         )
         for chunk in chunks:
-            for key in self._evidence_keys_by_chunk.get(chunk, ()):
-                distance = math.dist(center_point, self._center_point_for_key(key))
-                if distance <= radius_with_voxel_m:
-                    selected.add(key)
+            members = self._evidence_keys_by_chunk.get(chunk, ())
+            if not members:
+                continue
+            # 整桶在球外则跳过；整桶在球内则一次加入；边界桶执行有界数值筛选。
+            # 向内留浮点余量，避免恰在球面附近因不同加法顺序误接纳体素。
+            edge = self._NAVIGATION_CHUNK_EDGE_VOXELS
+            low = self._center_point_for_key(tuple(value * edge for value in chunk))
+            high = self._center_point_for_key(tuple((value + 1) * edge - 1 for value in chunk))
+            margin = max(1e-9, radius_with_voxel_m * 1e-12)
+            nearest = math.hypot(*(max(low[i] - center_point[i], center_point[i] - high[i], 0.)
+                                   for i in range(3)))
+            if nearest > radius_with_voxel_m + margin:
+                continue
+            farthest = math.hypot(*(max(abs(low[i] - center_point[i]),
+                                       abs(high[i] - center_point[i])) for i in range(3)))
+            if farthest < radius_with_voxel_m - margin:
+                selected.update(members)
+                continue
+            boundary_members.append(members)
+        # 边界桶共用固定大小的数值批次，避免每个小桶重复创建数组；仍逐体素检查同一个球面。
+        # 地图保持单写者，桶引用仅在本次同步调用存活，不交给后台线程。
+        if boundary_members:
+            selected.update(select_navigation_keys(chain.from_iterable(boundary_members),
+                self._minimum, self.resolution_m, center_point, radius_with_voxel_m))
         return selected
 
     # 功能：
@@ -975,16 +1133,27 @@ class MetricVoxelMap:
             maximum_bound_m=self.maximum_bound_m,
             unknown_is_occupied=self.unknown_is_occupied,
         )
-        clone._evidence = {
-            key: evidence for key in keys if (evidence := self._evidence.get(key)) is not None
-        }
+        # 两个迭代器读取同一未修改集合，顺序一致；内置 map/zip 减少逐体素 Python 调度。
+        # 空间索引若包含不存在的证据，整体拒绝，不能通过悄悄漏掉体素生成不完整地图。
+        try:
+            clone._evidence = dict(zip(keys, map(self._evidence.__getitem__, keys), strict=True))
+        except KeyError as error:
+            raise ValueError("NAVIGATION_EVIDENCE_INDEX_INCONSISTENT") from error
         # Both dictionaries now reference read-only shared values. Neither
         # map owns their tokens, so either side's next update must detach.
         # A map is still single-writer; the frozen clone can be read elsewhere.
         self._evidence_owner = object()
-        for key in clone._evidence:
-            chunk = clone._chunk_for_key(key)
-            clone._evidence_keys_by_chunk.setdefault(chunk, set()).add(key)
+        # 集合交集由底层实现执行，避免逐体素重新计算桶；各集合仍独立，不能共享可变索引。
+        clone._evidence_keys_by_chunk = {
+            chunk: subset for chunk, members in self._evidence_keys_by_chunk.items()
+            if (subset := members & keys)
+        }
+        # 只共享完整且几何一致的不可变桶；裁剪过的桶必须按自己的证据重建。
+        if self._navigation_block_geometry == (self._minimum, self.resolution_m):
+            clone._navigation_blocks = {
+                chunk: block for chunk, block in self._navigation_blocks.items()
+                if clone._evidence_keys_by_chunk.get(chunk) == self._evidence_keys_by_chunk[chunk]
+            }
         clone._occupied_keys = self._occupied_keys & keys
         clone._observed_free_keys = self._observed_free_keys & keys
         # Static priors and route bindings are immutable after worker startup,
@@ -994,12 +1163,8 @@ class MetricVoxelMap:
         clone._known_static_free_keys = self._known_static_free_keys
         clone._invalidated_static_free_keys = self._invalidated_static_free_keys
         clone._static_invalidation_owner = self._static_invalidation_owner
-        clone._non_static_evidence_count = sum(
-            1
-            for key in clone._evidence
-            if key not in clone._known_static_occupied_keys
-            and key not in clone._known_static_free_keys
-        )
+        clone._non_static_evidence_count = len(keys.difference(
+            clone._known_static_occupied_keys, clone._known_static_free_keys))
         clone._known_static_source_sha256 = self._known_static_source_sha256
         clone._qualified_route_points = self._qualified_route_points
         clone._qualified_route_sha256 = self._qualified_route_sha256
@@ -1304,6 +1469,70 @@ class MetricVoxelMap:
                         return False
         valid = True
         return valid
+
+    # 功能：
+    #   检查完整线段是否处于已资格化的静态机体中心走廊；原始测距空体素不能冒充此先验。
+    # 输入：
+    #   path_m：世界 ENU 折线，起点也必须检查，不允许启动豁免。
+    #   extra_clearance_m：在既有机体中心走廊外额外保留的漂移空间，单位米。
+    # 输出：
+    #   covered：所有相交中心体素均有未失效静态先验的标志。
+    def qualified_static_path_covered(self, path_m: Iterable[Vector3], extra_clearance_m=0.0):
+        extra_clearance_m = _number(extra_clearance_m, "coverage extra clearance")
+        if not 0 <= extra_clearance_m <= 10:
+            raise ValueError("METRIC_COVERAGE_MARGIN_INVALID")
+        points = [_frozen_vector(p) for p in _bounded_items(path_m, 1001, "coverage path")]
+        if not points or not self._qualified_route_sha256:
+            return False
+        work = 0
+        reach = math.ceil(extra_clearance_m / self.resolution_m) + 1
+        segments = list(zip(points, points[1:], strict=False)) or [(points[0], points[0])]
+        for start, end in segments:
+            first, second = _point(start), _point(end)
+            if not self._inside(first) or not self._inside(second):
+                return False
+            if any(not self._inside(tuple(p[a] + sign * extra_clearance_m for a in range(3)))
+                   for p in (first, second) for sign in (-1, 1)):
+                return False
+            count = max(1, math.ceil(math.dist(first, second) / (self.resolution_m / 2)))
+            work += (count + 1) * (2 * reach + 1)**3
+            if work > _MAX_GRID_WORK:
+                raise ValueError("METRIC_COVERAGE_WORK_BUDGET_EXCEEDED")
+            checked = set()
+            for index in range(count + 1):
+                key = self.key_for(tuple(first[a] + (second[a] - first[a]) * index / count
+                                         for a in range(3)))
+                for candidate in product(*(range(k - reach, k + reach + 1) for k in key)):
+                    if candidate in checked:
+                        continue
+                    checked.add(candidate)
+                    if (candidate in self._known_static_free_keys
+                            and candidate not in self._invalidated_static_free_keys
+                            and self.is_observed_free(candidate)
+                            and not self.is_occupied(candidate)):
+                        continue
+                    if _segment_hits_box(first, second, self._center_point_for_key(candidate),
+                                         self.resolution_m / 2 + extra_clearance_m):
+                        return False
+        covered = True
+        return covered
+
+    # 功能：
+    #   生成本次覆盖检查的有界来源身份，不复制整个体素图，不将计数当成可通行证明。
+    # 输入：
+    #   self：当前实时地图。
+    # 输出：
+    #   identity：地图先验、合格路线、原始观测版本及裁剪版本。
+    def motion_coverage_identity(self) -> dict:
+        identity = {"static_source_sha256": self._known_static_source_sha256,
+                    "qualified_route_sha256": self._qualified_route_sha256,
+                    "resolution_m": self.resolution_m,
+                    "minimum": self._minimum, "maximum": self._maximum,
+                    "observation_count": self.observation_count,
+                    "latest_source_seconds": self.latest_observation_monotonic_seconds,
+                    "pruned_count": self.pruned_live_evidence_count,
+                    "invalidated_static_cells": len(self._invalidated_static_free_keys)}
+        return identity
 
     # 功能：
     #   从确实已知为空的单元提取邻接未知区域的探索前沿，不枚举整片空立方体。
@@ -1730,7 +1959,6 @@ class MetricVoxelMap:
         goal = _point(goal_position_m)
         current_goal_distance = math.dist(current, goal)
         goal_heading = math.atan2(goal[1] - current[1], goal[0] - current[0])
-        voxel_radius = math.sqrt(3.0) * self.resolution_m / 2.0
         sectors: dict[str, dict[str, float | int | None | str]] = {
             label: {
                 "observed_free_voxels": 0,
@@ -1740,24 +1968,14 @@ class MetricVoxelMap:
             }
             for label in SECTOR_LABELS
         }
-        for key in self._evidence:
-            center = self._center_point_for_key(key)
-            distance = math.dist(current, center)
-            if distance > local_radius_m:
-                continue
-            relative = (
-                math.atan2(center[1] - current[1], center[0] - current[0]) - goal_heading + math.pi
-            ) % (2 * math.pi) - math.pi
-            sector_index = int(round(relative / (math.pi / 4))) % 8
-            sector = sectors[SECTOR_LABELS[sector_index]]
-            if self.is_observed_free(key):
-                sector["observed_free_voxels"] = int(sector["observed_free_voxels"]) + 1
-            elif self.is_occupied(key):
-                sector["occupied_voxels"] = int(sector["occupied_voxels"]) + 1
-                clearance = max(0.0, distance - voxel_radius)
-                prior = sector["nearest_occupied_clearance_m"]
-                if prior is None or clearance < float(prior):
-                    sector["nearest_occupied_clearance_m"] = round(clearance, 3)
+        # 仅已有实时证据进入摘要，不能把静态先验的整片空地当作本轮观测。
+        # 保留原概率判断（含边界舍入），方向和距离归约交给有界数值内核。
+        summaries = reduce_navigation_sector_blocks(
+            self._navigation_sector_blocks(current, local_radius_m), self.resolution_m,
+            current, goal_heading, local_radius_m)
+        for label, (free_count, occupied_count, nearest) in zip(SECTOR_LABELS, summaries, strict=True):
+            sectors[label].update(observed_free_voxels=free_count, occupied_voxels=occupied_count,
+                                 nearest_occupied_clearance_m=nearest)
         for sector in sectors.values():
             free_count = int(sector["observed_free_voxels"])
             occupied_count = int(sector["occupied_voxels"])
@@ -2082,6 +2300,12 @@ class MetricVoxelMap:
             dynamic_summaries.append(
                 {
                     "obstacle_id": obstacle.obstacle_id,
+                    # 保存实际感知几何；仅有距离和粗分区不能区分同格内左右目标。
+                    # 这些是原始观测，不是模拟器真值或教师选出的控制动作。
+                    "position_m": obstacle.position_m.model_dump(mode="json"),
+                    "velocity_mps": obstacle.velocity_mps.model_dump(mode="json"),
+                    "radius_m": obstacle.radius_m,
+                    "height_m": obstacle.height_m,
                     "distance_m": round(math.dist(current, obstacle_position), 3),
                     "time_to_closest_approach_seconds": round(closest_time, 3),
                     "closest_center_separation_m": round(_magnitude(closest), 3),
@@ -2141,3 +2365,76 @@ class MetricVoxelMap:
         }
         payload["snapshot_sha256"] = sha256_json(payload)
         return payload
+
+    # 功能：
+    #   1. 仅分类已有实时体素，静态占用仍优先，模糊概率不算作空地或占用。
+    #   2. 复用写入时按原概率公式维护的分类索引，不逐帧重复查找证据对象和计算分类。
+    # 输入：
+    #   self：单写者地图或独占导航克隆。
+    #   evidence_keys：可选的保守局部桶键迭代器；省略时遍历全部实时证据键。
+    # 输出：
+    #   classified：按所选证据顺序输出体素键和分类的迭代器，1 为空地，2 为占用。
+    def _classified_navigation_evidence(self, evidence_keys=None):
+        for key in (self._evidence if evidence_keys is None else evidence_keys):
+            kind = 2 if key in self._known_static_occupied_keys else (
+                1 if key in self._observed_free_keys else (2 if key in self._occupied_keys else 0))
+            if kind:
+                yield key, kind
+
+    # 功能：
+    #   1. 复用现有空间桶，只遍历与查询球体包围盒相交的证据，不改变地图或证据分类。
+    #   2. 边界外多留一层体素抵御浮点边界误差；最终球面筛选和方向归约仍由原数值内核完成。
+    #   3. 查询很大时遍历已有桶；若候选覆盖全图，直接遍历字典，避免逐键随机查找成本。
+    #   4. 两种访问方式都由最终球面判定筛选，摘要的计数与最小值与顺序无关。
+    # 输入：
+    #   current、radius：导航入口已经验证的位置三元组与局部半径。
+    # 输出：
+    #   evidence_keys：保守候选桶内已有体素键的迭代器。
+    def _navigation_sector_keys(self, current, radius):
+        buckets = tuple(self._evidence_keys_by_chunk[chunk]
+                        for chunk in self._navigation_sector_chunks(current, radius))
+        if sum(map(len, buckets)) == len(self._evidence):
+            yield from self._evidence
+            return
+        for bucket in buckets:
+            yield from bucket
+
+    # 功能：
+    #   获取与查询包围盒相交的已有证据桶，保留原保守边界与有界访问策略。
+    # 输入：
+    #   current、radius：已验证的查询位置和局部半径。
+    # 输出：
+    #   chunks：候选空间桶键迭代器。
+    def _navigation_sector_chunks(self, current, radius):
+        lower = tuple(math.floor((current[i] - radius - self._minimum[i]) / self.resolution_m) - 1
+                      for i in range(3))
+        upper = tuple(math.floor((current[i] + radius - self._minimum[i]) / self.resolution_m) + 1
+                      for i in range(3))
+        lower_chunk, upper_chunk = self._chunk_for_key(lower), self._chunk_for_key(upper)
+        volume = math.prod(upper_chunk[i] - lower_chunk[i] + 1 for i in range(3))
+        if volume > len(self._evidence_keys_by_chunk):
+            chunks = (chunk for chunk in self._evidence_keys_by_chunk
+                      if all(lower_chunk[i] <= chunk[i] <= upper_chunk[i] for i in range(3)))
+        else:
+            chunks = product(*(range(lower_chunk[i], upper_chunk[i] + 1) for i in range(3)))
+        yield from (chunk for chunk in chunks if chunk in self._evidence_keys_by_chunk)
+
+    # 功能：
+    #   仅重建内容已变化的证据桶；独占地图及独立克隆的缓存失效互不影响。
+    # 输入：
+    #   current、radius：本次查询的位置与范围。
+    # 输出：
+    #   blocks：与当前分类一致的只读数值块迭代器。
+    def _navigation_sector_blocks(self, current, radius):
+        geometry = (self._minimum, self.resolution_m)
+        if geometry != self._navigation_block_geometry:
+            self._navigation_blocks.clear()
+            self._navigation_block_geometry = geometry
+        for chunk in self._navigation_sector_chunks(current, radius):
+            block = self._navigation_blocks.get(chunk)
+            if block is None:
+                block = pack_navigation_sector_block(
+                    self._classified_navigation_evidence(self._evidence_keys_by_chunk[chunk]),
+                    self._minimum, self.resolution_m)
+                self._navigation_blocks[chunk] = block
+            yield block

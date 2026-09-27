@@ -5,6 +5,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+from clock_fixtures import isolate_time
 
 from dronedream_agent_core import simulation_render_replica as module
 
@@ -191,7 +192,9 @@ def test_training_config_cannot_mix_render_paths(changes):
         visual_package="visual-only", simulation_camera_profile="low-latency",
         camera_source_model_sha256="a" * 64, render_replica_runtime="isolated")
     assert Px4TrainingConfig(**config).render_replica_runtime == Path("isolated")
-    with pytest.raises(ValueError, match="isolated rendering"):
+    expected = ("non-native camera profile requires explicit visual training input"
+                if changes.get("visual_package", "present") is None else "isolated rendering")
+    with pytest.raises(ValueError, match=expected):
         Px4TrainingConfig(**{**config, **changes})
 
 
@@ -222,7 +225,6 @@ def test_startup_readiness_requires_both_current_source_bound_images(monkeypatch
     received = []
     initial = time.time_ns()
     now = [initial]
-    monkeypatch.setattr(module.time, "time_ns", lambda: now[0])
     monotonic = [10.]
 
     # 功能：
@@ -236,7 +238,7 @@ def test_startup_readiness_requires_both_current_source_bound_images(monkeypatch
         current = monotonic[0]
         return current
 
-    monkeypatch.setattr(module.time, "monotonic", tick)
+    isolate_time(monkeypatch, module, monotonic=tick, time_ns=lambda: now[0])
 
     callbacks = []
 

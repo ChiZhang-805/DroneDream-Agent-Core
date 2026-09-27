@@ -11,8 +11,20 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$LocalPolicySimulationAdmission,
 
+    [Parameter(Mandatory = $false)]
+    [string]$TrialSemantic,
+
+    [Parameter(Mandatory = $false)]
+    [string]$TrialVehicle,
+
     [Parameter(Mandatory = $true)]
-    [string]$NativeSensorRuntime
+    [string]$NativeSensorRuntime,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PayloadPlacementRuntime,
+
+    [Parameter(Mandatory = $true)]
+    [string]$CameraClockRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +43,16 @@ $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "Python virtual environment is missing: $python"
 }
+# 在创建开发副本前校验所有原生组件，避免留下看似完整但缺关键库的半成品目录。
+& $python (Join-Path $repoRoot "scripts\stage_native_sensor_runtime.py") `
+    --source $NativeSensorRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current native sensor Runtime preflight failed" }
+& $python (Join-Path $repoRoot "scripts\build_payload_placement_runtime.py") `
+    --stage-from $PayloadPlacementRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current payload placement Runtime preflight failed" }
+& $python (Join-Path $repoRoot "scripts\stage_native_camera_clock.py") `
+    --source $CameraClockRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current camera clock Runtime preflight failed" }
 $runtimeSource = Join-Path $repoRoot "runtime"
 $runtimeOutput = Join-Path $output "runtime"
 $wheels = Join-Path $runtimeOutput "wheels"
@@ -42,7 +64,9 @@ $pythonOutput = Join-Path $output "src"
 
 foreach ($name in @(
     "requirements-linux.txt",
+    "control-profile.json",
     "px4_offboard_track_executor.py"
+    "px4_map_fusion_experiment_executor.py"
 )) {
     Copy-Item -LiteralPath (Join-Path $runtimeSource $name) `
         -Destination (Join-Path $runtimeOutput $name)
@@ -54,6 +78,12 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\runtime_depth_safety_worker
 & $python (Join-Path $repoRoot "scripts\stage_native_sensor_runtime.py") `
     --source $NativeSensorRuntime --output (Join-Path $runtimeOutput "native-sensors")
 if ($LASTEXITCODE -ne 0) { throw "Current native sensor Runtime staging failed" }
+& $python (Join-Path $repoRoot "scripts\build_payload_placement_runtime.py") `
+    --stage-from $PayloadPlacementRuntime --output (Join-Path $runtimeOutput "payload-placement")
+if ($LASTEXITCODE -ne 0) { throw "Current payload placement Runtime staging failed" }
+& $python (Join-Path $repoRoot "scripts\stage_native_camera_clock.py") `
+    --source $CameraClockRuntime --output (Join-Path $runtimeOutput "camera-clock")
+if ($LASTEXITCODE -ne 0) { throw "Current camera clock Runtime staging failed" }
 & $python (Join-Path $repoRoot "scripts\write_runtime_provenance.py") `
     --repository $repoRoot `
     --runtime-root $runtimeOutput
@@ -89,11 +119,22 @@ foreach ($cache in $pythonCaches) {
 $hasLocalPolicy = -not [string]::IsNullOrWhiteSpace($LocalPolicyPackage)
 $hasQualification = -not [string]::IsNullOrWhiteSpace($LocalPolicyQualification)
 $hasSimulationAdmission = -not [string]::IsNullOrWhiteSpace($LocalPolicySimulationAdmission)
-if (($hasQualification -and $hasSimulationAdmission) -or `
-    ($hasLocalPolicy -ne ($hasQualification -or $hasSimulationAdmission))) {
+$hasTrial = -not [string]::IsNullOrWhiteSpace($TrialSemantic)
+if ($hasTrial -ne (-not [string]::IsNullOrWhiteSpace($TrialVehicle))) {
+    throw "Trial staging needs both semantic and vehicle bindings"
+}
+if (([int]$hasQualification + [int]$hasSimulationAdmission + [int]$hasTrial -gt 1) -or `
+    ($hasLocalPolicy -ne ($hasQualification -or $hasSimulationAdmission -or $hasTrial))) {
     throw "A development local policy needs one package and exactly one receipt"
 }
-if ($hasLocalPolicy) {
+if ($hasTrial) {
+    & $python (Join-Path $repoRoot 'scripts\stage_simulation_trial.py') `
+        --package $LocalPolicyPackage --semantic $TrialSemantic --vehicle $TrialVehicle `
+        --output (Join-Path $runtimeOutput 'local-policy') `
+        --limitation 'Candidate ensemble: recovery offline error exceeds formal admission target; manual isolated Gazebo evaluation only.' `
+        --limitation 'Full office-pickup-return flight has not passed acceptance; hardware and official distribution are not authorized.'
+    if ($LASTEXITCODE -ne 0) { throw 'Candidate trial staging failed' }
+} elseif ($hasLocalPolicy) {
     $packageSource = (Resolve-Path -LiteralPath $LocalPolicyPackage).Path
     $receiptSource = (
         Resolve-Path -LiteralPath $(
@@ -131,7 +172,26 @@ $previousSourceDateEpoch = [Environment]::GetEnvironmentVariable(
 )
 try {
     $env:SOURCE_DATE_EPOCH = "946684800"
-    & $python -m pip wheel --no-deps --wheel-dir $wheels $repoRoot
+    # 原生扩展加入后，Windows wheel 不能用于 Linux Runtime；必须在目标解释器下编译。
+    # 功能：
+    #   将已解析的 Windows 本地盘路径转换为 WSL 挂载路径，不拼接 shell 命令。
+    # 输入：
+    #   path：本轮构建的绝对文件路径。
+    # 输出：
+    #   converted：对应的 /mnt/<drive>/ 路径。
+    function Convert-ToRuntimeBuildPath([string]$path) {
+        $resolved = [System.IO.Path]::GetFullPath($path)
+        if ($resolved -notmatch '^([A-Za-z]):[\\/](.*)$') { throw 'Local drive path required' }
+        $converted = '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
+        return $converted
+    }
+    $linuxTemporary = Join-Path $output 'linux-build-temp'
+    [System.IO.Directory]::CreateDirectory($linuxTemporary) | Out-Null
+    & wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800 `
+        ("TMPDIR=" + (Convert-ToRuntimeBuildPath $linuxTemporary)) `
+        /home/dronedream/.local/share/dronedream-autonomy/v0.1.0/venv/bin/python `
+        -m pip wheel --no-cache-dir --no-build-isolation --no-deps `
+        --wheel-dir (Convert-ToRuntimeBuildPath $wheels) (Convert-ToRuntimeBuildPath $repoRoot)
     if ($LASTEXITCODE -ne 0) { throw "Development Runtime core wheel build failed" }
 } finally {
     if ([string]::IsNullOrWhiteSpace($previousSourceDateEpoch)) {

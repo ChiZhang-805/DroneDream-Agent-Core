@@ -44,7 +44,7 @@ from .asset_packages import (
     open_verified_ddpkg,
     package_content_sha256,
 )
-from .collision import validate_route_clearance
+from .collision import build_tracking_corridor_budget, validate_route_clearance
 from .contracts import GraphRoute, MapAsset, RouteQuery, StrictModel, VehicleAsset
 from .hashing import sha256_json
 from .navigation import shortest_route
@@ -824,6 +824,10 @@ def _round_trip_route(
         except ValueError:
             # 有去路不代表有回路；单向死路不能让其余合格候选一起失败。
             continue
+        if not (minimum_translation_m <= inbound.route_length_m <= maximum_translation_m):
+            # 往返资格不能只限制去程；单向图上的超长绕返会把短练习静默扩成
+            # 数百米任务，并使运行时长、能量与定位预算脱离本次验收边界。
+            continue
         route = GraphRoute(
             start_node=launch,
             goal_node=launch,
@@ -840,8 +844,16 @@ def _round_trip_route(
             vehicle_diameter_m=vehicle.body_radius_m * 2,
             vehicle_height_m=vehicle.body_height_m,
         )
-        if clearance.accepted:
-            candidates.append((outbound.route_length_m, route, clearance))
+        if not clearance.accepted:
+            continue
+        try:
+            build_tracking_corridor_budget(clearance.minimum_clearance_m)
+        except ValueError:
+            # The runtime reserves this same clearance for local avoidance,
+            # localization uncertainty and tracking drift. Rejecting here keeps
+            # preparation and execution from applying different safety budgets.
+            continue
+        candidates.append((outbound.route_length_m, route, clearance))
     if not candidates:
         raise AssetPairQualificationError("ASSET_QUALIFICATION_CLEAR_ROUND_TRIP_REQUIRED")
     _, route, clearance = max(candidates, key=lambda item: item[0])

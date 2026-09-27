@@ -116,25 +116,24 @@ def test_current_asset_boundaries_cannot_restore_retired_implicit_inputs() -> No
         assert 'semantic.get("simulation_bindings")' not in source, path
 
 
-def test_default_assets_have_one_current_content_addressed_boundary() -> None:
+def test_default_assets_have_content_addressed_multi_pair_boundary() -> None:
     """Prevent the retired mutable ZIP repository from returning beside DDPKG."""
 
     repository = Path(__file__).resolve().parents[1]
     asset_root = repository / "app" / "desktop" / "src-tauri" / "resources" / "default-assets"
     index = json.loads((asset_root / "index.json").read_text(encoding="utf-8"))
-    packages = index["qualified_pair"]["packages"]
+    pairs = index["qualified_pairs"]
+    packages = [entry for pair in pairs for entry in pair["packages"]]
 
-    assert index["schema_version"] == "dronedream.bundled-assets.v2"
+    assert index["schema_version"] == "dronedream.bundled-assets.v3"
+    assert len(pairs) == 8
+    assert index["qualified_pair"] in pairs
+    assert index["default_qualification_id"] == index["qualified_pair"]["qualification_id"]
+    assert len({pair["qualification_id"] for pair in pairs}) == len(pairs)
+    assert len({pair["resource_id"] for pair in pairs}) == len(pairs)
     assert "bundles" not in index
-    assert {(entry["kind"], entry["file"]) for entry in packages} == {
-        ("map", "school-map.ddpkg"),
-        ("vehicle", "my-drone.ddpkg"),
-    }
-    assert sorted(path.name for path in asset_root.iterdir() if path.is_file()) == [
-        "index.json",
-        "my-drone.ddpkg",
-        "school-map.ddpkg",
-    ]
+    assert all({entry["kind"] for entry in pair["packages"]} == {"map", "vehicle"} for pair in pairs)
+    assert len({entry["file"] for entry in packages}) == len(packages)
 
     for entry in packages:
         archive = asset_root / entry["file"]
@@ -143,14 +142,20 @@ def test_default_assets_have_one_current_content_addressed_boundary() -> None:
             names = bundle.namelist()
             assert not any("legacy" in name.casefold() for name in names)
             assert not any(name.casefold().endswith(".zip") for name in names)
-            assert not any(name.casefold().startswith("source/") for name in names)
+            assert all(
+                not name.casefold().startswith("source/")
+                or name == "source/source-reference.json"
+                for name in names
+            )
             manifest = json.loads(bundle.read("manifest.json"))
             asset_ir = json.loads(bundle.read(manifest["asset_ir_path"]))
-            assert asset_ir["source"]["source_format"] == "dronedream-native"
+            assert isinstance(asset_ir["source"]["source_format"], str)
             assert manifest["content_sha256"] == entry["content_sha256"]
 
             if entry["kind"] == "map":
-                semantic = json.loads(bundle.read("normalized/map/gazebo/semantic.json"))
+                semantic_paths = [name for name in names if name.endswith("semantic.json")]
+                assert len(semantic_paths) == 1
+                semantic = json.loads(bundle.read(semantic_paths[0]))
                 assert semantic["schema_version"] == "dronedream.map-semantic.v1"
                 assert "simulation_bindings" not in semantic
                 assert semantic["runtime_bindings"]

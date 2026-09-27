@@ -15,14 +15,76 @@ from dronedream_agent_core.contracts import (
     Vector3,
 )
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.learning_observation_recorder import LearningObservationRecorder
+from dronedream_agent_core.learning_observation_recorder import LearningObservationRecorder, learning_recovery_task_context
 from dronedream_agent_core.local_world_model import MetricVoxelMap
 from dronedream_agent_core.navigation_snapshot import (
     NavigationSnapshotRequest,
     compile_navigation_snapshot,
+    freeze_navigation_frame,
 )
 from dronedream_agent_core.realtime_feature_encoders import fuse_realtime_features
 from dronedream_agent_core.simulation_teacher import teacher_heading_rate, teacher_input_deadline
+
+
+# 功能：
+#   无指令时保存真实观测并显式禁止监督标签；同步与后台模式采用同一标记。
+# 输入：
+#   synchronous：记录编译是否在调用线程完成。
+# 输出：
+#   None：断言无伪造指令、无模型权限，来源与原始快照一致。
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_no_command_observation_retains_source_without_action(synchronous):
+    request, _ = request_fixture()
+    records = []
+    recorder = LearningObservationRecorder(lambda row: records.append(row) is None,
+                                          synchronous=synchronous)
+    try:
+        assert recorder.submit(request, None)
+    finally:
+        assert recorder.close()["complete"]
+    assert len(records) == 1
+    assert records[0]["evaluated_command_sha256"] is None
+    assert records[0]["control_evaluation_status"] == "no-command"
+    assert records[0]["model_invoked"] is False
+    assert records[0]["control_authority_granted"] is False
+    assert records[0]["snapshot"] == compile_navigation_snapshot(request)
+
+
+# 功能：
+#   无动作历史仍受原有感知时效限制，不能以保留历史为由接纳过期输入。
+# 输入：
+#   无。
+# 输出：
+#   None：断言记录被拒绝且来源提交计数不增加。
+def test_no_command_history_does_not_bypass_feature_freshness():
+    request, _ = request_fixture()
+    recorder = LearningObservationRecorder(lambda row: pytest.fail("expired source"), synchronous=True)
+    request = replace(request, control_reference_observed_at_unix_ms=2000)
+    assert recorder.submit(request, None) is False
+    assert recorder.expired_skipped == 1
+    assert recorder.close()["submitted"] == 0
+
+
+# 功能：
+#   核对教师恢复标签来自真实威胁和同目标事件，排除远处目标、旧事件和普通跟踪状态。
+# 输入：
+#   无：显式构造目标与事件身份，不产生正式训练样本。
+# 输出：
+#   无：断言恢复标注和普通标注边界。
+def test_learning_recovery_context_requires_bound_incident():
+    event = {'navigation_goal_id': 'goal-a', 'episode_id': 'incident-a'}
+    ordinary = {'decision_trigger': 'periodic', 'recovery_episode_id': None}
+    assert learning_recovery_task_context({}, 'goal-a', event, True) == {
+        'decision_trigger': 'dynamic-obstacle', 'recovery_episode_id': 'incident-a'}
+    assert learning_recovery_task_context({}, 'goal-a', event, False) == ordinary
+    assert learning_recovery_task_context({}, 'goal-b', event, True) == ordinary
+    assert learning_recovery_task_context({'executor_phase': 'TRACKING_RECOVERY'}, 'goal-a', None, False) == ordinary
+    assert learning_recovery_task_context({'decision_trigger': 'progress-stalled'}, 'goal-a', None, False) == ordinary
+    stalled = {'decision_trigger': 'progress-stalled', 'recovery_episode_id': 'stall-a'}
+    assert learning_recovery_task_context(stalled, 'goal-a', event, True) == stalled
+    assert learning_recovery_task_context({}, 'goal-a', {'navigation_goal_id': 'goal-a'}, True) == ordinary
+    with pytest.raises(ValueError, match='CONTEXT_INVALID'):
+        learning_recovery_task_context({}, 'goal-a', event, 1)
 
 
 # 功能：
@@ -101,6 +163,169 @@ def test_observer_uses_deployment_compiler_without_model_or_control_authority():
     assert record["model_invoked"] is record["control_authority_granted"] is False
     assert record["evaluated_command_sha256"] == sha256_json(command)
     assert record["recorded_at_unix_ms"] == 1000
+
+
+# 功能：
+#   同线程采集复用完整部署编译器，不创建后台线程、不让活地图引用进入已生成证据。
+# 输入：
+#   monkeypatch：禁止创建后台编译池，以验证实际路径而非只检查模式字段。
+# 输出：
+#   None：断言内容、来源、控制权限与默认编译一致，后续地图变化不影响旧记录。
+def test_same_thread_compilation_owns_live_map_until_return(monkeypatch):
+    from unittest.mock import Mock
+    import dronedream_agent_core.learning_observation_recorder as module
+
+    request, command = request_fixture()
+    request.world.integrate_scan(request.frame.range_rays)
+    expected = compile_navigation_snapshot(request)
+    owner = request.world._evidence_owner
+    monkeypatch.setattr(module, 'ThreadPoolExecutor', Mock(side_effect=AssertionError('unexpected background reader')))
+    records = []
+    observer = LearningObservationRecorder(lambda record: records.append(record) is None, synchronous=True)
+    assert observer.submit(request, command)
+    assert observer.completed == 1 and len(records) == 1
+    assert not observer.submit(request, command)
+    assert request.world._evidence_owner is owner
+    request.world.integrate_scan([request.frame.range_rays[0].model_copy(update={
+        'hit': True, 'observed_at_monotonic_seconds': 2.})])
+    request.frame.localization_position_m.x = 99
+    assert records[0]['snapshot'] == expected
+    assert records[0]['model_invoked'] is records[0]['control_authority_granted'] is False
+    summary = observer.close()
+    assert summary['complete'] and summary['compiler_mode'] == 'same-thread'
+    assert summary['duplicate_skipped'] == 1
+
+
+# 功能：
+#   同线程模式拒绝其他线程借用活地图；错误调用不能推进计数或来源基线。
+# 输入：
+#   无：另建仅用于测试调用边界的线程，不运行飞行或模型。
+# 输出：
+#   None：断言跨线程请求失败而所有者仍能提交原始请求。
+def test_same_thread_compilation_rejects_foreign_thread():
+    from concurrent.futures import ThreadPoolExecutor
+
+    request, command = request_fixture()
+    observer = LearningObservationRecorder(lambda record: True, synchronous=True)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        attempted = pool.submit(observer.submit, request, command)
+        with pytest.raises(ValueError, match='WRONG_OWNER_THREAD'):
+            attempted.result()
+    assert observer.submitted == 0
+    assert observer.submit(request, command)
+    assert observer.close()['complete']
+
+
+# 功能：
+#   同线程编译或落盘接收失败必须留下失败状态，不能把提交计数误报为完整记录。
+# 输入：
+#   failure：模拟编译异常或接收端拒绝。
+#   monkeypatch：仅替换被测试的失败边界。
+# 输出：
+#   None：断言失败后不再接收新工作且没有伪成功回执。
+@pytest.mark.parametrize('failure', ['compile', 'sink'])
+def test_same_thread_compilation_failure_is_not_complete(monkeypatch, failure):
+    from unittest.mock import Mock
+
+    request, command = request_fixture()
+    observer = LearningObservationRecorder(lambda record: False, synchronous=True)
+    if failure == 'compile':
+        monkeypatch.setattr(observer, '_compile', Mock(side_effect=ValueError('synthetic failure')))
+    assert observer.submit(request, command)
+    assert not observer.submit(request, command)
+    summary = observer.close()
+    assert summary['submitted'] == 1 and summary['completed'] == 0
+    assert not summary['complete']
+    assert summary['issue_code'] == ('LEARNING_OBSERVATION_FAILED:ValueError' if failure == 'compile'
+                                      else 'LEARNING_OBSERVATION_SINK_REJECTED')
+
+
+# 功能：
+#   拒绝隐式真值作为同步模式，避免配置字符串意外改变地图所有权约定。
+# 输入：
+#   value：非法模式值。
+# 输出：
+#   None：断言初始化在创建线程前拒绝配置。
+@pytest.mark.parametrize('value', [1, 'true', None])
+def test_compiler_mode_requires_boolean(value):
+    with pytest.raises(ValueError, match='COMPILER_MODE_INVALID'):
+        LearningObservationRecorder(lambda record: True, synchronous=value)
+
+
+# 功能：
+#   验证轻量状态与原感知帧编译结果完全一致，且异步提交不复制未被导航编译使用的射线。
+# 输入：
+#   monkeypatch：隔离替换射线复制操作，误复制时立即使测试失败。
+# 输出：
+#   None：内容摘要、源时间和权限保持一致，源向量修改不能污染冻结状态。
+def test_navigation_state_omits_raw_ray_copy_without_changing_snapshot(monkeypatch):
+    request, command = request_fixture()
+    expected = compile_navigation_snapshot(request)
+
+    # 功能：
+    #   阻止射线进入导航状态复制路径，检查并非只优化了最终序列化。
+    # 输入：
+    #   self、memo：深拷贝协议参数。
+    # 输出：
+    #   无：调用意味着回归，立即抛出断言错误。
+    def reject_copy(self, memo=None):
+        raise AssertionError('navigation state copied raw depth rays')
+
+    monkeypatch.setattr(RangeRayObservation, '__deepcopy__', reject_copy)
+    frozen = freeze_navigation_frame(request.frame)
+    assert not hasattr(frozen, 'range_rays')
+    assert compile_navigation_snapshot(replace(request, frame=frozen)) == expected
+    records = []
+    observer = LearningObservationRecorder(lambda row: records.append(row) is None)
+    assert observer.submit(request, command)
+    request.frame.localization_position_m.x = 99
+    assert observer.close()['complete']
+    assert records[0]['snapshot'] == expected
+    assert frozen.localization_position_m.x == .5
+
+
+# 功能：
+#   验证导航裁剪保留动态目标的真实年龄并隔离可变向量，拒绝超过目标预算的输入。
+# 输入：
+#   无：使用明确的动态目标和测试感知帧。
+# 输出：
+#   无：断言冻结结果不随原目标改变，异常输入被拒绝。
+def test_navigation_state_freezes_dynamic_targets_and_enforces_budget():
+    from dronedream_agent_core.contracts import DynamicObstacleObservation
+
+    request, _ = request_fixture()
+    target = DynamicObstacleObservation(obstacle_id='cart',
+        position_m=Vector3(x=2, y=1, z=1), velocity_mps=Vector3(x=0, y=.1, z=0),
+        radius_m=.2, height_m=.5, confidence=.9, age_seconds=.12)
+    request.frame.dynamic_obstacles = [target]
+    frozen = freeze_navigation_frame(request.frame)
+    target.position_m.x = 99
+    target.age_seconds = 4
+    assert frozen.dynamic_obstacles[0].position_m.x == 2
+    assert frozen.dynamic_obstacles[0].age_seconds == .12
+    # 模拟已验证容器随后被原地扩展；赋值验证无法拦截列表内部修改。
+    request.frame.dynamic_obstacles.extend([target] * 512)
+    with pytest.raises(ValueError, match='budget'):
+        freeze_navigation_frame(request.frame)
+    with pytest.raises(ValueError, match='typed'):
+        freeze_navigation_frame({})
+
+
+# 功能：
+#   验证过期输入有明确计数，且不推进来源基线或制造训练记录。
+# 输入：
+#   无：使用合成来源时间和超过期限的消费时间。
+# 输出：
+#   None：过期输入被拒绝，原先尚未提交的合法输入仍能被接受。
+def test_expired_observation_is_counted_without_advancing_source():
+    request, command = request_fixture()
+    records = []
+    observer = LearningObservationRecorder(lambda row: records.append(row) is None)
+    assert not observer.submit(replace(request, control_reference_observed_at_unix_ms=2000), command)
+    assert observer.submit(request, command)
+    summary = observer.close()
+    assert summary['expired_skipped'] == 1 and summary['submitted'] == 1
+    assert summary['complete'] and len(records) == 1
 
 
 # 功能：

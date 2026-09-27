@@ -530,6 +530,7 @@ def test_runtime_cli_binds_paths_hashes_and_declared_px4_model(
     assert captured["px4_sitl_model"] == "x500"
     assert captured["world_name"] == "qualification_world"
     assert captured["vehicle_name"] == "qualification_vehicle"
+    assert captured["simulation_ground_truth_control"] is False
 
 
 # 功能：
@@ -907,23 +908,22 @@ def test_release_default_pair_is_immediately_resolvable_after_fresh_seed(tmp_pat
         vehicle_content_sha256=vehicle_hash,
     )
 
-    assert len(first) == 2
-    assert len(second) == 2
+    expected_pairs = bundled_index["qualified_pairs"]
+    expected_versions = {
+        (
+            str(package["asset_id"]),
+            str(package["content_sha256"]),
+            "qualified",
+        )
+        for candidate in expected_pairs
+        for package in candidate["packages"]
+    }
+    assert len(first) == len(expected_pairs) * 2
+    assert len(second) == len(expected_pairs) * 2
     assert {
         (str(version["asset_id"]), str(version["content_sha256"]), str(version["maturity"]))
         for version in store.list_asset_versions()
-    } == {
-        (
-            "dronedream.school-map.v1",
-            map_hash,
-            "qualified",
-        ),
-        (
-            "dronedream.my-drone.v1",
-            vehicle_hash,
-            "qualified",
-        ),
-    }
+    } == expected_versions
     assert pair is not None
     receipt, receipt_sha256 = store.verified_asset_pair_receipt(pair)
     assert receipt.qualification_id == qualified_pair["qualification_id"]
@@ -931,7 +931,8 @@ def test_release_default_pair_is_immediately_resolvable_after_fresh_seed(tmp_pat
     binding = store.verified_asset_pair_execution_binding(pair)
     assert binding.map_qualified_content_sha256 == (map_hash)
     assert binding.vehicle_qualified_content_sha256 == (vehicle_hash)
-    assert len(store.list_asset_pair_qualification_jobs()) == 1
+    assert len(store.list_asset_pair_qualification_jobs()) == len(expected_pairs)
+    store.close()
 
 
 # 功能：

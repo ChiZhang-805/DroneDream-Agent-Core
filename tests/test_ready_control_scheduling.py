@@ -39,6 +39,29 @@ def test_completed_future_is_only_a_hint_and_cannot_promote_legacy_results():
 
 
 # 功能：
+#   Future 在读取瞬间完成时仍保留一个等待提示，下次即可消费，不能瞬间变成无工作。
+# 输入：
+#   无。
+# 输出：
+#   None：每次只采样一次完成状态，结果只在真实完成后读取。
+def test_handoff_state_samples_completion_once():
+    from unittest.mock import Mock
+    coordinator = object.__new__(EventDrivenIndoorNavigationCoordinator)
+    coordinator.control_output_mode = 'normalized-body-velocity'
+    future = Mock()
+    future.done.side_effect = [False, True]
+    future.result.return_value = _NavigationWorkerResult(snapshot={}, model_result=object())
+    coordinator._pending = SimpleNamespace(future=future)
+    assert coordinator.continuous_handoff_state == (True, False)
+    assert future.done.call_count == 1
+    future.result.assert_not_called()
+    assert coordinator.continuous_handoff_state == (False, True)
+    assert future.done.call_count == 2
+    future.result.assert_called_once_with()
+    assert coordinator._pending.future is future
+
+
+# 功能：
 #   失败或缺失的结果不能延迟新深度接入，但仍保留给原有结果收取流程。
 # 输入：
 #   kind：结果失败方式。
@@ -153,8 +176,9 @@ def waiting(**updates):
 def test_running_inference_gets_one_finite_handoff_without_depth_starvation():
     scheduler = ReadyControlScheduler()
     assert scheduler.await_pending_result(**waiting())
-    assert scheduler.await_pending_result(**waiting(now_monotonic=1.034))
-    assert not scheduler.await_pending_result(**waiting(now_monotonic=1.036))
+    assert scheduler.await_pending_result(**waiting(now_monotonic=1.050))
+    assert scheduler.await_pending_result(**waiting(now_monotonic=1.099))
+    assert not scheduler.await_pending_result(**waiting(now_monotonic=1.100))
     assert not scheduler.await_pending_result(**waiting(now_monotonic=2.0))
     assert scheduler.await_pending_result(**waiting(depth_sequence=2, now_monotonic=2.0))
     # A reply terminates the waiting opportunity and gets the normal admission
@@ -189,6 +213,26 @@ def test_handoff_cancels_immediately_on_loss_of_permission_and_cannot_restart(ch
     assert scheduler.await_pending_result(**waiting())
     assert not scheduler.await_pending_result(**waiting(now_monotonic=1.001, **change))
     assert not scheduler.await_pending_result(**waiting(now_monotonic=1.002))
+
+
+# 功能：
+#   复现结果晚于旧 50 ms 定时器数毫秒的交接，余量下降仍立即截止而非等满绝对上限。
+# 输入：
+#   无。
+# 输出：
+#   None：仅验证调度，未授予任何飞行权限。
+def test_late_within_source_budget_result_is_consumed_before_another_depth_pass():
+    scheduler = ReadyControlScheduler()
+    assert scheduler.await_pending_result(**waiting())
+    assert scheduler.await_pending_result(**waiting(now_monotonic=1.055))
+    assert not scheduler.await_pending_result(**waiting(now_monotonic=1.060, result_ready=True))
+    assert scheduler.eligible(**conditions())
+    scheduler.consume(1)
+    assert not scheduler.eligible(**conditions())
+    assert scheduler.await_pending_result(**waiting(depth_sequence=2, now_monotonic=2.))
+    assert not scheduler.await_pending_result(**waiting(
+        depth_sequence=2, now_monotonic=2.035, features_retain_dispatch_budget=False))
+    assert not scheduler.await_pending_result(**waiting(depth_sequence=2, now_monotonic=2.040))
 
 
 # 功能：

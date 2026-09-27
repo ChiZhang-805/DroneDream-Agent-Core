@@ -9,6 +9,7 @@ from unittest.mock import Mock
 from urllib.error import HTTPError
 
 import pytest
+from clock_fixtures import isolate_monotonic
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
@@ -212,7 +213,7 @@ def test_unknown_key_fetches_once_per_attempt(monkeypatch):
 def test_key_miss_cooldown_allows_later_rotation(monkeypatch):
     verifier, _, jwk = _fixture()
     clock = [100.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    isolate_monotonic(monkeypatch, module, lambda: clock[0])
     verifier._loaded_at = 100.0
     opened = _response(monkeypatch, {"keys": [jwk]})
     for key_id in ("missing-a", "missing-b", "missing-c"):
@@ -289,7 +290,7 @@ def test_issuer_configuration_is_exact_https_endpoint(issuer):
 def test_failed_refresh_does_not_extend_expired_key_lifetime(monkeypatch):
     verifier, token, jwk = _fixture()
     clock = [100.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    isolate_monotonic(monkeypatch, module, lambda: clock[0])
     verifier._loaded_at = -1000.0
     previous = verifier._keys
     opened = _response(monkeypatch, {"keys": [jwk]})

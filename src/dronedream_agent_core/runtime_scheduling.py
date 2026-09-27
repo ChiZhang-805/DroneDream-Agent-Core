@@ -14,9 +14,40 @@ import time
 from collections import deque
 from contextlib import contextmanager
 
-from .control_timing import LOCAL_CONTROL_MAXIMUM_AGE_SECONDS, LOCAL_CONTROL_PERIOD_SECONDS
+from .control_timing import (
+    LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
+    LOCAL_CONTROL_PERIOD_SECONDS,
+    LOCAL_DISPATCH_RESERVE_MS,
+)
 
 _baseline_retention_active = False
+
+
+# 功能：
+#   1. 在已验证的独立感知解释器中减少短寿命对象触发的过密回收，循环回收始终保持开启。
+#   2. 仅将正的代零阈值提高到 4096，不改变高代阈值，不触碰已关闭或由其他配置放宽的策略。
+#   3. 正常与异常退出均恢复自身配置；若期间有其他所有者修改策略，保留其修改。
+# 输入：
+#   无：只在独立感知进程的主线程入口使用。
+# 输出：
+#   thresholds：上下文内的实际回收阈值元组，不授予实时性或内存上限保证。
+@contextmanager
+def sensor_worker_gc_budget():
+    previous = gc.get_threshold()
+    eligible = (sys.implementation.name == "cpython" and sys.version_info[:2] in ((3, 11), (3, 12))
+                and threading.current_thread() is threading.main_thread() and gc.isenabled()
+                and 0 < previous[0] < 4096)
+    if not eligible:
+        yield previous
+        return
+    thresholds = (4096, previous[1], previous[2])
+    gc.set_threshold(*thresholds)
+    try:
+        yield thresholds
+    finally:
+        # 不覆盖嵌套调用之外的配置变动，也不意外重新开启被关闭的 GC。
+        if gc.get_threshold() == thresholds:
+            gc.set_threshold(*previous)
 
 
 # 功能：
@@ -106,6 +137,64 @@ def sensor_input_maximum_rate_hz(*, maintenance_rate_hz: float,
     return rate
 
 
+# 功能：
+#   1. 仅为仍有下发预算的真实模型请求重验特征，教师采集或空闲模型不反复复制张量。
+#   2. 必须同时满足原请求期限与原观测期限；结果只作调度提示，不消费结果或授权动作。
+# 输入：
+#   coordinator：当前模型协调器，无模型时为 None。
+#   features：原始融合快照；now_unix_ms：当前毫秒时钟。
+#   state_buffer：可选原生状态缓冲，仅用已收到的真实新编码复验调度；不修改请求期限。
+# 输出：
+#   ready：剩余请求和观测预算均足够时为 True。
+def pending_dispatch_budget_ready(coordinator, features, *, now_unix_ms: int, state_buffer=None) -> bool:
+    if type(now_unix_ms) is not int or not 0 <= now_unix_ms < 2**63:
+        raise ValueError("CONTROL_DEADLINE_CLOCK_INVALID")
+    if coordinator is None or features is None:
+        return False
+    if coordinator.continuous_request_remaining_ms(now_unix_ms=now_unix_ms) < LOCAL_DISPATCH_RESERVE_MS:
+        return False
+    ready = (features.control_deadline_unix_ms(now_unix_ms=now_unix_ms) - now_unix_ms
+             >= LOCAL_DISPATCH_RESERVE_MS)
+    if ready or state_buffer is None:
+        return ready
+    if state_buffer is not None:
+        from .realtime_feature_encoders import refresh_flight_state_features
+        try:
+            native = state_buffer.latest(now_unix_ms=now_unix_ms)
+            features = refresh_flight_state_features(
+                features, native.encoding, captured_at_unix_ms=now_unix_ms)
+        except ValueError:
+            return False
+    ready = (features.control_deadline_unix_ms(now_unix_ms=now_unix_ms) - now_unix_ms
+             >= LOCAL_DISPATCH_RESERVE_MS)
+    return ready
+
+
+# 功能：
+#   1. 推理仍在进行时仅检查提交时已绑定的原始期限，避免每两毫秒复制张量而争抢推理线程。
+#   2. 结果就绪才重验完整当前特征；等待提示本身不消费结果、不发指令，也不刷新任何期限。
+# 输入：
+#   coordinator、features、state_buffer：协调器和当前特征及原生状态来源。
+#   handoff_state：协调器一次采样的等待/就绪二元组；now_unix_ms：当前毫秒钟。
+# 输出：
+#   ready：可以等待或进入完整交接复验的调度提示，健康及逐帧额度仍须由调度器检查。
+def model_handoff_budget_ready(coordinator, features, *, handoff_state, now_unix_ms: int, state_buffer=None) -> bool:
+    if type(now_unix_ms) is not int or not 0 <= now_unix_ms < 2**63:
+        raise ValueError('CONTROL_DEADLINE_CLOCK_INVALID')
+    if (type(handoff_state) is not tuple or len(handoff_state) != 2
+            or any(type(value) is not bool for value in handoff_state) or all(handoff_state)):
+        raise ValueError('CONTROL_HANDOFF_STATE_INVALID')
+    if coordinator is None or features is None:
+        return False
+    pending, result_ready = handoff_state
+    if result_ready:
+        return pending_dispatch_budget_ready(coordinator, features,
+            now_unix_ms=now_unix_ms, state_buffer=state_buffer)
+    ready = bool(pending and coordinator.continuous_request_remaining_ms(
+        now_unix_ms=now_unix_ms) >= LOCAL_DISPATCH_RESERVE_MS)
+    return ready
+
+
 class ReadyControlScheduler:
     """Allow one ready-action tick between independently ingested depth frames.
 
@@ -127,7 +216,7 @@ class ReadyControlScheduler:
         self._last_wait_clock = -math.inf
 
     # 功能：
-    #   为已在运行的本地推理保留最多 35 毫秒交接机会，不阻塞等待 Future 或续期控制来源。
+    #   为已在运行的本地推理保留有界交接机会，逐次重验原始派发预算，不阻塞 Future 或续期来源。
     # 输入：
     #   self：当前调度器。
     #   now_monotonic、depth_sequence：当前单调钟和独立深度序列。
@@ -159,7 +248,11 @@ class ReadyControlScheduler:
             return False
         if depth_sequence > self._wait_sequence:
             self._wait_sequence = depth_sequence
-            self._wait_until = now_monotonic + .035
+            # 逐调用实测：原 50 ms 定时器常在结果返回前 0–11 ms 到期，
+            # 接着整轮重投影又消耗 68–118 ms。等待改由原请求剩余预算先约束，
+            # 两个控制周期仅作绝对上限；任何一项预算不足立即恢复深度处理。
+            # 这是生产者工作排序，飞控继续执行原短租约，不能延长已发指令。
+            self._wait_until = now_monotonic + 2 * LOCAL_CONTROL_PERIOD_SECONDS
         should_wait = depth_sequence == self._wait_sequence and now_monotonic < self._wait_until
         return should_wait
 
@@ -196,6 +289,31 @@ class ReadyControlScheduler:
                 or depth_sequence <= self._last_priority_sequence):
             raise ValueError("CONTROL_PRIORITY_REQUIRES_INDEPENDENT_DEPTH_SEQUENCE")
         self._last_priority_sequence = depth_sequence
+
+
+# 功能：
+#   1. 为显式仿真教师提供一次基于新原生状态的反馈机会，不必先处理另一整帧深度。
+#   2. 与模型交接共用每深度序列一次的额度，保留原观测期限，下一轮仍须处理新深度。
+#   3. 不生成训练标签、不复制旧状态充数、不为云端或未启用的教师开放控制权限。
+# 输入：
+#   enabled：调用方明确限定为无模型提供者的仿真教师。
+#   scheduler、state_buffer：当前交接额度与原生状态缓冲。
+#   features：已有真实感知快照；previous_state_ms：上一周期消费的状态来源钟。
+#   depth_sequence、now_unix_ms：独立深度序列与当前消费时刻。
+#   perception_healthy、depth_processing_failed、fault_active：现有安全状态。
+# 输出：
+#   ready：允许交接提示；执行仍须重新读取状态、校验感知及完整安全约束。
+def teacher_state_handoff_ready(*, enabled, scheduler, state_buffer, features, previous_state_ms, depth_sequence, now_unix_ms, perception_healthy, depth_processing_failed, fault_active) -> bool:
+    if enabled is not True or features is None or not scheduler.eligible(
+        depth_sequence=depth_sequence, result_ready=True, perception_healthy=perception_healthy,
+        features_retain_dispatch_budget=True, depth_processing_failed=depth_processing_failed,
+        fault_active=fault_active):
+        return False
+    if not state_buffer.newer_sample_available(previous_state_ms, now_unix_ms=now_unix_ms):
+        return False
+    ready = (features.control_deadline_unix_ms(now_unix_ms=now_unix_ms) - now_unix_ms
+             >= LOCAL_DISPATCH_RESERVE_MS)
+    return ready
 
 
 class SensorArrivalScheduler:
@@ -292,6 +410,7 @@ class InterpreterPauseMonitor:
     #   None：不返回业务数据。
     def __init__(self):
         self._closed = False
+        self._initial_thresholds = gc.get_threshold()
         self._starts = {}
         self._recent = deque(maxlen=64)
         self._longest = []
@@ -363,6 +482,8 @@ class InterpreterPauseMonitor:
         if self._callback in gc.callbacks:
             gc.callbacks.remove(self._callback)
         summary = {"collection_count": self._count, "total_pause_ms": self._total_ms,
+                "initial_thresholds": list(self._initial_thresholds),
+                "final_thresholds": list(gc.get_threshold()),
                 "maximum_pause_ms": self._maximum_ms,
                 "startup_frozen_objects": gc.get_freeze_count(),
                 "generations": {str(key): dict(value)

@@ -56,7 +56,7 @@ from .perception_evidence import (
     freeze_perception_frame,
 )
 from .prompts import TEXT_NAVIGATION_ADVISOR
-from .realtime_feature_encoders import RealtimeFeatureSnapshot
+from .realtime_feature_encoders import RealtimeFeatureSnapshot, parse_realtime_control_input
 from .runtime_sensor_contracts import (
     RuntimeMultimodalSensorSnapshot,
     RuntimeSensorEnvelope,
@@ -360,7 +360,9 @@ class RuntimePerceptionFusion:
         missing = {
             key: state
             for key, state in dynamic_tracks.items()
-            if frame.observed_at_unix_ms > state.observed_at_unix_ms
+            # 超过一秒的历史本来就不允许以这个短时运动包络清除；不要为必定拒绝的
+            # 目标逐帧重新遍历全幅自由空间，挤占定位新帧预算。目标仍原样留在历史中。
+            if 100 <= frame.observed_at_unix_ms - state.observed_at_unix_ms <= 1000
         }
         if missing:
             free = fresh_free_voxels(
@@ -707,8 +709,19 @@ def request_text_navigation_decision(
     snapshot: dict[str, object],
     context_id: str | None = None,
     multimodal: list[dict[str, object]] | None = None,
+    control_deadline_monotonic: float | None = None,
 ) -> tuple[StructuredCallResult[TextNavigationDecision], dict[str, object] | None]:
+    # Only our owned process facade may move validation across the IPC boundary.
+    # It executes this same function with an actual LocalPolicyPort in the child,
+    # so malformed/hash-mismatched outputs remain rejected before publication.
+    from .process_local_policy_port import ProcessLocalPolicyPort
+    if isinstance(port, ProcessLocalPolicyPort):
+        return port.request_navigation(snapshot=snapshot, context_id=context_id,
+            multimodal=multimodal, control_deadline_monotonic=control_deadline_monotonic)
     snapshot = copy_json(snapshot, limit=8 * 1024 * 1024)
+    local_deadline = ({"control_deadline_monotonic": control_deadline_monotonic}
+        if control_deadline_monotonic is not None
+        and getattr(port, "supports_control_deadline", False) is True else {})
     result = port.call(
         role="local_navigation_advisor",
         output_type=TextNavigationDecision,
@@ -716,6 +729,7 @@ def request_text_navigation_decision(
         input_artifact={"text_navigation_snapshot": copy.deepcopy(snapshot)},
         context_id=context_id,
         multimodal=multimodal,
+        **local_deadline,
     )
     result = copy.deepcopy(result)
     try:
@@ -834,6 +848,10 @@ class TextOnlyIndoorNavigationCoordinator:
                 hold_reason=(
                     "MODEL_REQUESTED_ABORT"
                     if decision.action == "abort"
+                    else "LOCAL_EXPERT_TEMPORAL_HISTORY_WARMING"
+                    if "LOCAL_EXPERT_TEMPORAL_HISTORY_WARMING" in decision.risk_notes
+                    else "LOCAL_POLICY_RISK_THRESHOLD_REACHED"
+                    if "LOCAL_POLICY_RISK_THRESHOLD_REACHED" in decision.risk_notes
                     else "MODEL_DID_NOT_SELECT_AUTHORIZED_PATH"
                 ),
             )
@@ -1008,71 +1026,35 @@ def _failure_diagnostic(error: BaseException, *, stage: str) -> dict[str, object
 
 
 # 功能：
-#   在后台编译输入并调用模型，原始观测期限贯穿准备与推理，过期结果只保留调用证据。
+#   调用模型；候选模式先编译独占地图，连续模式消费已冻结的观测，过期结果只保留调用证据。
 # 输入：
-#   world：为本次请求冻结的局部米制地图。
-#   frame：带原始采集时间的不可变感知帧。
-#   health：提交时的感知健康判定。
+#   request：候选模式的独占编译输入；与 prepared_snapshot 恰好提供一个。
+#   prepared_snapshot：连续模式在地图所有者线程编译好的独立 JSON 观测。
 #   port：本次选择的模型端口。
-#   goal_position_m：宏观目标位置，单位米。
-#   required_clearance_m：所需净空，单位米。
-#   candidate_speed_mps：候选评估速度，单位米每秒。
-#   vehicle_radius_m：机体水平半径，单位米。
-#   vehicle_height_m：机体高度，单位米。
 #   context_id：可选模型上下文身份。
 #   multimodal：已冻结的图像传输输入。
-#   visual_evidence：与图像字节对应的证据摘要。
-#   multimodal_sensor_snapshot：可选多模态健康状态。
-#   realtime_feature_snapshot：可选本地编码特征。
-#   strategic_context：经过范围限制的宏观任务上下文。
-#   maximum_snapshot_planning_seconds：快照规划计算预算，单位秒。
-#   include_candidate_paths：是否编译兼容候选路径。
-#   control_reference_observed_at_unix_ms：本次控制状态的原始毫秒时钟。
 #   invocation_deadline_monotonic：连续控制请求的单调时钟截止时间。
 # 输出：
 #   worker_result：后台结果、失败原因或因过期保留的调用回执。
 def _compile_and_request_navigation_decision(
     *,
-    world: MetricVoxelMap,
-    frame: OnboardPerceptionFrame,
-    health: PerceptionFusionHealth,
+    request: NavigationSnapshotRequest | None,
+    prepared_snapshot: dict[str, object] | None,
     port: StructuredModelPort,
-    goal_position_m: Vector3,
-    required_clearance_m: float,
-    candidate_speed_mps: float,
-    vehicle_radius_m: float,
-    vehicle_height_m: float,
     context_id: str | None,
     multimodal: list[dict[str, object]],
-    visual_evidence: list[dict[str, object]],
-    multimodal_sensor_snapshot: dict[str, object] | None,
-    realtime_feature_snapshot: dict[str, object] | None,
-    strategic_context: dict[str, object],
-    maximum_snapshot_planning_seconds: float,
-    include_candidate_paths: bool,
-    control_reference_observed_at_unix_ms: int,
     invocation_deadline_monotonic: float | None = None,
 ) -> _NavigationWorkerResult:
+    # 工作槽排队时间也消耗原观测期限；已无派发余量时不再编译大型地图快照。
+    if (invocation_deadline_monotonic is not None
+            and time.monotonic() + LOCAL_DISPATCH_RESERVE_MS / 1000 >= invocation_deadline_monotonic):
+        return _NavigationWorkerResult(
+            snapshot=None, failure_reason="CONTROL_SOURCE_EXPIRED_DURING_PREPARATION")
     try:
-        snapshot = compile_navigation_snapshot(
-            NavigationSnapshotRequest(
-                world=world,
-                frame=frame,
-                health=health,
-                goal_position_m=goal_position_m,
-                required_clearance_m=required_clearance_m,
-                candidate_speed_mps=candidate_speed_mps,
-                vehicle_radius_m=vehicle_radius_m,
-                vehicle_height_m=vehicle_height_m,
-                visual_evidence=visual_evidence,
-                multimodal_sensor_snapshot=multimodal_sensor_snapshot,
-                realtime_feature_snapshot=realtime_feature_snapshot,
-                strategic_context=strategic_context,
-                maximum_snapshot_planning_seconds=maximum_snapshot_planning_seconds,
-                include_candidate_paths=include_candidate_paths,
-                control_reference_observed_at_unix_ms=control_reference_observed_at_unix_ms,
-            )
-        )
+        if (request is None) == (prepared_snapshot is None):
+            raise ValueError("NAVIGATION_WORKER_INPUT_OWNERSHIP_INVALID")
+        snapshot = (compile_navigation_snapshot(request)
+                    if request is not None else prepared_snapshot)
     except ValueError as error:
         return _NavigationWorkerResult(
             snapshot=None,
@@ -1092,6 +1074,8 @@ def _compile_and_request_navigation_decision(
             snapshot=snapshot,
             context_id=context_id,
             multimodal=multimodal,
+            control_deadline_monotonic=(invocation_deadline_monotonic - LOCAL_DISPATCH_RESERVE_MS / 1000
+                if invocation_deadline_monotonic is not None else None),
         )
     except Exception as error:
         return _NavigationWorkerResult(
@@ -1649,6 +1633,8 @@ class EventDrivenIndoorNavigationCoordinator:
         self._active_navigation_snapshot_sha256: str | None = None
         self._model_call_records: deque[Any] = deque()
         self._last_submitted_snapshot: dict[str, object] | None = None
+        self._last_rejected_observation_monotonic = float("-inf")
+        self._input_preparation_timing: dict[str, float] = {}
 
     # 功能：
     #   判断请求、路径重验或隔离中的过期推理是否占用工作槽，避免有状态推理并发。
@@ -1673,11 +1659,28 @@ class EventDrivenIndoorNavigationCoordinator:
     #   pending：存在未完成连续控制请求时为 True。
     @property
     def continuous_request_pending(self) -> bool:
-        return (
-            self.control_output_mode == CONTINUOUS_CONTROL_MODE
-            and self._pending is not None
-            and not self._pending.future.done()
-        )
+        return self.continuous_handoff_state[0]
+
+    # 功能：
+    #   一次读取 Future 状态，避免结果刚完成时分别读取就绪/等待得到两个 False 而错过交接。
+    # 输入：
+    #   self：只由感知线程消费请求的协调器。
+    # 输出：
+    #   state：等待标志和就绪标志二元组；失败、空闲和兼容模式均为两个 False。
+    @property
+    def continuous_handoff_state(self) -> tuple[bool, bool]:
+        pending = self._pending
+        if self.control_output_mode != CONTINUOUS_CONTROL_MODE or pending is None:
+            return False, False
+        if not pending.future.done():
+            return True, False
+        try:
+            result = pending.future.result()
+        except Exception:
+            return False, False
+        ready = (isinstance(result, _NavigationWorkerResult)
+                 and result.failure_reason is None and result.model_result is not None)
+        return False, ready
 
     # 功能：
     #   仅为可能有效的连续决策提示优先消费，不让已知失败结果抢占新感知处理时间。
@@ -1687,22 +1690,7 @@ class EventDrivenIndoorNavigationCoordinator:
     #   ready：已有待核验连续结果时为 True。
     @property
     def continuous_result_ready(self) -> bool:
-        pending = self._pending
-        if (
-            self.control_output_mode != CONTINUOUS_CONTROL_MODE
-            or pending is None
-            or not pending.future.done()
-        ):
-            return False
-        try:
-            result = pending.future.result()
-        except Exception:
-            return False
-        return (
-            isinstance(result, _NavigationWorkerResult)
-            and result.failure_reason is None
-            and result.model_result is not None
-        )
+        return self.continuous_handoff_state[1]
 
     # 功能：
     #   计算在途连续请求的剩余原始预算，只供调度参考，不随新观测续租。
@@ -1790,6 +1778,8 @@ class EventDrivenIndoorNavigationCoordinator:
         health: PerceptionFusionHealth,
         goal_position_m: Vector3,
         strategic_context: Mapping[str, object] | None,
+        realtime_feature_snapshot: Mapping[str, object] | None = None,
+        now_unix_ms: int | None = None,
     ) -> str | None:
         frame = self.fusion.latest_frame
         if frame is None:
@@ -1810,6 +1800,11 @@ class EventDrivenIndoorNavigationCoordinator:
         except ValueError:
             return None
         snapshot["perception_health"] = health.model_dump(mode="json")
+        if now_unix_ms is not None:
+            # 当前评价时刻不替换编码自身的采样时间；缺失/过期内容仍保持缺失/过期。
+            snapshot["control_reference_observed_at_unix_ms"] = now_unix_ms
+        if realtime_feature_snapshot is not None:
+            snapshot["realtime_feature_snapshot"] = copy.deepcopy(dict(realtime_feature_snapshot))
         multimodal_sensor_snapshot = self.fusion.multimodal_sensor_snapshot()
         if multimodal_sensor_snapshot is not None:
             snapshot["multimodal_sensor_snapshot"] = multimodal_sensor_snapshot.model_dump(
@@ -1823,6 +1818,22 @@ class EventDrivenIndoorNavigationCoordinator:
         self._last_submitted_snapshot = dict(snapshot)
         return str(snapshot["snapshot_sha256"])
 
+    # 功能：仿真训练拒绝运动时仍保存原输入，供只读阶段决策分析缺观测；最多2Hz。
+    # 输入：原健康状态、目标、上下文、编码及UNIX毫秒；输出：只读快照摘要或None。
+    # 不调用模型、不申请新动作、不延长控制租期，生产端口不启用此附加采集。
+    def _record_rejected_training_observation(self, **kwargs):
+        if getattr(self.port, "simulation_only", False) is not True:
+            return None
+        now = time.monotonic()
+        if now - self._last_rejected_observation_monotonic < 0.5:
+            return None
+        self._last_rejected_observation_monotonic = now
+        try:
+            return self._record_non_invoked_snapshot(**kwargs)
+        except (ValueError, TypeError, KeyError):
+            # 非法诊断载荷不能把原本的安全拒绝升级成控制线程异常。
+            return None
+
     # 功能：
     #   冻结本次输入并申请唯一后台工作槽；原始图像/编码时效不足或感知不健康时只生成拒绝回执。
     # 输入：
@@ -1834,6 +1845,7 @@ class EventDrivenIndoorNavigationCoordinator:
     #   multimodal：最多四张待绑定的摄像头图像。
     #   strategic_context：云端宏观任务上下文。
     #   realtime_feature_snapshot：本地编码器的实时特征快照。
+    #   observation_only：只保存真实数值历史；缺少当次图像时不运行模型或签发动作。
     # 输出：
     #   receipt：立即拒绝时的回执；已经提交或暂忙时为 None。
     def schedule(
@@ -1847,8 +1859,10 @@ class EventDrivenIndoorNavigationCoordinator:
         multimodal: list[dict[str, object]] | None = None,
         strategic_context: Mapping[str, object] | None = None,
         realtime_feature_snapshot: Mapping[str, object] | None = None,
+        observation_only: bool = False,
     ) -> IndoorNavigationCycleReceipt | None:
         preparation_started_monotonic = time.monotonic()
+        self._input_preparation_timing = {}
         if self._closed:
             raise ValueError("NAVIGATION_COORDINATOR_CLOSED")
         if type(now_unix_ms) is not int or now_unix_ms < 0:
@@ -1866,7 +1880,12 @@ class EventDrivenIndoorNavigationCoordinator:
             type(navigation_goal_id) is not str or not 1 <= len(navigation_goal_id) <= 160
         ):
             raise ValueError("NAVIGATION_GOAL_ID_INVALID")
-        if self.request_pending:
+        observe_history = (self.control_output_mode == CONTINUOUS_CONTROL_MODE
+                           and getattr(self.port, 'supports_observation_history', False) is True)
+        if type(observation_only) is not bool or observation_only and not observe_history:
+            raise ValueError("NAVIGATION_OBSERVATION_ONLY_MODE_INVALID")
+        pending_at_entry = self.request_pending
+        if pending_at_entry and not observe_history:
             return None
         # Freeze caller-owned inputs before either the deadline check or the
         # asynchronous compilation. A shallow mapping copy still shares its
@@ -1897,13 +1916,18 @@ class EventDrivenIndoorNavigationCoordinator:
             )
         age_limit = self._next_invocation_age_limit_seconds()
         if self.control_output_mode == CONTINUOUS_CONTROL_MODE:
+            source_issue = "CONTINUOUS_FEATURE_SCHEMA_INVALID"
             try:
-                features = RealtimeFeatureSnapshot.model_validate(realtime_feature_snapshot)
-                if not features.fresh_at(now_unix_ms):
+                features, features_fresh, source_deadline = parse_realtime_control_input(
+                    realtime_feature_snapshot, now_unix_ms=now_unix_ms)
+                source_issue = "CONTINUOUS_FEATURE_NOT_FRESH" if features.ready_for_control else "CONTINUOUS_FEATURE_NOT_READY"
+                if not features_fresh:
                     raise ValueError("continuous features are stale or not ready")
+                source_issue = "CONTINUOUS_FEATURE_CONTRACT_INCOMPLETE"
                 if features.policy_feature_contract_sha256() is None:
                     raise ValueError("continuous feature contract is incomplete")
-                source_deadline = features.control_deadline_unix_ms(now_unix_ms=now_unix_ms)
+                source_issue = "CONTINUOUS_FEATURE_DEADLINE_INVALID"
+                self._input_preparation_timing["feature_remaining_ms"] = max(0, source_deadline - now_unix_ms)
                 source_deadline = self._feature_deadline_latch.restrict(
                     source_unix_ms=min(
                         e.observed_at_unix_ms
@@ -1913,21 +1937,33 @@ class EventDrivenIndoorNavigationCoordinator:
                     deadline_unix_ms=source_deadline,
                 )
                 age_limit = min(age_limit, (source_deadline - now_unix_ms) / 1000)
-                if age_limit <= LOCAL_DISPATCH_RESERVE_MS / 1000:
+                source_issue = "CONTINUOUS_FEATURE_DISPATCH_BUDGET_INSUFFICIENT"
+                if age_limit <= LOCAL_DISPATCH_RESERVE_MS / 1000 and not observe_history:
                     raise ValueError("continuous source deadline too close for publication")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as error:
+                observation_sha256 = self._record_rejected_training_observation(
+                    health=health, goal_position_m=goal_position_m,
+                    strategic_context=strategic_context,
+                    realtime_feature_snapshot=realtime_feature_snapshot,
+                    now_unix_ms=now_unix_ms,
+                )
                 return IndoorNavigationCycleReceipt(
                     sequence=self._sequence,
                     trigger=trigger,
+                    snapshot_sha256=observation_sha256,
                     perception_health=health,
                     model_action="not-invoked",
                     hold_reason="CONTINUOUS_CONTROL_SOURCE_NOT_READY",
+                    failure_reason_code=source_issue,
+                    failure_exception_type=type(error).__name__,
                 )
         if not health.stream_healthy:
             snapshot_sha256 = self._record_non_invoked_snapshot(
                 health=health,
                 goal_position_m=goal_position_m,
                 strategic_context=strategic_context,
+                realtime_feature_snapshot=realtime_feature_snapshot,
+                now_unix_ms=now_unix_ms,
             )
             return IndoorNavigationCycleReceipt(
                 sequence=self._sequence,
@@ -1990,13 +2026,14 @@ class EventDrivenIndoorNavigationCoordinator:
             image_deadline = min(
                 image_control_deadline(item, now_unix_ms=now_unix_ms) for item in media
             )
+            self._input_preparation_timing["image_remaining_ms"] = image_deadline - now_unix_ms
             if image_deadline:
                 image_deadline = self._image_deadline_latch.restrict(
                     source_unix_ms=min(item["scene_source_unix_ns"] // 1_000_000 for item in media),
                     deadline_unix_ms=image_deadline,
                 )
             age_limit = min(age_limit, (image_deadline - now_unix_ms) / 1000)
-            if age_limit <= LOCAL_DISPATCH_RESERVE_MS / 1000:
+            if age_limit <= LOCAL_DISPATCH_RESERVE_MS / 1000 and not observe_history:
                 return IndoorNavigationCycleReceipt(
                     sequence=self._sequence,
                     trigger=trigger,
@@ -2053,7 +2090,7 @@ class EventDrivenIndoorNavigationCoordinator:
             else None
         )
         if (
-            invocation_deadline is not None
+            not observe_history and invocation_deadline is not None
             and time.monotonic() + LOCAL_DISPATCH_RESERVE_MS / 1000 >= invocation_deadline
         ):
             return IndoorNavigationCycleReceipt(
@@ -2064,7 +2101,9 @@ class EventDrivenIndoorNavigationCoordinator:
                 hold_reason="CONTROL_SOURCE_EXPIRED_DURING_PREPARATION",
             )
         prime = getattr(self.port, "prime_multimodal", None)
-        if callable(prime):
+        if (callable(prime) and not pending_at_entry and not observation_only
+                and (invocation_deadline is None
+                     or time.monotonic() + LOCAL_DISPATCH_RESERVE_MS / 1000 < invocation_deadline)):
             try:
                 prime(copy.deepcopy(media))
             except Exception as error:
@@ -2076,28 +2115,21 @@ class EventDrivenIndoorNavigationCoordinator:
                     hold_reason="VISUAL_NAVIGATION_PREPARATION_FAILED",
                     **_failure_diagnostic(error, stage="model-invocation"),
                 )
-        future = self._executor.submit(
-            _compile_and_request_navigation_decision,
-            # Static route/map priors remain complete and immutable.  Only
-            # mutable depth evidence is frozen to the local reasoning horizon;
-            # copying the entire mission history here previously delayed the
-            # fail-closed command publisher after long flights.
-            world=self.fusion.world.navigation_clone(
+        freeze_started = time.monotonic()
+        direct_observation = (self.control_output_mode == CONTINUOUS_CONTROL_MODE
+                              and not self.include_candidate_paths)
+        # 连续模式不搜索路径：在地图唯一写者线程生成相同八米观测即可。
+        # 候选搜索仍在后台运行，必须持有独占局部地图，不能借用活跃地图。
+        snapshot_request = NavigationSnapshotRequest(
+            world=(self.fusion.world if direct_observation else self.fusion.world.navigation_clone(
                 center_m=frame.localization_position_m,
-                radius_m=self._NAVIGATION_LIVE_EVIDENCE_RADIUS_M,
-            ),
-            # Every nested vector and sequence is immutable. The asynchronous
-            # compiler may retain this exact validated source across new scans.
-            frame=frame,
-            health=health,
-            port=self.port,
+                radius_m=self._NAVIGATION_LIVE_EVIDENCE_RADIUS_M)),
+            frame=frame, health=health,
             goal_position_m=goal_position_m,
             required_clearance_m=self.required_clearance_m,
             candidate_speed_mps=self.candidate_speed_mps,
             vehicle_radius_m=self.vehicle_radius_m,
             vehicle_height_m=self.vehicle_height_m,
-            context_id=context_id,
-            multimodal=media,
             visual_evidence=visual_evidence,
             multimodal_sensor_snapshot=(
                 multimodal_sensor_snapshot.model_dump(mode="json")
@@ -2111,7 +2143,39 @@ class EventDrivenIndoorNavigationCoordinator:
             maximum_snapshot_planning_seconds=(self.maximum_snapshot_planning_seconds),
             include_candidate_paths=(self.include_candidate_paths),
             control_reference_observed_at_unix_ms=now_unix_ms,
-            invocation_deadline_monotonic=invocation_deadline,
+        )
+        prepared_snapshot = None
+        try:
+            if direct_observation:
+                prepared_snapshot = compile_navigation_snapshot(snapshot_request)
+                if observe_history:
+                    # 观测仍须新鲜，但没有足够动作发布余量不等于它从未被测量。
+                    # 排队历史不会调用模型；推理线程仅消费截至自身输入时刻的部分。
+                    self.port.observe_navigation_snapshot(prepared_snapshot)
+                # 编译器已冻结输入并绑定摘要；后台不再持有活跃地图或外部可变消息。
+                snapshot_request = None
+        except ValueError as error:
+            return IndoorNavigationCycleReceipt(
+                sequence=self._sequence, trigger=trigger, perception_health=health,
+                model_action="not-invoked", hold_reason="METRIC_NAVIGATION_SNAPSHOT_UNAVAILABLE",
+                **_failure_diagnostic(error, stage="snapshot-compilation"))
+        freeze_finished = time.monotonic()
+        self._input_preparation_timing = {**self._input_preparation_timing,
+            "validation_and_media_ms": (freeze_started - preparation_started_monotonic) * 1000,
+            "world_freeze_ms": 0. if direct_observation else (freeze_finished - freeze_started) * 1000,
+            "direct_observation_ms": (freeze_finished - freeze_started) * 1000 if direct_observation else 0.,
+        }
+        if pending_at_entry or observation_only:
+            return None
+        if (invocation_deadline is not None
+                and freeze_finished + LOCAL_DISPATCH_RESERVE_MS / 1000 >= invocation_deadline):
+            return IndoorNavigationCycleReceipt(
+                sequence=self._sequence, trigger=trigger, perception_health=health,
+                model_action="not-invoked", hold_reason="CONTROL_SOURCE_EXPIRED_DURING_PREPARATION")
+        future = self._executor.submit(
+            _compile_and_request_navigation_decision, request=snapshot_request,
+            prepared_snapshot=prepared_snapshot, port=self.port, context_id=context_id,
+            multimodal=media, invocation_deadline_monotonic=invocation_deadline,
         )
         self._pending = _PendingNavigationCycle(
             sequence=self._sequence,
@@ -2124,6 +2188,17 @@ class EventDrivenIndoorNavigationCoordinator:
             future=future,
         )
         return None
+
+    # 功能：
+    #   返回最近一次输入准备的分段耗时副本，只供诊断，不参与动作有效期计算。
+    # 输入：
+    #   self：导航协调器。
+    # 输出：
+    #   timing：验证与媒体处理、地图冻结或直接观测编译的毫秒耗时。
+    @property
+    def input_preparation_timing(self) -> dict[str, float]:
+        timing = dict(self._input_preparation_timing)
+        return timing
 
     # 功能：
     #   将摄像头输入固定为同一份不可变字节，再核对摘要和大小，避免算摘要与推理间重开文件。
@@ -2473,6 +2548,10 @@ class EventDrivenIndoorNavigationCoordinator:
                 hold_reason=(
                     "MODEL_REQUESTED_ABORT"
                     if decision.action == "abort"
+                    else "LOCAL_EXPERT_TEMPORAL_HISTORY_WARMING"
+                    if "LOCAL_EXPERT_TEMPORAL_HISTORY_WARMING" in decision.risk_notes
+                    else "LOCAL_POLICY_RISK_THRESHOLD_REACHED"
+                    if "LOCAL_POLICY_RISK_THRESHOLD_REACHED" in decision.risk_notes
                     else "MODEL_DID_NOT_SELECT_AUTHORIZED_PATH"
                 ),
             )

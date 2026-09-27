@@ -107,8 +107,10 @@ class PreparedModelImage:
             "observed_at_unix_ms": self.received_at_unix_ms,
             "timestamp_basis": "host-receive-not-hardware-exposure",
         }
-        if self.frame_time is not None and self.frame_time.clock_kind == "scene-source":
-            payload.update({"timestamp_basis": "simulation-scene-capture",
+        if self.frame_time is not None and self.frame_time.clock_kind in {"scene-source", "native-simulation"}:
+            payload.update({"timestamp_basis": (
+                "native-simulation-preupdate" if self.frame_time.clock_kind == "native-simulation"
+                else "simulation-scene-capture"),
                 "scene_epoch": self.frame_time.epoch, "scene_sha256": self.frame_time.scene_sha256,
                 "scene_sequence": self.frame_time.sequence,
                 "scene_simulation_ns": self.frame_time.simulation_ns,

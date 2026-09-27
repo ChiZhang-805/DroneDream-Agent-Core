@@ -22,7 +22,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from dronedream_agent_core.contract_json import decode_contract_json
 from dronedream_agent_core.contracts import (
+    MapAsset,
     MissionAssetPairQualificationBinding,
     PreparedMission,
     Px4RuntimeAbortRequest,
@@ -52,7 +54,11 @@ from dronedream_agent_core.plugin_files import (
     read_plugin_file,
 )
 from dronedream_agent_core.runtime_interrupt import submit_runtime_message
+from dronedream_agent_core.runtime_plugins import runtime_extension_registry
+from dronedream_agent_core.simulation_camera_clock import validate_native_camera_clock
+from dronedream_agent_core.simulation_payload_runtime import validate_payload_runtime
 from dronedream_agent_core.simulation_sensor_runtime import validate_native_sensor_runtime
+from dronedream_agent_core.windows_paths import windows_drive_path_to_wsl
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
 
 from .asset_runtime_resolver import (
@@ -69,6 +75,7 @@ from .runtime_control_records import (
     read_control_record,
     read_takeover_evidence,
 )
+from .runtime_failure import executor_failure_detail
 from .runtime_launch_settings import bounded_integer, packaged_executor, positive_seconds
 from .runtime_resource_manifest import verify_runtime_resource_manifest
 from .storage import AppStore
@@ -105,18 +112,16 @@ class ActiveTakeoverGrant:
 
 
 # 功能：
-#   将 Windows 盘符绝对路径映射为 WSL 的 /mnt 路径，拒绝无法对应盘符的路径。
+#   解析本机资源路径，再按统一规则映射普通及扩展长度盘符路径，不猜测网络盘挂载。
 # 输入：
 #   path：本机资源或任务文件路径。
 # 输出：
 #   mapped：供 WSL 命令使用的绝对路径字符串。
 def _wsl_path(path: Path) -> str:
-    resolved = path.resolve()
-    drive = resolved.drive.rstrip(":").lower()
-    if not drive or len(drive) != 1:
-        raise RuntimeBridgeError("WINDOWS_PATH_CANNOT_MAP_TO_WSL")
-    relative = resolved.as_posix().split(":", 1)[1]
-    mapped = f"/mnt/{drive}{relative}"
+    try:
+        mapped = windows_drive_path_to_wsl(str(path.resolve()))
+    except ValueError as error:
+        raise RuntimeBridgeError("WINDOWS_PATH_CANNOT_MAP_TO_WSL") from error
     return mapped
 
 
@@ -255,6 +260,10 @@ class RuntimeManager:
             runtime / "native-sensors" / "libdronedream-magnetometer.so",
             runtime / "native-sensors" / "magnetic-field-probe",
             runtime / "native-sensors" / "geo_magnetic_tables.hpp",
+            runtime / "payload-placement" / "payload-placement-runtime.json",
+            runtime / "payload-placement" / "libdronedream-payload-placement.so",
+            runtime / "camera-clock" / "camera-clock-runtime.json",
+            runtime / "camera-clock" / "libdronedream-camera-clock.so",
             runtime / "ros_ws" / "src",
             runtime / "wheels",
         )
@@ -267,6 +276,8 @@ class RuntimeManager:
             # pip 和 ROS 会发现目录中的文件，因此未索引的残留物也必须拒绝。
             verify_runtime_resource_manifest(runtime)
             validate_native_sensor_runtime(runtime / "native-sensors")
+            validate_payload_runtime(runtime / "payload-placement")
+            validate_native_camera_clock(runtime / "camera-clock")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
             return ready
         ready = True
@@ -279,6 +290,26 @@ class RuntimeManager:
     #   self：持有产品资源根目录的运行管理器。
     # 输出：
     #   resources：模型包路径、生产资格路径、仿真准入路径三个元组。
+    # 功能：读取随安装包发布的仿真控制配置；未配置时保留旧模式，坏配置明确报错。
+    # 输入：受 Runtime 清单校验的资源目录；输出：是否启用不依赖模型的路线控制。
+    def _independent_route_control_enabled(self) -> bool:
+        if self.resource_root is None:
+            return False
+        path = self.resource_root / "runtime" / "control-profile.json"
+        if not path.exists():
+            return False
+        try:
+            profile = json.loads(read_plugin_file(path, limit=4096))
+            if profile != {
+                "schema_version": "dronedream.control-profile.v1",
+                "mode": "independent-route-v1",
+                "simulation_only": True,
+            }:
+                raise ValueError("unknown control profile")
+        except (OSError, ValueError) as error:
+            raise RuntimeBridgeError("RUNTIME_CONTROL_PROFILE_INVALID") from error
+        return True
+
     def _local_policy_runtime_resources(
         self,
     ) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
@@ -302,7 +333,8 @@ class RuntimeManager:
             or catalog.get("schema_version") != "dronedream.local-policy-runtime-catalog.v2"
             or not isinstance(catalog.get("entries"), list)
             or not 1 <= len(catalog["entries"]) <= 256
-            or catalog.get("deployment_scope") not in {"simulation-only", "production-qualified"}
+            or catalog.get("deployment_scope")
+            not in {"simulation-only", "production-qualified", "simulation-trial"}
         ):
             raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_CATALOG_INVALID")
         deployment_scope = str(catalog["deployment_scope"])
@@ -342,7 +374,8 @@ class RuntimeManager:
                 not isinstance(package_sha256, str)
                 or len(package_sha256) != 64
                 or not isinstance(receipt, dict)
-                or receipt.get("kind") not in {"qualification", "simulation-admission"}
+                or receipt.get("kind")
+                not in {"qualification", "simulation-admission", "simulation-trial"}
                 or not isinstance(receipt.get("sha256"), str)
                 or len(str(receipt["sha256"])) != 64
             ):
@@ -357,7 +390,19 @@ class RuntimeManager:
             if observed_package.package_sha256 != package_sha256:
                 raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_PACKAGE_HASH_MISMATCH")
             receipt_kind = receipt["kind"]
-            if receipt_kind == "qualification":
+            if receipt_kind == "simulation-trial":
+                from dronedream_agent_core.simulation_trial import read_simulation_trial
+
+                if (
+                    deployment_scope != "simulation-trial"
+                    or len(catalog["entries"]) != 1
+                    or receipt.get("path") != "trial.json"
+                ):
+                    raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_SCOPE_MISMATCH")
+                permit = read_simulation_trial(receipt_path)
+                if permit.package_sha256 != observed_package.package_sha256:
+                    raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_PACKAGE_HASH_MISMATCH")
+            elif receipt_kind == "qualification":
                 if deployment_scope != "production-qualified":
                     raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_SCOPE_MISMATCH")
                 qualifications.append(receipt_path)
@@ -370,6 +415,24 @@ class RuntimeManager:
             raise RuntimeBridgeError("RUNTIME_LOCAL_POLICY_PACKAGE_DUPLICATE")
         resources = tuple(packages), tuple(qualifications), tuple(simulation_admissions)
         return resources
+
+    # 功能：
+    #   只为经过目录核验的候选仿真包返回试飞许可，不把试飞许可当成正式资格。
+    # 输入：
+    #   self：已装载产品资源的 Runtime 管理器。
+    #   packages、qualifications、admissions：目录核验后的三类资源路径。
+    # 输出：
+    #   trial_path：候选仿真许可路径；正式或无模型资源时为 None。
+    def _local_policy_trial_resource(self, packages, qualifications, admissions):
+        trial_path = None
+        if packages and not qualifications and not admissions:
+            if self.resource_root is None:
+                raise RuntimeBridgeError("RUNTIME_RESOURCES_MISSING")
+            trial_path = self.resource_root / "runtime" / "local-policy" / "trial.json"
+            from dronedream_agent_core.simulation_trial import read_simulation_trial
+
+            read_simulation_trial(trial_path)
+        return trial_path
 
     # 功能：
     #   从包清单明确声明的角色判断能力，不根据模型文件名猜测视觉或控制能力。
@@ -557,6 +620,14 @@ class RuntimeManager:
                         "ready": (active.run_dir / "live-frame.png").is_file(),
                     },
                     {
+                        "id": "gazebo-onboard",
+                        "kind": "simulation",
+                        "label": "Onboard forward camera",
+                        "transport": "agent-core-frame",
+                        "mode": "simulation",
+                        "ready": (active.run_dir / "live-onboard.png").is_file(),
+                    },
+                    {
                         "id": "gazebo-position",
                         "kind": "gps",
                         "label": "Simulation position",
@@ -581,16 +652,19 @@ class RuntimeManager:
     #   查找活动仿真进程的显示帧；不将预览帧是否存在用作感知控制准入条件。
     # 输入：
     #   self：当前活动运行的管理器。
-    #   thread_id：需要查看的任务标识。
+    #   thread_id：需要查看的任务标识；source_id：固定白名单中的仿真相机。
     # 输出：
     #   frame：存在的显示帧路径，无活动进程或文件时为空。
-    def live_frame(self, thread_id: str) -> Path | None:
+    def live_frame(self, thread_id: str, source_id: str = "gazebo-render") -> Path | None:
         frame = None
+        cameras = {"gazebo-render": "live-frame.png", "gazebo-onboard": "live-onboard.png"}
+        if source_id not in cameras:
+            raise RuntimeBridgeError("LIVE_CAMERA_SOURCE_INVALID")
         with self._lock:
             active = self._active_runs.get(thread_id)
         if active is None or active.process.poll() is not None:
             return frame
-        path = active.run_dir / "live-frame.png"
+        path = active.run_dir / cameras[source_id]
         frame = path if path.is_file() else None
         return frame
 
@@ -692,7 +766,11 @@ class RuntimeManager:
             raise RuntimeBridgeError("ASSET_QUALIFICATION_TIMEOUT_INVALID")
         if self.resource_root is None:
             raise RuntimeBridgeError("RUNTIME_RESOURCES_MISSING")
-        executor = self.resource_root / "runtime" / "px4_offboard_track_executor.py"
+        # The Gazebo adapter drives the current checkpoint/phase-channel executor.
+        # The lower-level offboard script is imported by that executor and cannot
+        # satisfy the live phase, safety, and control-authority contract on its own.
+        executor = self.resource_root / "runtime" / "px4_checkpoint_executor.py"
+        base_executor = self.resource_root / "runtime" / "px4_offboard_track_executor.py"
         if not executor.is_file():
             raise RuntimeBridgeError("RUNTIME_ADAPTER_RESOURCE_MISSING")
         work_root = work_root.resolve()
@@ -717,6 +795,8 @@ class RuntimeManager:
             "/opt/PX4-Autopilot",
             "--executor",
             _wsl_path(executor),
+            "--base-executor",
+            _wsl_path(base_executor),
         ]
         command_text = " ".join(shlex.quote(value) for value in command)
         script = (
@@ -724,7 +804,7 @@ class RuntimeManager:
             "source /opt/ros/jazzy/setup.bash; "
             'source "$root/ros_ws-merged/install/setup.bash"; set -u; '
             "export ROS_DOMAIN_ID=74 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp "
-            "ROS2_DISABLE_DAEMON=1; "
+            "ROS2_DISABLE_DAEMON=1 PYTHONDONTWRITEBYTECODE=1; "
             f'exec "$root/venv/bin/python" {command_text} '
             '--ros-workspace "$root/ros_ws-merged"'
         )
@@ -1265,6 +1345,15 @@ class RuntimeManager:
         ):
             raise RuntimeBridgeError("EXECUTION_AUTHORITY_SCOPE_MISMATCH")
         map_content_sha256 = thread.get("selected_map_content_sha256")
+        independent_route_control = self._independent_route_control_enabled()
+        (
+            local_policy_packages,
+            local_policy_qualifications,
+            local_policy_simulation_admissions,
+        ) = ((), (), ()) if independent_route_control else self._local_policy_runtime_resources()
+        local_policy_trial = self._local_policy_trial_resource(
+            local_policy_packages, local_policy_qualifications, local_policy_simulation_admissions
+        )
         vehicle_content_sha256 = thread.get("selected_vehicle_content_sha256")
         if (map_content_sha256 is None) != (vehicle_content_sha256 is None):
             raise RuntimeBridgeError("EXECUTION_ASSET_VERSION_PAIR_INCOMPLETE")
@@ -1287,14 +1376,32 @@ class RuntimeManager:
             if pair_qualification is None:
                 raise RuntimeBridgeError("EXECUTION_ASSET_PAIR_QUALIFICATION_REQUIRED")
             pair_binding = self.store.verified_asset_pair_execution_binding(pair_qualification)
+            map_selection = resolve_versioned_map(map_record)
+            vehicle_selection = resolve_versioned_vehicle(vehicle_record)
+            if local_policy_trial is not None:
+                from dronedream_agent_core.contracts import VehicleAsset
+                from dronedream_agent_core.simulation_trial import validate_trial_configuration
+
+                validate_trial_configuration(
+                    local_policy_trial,
+                    local_policy_packages,
+                    map_selection.semantic,
+                    VehicleAsset.model_validate_json(
+                        read_plugin_file(vehicle_selection.vehicle_metadata, limit=1024 * 1024)
+                    ),
+                )
             environment_versions = self.qualification_environment_versions()
+            from .asset_runtime_resolver import trial_asset_environment_matches
+
             if not environment_versions or not all(
                 qualification_matches_environment(record, environment_versions)
+                or (
+                    (local_policy_trial is not None or independent_route_control)
+                    and trial_asset_environment_matches(record, environment_versions)
+                )
                 for record in (map_record, vehicle_record)
             ):
                 raise RuntimeBridgeError("EXECUTION_ASSET_QUALIFICATION_STALE")
-            map_selection = resolve_versioned_map(map_record)
-            vehicle_selection = resolve_versioned_vehicle(vehicle_record)
         except (AssetRuntimeResolutionError, KeyError) as error:
             raise RuntimeBridgeError(str(error)) from error
         provider = connection.provider
@@ -1353,25 +1460,31 @@ class RuntimeManager:
         if any(not path.is_file() for path in required):
             raise RuntimeBridgeError("EXECUTION_ARTIFACT_MISSING")
         try:
-            prepared_mission = PreparedMission.model_validate(
-                decode_json(
-                    read_plugin_file(prepared, limit=16 * 1024 * 1024),
-                    limit=16 * 1024 * 1024,
-                    node_limit=2_000_000,
-                )
+            prepared_mission = decode_contract_json(
+                read_plugin_file(prepared, limit=16 * 1024 * 1024),
+                PreparedMission,
+                limit=16 * 1024 * 1024,
+                node_limit=2_000_000,
             )
             if prepared_mission.schema_version != "dronedream.prepared-mission.v4":
                 raise RuntimeBridgeError("PREPARED_MISSION_SCHEMA_OBSOLETE")
-            authority_artifact = ModelHarnessExecutionAuthority.model_validate(
-                decode_json(
-                    read_plugin_file(authority_path, limit=1024 * 1024),
-                    limit=1024 * 1024,
-                    node_limit=100_000,
-                )
+            authority_artifact = decode_contract_json(
+                read_plugin_file(authority_path, limit=1024 * 1024),
+                ModelHarnessExecutionAuthority,
+                limit=1024 * 1024,
+                node_limit=100_000,
             )
             if authority_artifact != authority:
                 raise RuntimeBridgeError("EXECUTION_AUTHORITY_ARTIFACT_MISMATCH")
             prepared_sha256 = sha256_json(prepared_mission)
+            # 规划器和 Linux 执行器绑定的是 MapAsset 规范 JSON，而不是带缩进的文件字节。
+            # 先严格解析地图再计算同一摘要；语义文件和 SDF 仍按原有原始字节合同校验。
+            bound_map = decode_contract_json(
+                read_plugin_file(map_graph, limit=64 * 1024 * 1024),
+                MapAsset,
+                limit=64 * 1024 * 1024,
+                node_limit=2_000_000,
+            )
             if (
                 authority.prepared_mission_sha256 != prepared_sha256
                 or prepared_mission.contract.conversation_id != thread_id
@@ -1380,8 +1493,7 @@ class RuntimeManager:
                 or prepared_mission.plugin_snapshot.catalog_sha256 != snapshot.catalog_sha256
                 or prepared_mission.contract.map_asset_id != map_selection.asset_id
                 or prepared_mission.contract.vehicle_asset_id != vehicle_selection.asset_id
-                or prepared_mission.contract.map_sha256
-                != hash_plugin_file(map_graph, limit=256 * 1024 * 1024)
+                or prepared_mission.contract.map_sha256 != sha256_json(bound_map)
                 or prepared_mission.contract.map_semantic_sha256
                 != hash_plugin_file(semantic, limit=256 * 1024 * 1024)
                 or prepared_mission.contract.vehicle_sha256
@@ -1402,6 +1514,8 @@ class RuntimeManager:
                 if planned_pair_binding != pair_binding:
                     raise RuntimeBridgeError("EXECUTION_ASSET_QUALIFICATION_BINDING_MISMATCH")
             simulation_contract = prepared_mission.simulation_capabilities
+            # 同时验证检查点、改令和完成核验会用到的全部钩子，不只检查启动适配器。
+            runtime_extension_registry(prepared_mission)
             simulator_contract = simulation_contract.get("simulator", {})
             native_contract = simulation_contract.get("native_runtime", {})
             transport_contract = (
@@ -1444,11 +1558,6 @@ class RuntimeManager:
         runtime_metadata = runtime_capability.metadata
         interrupt_metadata = interrupt_capability.metadata
         runtime = self.resource_root / "runtime"
-        (
-            local_policy_packages,
-            local_policy_qualifications,
-            local_policy_simulation_admissions,
-        ) = self._local_policy_runtime_resources()
         local_policy_enabled = bool(local_policy_packages)
         try:
             executor = packaged_executor(runtime, runtime_metadata.get("executor", ""))
@@ -1487,7 +1596,9 @@ class RuntimeManager:
         ):
             raise RuntimeBridgeError("RUNTIME_LOCAL_NAVIGATION_POLICY_INVALID")
         local_navigation_provider = "local-policy" if local_policy_enabled else provider
-        local_navigation_fallback_provider = provider if local_policy_enabled else None
+        local_navigation_fallback_provider = (
+            provider if local_policy_enabled and local_policy_trial is None else None
+        )
         local_navigation_timeout = (
             min(configured_local_navigation_timeout, 0.25)
             if local_policy_enabled
@@ -1584,8 +1695,39 @@ class RuntimeManager:
             command.extend(["--local-policy-qualification", _wsl_path(qualification_path)])
         for admission_path in local_policy_simulation_admissions:
             command.extend(["--local-policy-simulation-admission", _wsl_path(admission_path)])
+        if local_policy_trial is not None:
+            command.extend(["--local-policy-trial", _wsl_path(local_policy_trial)])
+            if local_navigation_visual_enabled:
+                command.append("--simulation-map-fusion")
         if local_navigation_visual_enabled:
             command.append("--local-navigation-visual-enabled")
+        if independent_route_control:
+            # 不向独立控制器携带失效模型包或云端导航调用；大模型仍负责任务与改令。
+            # 仅移除导航模型参数，保留账户授权、地图/机型绑定、检查点和中断控制。
+            pair_flags = {
+                "--local-navigation-provider",
+                "--local-navigation-model-timeout-seconds",
+                "--local-navigation-period-seconds",
+                "--local-navigation-context-id",
+                "--local-navigation-fallback-provider",
+                "--local-navigation-fallback-model-timeout-seconds",
+            }
+            clean_command = []
+            index = 0
+            while index < len(command):
+                if command[index] in pair_flags:
+                    index += 2
+                elif command[index] in {
+                    "--require-local-navigation-control-authority",
+                    "--local-navigation-visual-enabled",
+                }:
+                    index += 1
+                else:
+                    clean_command.append(command[index])
+                    index += 1
+            command = clean_command
+            command[command.index("--heading-policy") + 1] = "route-tangent-relative"
+            command.extend(["--independent-route-control", "--simulation-map-fusion"])
         command_text = " ".join(shlex.quote(value) for value in command)
         secret_wsl = shlex.quote(_wsl_path(secret_path))
         native_preflight_marker_wsl = shlex.quote(
@@ -1595,7 +1737,7 @@ class RuntimeManager:
             f"set -eo pipefail; source {shlex.quote(ros_setup)}; "
             f'root={self.runtime_home}; source "$root/ros_ws-merged/install/setup.bash"; set -u; '
             f"export ROS_DOMAIN_ID={ros_domain_id} RMW_IMPLEMENTATION=rmw_cyclonedds_cpp "
-            "ROS2_DISABLE_DAEMON=1; "
+            "ROS2_DISABLE_DAEMON=1 PYTHONDONTWRITEBYTECODE=1; "
             'export CYCLONEDDS_URI=\'<CycloneDDS><Domain Id="any"><General>'
             '<Interfaces><NetworkInterface address="127.0.0.1"/></Interfaces>'
             "<AllowMulticast>false</AllowMulticast></General><Discovery>"
@@ -1721,12 +1863,11 @@ class RuntimeManager:
             final_state = "failed"
             if return_code == 0 and result_path.is_file():
                 try:
-                    result = SimulationWorkflowResult.model_validate(
-                        decode_json(
-                            read_plugin_file(result_path, limit=16 * 1024 * 1024),
-                            limit=16 * 1024 * 1024,
-                            node_limit=2_000_000,
-                        )
+                    result = decode_contract_json(
+                        read_plugin_file(result_path, limit=16 * 1024 * 1024),
+                        SimulationWorkflowResult,
+                        limit=16 * 1024 * 1024,
+                        node_limit=2_000_000,
                     )
                     # 零退出或 status 字符串不能替代实际结果契约及本次计划身份。
                     if (
@@ -1746,6 +1887,37 @@ class RuntimeManager:
                 "prepared_mission_sha256": authority.prepared_mission_sha256,
                 "completed_at": datetime.now(UTC).isoformat(),
             }
+            failure_detail = ""
+            if final_state == "failed":
+                # 只公开约定格式的错误码，不把日志里的路径、令牌或任意异常正文返回界面。
+                issue = (
+                    "EXECUTION_PROCESS_FAILED"
+                    if return_code != 0
+                    else "EXECUTION_RESULT_NOT_VERIFIED"
+                )
+                try:
+                    log = read_plugin_file(
+                        execution_root / "desktop-runtime.stderr.log", limit=2 * 1024 * 1024
+                    ).decode("utf-8", errors="replace")
+                    codes = re.findall(
+                        r"(?m)^(?:ValueError|RuntimeError|PreparedMissionBindingError): "
+                        r"([A-Z][A-Z0-9_]{3,100})(?::[a-z0-9._-]{1,120})?\s*$",
+                        log,
+                    )
+                    if codes:
+                        issue = codes[-1]
+                except (OSError, ValueError):
+                    pass
+                executor_detail = executor_failure_detail(
+                    run_dir, english=self._thread_locale(thread_id) == "en-US"
+                )
+                if executor_detail is not None:
+                    issue, explanation = executor_detail
+                    metadata["failure_explanation"] = explanation
+                metadata["issue"] = issue
+                failure_detail = f" ({issue})"
+                if executor_detail is not None:
+                    failure_detail += " " + explanation
             tracking_error = "EXECUTION_CLEANUP_FAILED" if cleanup_failed else None
             try:
                 # 数据库临时不可写时仍保留本次宿主退出记录，不能伪造任务已成功落库。
@@ -1763,12 +1935,13 @@ class RuntimeManager:
                     content=(
                         "Simulation completed"
                         if english and final_state == "completed"
-                        else "Simulation did not pass acceptance"
+                        else "Simulation failed; execution stopped"
                         if english
                         else "仿真任务已完成"
                         if final_state == "completed"
-                        else "仿真任务未通过验收"
-                    ),
+                        else "仿真运行失败，执行已停止"
+                    )
+                    + failure_detail,
                     metadata=metadata,
                 )
             except Exception:
@@ -1891,8 +2064,11 @@ class RuntimeManager:
             return summary
         try:
             raw_result = read_plugin_file(result_path, limit=16 * 1024 * 1024)
-            result = SimulationWorkflowResult.model_validate(
-                decode_json(raw_result, limit=16 * 1024 * 1024, node_limit=2_000_000)
+            result = decode_contract_json(
+                raw_result,
+                SimulationWorkflowResult,
+                limit=16 * 1024 * 1024,
+                node_limit=2_000_000,
             )
             # 历史消息可能没有保存计划身份；存在该字段时必须逐项匹配，不能忽略。
             for name in ("contract_id", "prepared_mission_sha256"):

@@ -6,6 +6,8 @@ from dronedream_plugin_sdk.protocol import copy_json
 
 from ..contracts import QuaternionWxyz, RuntimeLocalSafetyObservation, Vector3
 from ..control_execution_evidence import ControlApplicationRecord
+from ..control_timing import LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+from ..control_uncertainty import localization_uncertainty_margin_m
 from ..hashing import sha256_json
 from ..realtime_feature_encoders import RealtimeFeatureSnapshot
 from .counterfactual_teacher import CounterfactualConfig, CounterfactualState
@@ -31,6 +33,7 @@ def copy_grounded_state(state: CounterfactualState) -> CounterfactualState:
 # 功能：
 #   1. 绑定原始观测与快照，将及时的独立仿真见证外推到源观测时刻并保留不确定度。
 #   2. 构造只供离线监督的上下文及摘要回执，不将特权真值合并进学生输入。
+#   3. 保留机载定位方差对应的三倍标准差余量，不让精确仿真真值掩盖学生的误差。
 # 输入：
 #   observation：学生当时获得的原始观测。
 #   snapshot：与观测摘要一致的原输入快照。
@@ -58,7 +61,10 @@ def grounded_teacher_context(observation, snapshot, witness, application, teache
         raise ValueError("DAGGER_NATIVE_CONTEXT_SNAPSHOT_MISMATCH")
     source_ms = observation.sample.temporal_evidence.observed_at_unix_ms
     reference = snapshot.get("control_reference_observed_at_unix_ms")
-    if type(reference) is not int or reference != source_ms:
+    maximum_age_ms = round(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
+    # 控制参考钟是组装快照时刻，不等于传感器采样钟；允许有界处理延迟，但不续期。
+    if (type(reference) is not int or not 0 <= reference - source_ms <= maximum_age_ms
+            or reference > application.accepted_at_unix_ms):
         raise ValueError("DAGGER_NATIVE_CONTEXT_SOURCE_TIME_MISMATCH")
     if (
         not 0 <= source_ms - witness.observed_at_unix_ms <= 100
@@ -77,18 +83,39 @@ def grounded_teacher_context(observation, snapshot, witness, application, teache
                    if row.encoder_role == "flight-state-encoder"), None)
     if flight is None or flight.valid_mask[:4] != [1.0] * 4:
         raise ValueError("DAGGER_NATIVE_ORIENTATION_MISSING")
+    temporal = observation.sample.temporal_evidence
+    if (flight.observed_at_unix_ms != source_ms
+            or flight.source_sha256 != temporal.sample_sha256
+            or flight.history_slot_revision != temporal.history_slot_revision
+            or flight.encoded_at_unix_ms > reference):
+        raise ValueError("DAGGER_NATIVE_CONTEXT_SOURCE_ENCODING_MISMATCH")
+    # 风险监督必须计入学生当时的定位不确定度；独立仿真真值不能让学生的协方差消失。
+    # 第7维使用方差/0.25，饱和值4不能还原真实方差，不能当成可靠上界继续标注。
+    if flight.valid_mask[7] != 1.0 or not 0 <= flight.features[7] < 4.0:
+        raise ValueError("DAGGER_NATIVE_LOCALIZATION_UNCERTAINTY_UNAVAILABLE")
+    variance = flight.features[7] * 0.25
+    localization_margin = localization_uncertainty_margin_m(variance)
+    additional_localization_margin = max(0.0, localization_margin - config.position_uncertainty_m)
     # Advance a recent witness to the observation time under constant velocity;
     # retain an acceleration-derived uncertainty rather than claiming exactness.
     dt = (source_ms - witness.observed_at_unix_ms) / 1000
+    additional_uncertainty = (additional_localization_margin
+                              + 0.5 * config.acceleration_mps2 * dt * dt)
+    if additional_uncertainty > 2.0:
+        raise ValueError("DAGGER_NATIVE_LOCALIZATION_UNCERTAINTY_OUTSIDE_MODEL")
     p, v = witness.current_position_m, witness.current_velocity_mps
     context = {
         "witness": witness.model_dump(mode="json"),
         "source_observation_sha256": sha256_json(observation),
         "source_ms": source_ms,
+        "control_reference_ms": reference,
         "source_snapshot_sha256": snapshot["snapshot_sha256"],
         "pose_prediction_seconds": dt,
         "application_sha256": sha256_json(application),
         "observed_action_latency_seconds": latency_ms / 1000,
+        "localization_covariance_m2": variance,
+        "localization_uncertainty_margin_m": localization_margin,
+        "uncertainty_policy": "max(configured-position-margin,onboard-three-sigma)+witness-time",
         "binding": binding,
         "scope": "privileged-offline-supervision-only; never actor input",
     }
@@ -103,7 +130,7 @@ def grounded_teacher_context(observation, snapshot, witness, application, teache
             for row in witness.dynamic_obstacles
         ),
         context_sha256=sha256_json(context),
-        additional_position_uncertainty_m=0.5 * config.acceleration_mps2 * dt * dt,
+        additional_position_uncertainty_m=additional_uncertainty,
         observed_action_latency_seconds=latency_ms / 1000,
     )
     return state, context

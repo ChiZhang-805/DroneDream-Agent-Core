@@ -261,9 +261,16 @@ def main() -> int:
     parser.add_argument("--training-receipt", type=Path, required=True)
     parser.add_argument("--hidden-feature-count", type=int, default=32)
     parser.add_argument("--epoch-count", type=int, default=100)
+    parser.add_argument("--payload-history-dropout", action="store_true")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.002)
     parser.add_argument("--random-seed", type=int, default=2905)
+    parser.add_argument("--settle-motion-only", action="store_true",
+                        help="Restrict settle history to velocity and physical scale; "
+                             "other roles reject this option.")
+    parser.add_argument("--sensor-state-only", action="store_true",
+                        help="Restrict health/anomaly critics to physical state and health; "
+                             "exclude mission and map context.")
     parser.add_argument(
         "--validation-used-for-configuration-selection",
         action="store_true",
@@ -311,6 +318,11 @@ def main() -> int:
             )
         )
     )
+    if args.settle_motion_only and roles != ("settle-stability-critic",):
+        parser.error("--settle-motion-only requires only --role settle-stability-critic")
+    if args.sensor_state_only and (args.settle_motion_only or not set(roles) <= {
+            "perception-health-critic", "state-anomaly-detector"}):
+        parser.error("--sensor-state-only requires only health/anomaly critics")
     # 一次验证全部配置，避免后一个种子越界时才中断已经完成的前序训练。
     configs = [
         LocalAdvisorTrainingConfig(
@@ -319,6 +331,9 @@ def main() -> int:
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             random_seed=args.random_seed + index,
+            settle_motion_only=args.settle_motion_only,
+            sensor_state_only=args.sensor_state_only,
+            payload_history_dropout=args.payload_history_dropout,
         )
         for index in range(len(roles))
     ]

@@ -631,7 +631,7 @@ def test_windows_job_closes_only_its_owned_test_process():
 #   通过自有 Python 夹具验证真实管道、UTF-8 往返、超时取消和服务响应，不运行第三方插件。
 # 输入：
 #   tmp_path：存放本次夹具脚本的独立目录。
-#   monkeypatch：仅替换可执行文件解析，其余通信和资源限制使用正式实现。
+#   monkeypatch：替换夹具程序解析及 POSIX 测试配额，通信协议保持正式实现。
 # 输出：
 #   None：不返回业务数据。
 def test_actual_sdk_stdio_pair_executes_locally_and_cancellation_frees_worker(
@@ -656,18 +656,46 @@ def test_actual_sdk_stdio_pair_executes_locally_and_cancellation_frees_worker(
         "             {'type':'object'}, handler)]).run()\n",
         encoding="utf-8",
     )
-    # Only executable resolution is replaced. Wire parsing, bounded writes,
-    # cancellation, schema checks and the Windows Job are the production code.
+    # Wire parsing, bounded writes, cancellation, schema checks and the Windows
+    # Job are production code. This fixture does not certify POSIX OS isolation.
     monkeypatch.setattr(
         "dronedream_agent_core.plugin_process._isolated_command",
         lambda **_kwargs: [sys.executable, str(script)],
     )
+    if os.name != "nt":
+        import resource
+
+        # 功能：
+        #   为自有惰性协议夹具保留内存及 CPU 上限，不借用共享用户的线程数当插件配额。
+        # 输入：
+        #   policy：本用例显式验证的地址空间与 CPU 预算。
+        # 输出：
+        #   apply_limits：只在夹具子进程中执行的资源回调。
+        def protocol_test_limits(policy):
+            # 功能：
+            #   给夹具设置实际内存和 CPU 上限；生产 NPROC 限制另有独立断言。
+            # 输入：
+            #   无；使用外层已导入的系统接口和 policy。
+            # 输出：
+            #   None：无返回值。
+            def apply_limits():
+                memory = policy.memory_limit_mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+                cpu = policy.cpu_time_limit_seconds
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+
+            return apply_limits
+
+        monkeypatch.setattr(
+            "dronedream_agent_core.plugin_process._posix_resource_limiter", protocol_test_limits
+        )
     with McpStdioClient(
         plugin_root=tmp_path,
         command=["fixture.py"],
         protocol_version="dronedream.plugin.v1",
         startup_timeout_seconds=10,
         call_timeout_seconds=2,
+        resource_policy=PluginResourcePolicy(),
     ) as client:
         assert client.list_tools()[0]["name"] == "fixture"
         assert client.call_tool("fixture", {"text": "传感器"}) == {"received": {"text": "传感器"}}
@@ -676,3 +704,43 @@ def test_actual_sdk_stdio_pair_executes_locally_and_cancellation_frees_worker(
                 "tools/call", {"name": "fixture", "arguments": {"wait": True}}, timeout=0.05
             )
         assert client.ping()
+
+
+# 功能：
+#   检查线程资源不足时撤销调用登记并回复稳定错误，通道及恢复后的新调用仍可用。
+# 输入：
+#   monkeypatch：暂时阻止工具线程启动的测试工具。
+#   error_type：要模拟的线程资源失败类型。
+# 输出：
+#   None：无返回值。
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError, MemoryError])
+def test_worker_resource_failure_preserves_protocol_and_recovery(monkeypatch, error_type):
+    calls = []
+    server = RecordingServer(lambda value, _: calls.append(value) or {})
+
+    # 功能：
+    #   模拟系统拒绝启动线程，私有异常详情不应出现在协议回复中。
+    # 输入：
+    #   worker：尚未启动的工具线程。
+    # 输出：
+    #   None：通过异常模拟启动失败。
+    def unavailable(worker):
+        raise error_type("private host resource details")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", unavailable)
+            server.dispatch(call(101))
+            reply = server.wait_for_reply(101)
+            assert reply["error"]["message"] == "TOOL_WORKER_UNAVAILABLE"
+            assert not server._workers and not server._cancelled and not calls
+            server.dispatch({"jsonrpc": "2.0", "id": 102, "method": "ping"})
+            assert server.wait_for_reply(102)["result"] == {}
+        server.dispatch(call(103, {"recovered": True}))
+        assert server.wait_for_reply(103)["result"] == {
+            "content": [{"type": "text", "text": "{}"}],
+            "structuredContent": {}, "isError": False,
+        }
+        assert calls == [{"recovered": True}]
+    finally:
+        server.close()

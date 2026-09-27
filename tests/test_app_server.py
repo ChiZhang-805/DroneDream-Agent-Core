@@ -7,12 +7,15 @@ import shutil
 import zipfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from dronedream_agent_app.identity import VerifiedIdentity
 from dronedream_agent_app.server import create_app
 from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.model_harness.memory import AccountMemoryStore, MemoryOwnerScope
+
+pytestmark = pytest.mark.usefixtures("isolated_server_credentials")
 
 
 class _MemoryVault:
@@ -687,14 +690,32 @@ def test_current_bundled_pair_is_seeded_into_content_addressed_api(tmp_path):
     assert "maps" not in bootstrap
     assert "vehicles" not in bootstrap
     versions = bootstrap["asset_versions"]
-    assert len(versions) == 2
-    assert {entry["asset_id"] for entry in versions} == {
-        "dronedream.school-map.v1",
-        "dronedream.my-drone.v1",
+    bundled_index = json.loads(
+        (resource_root / "default-assets" / "index.json").read_text(encoding="utf-8")
+    )
+    package_keys = {
+        (entry["asset_id"], entry["content_sha256"])
+        for pair in bundled_index["qualified_pairs"]
+        for entry in pair["packages"]
     }
+    assert len(versions) == len(package_keys)
+    assert {(entry["asset_id"], entry["content_sha256"]) for entry in versions} == package_keys
     assert {entry["maturity"] for entry in versions} == {"qualified"}
-    map_version = next(entry for entry in versions if entry["kind"] == "map")
-    vehicle_version = next(entry for entry in versions if entry["kind"] == "vehicle")
+    default_packages = {
+        entry["kind"]: entry for entry in bundled_index["qualified_pair"]["packages"]
+    }
+    map_version = next(
+        entry
+        for entry in versions
+        if entry["asset_id"] == default_packages["map"]["asset_id"]
+        and entry["content_sha256"] == default_packages["map"]["content_sha256"]
+    )
+    vehicle_version = next(
+        entry
+        for entry in versions
+        if entry["asset_id"] == default_packages["vehicle"]["asset_id"]
+        and entry["content_sha256"] == default_packages["vehicle"]["content_sha256"]
+    )
 
     created = client.post(
         "/v1/asset-qualification-jobs",

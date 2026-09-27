@@ -375,6 +375,8 @@ def test_strict_gate_rejects_invalid_depth_source(depth_time):
 def test_diagnostics_survive_failed_readiness_without_raw_error_leak(tmp_path):
     assert sensor_issue_code(ValueError("native IMU source has expired")) == "NATIVE_IMU_EXPIRED"
     assert sensor_issue_code(ValueError("private token fixture")) == "ValueError"
+    assert sensor_issue_code(ValueError("NATIVE_ODOMETRY_RESET_WAITING_FOR_COHERENT_STATE")) == (
+        "NATIVE_ODOMETRY_RESET_WAITING_FOR_COHERENT_STATE")
     issue = "ValueError:NATIVE_STATE_STREAM_UNAVAILABLE:SOURCE_SAMPLE_EXPIRED"
     assert sensor_issue_code(issue) == "SOURCE_SAMPLE_EXPIRED"
     assert len(sensor_issue_codes(["arbitrary"+str(i) for i in range(10000)])) <= 4
@@ -431,6 +433,65 @@ def test_transport_checks_actual_required_rate_receipts(tmp_path, state):
     else:
         assert asyncio.run(call).armable
         assert client.calls == 2
+
+
+# 功能：证明视觉定位依赖的遥测先于就绪等待启动，且不跳过原有飞控就绪检查。
+# 输入：tmp_path：隔离日志路径；就绪替身仅在获得采样率请求后返回。
+# 输出：顺序断言以及真实执行过的就绪检查回执，不请求解锁。
+def test_sensor_rates_precede_localization_readiness(tmp_path):
+    base = _base_module()
+    order = []
+
+    class Client(base.FakeOffboardClient):
+        # 功能：记录遥测配置阶段，提供完整且成功的独立请求回执。
+        # 输入：无。
+        # 输出：按来源列出的模拟速率请求。
+        async def configure_dynamics_telemetry_rates(self):
+            order.append('rates')
+            return {'sources': {key: {'status': 'requested'} for key in
+                    ('position_velocity', 'imu', 'attitude', 'odometry', 'battery')},
+                    'required_rate_requests_succeeded': True}
+
+        # 功能：检测原有循环依赖；没有遥测请求则拒绝模拟定位就绪。
+        # 输入：timeout_seconds：继承的有界准备期限。
+        # 输出：父类就绪状态。
+        async def wait_until_ready(self, timeout_seconds):
+            assert order == ['rates']
+            order.append('readiness')
+            return await super().wait_until_ready(timeout_seconds)
+
+    result = asyncio.run(base.connect_preflight_with_recovery(Client(), connection='test-only',
+        readiness_timeout_seconds=2, abort_check=lambda: None, log_path=tmp_path/'log',
+        evidence={}))
+    assert result.armable
+    assert order == ['rates', 'readiness']
+
+
+# 功能：本地模式准备只能显式选择，只返回原始健康，不伪造可解锁；默认路径仍拒绝。
+# 输入：只有本地定位有效的客户端与临时日志。
+# 输出：准备阶段可以返回 armable=False，默认完整准备仍失败，且没有控制命令。
+def test_local_preparation_is_explicit_and_does_not_claim_armability(tmp_path):
+    base = _base_module()
+    native = base.TelemetryHealth(True, False, True, True, False)
+
+    class Client(base.FakeOffboardClient):
+        # 功能：提供模式准备前的真实式状态；输入：期限；输出：不可解锁的健康。
+        async def wait_until_local_position_ready(self, timeout_seconds):
+            return native
+
+        # 功能：模拟原有完整准备；输入：期限；输出：同一不可解锁状态供检查器拒绝。
+        async def wait_until_ready(self, timeout_seconds):
+            return native
+
+    common = dict(connection='test-only', readiness_timeout_seconds=2,
+                  abort_check=lambda: None, log_path=tmp_path/'log')
+    evidence = {}
+    result = asyncio.run(base.connect_preflight_with_recovery(Client(), **common,
+        evidence=evidence, local_mode_preparation_only=True))
+    assert result is native and result.armable is False
+    assert evidence['attempts'][0]['local_mode_preparation_only'] is True
+    with pytest.raises(RuntimeError, match='FIRMWARE_NOT_READY'):
+        asyncio.run(base.connect_preflight_with_recovery(Client(), **common, evidence={}))
 
 
 # 功能：

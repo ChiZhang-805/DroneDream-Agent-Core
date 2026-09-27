@@ -12,7 +12,7 @@ from ..local_expert_harness import requested_navigation_expert
 from ..local_policy_port import compile_local_policy_features
 from ..local_policy_training import LocalPolicyObservation
 from ..plugin_files import read_plugin_file
-from ..realtime_feature_encoders import RealtimeFeatureSnapshot
+from ..realtime_feature_encoders import RealtimeFeatureSnapshot, parse_realtime_control_input
 from ..simulation_teacher import teacher_input_deadline
 
 
@@ -71,6 +71,13 @@ def _validate_clock(value) -> None:
 # 输出：
 #   observation：绑定原快照和当前特征契约的无监督标签观测。
 def compile_training_observation(snapshot: dict, *, now_unix_ms: int) -> LocalPolicyObservation:
+    return compile_training_input(snapshot, now_unix_ms=now_unix_ms)[0]
+
+
+# 功能：单次入口同时返回观测、独立验证的特征及原始期限，避免调用方重复解析同一特征。
+# 输入：未信任的导航快照和当前UNIX毫秒时钟；输出：观测、特征、绝对截止毫秒。
+# 返回对象仅属于本次调用，不缓存许可；再次使用仍须核对时效和内容身份。
+def compile_training_input(snapshot: dict, *, now_unix_ms: int):
     _validate_clock(now_unix_ms)
     if not isinstance(snapshot, dict):
         raise TrainingObservationError("TRAINING_INPUT_SNAPSHOT_NOT_OBJECT")
@@ -87,8 +94,10 @@ def compile_training_observation(snapshot: dict, *, now_unix_ms: int) -> LocalPo
             or not task.get("control_session_id")
             or snapshot.get("authorized_candidate_paths")):
         raise TrainingObservationError("TRAINING_INPUT_MUST_BE_CONTINUOUS_SENSOR_CONTROL")
-    features = RealtimeFeatureSnapshot.model_validate(snapshot.get("realtime_feature_snapshot"))
-    if teacher_input_deadline(features, now_ms=now_unix_ms) <= now_unix_ms:
+    features, fresh, deadline = parse_realtime_control_input(
+        snapshot.get("realtime_feature_snapshot"), now_unix_ms=now_unix_ms
+    )
+    if not fresh or deadline <= now_unix_ms:
         raise TrainingObservationError("TRAINING_INPUT_SENSOR_EVIDENCE_EXPIRED")
     batch = compile_local_policy_features(snapshot, include_candidate_features=False)
     if (not batch.realtime_features_ready or batch.temporal_evidence is None
@@ -107,7 +116,7 @@ def compile_training_observation(snapshot: dict, *, now_unix_ms: int) -> LocalPo
         realtime_features=list(batch.realtime_features),
         realtime_valid_mask=list(batch.realtime_valid_mask),
     )
-    return observation
+    return observation, features, deadline
 
 
 @dataclass(frozen=True)
@@ -156,14 +165,14 @@ class PreparedTrainingInput:
         if not isinstance(request, dict) or not isinstance(request.get("snapshot"), dict):
             raise ValueError("TRAINING_PREPARED_REQUEST_INVALID")
         snapshot = request["snapshot"]
-        compiled = compile_training_observation(
+        compiled, features, _ = compile_training_input(
             snapshot, now_unix_ms=snapshot.get("control_reference_observed_at_unix_ms")
         )
         supplied = LocalPolicyObservation.model_validate(request.get("observation"))
         if supplied != compiled:
             raise ValueError("PX4_TRAINING_FEATURES_DIFFER_FROM_RUNTIME_SNAPSHOT")
-        prepared = cls(sha256_json(request), compiled,
-                       RealtimeFeatureSnapshot.model_validate(snapshot["realtime_feature_snapshot"]))
+        # 复用同一次验证返回的特征；构造器仍独立复制并记录指纹，不缓存旧时效许可。
+        prepared = cls(sha256_json(request), compiled, features)
         return prepared
 
     # 功能：

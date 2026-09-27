@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_serializer, model_validator
 
 from dronedream_plugin_sdk.protocol import decode_json
 
@@ -22,6 +22,7 @@ from .causal_control import CONTROL_HISTORY_CONTRACT_SHA256
 from .contracts import StrictModel
 from .control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
 from .hashing import sha256_json
+from .heading_context import HEADING_CONTEXT_SHA256
 from .local_expert_harness import NAVIGATION_EXPERT_ROLES
 from .local_policy_quality import LocalPolicyTrainingMetrics, navigation_quality_issues
 from .plugin_files import (
@@ -34,6 +35,7 @@ from .realtime_feature_encoders import (
     POLICY_REALTIME_FEATURE_COUNT,
     REALTIME_CONTROL_FEATURE_COUNT,
 )
+from .training.risk_admission_evidence import action_risk_evidence_issues
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 PolicyScope = Literal["general", "map-specialist"]
@@ -132,12 +134,44 @@ class LocalPolicyPackageManifest(StrictModel):
     )
     navigation_history_length: int | None = Field(default=None, ge=4, le=32)
     navigation_history_contract_sha256: Sha256 | None = None
+    precision_heading_context_sha256: Sha256 | None = None
+    navigation_heading_context_sha256: Sha256 | None = None
     visual_normalization: Literal[
         "zero-to-one",
         "minus-one-to-one",
         "imagenet",
     ] = "zero-to-one"
     artifacts: list[LocalPolicyArtifact] = Field(min_length=1, max_length=12)
+
+    # 功能：
+    #   没有偏航组合扩展的历史包保持原清单序列化，避免无关字段改变既有身份。
+    # 输入：
+    #   self、handler：当前清单与标准序列化器。
+    # 输出：
+    #   payload：仅在实际启用组合时包含额外输入契约的清单。
+    @model_serializer(mode='wrap')
+    def serialize_heading_extension(self, handler):
+        payload = handler(self)
+        if self.precision_heading_context_sha256 is None:
+            payload.pop('precision_heading_context_sha256', None)
+        if self.navigation_heading_context_sha256 is None:
+            payload.pop('navigation_heading_context_sha256', None)
+        return payload
+
+    # 功能：按明确角色查询偏航输入契约，避免巡航扩展污染恢复或风险专家。
+    # 输入：role：本次专家角色。输出：该角色声明的摘要，未启用时为空。
+    def heading_context_for_role(self, role: str) -> str | None:
+        if role == 'local-navigation-policy':
+            return self.navigation_heading_context_sha256
+        if role == 'precision-maneuver-policy':
+            return self.precision_heading_context_sha256
+        return None
+
+    # 功能：判断是否必须提供独立偏航观测证据，不转移任何旧模型验收成绩。
+    # 输入：self：模型包清单。输出：是否存在显式偏航组合。
+    def requires_heading_evidence(self) -> bool:
+        return any(self.heading_context_for_role(role) is not None
+                   for role in NAVIGATION_EXPERT_ROLES)
 
     # 功能：
     #   1. 验证通用或地图范围、唯一角色及路径，禁止不兼容历史权重只改声明后冒充当前控制器。
@@ -154,6 +188,20 @@ class LocalPolicyPackageManifest(StrictModel):
         elif self.map_sha256 is None or self.base_package_sha256 is None:
             raise ValueError("map-specialist policies require map and base-policy hashes")
         roles = [artifact.role for artifact in self.artifacts]
+        if self.navigation_heading_context_sha256 is not None and (
+            self.navigation_heading_context_sha256 != HEADING_CONTEXT_SHA256
+            or self.navigation_architecture != 'causal-gru-control'
+            or self.pilot_control_mode != 'normalized-body-velocity'
+            or 'local-navigation-policy' not in roles
+        ):
+            raise ValueError('NAVIGATION_HEADING_PACKAGE_CONTRACT_INVALID')
+        if self.precision_heading_context_sha256 is not None and (
+            self.precision_heading_context_sha256 != HEADING_CONTEXT_SHA256
+            or self.navigation_architecture != 'causal-gru-control'
+            or self.pilot_control_mode != 'normalized-body-velocity'
+            or 'precision-maneuver-policy' not in roles
+        ):
+            raise ValueError('PRECISION_HEADING_PACKAGE_CONTRACT_INVALID')
         if len(set(roles)) != len(roles):
             raise ValueError("policy artifact roles must be unique")
         if len({artifact.relative_path.casefold() for artifact in self.artifacts}) != len(roles):
@@ -163,6 +211,9 @@ class LocalPolicyPackageManifest(StrictModel):
         navigation = next(
             artifact for artifact in self.artifacts if artifact.role == "local-navigation-policy"
         )
+        if ('heading_context' in navigation.input_names) != (
+                self.navigation_heading_context_sha256 is not None):
+            raise ValueError('NAVIGATION_HEADING_TENSOR_CONTRACT_INVALID')
         base_navigation_inputs = {
             "state_features",
             "candidate_features",
@@ -214,8 +265,11 @@ class LocalPolicyPackageManifest(StrictModel):
                 (artifact for artifact in self.artifacts if artifact.role == expert_role),
                 None,
             )
+            expert_inputs = set(navigation.input_names) - {'heading_context'}
+            if self.heading_context_for_role(expert_role) is not None:
+                expert_inputs.add('heading_context')
             if expert is not None and (
-                set(expert.input_names) != set(navigation.input_names)
+                set(expert.input_names) != expert_inputs
                 or set(expert.output_names) != set(navigation.output_names)
             ):
                 raise ValueError(f"{expert_role} tensor contract is incompatible")
@@ -301,6 +355,8 @@ class LocalPolicyPackageManifest(StrictModel):
             accepted_payload_inputs = {
                 frozenset({"payload_features", "state_history", "history_mask"}),
                 frozenset({"payload_features", "payload_history", "history_mask"}),
+                frozenset({"payload_features", "maneuver_features", "payload_history",
+                           "state_history", "history_mask"}),
             }
             if frozenset(payload_adapter.input_names) not in accepted_payload_inputs or set(
                 payload_adapter.output_names
@@ -479,6 +535,7 @@ class LocalPolicySimulationAdmissionReceipt(StrictModel):
     """Offline evidence that permits an unqualified package in simulation only."""
 
     control_feature_contract_sha256: Sha256 | None = None
+    heading_observations_sha256: Sha256 | None = None
     receipt_id: str = Field(pattern=r"^policy-simulation-admission-[0-9a-f]{32}$")
     policy_package_sha256: Sha256
     navigation_expert_metrics: dict[str, LocalPolicyTrainingMetrics] = Field(
@@ -531,6 +588,19 @@ class LocalPolicySimulationAdmissionReceipt(StrictModel):
     minimum_non_motion_sample_count: int = Field(default=20, ge=1, le=10_000_000)
     admitted_to_simulation: bool
     issue_codes: list[str] = Field(default_factory=list, max_length=64)
+
+    # 功能：
+    #   未启用精确偏航的历史回执保持原序列化身份，新输入存在时必须保存其摘要。
+    # 输入：
+    #   self、handler：回执与标准序列化器。
+    # 输出：
+    #   payload：只在实际使用额外来源时包含该身份的回执。
+    @model_serializer(mode='wrap')
+    def serialize_heading_observation_source(self, handler):
+        payload = handler(self)
+        if self.heading_observations_sha256 is None:
+            payload.pop('heading_observations_sha256', None)
+        return payload
 
     # 功能：
     #   1. 验证离线样本、视觉和继承来源证据完整，标准与恢复引导通道使用各自固定门槛。
@@ -660,6 +730,7 @@ class LocalPolicySelection(StrictModel):
         "general-qualified",
         "exact-map-specialist-simulation-admitted",
         "general-simulation-admitted",
+        "explicit-candidate-simulation-trial",
     ]
     simulation_only: bool = False
     rollback_package_sha256: Sha256 | None = None
@@ -773,7 +844,23 @@ def local_policy_receipt_supports_control_contract(
         for metrics in receipt.navigation_expert_metrics.values()
     ):
         return supported
+    risk_evidence = [m.action_risk_evidence for m in receipt.navigation_expert_metrics.values()]
+    if manifest.navigation_architecture == 'causal-gru-control' and (
+            not risk_evidence or any(item is None for item in risk_evidence)):
+        return supported
+    declared = [item for item in risk_evidence if item is not None]
+    if declared:
+        risk_sha = next((a.sha256 for a in manifest.artifacts if a.role == 'risk-critic'), None)
+        if (len(declared) != len(risk_evidence)
+                or any(item != declared[0] for item in declared)
+                or declared[0].model_sha256 != risk_sha
+                or action_risk_evidence_issues(declared[0],
+                    maximum_latency_ms=manifest.maximum_inference_latency_ms)):
+            return supported
     if isinstance(receipt, LocalPolicySimulationAdmissionReceipt):
+        if manifest.requires_heading_evidence() != (
+                receipt.heading_observations_sha256 is not None):
+            return supported
         supported = bool(
             receipt.realtime_feature_ready_sample_count == receipt.sample_count
             and receipt.pilot_control_target_sample_count == receipt.sample_count

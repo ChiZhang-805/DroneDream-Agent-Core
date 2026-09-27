@@ -15,10 +15,14 @@ def _stage_runtime_sources(repository: Path, runtime_root: Path) -> None:
         shutil.copy2(repository / repository_relative, runtime_root / staged_relative)
 
 
-def test_runtime_provenance_is_generated_from_exact_agent_core_sources(
-    tmp_path: Path,
-) -> None:
-    repository = Path(__file__).resolve().parents[1]
+# 功能：
+#   从当前执行器源码副本生成 Runtime 身份，拒绝依赖用户仓库的跨系统 Git 元数据。
+# 输入：
+#   tmp_path、isolated_source_repository：隔离运行目录与当前源码副本。
+# 输出：
+#   None：无返回值。
+def test_runtime_provenance_binds_exact_core_sources(tmp_path, isolated_source_repository):
+    repository = isolated_source_repository
     runtime_root = tmp_path / "runtime"
     _stage_runtime_sources(repository, runtime_root)
 

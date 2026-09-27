@@ -138,6 +138,7 @@ class RuntimeMultimodalDatasetRecorder:
         self._record_count = 0
         self._bytes_written = 0
         self._last_recorded_monotonic_seconds: float | None = None
+        self._last_rgb_sample_monotonic_seconds: float | None = None
         self._previous_record_sha256 = "0" * 64
         self._records_digest = hashlib.sha256()
         self._records_metadata: os.stat_result | None = None
@@ -212,7 +213,7 @@ class RuntimeMultimodalDatasetRecorder:
     #   semantic_mask_png、semantic_label_map_sha256：可选语义掩码及标签定义摘要。
     #   semantic_sample_monotonic_seconds：必须与掩码一并提供的监督采样时刻。
     # 输出：
-    #   record：已同步写入的记录；同周期的合法样本返回 None。
+    #   record：已同步写入的记录；同周期或重复源帧返回 None，不将轮询次数计作新图像。
     def record(self, *, rgb_png: bytes, frame: OnboardPerceptionFrame,
                sensor_snapshot: RuntimeMultimodalSensorSnapshot, recorded_at_unix_ms: int,
                recorded_at_monotonic_seconds: float, state: dict[str, Any],
@@ -280,6 +281,12 @@ class RuntimeMultimodalDatasetRecorder:
                     or (semantic_sample_monotonic_seconds is not None
                         and semantic_sample_monotonic_seconds > recorded_at_monotonic_seconds)):
                 raise ValueError("MULTIMODAL_DATASET_SAMPLE_CLOCK_INVALID")
+            previous_rgb = self._last_rgb_sample_monotonic_seconds
+            if previous_rgb is not None:
+                if rgb_sample_time < previous_rgb:
+                    raise ValueError("MULTIMODAL_DATASET_RGB_CLOCK_REVERSED")
+                if rgb_sample_time == previous_rgb:
+                    return None
             if (
                 previous_time is not None
                 and recorded_at_monotonic_seconds - previous_time
@@ -393,6 +400,7 @@ class RuntimeMultimodalDatasetRecorder:
             self._bytes_written += len(serialized)
             self._record_count += 1
             self._last_recorded_monotonic_seconds = recorded_at_monotonic_seconds
+            self._last_rgb_sample_monotonic_seconds = rgb_sample_time
             self._previous_record_sha256 = record_sha256
             return record
 

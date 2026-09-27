@@ -13,7 +13,15 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .map_surface_geometry import BOX, CYLINDER, SPHERE, first_surface_hits
+from .map_surface_geometry import (
+    BOX,
+    CYLINDER,
+    MESH,
+    SPHERE,
+    _box_hits,
+    first_surface_hits,
+    mesh_surface_hits,
+)
 
 
 # 功能：
@@ -219,6 +227,8 @@ class PlaneCorrespondences:
     distances: np.ndarray
     valid: np.ndarray
     surface_ids: np.ndarray
+    surface_ranges_m: np.ndarray | None = None
+    rejection_reasons: np.ndarray | None = None
 
 
 class MapSurfaceIndex:
@@ -241,12 +251,74 @@ class MapSurfaceIndex:
         if not isinstance(primitives, list) or not 1 <= len(primitives) <= 20_000:
             raise ValueError("MAP_ALIGNMENT_MAP_INVALID")
         centers, halves, rotations, kinds = [], [], [], []
+        self.meshes = {}
+        self.mesh_optics = {}
+        mesh_triangle_count = 0
+        eligible = []
         for primitive in primitives:
             if not isinstance(primitive, dict):
                 raise ValueError("MAP_ALIGNMENT_PRIMITIVE_INVALID")
             size_keys = [f"size_{a}" for a in "xyz"]
             lengths = [k for k in ("height_m", "length_m") if k in primitive]
-            if any(k in primitive for k in size_keys):
+            if "triangles" in primitive:
+                if any(k in primitive for k in (*size_keys, *lengths, "radius_m")):
+                    raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")
+                raw = primitive["triangles"]
+                if not isinstance(raw, list) or not 1 <= len(raw) <= 8192:
+                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
+                mesh_triangle_count += len(raw)
+                if mesh_triangle_count > 65_536:
+                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
+                # Inspect scalars before NumPy can coerce a mixed bool/float mesh
+                # into apparently valid metric coordinates.
+                if any(not isinstance(face, (list, tuple)) or len(face) != 3
+                       or any(not isinstance(vertex, (list, tuple)) or len(vertex) != 3
+                              or any(not _finite(value) for value in vertex)
+                              for vertex in face) for face in raw):
+                    raise ValueError("MAP_ALIGNMENT_MESH_INVALID")
+                triangles = np.asarray(raw)
+                if (
+                    triangles.shape != (len(raw), 3, 3)
+                    or triangles.dtype.kind not in "fiu"
+                    or not np.isfinite(triangles).all()
+                    or np.max(np.abs(triangles)) > 1e6
+                ):
+                    raise ValueError("MAP_ALIGNMENT_MESH_INVALID")
+                triangles = triangles.astype(np.float64, copy=True)
+                if np.any(
+                    np.linalg.norm(
+                        np.cross(
+                            triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+                        ),
+                        axis=1,
+                    )
+                    < 1e-12
+                ):
+                    raise ValueError("MAP_ALIGNMENT_MESH_DEGENERATE")
+                sizes, kind = (
+                    np.maximum(2 * np.max(np.abs(triangles), axis=(0, 1)), 1e-9).tolist(),
+                    MESH,
+                )
+                triangles.setflags(write=False)
+                self.meshes[len(centers)] = triangles
+                centered = triangles - triangles[0, 0]
+                volume = float(
+                    np.sum(
+                        np.einsum(
+                            "ij,ij->i", centered[:, 0], np.cross(centered[:, 1], centered[:, 2])
+                        )
+                    )
+                    / 6
+                )
+                double_sided = primitive.get("mesh_double_sided", False)
+                if (
+                    not math.isfinite(volume)
+                    or abs(volume) < 1e-12
+                    or type(double_sided) is not bool
+                ):
+                    raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
+                self.mesh_optics[len(centers)] = (double_sided, float(np.sign(volume)))
+            elif any(k in primitive for k in size_keys):
                 if not all(k in primitive for k in size_keys) or lengths or "radius_m" in primitive:
                     raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")
                 sizes, kind = [primitive[k] for k in size_keys], BOX
@@ -278,8 +350,14 @@ class MapSurfaceIndex:
             halves.append(np.array(sizes) / 2)
             rotations.append(rotation)
             kinds.append(kind)
+            flag = primitive.get("registration_eligible", True)
+            if type(flag) is not bool:
+                raise ValueError("MAP_ALIGNMENT_ELIGIBILITY_INVALID")
+            eligible.append(flag)
         self.centers, self.halves, self.rotations = map(np.asarray, (centers, halves, rotations))
         self.kinds = np.asarray(kinds)
+        self.registration_eligible = np.asarray(eligible, dtype=bool)
+        self.registration_eligible.setflags(write=False)
         self.extents = np.einsum("bij,bj->bi", np.abs(self.rotations), self.halves)
         sphere, cylinder = self.kinds == SPHERE, self.kinds == CYLINDER
         self.extents[sphere] = self.halves[sphere]
@@ -289,7 +367,12 @@ class MapSurfaceIndex:
         )
         self.primitive_counts = {
             name: int(np.count_nonzero(self.kinds == kind))
-            for name, kind in (("box", BOX), ("cylinder", CYLINDER), ("sphere", SPHERE))
+            for name, kind in (
+                ("box", BOX),
+                ("cylinder", CYLINDER),
+                ("sphere", SPHERE),
+                ("mesh", MESH),
+            )
         }
         for value in (self.centers, self.halves, self.rotations, self.extents, self.kinds):
             value.setflags(write=False)
@@ -339,6 +422,29 @@ class MapSurfaceIndex:
         enter, local_normals, interiors, face_ids, inside, planar = first_surface_hits(
             local_origin, direction, halves, self.kinds[indices], limits.minimum_face_interior_m
         )
+        for column, global_index in enumerate(indices):
+            if self.kinds[global_index] == MESH:
+                # Skip only rays which cannot touch the mesh at all. Truncating
+                # at the observed range can hide a competing occluder.
+                box_enter, _, _, _, box_inside = _box_hits(
+                    local_origin[:, column], direction[:, column], halves[column], 0.0
+                )
+                candidates = box_inside | np.isfinite(box_enter)
+                if not np.any(candidates):
+                    continue
+                values = mesh_surface_hits(
+                    local_origin[candidates, column],
+                    direction[candidates, column],
+                    self.meshes[int(global_index)],
+                    limits.minimum_face_interior_m,
+                    double_sided=self.mesh_optics[int(global_index)][0],
+                    winding_sign=self.mesh_optics[int(global_index)][1],
+                )
+                for destination, value in zip(
+                    (enter, local_normals, interiors, face_ids, inside), values, strict=True
+                ):
+                    destination[candidates, column] = value
+        interiors &= self.registration_eligible[indices][None, :]
         inside = np.any(inside, axis=1)
         normals = np.einsum("nbj,bij->nbi", local_normals, rotations)
         intersections = (
@@ -371,8 +477,22 @@ class MapSurfaceIndex:
             & (best_distance <= padding)
             & (separation > limits.ambiguity_distance_m)
         )
-        surfaces = indices[best] * 6 + face_ids[row, best]
-        matches = PlaneCorrespondences(best_normal, best_offset, best_distance, valid, surfaces)
+        # Preserve historical analytic IDs; mesh facets occupy a disjoint range.
+        surfaces = np.where(
+            self.kinds[indices[best]] == MESH,
+            120_000 + indices[best] * 8192 + face_ids[row, best],
+            indices[best] * 6 + face_ids[row, best],
+        )
+        reasons = np.full(len(points), "accepted", dtype="<U32")
+        reasons[best_distance > padding] = "outside_association_envelope"
+        reasons[separation <= limits.ambiguity_distance_m] = "competing_surface"
+        reasons[~interior] = "edge_or_unstable_surface"
+        reasons[~self.registration_eligible[indices[best]]] = "ineligible_optical_surface"
+        reasons[inside] = "origin_inside_or_backface"
+        reasons[~np.isfinite(best_enter)] = "no_visible_map_surface"
+        matches = PlaneCorrespondences(
+            best_normal, best_offset, best_distance, valid, surfaces, best_enter, reasons
+        )
         return matches
 
 
@@ -429,9 +549,9 @@ def fit_map_translation(
     def result(issue):
         fit = MapTranslationFit(
             issue is None,
-            tuple(correction if issue is None else np.zeros(3)),
+            tuple(float(v) for v in (correction if issue is None else np.zeros(3))),
             rank,
-            tuple(tuple(v) for v in null),
+            tuple(tuple(float(v) for v in row) for row in null),
             count,
             residual,
             iteration,

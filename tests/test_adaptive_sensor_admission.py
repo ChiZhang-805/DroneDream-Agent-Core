@@ -68,7 +68,7 @@ def test_live_image_has_its_own_older_deadline_even_with_new_state(monkeypatch):
             host_received_unix_ns=1010_000_000)]) is None
         port.prime_multimodal.assert_called_once()
         executor.submit.assert_called_once()
-        evidence = executor.submit.call_args.kwargs["visual_evidence"][0]
+        evidence = executor.submit.call_args.kwargs["prepared_snapshot"]["visual_evidence"][0]
         assert evidence["source_observed_at_unix_ms"] == 950
         assert evidence["control_deadline_unix_ms"] == 1200
         assert instance.continuous_request_remaining_ms(now_unix_ms=1020) == 180
@@ -83,9 +83,6 @@ def test_time_spent_before_or_inside_inference_cannot_be_renewed(monkeypatch, st
     clock = [1.]
     monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     try:
-        assert schedule(instance) is None
-        args = executor.submit.call_args.kwargs
-
         def compile_snapshot(_):
             if stage == "compilation":
                 clock[0] += .2
@@ -98,6 +95,14 @@ def test_time_spent_before_or_inside_inference_cannot_be_renewed(monkeypatch, st
         invocation = Mock(side_effect=invoke)
         monkeypatch.setattr(runtime, "compile_navigation_snapshot", compile_snapshot)
         monkeypatch.setattr(runtime, "request_text_navigation_decision", invocation)
+        receipt = schedule(instance)
+        if stage == "compilation":
+            assert receipt.hold_reason == "CONTROL_SOURCE_EXPIRED_DURING_PREPARATION"
+            executor.submit.assert_not_called()
+            invocation.assert_not_called()
+            return
+        assert receipt is None
+        args = executor.submit.call_args.kwargs
         result = runtime._compile_and_request_navigation_decision(**args)
         assert result.model_result is None
         assert result.failure_reason == ("CONTROL_SOURCE_EXPIRED_DURING_PREPARATION"
@@ -105,6 +110,69 @@ def test_time_spent_before_or_inside_inference_cannot_be_renewed(monkeypatch, st
         assert invocation.call_count == (0 if stage == "compilation" else 1)
         assert result.discarded_call_record == (
             None if stage == "compilation" else {"actual-inference": True})
+    finally:
+        instance.close()
+
+
+# 功能：
+#   验证观测编译耗尽派发余量时不提交后台任务，诊断副本不能修改协调器内部记录。
+# 输入：
+#   monkeypatch：控制冻结耗时与后台执行器的夹具。
+# 输出：
+#   None：不返回业务数据。
+def test_observation_compile_expiry_does_not_enqueue_a_doomed_request(monkeypatch):
+    instance, port, executor = coordinator(monkeypatch)
+    clock = [1.]
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    compile_snapshot = runtime.compile_navigation_snapshot
+
+    # 功能：
+    #   模拟观测编译耗时二百毫秒，仍返回真实独立观测供时效门禁检查。
+    # 输入：
+    #   request：原始编译输入。
+    # 输出：
+    #   frozen：实际生成的独立观测。
+    def slow_compile(request):
+        frozen = compile_snapshot(request)
+        clock[0] += .2
+        return frozen
+
+    monkeypatch.setattr(runtime, "compile_navigation_snapshot", slow_compile)
+    try:
+        result = schedule(instance)
+        assert result.hold_reason == "CONTROL_SOURCE_EXPIRED_DURING_PREPARATION"
+        executor.submit.assert_not_called()
+        assert not instance.request_pending
+        timing = instance.input_preparation_timing
+        assert timing["direct_observation_ms"] == pytest.approx(200.)
+        timing["direct_observation_ms"] = 0.
+        assert instance.input_preparation_timing["direct_observation_ms"] == pytest.approx(200.)
+    finally:
+        instance.close()
+
+
+# 功能：
+#   验证后台排队已耗尽余量时不再编译快照或调用模型，也不续期旧请求。
+# 输入：
+#   monkeypatch：提供受控时钟和禁止执行的编译入口。
+# 输出：
+#   None：不返回业务数据。
+def test_worker_queue_expiry_skips_snapshot_compilation(monkeypatch):
+    instance, port, executor = coordinator(monkeypatch)
+    clock = [1.]
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    compiler, invoke = Mock(), Mock()
+    try:
+        assert schedule(instance) is None
+        args = executor.submit.call_args.kwargs
+        monkeypatch.setattr(runtime, "compile_navigation_snapshot", compiler)
+        monkeypatch.setattr(runtime, "request_text_navigation_decision", invoke)
+        clock[0] += .2
+        result = runtime._compile_and_request_navigation_decision(**args)
+        assert result.failure_reason == "CONTROL_SOURCE_EXPIRED_DURING_PREPARATION"
+        assert result.snapshot is None and result.model_result is None
+        compiler.assert_not_called()
+        invoke.assert_not_called()
     finally:
         instance.close()
 
@@ -158,8 +226,14 @@ def test_action_specific_margin_veto_preserves_threat_forecast(monkeypatch):
     real = safety.predictive_safety_decision
     source = observation()
 
-    def tight_forecast(request, primitives):
-        result = real(request, primitives)
+    # 功能：
+    #   保留真实候选筛选后注入最终净空收紧，验证最后一道时效检查仍能否决动作。
+    # 输入：
+    #   request、primitives、candidate_check：真实请求、碰撞几何和候选时效回调。
+    # 输出：
+    #   result：注入较小最终净空的真实预测结果。
+    def tight_forecast(request, primitives, *, candidate_check=None):
+        result = real(request, primitives, candidate_check=candidate_check)
         if result.action != "hold":
             result.minimum_predicted_clearance_m = .13  # Only 3 cm residual slack.
         return result
@@ -203,6 +277,37 @@ def test_absent_budget_does_not_rewrite_historical_command_identity():
     restored = RuntimeLocalSafetyCommand.model_validate(wire)
     assert "observation_budget" not in restored.model_dump(mode="json")
     assert sha256_json(restored) == sha256_json(wire)
+
+
+# 功能：
+#   候选提前过期时保留原始预算与刹停预测，序列化往返不能把拒绝诊断变成运动许可。
+# 输入：
+#   age_ms：真实观测到本次评估之间的毫秒数。
+# 输出：
+#   无。
+@pytest.mark.parametrize("age_ms", [220, 250, 500])
+def test_early_candidate_veto_retains_original_budget_and_braking(age_ms):
+    from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
+
+    source = observation()
+    command = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
+        static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_000 + age_ms)
+    assert command.decision.action == "hold"
+    assert command.decision.evaluated_candidate_count > 1
+    assert command.decision.predicted_path_m
+    assert command.decision.braking_prediction_velocity_mps is not None
+    assert command.observation_budget.source_observed_at_unix_ms == 10_000
+    assert command.observation_budget.control_deadline_unix_ms == 10_250
+    assert command.observation_budget.disposition == "context-only"
+    assert "CANDIDATE_TIME_BUDGET_EXHAUSTED" in command.decision.issue_codes
+    assert "OBSERVATION_CONTROL_BUDGET_EXHAUSTED" in command.decision.issue_codes
+    wire = command.model_dump(mode="json")
+    assert RuntimeLocalSafetyCommand.model_validate(wire) == command
+    fresh = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
+        static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_020)
+    wire["decision"] = fresh.decision.model_dump(mode="json")
+    with pytest.raises(ValueError, match="exceeds its observation budget"):
+        RuntimeLocalSafetyCommand.model_validate(wire)
 
 
 @pytest.mark.parametrize("confidence,age", [(.1, .01), (.95, 1.1), (.1, 10.)])

@@ -61,6 +61,25 @@ def test_download_handoff_contains_all_bytes_and_has_closed_network(public_url, 
     assert not path.exists()
 
 
+def test_download_preserves_reviewed_compound_map_suffix(monkeypatch):
+    body = Body(b"name: clinic\nlevels: {}\n")
+    body.geturl = lambda: "https://public.example/clinic.building.yaml"
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *_: SimpleNamespace(open=lambda *_a, **_k: body)
+    )
+    monkeypatch.setattr(
+        remote,
+        "_validated_https_url",
+        lambda _url: urllib.parse.urlsplit("https://public.example/clinic.building.yaml"),
+    )
+    with remote.RemoteAssetSourceService().acquire(
+        source_type="direct_url",
+        location="https://public.example/clinic.building.yaml",
+    ) as (path, name):
+        assert path.name.casefold().endswith(".building.yaml")
+        assert name == "clinic.building.yaml"
+
+
 # 功能：
 #   验证拒绝不安全跳转时关闭原响应体，不遗留未消费连接。
 # 输入：
@@ -132,6 +151,55 @@ def test_git_uses_isolated_configuration_and_no_redirects(public_url, monkeypatc
         assert "GIT_CONFIG_VALUE_0" not in kwargs["environment"]
         assert "GIT_EXEC_PATH" not in kwargs["environment"]
     assert not workspace.exists()
+
+
+def test_git_cleanup_removes_readonly_entries(tmp_path):
+    workspace = tmp_path / "readonly-git-stage"
+    workspace.mkdir()
+    packed = workspace / "pack-file"
+    packed.write_bytes(b"git object")
+    packed.chmod(0o444)
+    remote.shutil.rmtree(workspace, onerror=remote._remove_readonly_git_entry)
+    assert not workspace.exists()
+
+
+def test_git_commit_ref_is_fetched_and_checked_out_detached(public_url, monkeypatch, tmp_path):
+    workspace = tmp_path / "git-commit-stage"
+    workspace.mkdir()
+    monkeypatch.setattr(remote.tempfile, "mkdtemp", lambda **_kwargs: str(workspace))
+    monkeypatch.setattr(remote.shutil, "which", lambda _name: "git.exe")
+    observed = []
+    commit = "7851a5792d19a037833292a3e2a823b0f9e0c111"
+
+    def run(command, **_kwargs):
+        observed.append(command)
+        checkout = workspace / "checkout"
+        checkout.mkdir(exist_ok=True)
+        (checkout / "clinic.building.yaml").write_text(
+            "name: clinic\nlevels: {}\n", encoding="utf-8"
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(remote, "capture_process", run)
+    with remote.RemoteAssetSourceService().acquire(
+        source_type="git",
+        location="https://example.invalid/repo.git",
+        git_ref=commit,
+        subpath="clinic.building.yaml",
+    ) as (archive, _):
+        assert archive.is_file()
+
+    assert len(observed) == 3
+    assert "--branch" not in observed[0]
+    assert observed[1][-6:] == [
+        "fetch",
+        "--depth",
+        "1",
+        "--no-tags",
+        "https://example.invalid/repo.git",
+        commit,
+    ]
+    assert observed[2][-3:] == ["checkout", "--detach", commit]
 
 
 # 功能：

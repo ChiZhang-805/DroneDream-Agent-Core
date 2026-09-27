@@ -17,13 +17,14 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 
 from dronedream_plugin_sdk.protocol import decode_json
 
-from ..contracts import StrictModel, VehicleAsset
-from ..control_timing import LOCAL_DISPATCH_RESERVE_MS
+from ..contracts import StrictModel, Vector3, VehicleAsset
+from ..control_timing import TRAINING_DISPATCH_RESERVE_MS as LOCAL_DISPATCH_RESERVE_MS
 from ..hashing import sha256_json
 from ..local_expert_harness import NavigationExpertRole
 from ..local_policy_training import LocalPolicyObservation
@@ -54,7 +55,11 @@ from .runtime_evidence import (
     OutcomeWindowError,
     read_object,
 )
+
+# 流式序列化器在起飞前加载，避免首条动作在短租约内承担模块初始化成本。
+from .stream_capture import StreamActionCapture, pack_stream_capture
 from .transition_writer import TransitionWriter
+from .visual_lineage import VisualInputContract
 from .visual_observation import FrozenVisualEncoder
 
 ASSET_FIELDS = ("route", "semantic", "world_sdf", "vehicle_sdf", "vehicle", "controller_params")
@@ -62,11 +67,35 @@ ASSET_FIELDS = ("route", "semantic", "world_sdf", "vehicle_sdf", "vehicle", "con
 # signed reply and the runtime's post-reply safety evaluation. The measured
 # learner path can consume 45 ms before reply; 35 ms admitted doomed commands.
 # Owned numeric-container snapshots reduced measured preparation to 34 ms.
-# Keep that predictive reserve for startup and the reward-step API. Streaming
+# Keep that predictive reserve for unselected startup and the reward-step API. Streaming
 # imitation instead attempts preparation against the actual remaining deadline,
-# then discards an output if it lacks the unchanged 70 ms dispatch reserve.
+# then discards an output if it lacks the shared 50 Hz executor dispatch reserve.
 # A prediction of preparation time never substitutes for final admission.
 TRAINING_REPLY_PREPARATION_RESERVE_MS = 50
+# 仅旧请求可丢弃并等待新帧；超长租约、身份不符和损坏内容必须继续上抛。
+EXPIRED_POLICY_REQUESTS = frozenset({
+    'TRAINING_POLICY_INPUT_EXPIRED', 'TRAINING_POLICY_REQUEST_EXPIRED_OR_REPLAYED',
+})
+
+
+# 功能：
+#   在创建飞行回合前拒绝只有接收时钟的视觉控制配置，避免起飞后永久等待不可能就绪的输入。
+# 输入：
+#   config：已验证的仿真训练配置；原生渲染制品和实际报头仍由运行器另外核验。
+# 输出：
+#   None：来源配置可用于后续校验，否则抛出明确错误。
+def require_visual_control_source(config) -> None:
+    runtime = getattr(config, 'native_camera_clock_runtime', None)
+    if runtime is not None:
+        from ..simulation_camera_clock import validate_native_camera_clock
+
+        # 地图融合也消费原生源钟；不能等到子进程创建后才发现源/二进制版本不一致。
+        validate_native_camera_clock(Path(runtime),
+            source_root=Path(__file__).resolve().parents[3]/'native/camera_clock')
+    if ((config.visual_encoder is not None or config.visual_package is not None)
+            and config.render_replica_runtime is None):
+        if runtime is None:
+            raise ValueError("PX4_VISUAL_CONTROL_REQUIRES_SOURCE_CLOCK_RENDERER")
 
 
 class Px4TrainingConfig(StrictModel):
@@ -88,9 +117,14 @@ class Px4TrainingConfig(StrictModel):
     speed_limit_mps: float = Field(default=0.4, gt=0, le=2)
     required_clearance_m: float = Field(default=0.25, gt=0, le=2)
     episode_steps: int = Field(default=256, ge=2, le=10000)
+    # 显式流式回合从首帧采用流式准入，避免必须先收到首帧才能选择模式的循环依赖。
+    # 仅省去预测准备余量；准备完成后的真实截止时间和派发安全余量不变。
+    initial_collection_mode: Literal['stream-imitation', 'reward-step'] | None = None
     startup_timeout_seconds: float = Field(default=240, ge=30, le=600)
     quiesce_timeout_seconds: float = Field(default=180, ge=30, le=300)
     visual_package: Path | None = None
+    visual_encoder: Path | None = None
+    visual_input_contract: VisualInputContract | None = None
     record_multimodal_training_dataset: bool = False
     batch_static_world_visuals: bool = False
     simulation_camera_profile: str = "native"
@@ -101,6 +135,12 @@ class Px4TrainingConfig(StrictModel):
     render_cache_bundle: Path | None = None
     render_replica_runtime: Path | None = None
     native_sensor_runtime: Path | None = None
+    native_camera_clock_runtime: Path | None = None
+    experimental_map_fusion: bool = False
+    # 仅阶段决策实验可显式启用已存在的有界衔接；回执仍保留独立控制器来源。
+    bounded_hybrid_control: bool = False
+    # 仅阶段决策流式采集可显式跨专家；普通单专家训练仍禁止角色切换。
+    collection_expert_roles: list[NavigationExpertRole] = Field(default_factory=list, max_length=3)
     held_out_missions: list[str] = Field(default_factory=list)
     held_out_route_groups: list[str] = Field(default_factory=list)
 
@@ -112,11 +152,33 @@ class Px4TrainingConfig(StrictModel):
     #   self：通过相机与渲染组合约束的配置。
     @model_validator(mode="after")
     def bound_camera_profile(self):
+        if self.collection_expert_roles and (
+            self.initial_collection_mode != "stream-imitation"
+            or self.expert_role not in self.collection_expert_roles
+            or len(set(self.collection_expert_roles)) != len(self.collection_expert_roles)
+        ):
+            raise ValueError("PX4_STAGE_COLLECTION_REQUIRES_EXPLICIT_UNIQUE_STREAM_ROLES")
+        if self.native_camera_clock_runtime is not None and (
+                self.render_replica_runtime is not None or self.native_sensor_runtime is None):
+            raise ValueError('native camera clock requires exclusive native sensor runtime')
+        if self.experimental_map_fusion and (
+                self.native_sensor_runtime is None or self.simulation_camera_profile != 'responsive-control'
+                or self.native_camera_clock_runtime is None or self.render_replica_runtime is not None
+                or not self.record_multimodal_training_dataset):
+            raise ValueError('map fusion collection requires native responsive camera and raw media')
+        if (self.visual_encoder is None) != (self.visual_input_contract is None):
+            raise ValueError("standalone visual encoder requires its input contract")
+        if self.visual_package is not None and self.visual_encoder is not None:
+            raise ValueError("choose a visual package or a standalone encoder, not both")
         validate_camera_profile_choice(
             self.simulation_camera_profile, self.camera_source_model_sha256
         )
+        if (self.simulation_camera_profile != 'native'
+                and self.visual_package is None and self.visual_encoder is None
+                and not self.experimental_map_fusion):
+            raise ValueError('non-native camera profile requires explicit visual training input')
         if self.render_replica_runtime is not None and (
-            self.visual_package is None
+            (self.visual_package is None and self.visual_encoder is None)
             or self.simulation_camera_profile == "native"
             or self.preflight_render_warmup
             or self.preflight_depth_warmup
@@ -196,16 +258,19 @@ class Px4GazeboTrainingEnvironment:
         if not isinstance(config, Px4TrainingConfig):
             raise ValueError("PX4_TRAINING_CONFIG_INVALID")
         config = Px4TrainingConfig.model_validate(config.model_dump(mode="python"), strict=True)
+        require_visual_control_source(config)
         # 固定工作目录解释；后续修改调用方配置不会改变这一回合的资产选择。
         for name in (
             "runner",
             "output_root",
             *ASSET_FIELDS,
             "visual_package",
+            "visual_encoder",
             "render_preparation_runtime",
             "render_cache_bundle",
             "render_replica_runtime",
             "native_sensor_runtime",
+            "native_camera_clock_runtime",
         ):
             path = getattr(config, name)
             if path is not None:
@@ -247,7 +312,11 @@ class Px4GazeboTrainingEnvironment:
                 config.maximum_enu_m,
             ),
         )
-        self.visual = FrozenVisualEncoder(config.visual_package) if config.visual_package else None
+        self.visual = (FrozenVisualEncoder.from_artifact(
+                           config.visual_encoder, config.visual_input_contract)
+                       if config.visual_encoder else
+                       FrozenVisualEncoder(config.visual_package)
+                       if config.visual_package else None)
         self._policy_sha256: str | None = None
         self._process = self._exchange = self._monitor = self._log = None
         self._transition_writer = None
@@ -257,7 +326,7 @@ class Px4GazeboTrainingEnvironment:
         self._following_request = None
         self._outcome_window_failure = None
         self._rollout_stop_reason = None
-        self._collection_mode = None
+        self._collection_mode = self.config.initial_collection_mode
         self._stream_captures = []
         self._quiesced = True
         self._closed = False
@@ -338,7 +407,7 @@ class Px4GazeboTrainingEnvironment:
             self.simulation / "runtime-state" / "control-applications.jsonl",
         )
         self._last_application = None
-        self._collection_mode = None
+        self._collection_mode = self.config.initial_collection_mode
         self._stream_captures = []
         self._sequence = 0
         self._rollout_stop_reason = None
@@ -369,6 +438,10 @@ class Px4GazeboTrainingEnvironment:
         ]
         if self.config.batch_static_world_visuals:
             args.append("--batch-static-world-visuals")
+        if self.config.experimental_map_fusion:
+            args.append('--experimental-map-fusion')
+        if self.config.bounded_hybrid_control:
+            args.append('--bounded-hybrid-control')
         if self.config.preflight_render_warmup:
             args.append("--preflight-render-warmup")
         if self.config.preflight_depth_warmup:
@@ -426,6 +499,9 @@ class Px4GazeboTrainingEnvironment:
         )
         self._log = (self.episode_path / "runner.log").open("xb")
         child_env = os.environ.copy()
+        if self.config.native_camera_clock_runtime is not None:
+            child_env['DRONEDREAM_NATIVE_CAMERA_CLOCK_RUNTIME'] = str(
+                self.config.native_camera_clock_runtime)
         child_env["PYTHONPATH"] = (
             str(Path(__file__).resolve().parents[2]) + os.pathsep + child_env.get("PYTHONPATH", "")
         )
@@ -597,7 +673,7 @@ class Px4GazeboTrainingEnvironment:
                 # completed preparation against the original dispatch deadline.
                 if remaining < self._input_admission_budget_ms():
                     self._record_rejected_input(request, "insufficient-input-budget")
-                    self._exchange.discard_pending()
+                    self._exchange.discard_pending(reason="insufficient-input-budget")
                     continue
                 return request
             except TimeoutError:
@@ -608,7 +684,7 @@ class Px4GazeboTrainingEnvironment:
                 # Authentication, provenance and replay errors still fail closed.
                 continue
             except ValueError as error:
-                if str(error) == "TRAINING_POLICY_REQUEST_EXPIRED_OR_REPLAYED":
+                if str(error) in EXPIRED_POLICY_REQUESTS:
                     continue  # Already expired requests cannot receive replacement actions.
                 raise
         self._check_executor_ending()
@@ -622,7 +698,8 @@ class Px4GazeboTrainingEnvironment:
         raise TimeoutError("PX4_TRAINING_NEXT_OBSERVATION_TIMEOUT")
 
     # 功能：
-    #   按原生时钟保留独立历史，重复状态不增行，换流或大间隔清空，倒退时间直接拒绝。
+    #   按原生时钟保留独立历史；同槽显式递增修订只替换末行，不增加样本或续期。
+    #   换流或大间隔重建历史；与部署历史一致，拒绝重标时间、修订冲突及真实时钟倒退。
     # 输入：
     #   self：持有最多三十二条源历史的环境。
     #   sample：已经由准备阶段验证的源观测。
@@ -639,14 +716,25 @@ class Px4GazeboTrainingEnvironment:
             return
         owned = detach_evidence(sample)
         if prior is not None:
+            if current.stream_id == prior.stream_id:
+                if current.sample_sha256 == prior.sample_sha256:
+                    raise ValueError('PX4_TRAINING_OBSERVATION_SAMPLE_REDATED')
+                delta = current.observed_at_unix_ms - prior.observed_at_unix_ms
+                if delta == 0:
+                    if (current.history_slot_revision > prior.history_slot_revision
+                            and current.reset_history == prior.reset_history):
+                        self._source_history[-1] = owned
+                        return
+                    raise ValueError('PX4_TRAINING_OBSERVATION_SAME_TIME_CONFLICT')
+                if delta < 0 and not current.reset_history:
+                    self._source_history.clear()
+                    raise ValueError('PX4_TRAINING_OBSERVATION_CLOCK_REGRESSED')
             if (
                 current.stream_id != prior.stream_id
                 or current.reset_history
                 or current.observed_at_unix_ms - prior.observed_at_unix_ms > 250
             ):
                 self._source_history.clear()
-            elif current.observed_at_unix_ms <= prior.observed_at_unix_ms:
-                raise ValueError("PX4_TRAINING_OBSERVATION_CLOCK_REGRESSED")
         self._source_history.append(owned)
 
     # 功能：
@@ -673,7 +761,12 @@ class Px4GazeboTrainingEnvironment:
                 "qualified_for_flight": False,
             }
             raise RuntimeError("PX4_TRAINING_EXECUTOR_ENDING:" + phase)
-        if sample.navigation_expert_role != self.config.expert_role:
+        allowed_roles = getattr(self.config, "collection_expert_roles", [])
+        stage_collection = (
+            getattr(self, "_collection_mode", None) == "stream-imitation"
+            and sample.navigation_expert_role in allowed_roles
+        )
+        if sample.navigation_expert_role != self.config.expert_role and not stage_collection:
             self._exchange.discard_pending()
             self._rollout_stop_reason = {
                 "reason": "role-specific-episode-required",
@@ -684,6 +777,11 @@ class Px4GazeboTrainingEnvironment:
                 "qualified_for_flight": False,
             }
             raise ValueError("PX4_TRAINING_REQUIRES_ROLE_SPECIFIC_EPISODE")
+        if self._source_history and (
+            self._source_history[-1].navigation_expert_role != sample.navigation_expert_role
+        ):
+            # 角色标签保留真实请求值；跨角色不能把原专家的循环状态当作新专家历史。
+            self._source_history.clear()
         compiled_at = time.perf_counter()
         if self.visual:
             sample = self.visual.attach(sample, request["multimodal"])
@@ -718,6 +816,43 @@ class Px4GazeboTrainingEnvironment:
             }
         )
         return observation
+
+    # 功能：
+    #   向仿真研究策略公开当前已接纳快照及严格过去回执，复制返回，不允许修改待执行请求。
+    # 输入：
+    #   self：当前具有待响应原生观测的仿真环境。
+    # 输出：
+    #   snapshot、application：同回合源快照与已绑定实际回执，回执未齐全时为 None。
+    def current_control_context(self):
+        snapshot = self.current_navigation_snapshot()
+        application = self._receipt_monitor.latest_before(
+            snapshot['control_reference_observed_at_unix_ms'])
+        return snapshot, application
+
+    # 功能：只复制当前已接纳的导航输入，不同步扫描执行账本；适用于结果稍后归档的阶段教师。
+    # 输入：活跃采集环境；输出：独立快照副本，身份/生命周期校验与完整上下文入口一致。
+    def current_navigation_snapshot(self):
+        if self._pending is None or self._observation is None or self._quiesced or self._closed:
+            raise RuntimeError('PX4_TRAINING_CONTEXT_REQUIRES_LIVE_OBSERVATION')
+        snapshot = self._pending['snapshot']
+        if snapshot['snapshot_sha256'] != self._observation.sample.source_snapshot_sha256:
+            raise ValueError('PX4_TRAINING_CONTEXT_IDENTITY_MISMATCH')
+        return detach_evidence(snapshot)
+
+    # 功能：
+    #   读取当前已接纳观测的位置副本，不复制整幅感知快照，也不查询不需要的执行回执。
+    # 输入：
+    #   self：当前具有待响应原生观测的仿真环境。
+    # 输出：
+    #   position：与当前观测身份一致、有限且独立持有的三维位置。
+    def current_position_m(self):
+        if self._pending is None or self._observation is None or self._quiesced or self._closed:
+            raise RuntimeError('PX4_TRAINING_CONTEXT_REQUIRES_LIVE_OBSERVATION')
+        snapshot = self._pending['snapshot']
+        if snapshot['snapshot_sha256'] != self._observation.sample.source_snapshot_sha256:
+            raise ValueError('PX4_TRAINING_CONTEXT_IDENTITY_MISMATCH')
+        position = Vector3.model_validate(snapshot['current_position_m']).model_copy(deep=True)
+        return position
 
     # 功能：
     #   等待指定动作的执行回执，同时接收新传感器历史；最多保留一个可用的执行后请求。
@@ -759,7 +894,7 @@ class Px4GazeboTrainingEnvironment:
             except (TimeoutError, ConnectionError):
                 continue
             except ValueError as error:
-                if str(error) != "TRAINING_POLICY_REQUEST_EXPIRED_OR_REPLAYED":
+                if str(error) not in EXPIRED_POLICY_REQUESTS:
                     raise
             finally:
                 # Observe while the previous action's receipt is being joined;
@@ -818,7 +953,7 @@ class Px4GazeboTrainingEnvironment:
         proposal = TrainingProposal(
             request_sha256=sha256_json(request),
             policy_sha256=self._policy_sha256,
-            expert_role=self.config.expert_role,
+            expert_role=previous.sample.navigation_expert_role,
             action=action,
         )
         # 推理期间执行器可能已经进入降落；采用时的阶段不能授权此刻的新动作。
@@ -842,7 +977,7 @@ class Px4GazeboTrainingEnvironment:
                     "not_submitted": True,
                 }
             )
-            self._exchange.discard_pending()
+            self._exchange.discard_pending(reason="proposal-budget-exhausted")
             self._pending = self._prepared_input = None
             raise ControlPreparationExpired("PX4_TRAINING_PROPOSAL_BUDGET_EXHAUSTED_BEFORE_SEND")
         self._exchange.reply(detach_evidence(proposal))
@@ -869,6 +1004,8 @@ class Px4GazeboTrainingEnvironment:
     def _select_collection_mode(self, mode: str) -> None:
         if type(mode) is not str or mode not in {"stream-imitation", "reward-step"}:
             raise ValueError("PX4_TRAINING_COLLECTION_MODE_INVALID")
+        if getattr(self.config, "collection_expert_roles", []) and mode != "stream-imitation":
+            raise ValueError("PX4_STAGE_COLLECTION_CANNOT_PRODUCE_REWARD_STEPS")
         current = getattr(self, "_collection_mode", None)
         if current is not None and current != mode:
             raise ValueError("PX4_TRAINING_COLLECTION_MODE_CHANGED_DURING_FLIGHT")
@@ -881,14 +1018,12 @@ class Px4GazeboTrainingEnvironment:
     #   self：已选择流式采集的活跃环境。
     #   action：本观测对应的四轴提案。
     # 输出：
-    #   None：不返回业务数据。
-    def submit_stream_action(self, action: PilotAction) -> None:
-        from .stream_capture import StreamActionCapture, pack_stream_capture
-
+    #   receipt：提案及捕获身份，仅证明提交，不证明已经实际执行。
+    def submit_stream_action(self, action: PilotAction) -> dict:
         self._select_collection_mode("stream-imitation")
         if self._observation is None or self._pending is None or self._quiesced:
             raise RuntimeError("PX4_TRAINING_STEP_REQUIRES_LIVE_OBSERVATION")
-        if self._sequence >= self.config.episode_steps or len(self._stream_captures) >= 256:
+        if self._sequence >= self.config.episode_steps or len(self._stream_captures) >= 512:
             raise ValueError("PX4_TRAINING_STREAM_ACTION_LIMIT_REACHED")
         witness = self._monitor.initial_witness(
             self._observation.sample.temporal_evidence.observed_at_unix_ms
@@ -897,7 +1032,7 @@ class Px4GazeboTrainingEnvironment:
         started = time.perf_counter()
         packed = pack_stream_capture(StreamActionCapture(previous, request, proposal, witness))
         total_bytes = self._retained_capture_bytes + len(packed.content)
-        if total_bytes > MAXIMUM_ARCHIVE_BYTES or len(self._stream_captures) >= 256:
+        if total_bytes > MAXIMUM_ARCHIVE_BYTES or len(self._stream_captures) >= 512:
             raise ValueError("PX4_TRAINING_CAPTURE_ARCHIVE_FULL")
         self._stream_captures.append(packed)
         self._retained_capture_bytes = total_bytes
@@ -912,6 +1047,21 @@ class Px4GazeboTrainingEnvironment:
             }
         )
         self._sequence += 1
+        return {"call_id": "model-" + sha256_json(proposal)[:24],
+                "capture_sha256": packed.sha256,
+                "source_snapshot_sha256": request["snapshot"]["snapshot_sha256"],
+                "application_not_yet_asserted": True}
+
+    # 功能：把独立仿真见证单独交给标签记录器，不合并到策略观测或控制上下文。
+    # 输入：UNIX毫秒起止时刻，窗口不超过2秒且不得跨回合；输出：原始连续见证副本。
+    # 采集失败只影响标签，调用者不得把它解释成机载感知失效。
+    def label_witness_window(self, start_ms: int, end_ms: int):
+        if self._monitor is None or self._quiesced or self._closed:
+            raise RuntimeError("PX4_LABEL_WITNESS_REQUIRES_ACTIVE_EPISODE")
+        if (type(start_ms) is not int or type(end_ms) is not int
+                or not 0 < end_ms-start_ms <= 2000):
+            raise ValueError("PX4_LABEL_WITNESS_WINDOW_INVALID")
+        return self._monitor.window(start_ms, end_ms)
 
     # 功能：
     #   跳过重复或采用时已过期的源状态，始终使用采集器原截止时刻，不续租旧动作。
@@ -939,12 +1089,12 @@ class Px4GazeboTrainingEnvironment:
                     if error.reason_code != "TRAINING_INPUT_SENSOR_EVIDENCE_EXPIRED":
                         raise
                     self._record_rejected_input(request, "stream-input-expired-at-adoption")
-                    self._exchange.discard_pending()
+                    self._exchange.discard_pending(reason="stream-input-expired-at-adoption")
                     self._pending = self._prepared_input = None
                     previous_stamp = stamp
                     continue
             self._record_rejected_input(request, "stream-native-state-not-new")
-            self._exchange.discard_pending()
+            self._exchange.discard_pending(reason="stream-native-state-not-new")
 
     # 功能：
     #   只在确认静止且原生进程已结束后，关联流式捕获与实际执行账本。

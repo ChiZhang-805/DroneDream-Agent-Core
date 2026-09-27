@@ -19,11 +19,14 @@ from dronedream_agent_core.capability_broker import (
 from dronedream_agent_core.context import ContextStore
 from dronedream_agent_core.contracts import (
     AttachmentArtifact,
+    EvidenceRecord,
     MapAsset,
     MissionRequest,
     VehicleAsset,
+    ToolReceipt,
 )
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.evidence import EvidenceChain
 from dronedream_agent_core.model_harness.boundary import (
     HARD_MAXIMUM_REPAIR_CYCLES,
     HarnessInputEnvelope,
@@ -103,6 +106,29 @@ def _validate_gateway(value: str, identity_issuer: str | None = None) -> str:
     return value.rstrip("/")
 
 
+# 功能：
+#   为通知插件提供独立的小型摘要，完整计划和证据留在任务产物中，不跨通知边界重复传输。
+# 输入：
+#   summary：桌面任务的完整结果。
+# 输出：
+#   notification_summary：只包含通知合同声明的标量字段。
+def _plan_notification_summary(summary: dict[str, object]) -> dict[str, object]:
+    fields = (
+        "goal", "contract_id", "plan_revision_id", "plugin_snapshot_id", "locale",
+        "plugin_catalog_sha256", "minimum_clearance_m", "model_calls",
+        "planning_attempts", "target_entity", "return_entity",
+    )
+    notification_summary = {}
+    for key in fields:
+        if key not in summary:
+            continue
+        value = summary[key]
+        if type(value) not in (str, int, float, bool, type(None)):
+            raise ValueError("NOTIFICATION_SUMMARY_FIELD_INVALID")
+        notification_summary[key] = value
+    return notification_summary
+
+
 def _canonical_sha256(value: object) -> str:
     payload = json.dumps(
         value,
@@ -113,6 +139,40 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+# 功能：
+#   校验证据全链并保存完整工具回执索引，用有界引用承载长任务，绝不截断或丢弃记录。
+# 输入：
+#   output_dir：当前计划目录；evidence：完整证据链；tool_receipts：完整工具回执。
+# 输出：
+#   evidence_ids、tool_ids、index：证据链末端引用、工具引用和完整索引的文件绑定。
+def _output_receipt_references(output_dir: Path, evidence: list[EvidenceRecord], tool_receipts: list[ToolReceipt]) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, object]]:
+    EvidenceChain.verify(evidence)
+    payload = {
+        "schema_version": "dronedream.harness-receipt-index.v1",
+        "evidence_record_ids": [item.record_sha256 for item in evidence],
+        "tool_receipts": [item.model_dump(mode="json") for item in tool_receipts],
+    }
+    path = output_dir / "harness-receipt-index.json"
+    raw = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    path.write_bytes(raw)
+    checksum = hashlib.sha256(raw).hexdigest()
+    # 末端真实记录的摘要递归绑定全部前驱，而不是只保留任意一条日志。
+    evidence_ids = (evidence[-1].record_sha256,) if evidence else ()
+    tool_ids = tuple(item.call_id for item in tool_receipts)
+    if len(tool_ids) > 128:
+        tool_ids = (f"sha256:{checksum}",)
+    index = {"path": path.name, "sha256": checksum, "evidence_count": len(evidence),
+             "tool_count": len(tool_receipts), "evidence_reference": "verified-chain-head",
+             "tool_reference": "individual" if len(tool_receipts) <= 128 else "complete-index"}
+    return evidence_ids, tool_ids, index
+
+
+# 功能：
+#   将已准备的任务投影到界面协议，保留插件动作和实际规划预算，不赋予飞行权限。
+# 输入：
+#   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本；maximum_planning_rounds：配置上限。
+# 输出：
+#   artifact：供界面展示与摘要绑定的计划对象。
 def _public_planner_artifact(
     *,
     prepared,
@@ -121,9 +181,10 @@ def _public_planner_artifact(
     public_map_version: int,
     public_aircraft_id: str,
     public_aircraft_version: int,
+    maximum_planning_rounds: int,
 ) -> dict[str, object]:
-    """Project the full PreparedMission into the public shell's stable contract."""
-
+    if not 1 <= prepared.planning_attempts <= maximum_planning_rounds <= 5:
+        raise ValueError("PUBLIC_PLANNER_ATTEMPT_BUDGET_INVALID")
     context_sha256 = str(input_metadata.get("public_harness_context_sha256", ""))
     if len(context_sha256) != 64 or any(
         character not in "0123456789abcdef" for character in context_sha256
@@ -170,7 +231,7 @@ def _public_planner_artifact(
         "blockers": [],
         "repair": {
             "attempt": prepared.planning_attempts,
-            "max_attempts": prepared.planning_attempts,
+            "max_attempts": maximum_planning_rounds,
             "repeated_plan_hashes": 0,
             "stop_reason": None,
         },
@@ -356,6 +417,7 @@ def _public_mission_plan(
             "vehicle_content_sha256": vehicle_content_sha256,
         },
         "steps": steps,
+        "route_positions_m": [point.model_dump(mode="json") for point in route_positions],
         "task_graph": {
             "schema_version": "dronedream.autonomy.task-graph.v1",
             "revision": prepared.task_graph.revision,
@@ -454,6 +516,8 @@ class MissionService:
         self.credential_resolver = credential_resolver
         self.harness_design = harness_design
         self.asset_interpretations = AssetInterpretationService(store)
+        from .airspace_service import AirspaceService
+        self.airspace = AirspaceService(store)
         self.account_memory = AccountMemoryStore(
             account_memory_path or (store.root / "account-memory.sqlite3")
         )
@@ -648,6 +712,25 @@ class MissionService:
         vehicle = VehicleAsset.model_validate_json(
             vehicle_selection.vehicle_metadata.read_text(encoding="utf-8")
         )
+        from .airspace_service import AirspaceRequest
+        preferred_space = self.airspace.field(AirspaceRequest(
+            map_asset_id=map_selection.asset_id,
+            map_content_sha256=map_selection.content_sha256,
+            vehicle_asset_id=vehicle_selection.asset_id,
+            vehicle_content_sha256=vehicle_selection.content_sha256,
+        ))
+        preferred_context = {
+            "airspace_sha256": preferred_space.sha256,
+            "binding": preferred_space.binding,
+            "authority": "preference-only; live safety and payload checks required",
+            "named_node_height_samples": [
+                {"node_id": node.node_id, "space": preferred_space.context(
+                    (node.position_m.x, node.position_m.y, node.position_m.z))}
+                for node in graph.nodes[:96]
+            ],
+            "node_samples_truncated": len(graph.nodes) > 96,
+        }
+        effective_input_metadata["preferred_airspace"] = preferred_context
         if start_entity == "__auto__":
             launch_node_ids = {node.node_id for node in graph.nodes if node.semantic == "launch"}
             launch_aliases = [
@@ -744,6 +827,7 @@ class MissionService:
                 waypoint_hold_seconds=0.4,
                 vehicle=vehicle,
                 broker_factory=broker_factory,
+                planning_phase="initial",
             ),
             snapshot=plugin_snapshot,
         )
@@ -789,6 +873,7 @@ class MissionService:
                 "memory_policy": effective_input_metadata["memory_policy"],
                 "asset_versions": effective_input_metadata["asset_versions"],
                 "asset_pair_qualification": effective_input_metadata["asset_pair_qualification"],
+                "preferred_airspace": preferred_context,
                 "harness_revision": harness_revision_binding,
             },
             memory_record_ids=tuple(
@@ -1080,6 +1165,8 @@ class MissionService:
             1 for record in prepared.model_calls if record.role == "intent_parser"
         )
         repair_cycle_count = max(0, intent_call_count - 1) + max(0, prepared.planning_attempts - 1)
+        evidence_ids, tool_ids, receipt_index = _output_receipt_references(
+            output_dir, prepared.evidence, prepared.tool_receipts)
         output_envelope = HarnessOutputEnvelope(
             request_id=input_envelope.request_id,
             task_id=input_envelope.task_id,
@@ -1091,12 +1178,13 @@ class MissionService:
                 "contract_id": prepared.contract.contract_id,
                 "mission_id": binding.thread.mission_id,
                 "plan_revision_id": binding.plan_revision.plan_revision_id,
+                "receipt_index": receipt_index,
             },
             model_call_count=prepared.model_attempt_count + len(interpretation_calls),
             repair_cycle_count=repair_cycle_count,
-            tool_receipt_ids=tuple(item.call_id for item in prepared.tool_receipts),
+            tool_receipt_ids=tool_ids,
             validation_receipt_ids=(prepared.contract.contract_id,),
-            evidence_receipt_ids=tuple(item.record_sha256 for item in prepared.evidence),
+            evidence_receipt_ids=evidence_ids,
             memory_candidate_ids=tuple(account_memory_candidate_ids[:32]),
         )
         validate_output_against_boundaries(
@@ -1195,6 +1283,7 @@ class MissionService:
                 public_map_version=int(public_bindings.get("map_version", 0)),
                 public_aircraft_id=str(public_bindings.get("aircraft_id", "")),
                 public_aircraft_version=int(public_bindings.get("aircraft_version", 0)),
+                maximum_planning_rounds=maximum_planning_rounds,
             )
             artifact_bindings = planner_artifact["asset_bindings"]
             if not isinstance(artifact_bindings, dict) or (
@@ -1206,11 +1295,14 @@ class MissionService:
                 raise ValueError("PUBLIC_ASSET_BINDINGS_INVALID")
             summary["integration_artifact"] = planner_artifact
             summary["integration_artifact_sha256"] = _canonical_sha256(planner_artifact)
+            # 传递被摘要绑定的原始字节，防止 JavaScript 把 1.0、指数和键序重编码。
+            summary["integration_artifact_canonical_json"] = json.dumps(
+                planner_artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            )
         notification_outputs, notification_receipts = extension_registry.invoke_multiple(
             "notifications.plan-ready",
             "render_plan_notification",
-            summary=summary,
-            prepared=prepared,
+            summary=_plan_notification_summary(summary),
         )
         notifications = [
             output

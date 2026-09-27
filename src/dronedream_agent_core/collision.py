@@ -12,6 +12,7 @@ from dronedream_plugin_sdk.protocol import MAX_JSON_BYTES, decode_json
 from .contracts import GraphRoute, RouteClearanceReport, RouteCollision, Vector3
 from .control_uncertainty import (
     PLANNING_LOCALIZATION_ALLOWANCE_M,
+    LOCALIZATION_SIGMA_MULTIPLIER,
     finite_positive_number,
     localization_uncertainty_margin_m,
 )
@@ -28,6 +29,48 @@ PREFERRED_TRANSIT_CLEARANCE_M = 0.35
 _MAX_ROUTE_SAMPLES = 250_000
 
 
+# 功能：按共享预算反求足够的搜索净空，保守预留最大本地余量，避免搜索与验收使用两套假设。
+# 输入：variance_m2：已核验的定位方差上界（平方米），不能缺失或用零表示未知。
+# 输出：clearance_m：包络之外的最小搜索净空；仍须验证整条路线且不授予运动权限。
+def localization_required_clearance_m(variance_m2: float) -> float:
+    if not finite_positive_number(variance_m2) or variance_m2 > 10_000.0:
+        raise ValueError("LOCALIZATION_VARIANCE_BOUND_INVALID")
+    uncertainty = max(PLANNING_LOCALIZATION_ALLOWANCE_M,
+                      localization_uncertainty_margin_m(variance_m2))
+    # 0.15 是预算允许的本地避障余量上限；微小数值余量避免边界舍入导致反复失败。
+    clearance_m = uncertainty + 0.15 + 0.04 + 1e-9
+    return clearance_m
+
+
+# 功能：
+#   用同一公式拆分路线净空预算，失败也返回缺口；预算只是条件评估，不授予起飞权限。
+# 输入：
+#   clearance_m：机体包络之外的净空；variance_m2：可选原生定位方差上界。
+# 输出：
+#   assessment：规划假设、实测余量、缺口及该路线能够容纳的最大定位方差。
+def assess_tracking_corridor_budget(clearance_m: float, variance_m2: float | None = None) -> dict:
+    if not finite_positive_number(clearance_m):
+        raise ValueError("route has no positive tracking corridor")
+    local = max(0.05, min(0.15, clearance_m * 0.4))
+    uncertainty = max(PLANNING_LOCALIZATION_ALLOWANCE_M,
+                      localization_uncertainty_margin_m(variance_m2)
+                      if variance_m2 is not None else PLANNING_LOCALIZATION_ALLOWANCE_M)
+    available = clearance_m - local - uncertainty
+    allowance = max(0.0, clearance_m - local - 0.04)
+    try:
+        maximum_variance = (allowance / LOCALIZATION_SIGMA_MULTIPLIER) ** 2
+    except OverflowError as exc:
+        raise ValueError("route tracking budget overflow") from exc
+    if not math.isfinite(maximum_variance):
+        raise ValueError("route tracking budget overflow")
+    return {"minimum_route_clearance_m": clearance_m, "required_local_clearance_m": local,
+            "reserved_uncertainty_m": uncertainty, "minimum_tracking_allowance_m": 0.04,
+            "available_tracking_m": available, "clearance_deficit_m": max(0.0, 0.04 - available),
+            "maximum_localization_variance_m2": maximum_variance,
+            "uncertainty_basis": "live-native-localization" if variance_m2 is not None else "planning-assumption",
+            "live_localization_checked": variance_m2 is not None, "funded": available >= 0.04}
+
+
 # 功能：
 #   将已证明的通道净空分配给安全余量、定位误差及跟踪偏差；没有实时协方差时只是规划假设。
 # 输入：
@@ -40,19 +83,10 @@ def build_tracking_corridor_budget(
     *,
     localization_covariance_m2: float | None = None,
 ) -> dict[str, float]:
-    if not finite_positive_number(minimum_route_clearance_m):
-        raise ValueError("route has no positive tracking corridor")
-    required_clearance_m = max(
-        0.05,
-        min(0.15, minimum_route_clearance_m * 0.4),
-    )
-    reserved_uncertainty_m = max(
-        PLANNING_LOCALIZATION_ALLOWANCE_M,
-        localization_uncertainty_margin_m(localization_covariance_m2)
-        if localization_covariance_m2 is not None
-        else PLANNING_LOCALIZATION_ALLOWANCE_M,
-    )
-    available_tracking_m = minimum_route_clearance_m - required_clearance_m - reserved_uncertainty_m
+    assessment = assess_tracking_corridor_budget(minimum_route_clearance_m, localization_covariance_m2)
+    required_clearance_m = assessment["required_local_clearance_m"]
+    reserved_uncertainty_m = assessment["reserved_uncertainty_m"]
+    available_tracking_m = assessment["available_tracking_m"]
     if available_tracking_m < 0.04:
         raise ValueError("route clearance cannot fund local safety and tracking margins")
     lag_limit_m = min(0.25, available_tracking_m * 0.80)
@@ -139,6 +173,26 @@ def _validated_primitive(primitive: dict[str, Any]) -> dict[str, Any]:
     for name in fields & primitive.keys():
         validated[name] = float(primitive[name])
     return validated
+
+
+# 功能：
+#   合并同一地图快照中的静态和 Runtime 碰撞层，避免计划或复核漏掉运行端独有障碍。
+# 输入：
+#   semantic：已验证来源的地图语义对象。
+# 输出：
+#   primitives：保留两层全部障碍、尺寸已验证且数量有界的独立基元列表。
+def planning_collision_primitives(semantic: dict[str, Any]) -> list[dict[str, Any]]:
+    static = semantic.get("collision_primitives")
+    runtime = semantic.get("runtime_collision_primitives", [])
+    if not isinstance(static, list) or not 1 <= len(static) <= 100_000:
+        raise ValueError("semantic artifact has no collision primitives")
+    if not isinstance(runtime, list) or len(runtime) > 100_000:
+        raise ValueError("runtime collision primitives invalid")
+    if len(static) + len(runtime) > 100_000:
+        raise ValueError("planning collision primitive budget exceeded")
+    # 不按名称覆盖同名图元：同名但扩大了的物理碰撞包络也必须保留。
+    primitives = [_validated_primitive(primitive) for primitive in (*static, *runtime)]
+    return primitives
 
 
 # 功能：
@@ -370,6 +424,47 @@ def vehicle_clearance(
 
 
 # 功能：
+#   一次验证并固定整批位置和障碍，用原标量几何逐点求最小净空，保留全部障碍与首个同分身份。
+#   相邻位置完全相同时复用本次静态结果，不省略动态预测的时间点，也不跨快照复用。
+# 输入：
+#   points：有界的三维米制位置序列。
+#   primitives：当前快照的完整障碍列表。
+#   radius_m、half_height_m：机体水平半径与半高，单位米且严格为正。
+# 输出：
+#   samples：与位置顺序一致的（净空米数，障碍索引）列表；无近处障碍为（999.0，-1）。
+def minimum_vehicle_clearances(points, primitives, *, radius_m: float, half_height_m: float) -> list[tuple[float, int]]:
+    if not all(finite_positive_number(value) for value in (radius_m, half_height_m)):
+        raise ValueError("vehicle envelope dimensions must be positive")
+    if not isinstance(points, (tuple, list)) or len(points) > _MAX_ROUTE_SAMPLES:
+        raise ValueError("collision point budget exceeded")
+    if not isinstance(primitives, list) or len(primitives) > 100_000:
+        raise ValueError("collision primitive budget exceeded")
+    frozen_points = []
+    for point in points:
+        if not isinstance(point, (tuple, list)) or len(point) != 3 or not all(_finite(v) for v in point):
+            raise ValueError("collision point must contain three finite coordinates")
+        frozen_points.append(tuple(point))
+    frozen_primitives = [_validated_primitive(primitive) for primitive in primitives]
+    samples = []
+    previous_point = None
+    for point in frozen_points:
+        if point == previous_point:
+            samples.append(samples[-1])
+            continue
+        minimum, nearest = 999.0, -1
+        for index, primitive in enumerate(frozen_primitives):
+            # 只消除重复校验，不换用近似形状、减少预测点或改变标量运算顺序。
+            clearance = _clearance(point, primitive, radius_m=radius_m, half_height_m=half_height_m)
+            if not math.isfinite(clearance):
+                raise ValueError("collision clearance overflow")
+            if clearance < minimum:
+                minimum, nearest = clearance, index
+        samples.append((minimum, nearest))
+        previous_point = point
+    return samples
+
+
+# 功能：
 #   有界采样单段并保留两个端点，拒绝会导致无限分配的极小间隔或异常跨度。
 # 输入：
 #   start：已经验证的起点米制坐标。
@@ -423,10 +518,7 @@ def validate_route_clearance(
         raise ValueError("penetration tolerance must be finite and non-negative")
     route = GraphRoute.model_validate(route.model_dump(mode="python"), strict=True)
     semantic, semantic_sha256 = _load(semantic_path)
-    primitives = semantic.get("collision_primitives")
-    if not isinstance(primitives, list) or not 1 <= len(primitives) <= 100_000:
-        raise ValueError("semantic artifact has no collision primitives")
-    primitives = [_validated_primitive(primitive) for primitive in primitives]
+    primitives = planning_collision_primitives(semantic)
     route_points = [(point.x, point.y, point.z) for point in route.positions_m]
     segments = list(zip(route_points, route_points[1:], strict=False))
     if not segments:
@@ -438,7 +530,16 @@ def validate_route_clearance(
     collision_count = 0
     collisions: list[RouteCollision] = []
     segment_minimum_clearances_m: list[float] = []
-    for start, end in segments:
+    from time import monotonic
+    from .model_harness.progress import progress_sink, report_progress
+    observing = progress_sink.get() is not None
+    started = monotonic()
+    next_progress = started + 4
+    if observing:
+        report_progress("clearance",
+            f"开始检查一条候选路线：共 {len(segments)} 个连续线段，对照 {len(primitives)} 个地图碰撞基元。无人机按直径 {vehicle_diameter_m:.2f} 米、高度 {vehicle_height_m:.2f} 米的三维包络计算，不把无人机当作没有体积的点。\n\n检查将沿路线以不大于 {sample_interval_m:.2f} 米的间隔采样，并从净空结果扣除半个实际采样步距，为采样点之间的空间保留保守余量。因此，两个路径点本身没有碰到障碍，并不意味着中间这一段可以穿过墙壁或天花板。\n\n本阶段会保留各段最小间隙、对应位置和潜在冲突。多条候选路线需要分别检查；尚未检查的部分不会提前计为通过。此处使用地图中的静态几何，不能代替起飞前和飞行中的实时传感器检查。",
+            f"Checking {len(segments)} continuous segments against {len(primitives)} collision primitives, using a {vehicle_diameter_m:.2f} m wide and {vehicle_height_m:.2f} m high vehicle envelope.\n\nSamples are at most {sample_interval_m:.2f} m apart; half the actual sample spacing is deducted from clearance to conservatively cover gaps between samples. Clear endpoints alone do not establish a clear segment.\n\nEach candidate is checked separately, retaining minimum gaps and potential conflicts. Unchecked segments are not passed. Static map checks do not replace live sensor checks.")
+    for segment_index, (start, end) in enumerate(segments):
         samples = _segment_samples(start, end, sample_interval_m)
         if (
             sample_count + len(samples) > _MAX_ROUTE_SAMPLES
@@ -477,6 +578,13 @@ def validate_route_clearance(
                             )
                         )
             sample_count += 1
+            # 只在观察器存在时低频读取时钟，不增加每个障碍物距离查询的开销。
+            if observing and sample_count % 32 == 0 and monotonic() >= next_progress:
+                elapsed = monotonic() - started
+                next_progress = monotonic() + 4
+                report_progress("clearance",
+                    f"本条候选路线已检查 {sample_count} 个采样位置，正在处理第 {segment_index + 1}/{len(segments)} 段，计算已用 {elapsed:.1f} 秒。当前最小保守间隙为 {minimum:.3f} 米，发现 {collision_count} 次超出容差的包络冲突记录；这些是扫描至今的中间结果，最终结论须等待整条路线完成。",
+                    f"Checked {sample_count} sample positions; processing segment {segment_index + 1}/{len(segments)}, elapsed {elapsed:.1f} s. Minimum conservative gap so far: {minimum:.3f} m; {collision_count} envelope conflicts beyond tolerance. These are intermediate observations, not the final route result.")
         if len(route_points) > 1:
             segment_minimum_clearances_m.append(segment_minimum)
     report = RouteClearanceReport(
@@ -493,4 +601,6 @@ def validate_route_clearance(
         segment_minimum_clearances_m=segment_minimum_clearances_m,
         collisions=collisions,
     )
+    if observing:
+        report_progress("clearance", f"本条路线净空计算完成，用时 {monotonic() - started:.1f} 秒，共检查 {sample_count} 个位置。静态净空检查{'通过' if report.accepted else '未通过'}；接下来还要结合操作余量和候选路线评价确定是否采用。", f"Clearance calculation completed in {monotonic() - started:.1f} s for {sample_count} positions. Static check {'passed' if report.accepted else 'did not pass'}; operational margins and candidate evaluation still determine selection.")
     return report

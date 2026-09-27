@@ -8,9 +8,44 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 from test_runtime_commands import _load_executor
 
+from dronedream_agent_core import runtime_phase_channel
 from dronedream_agent_core.executor_snapshots import ACTIVE_SNAPSHOTS, ExecutorSnapshots
+
+
+# 功能：
+#   验证后台快照通过实际发布器恢复一次临时读锁，不刷新载荷来源时间。
+# 输入：
+#   tmp_path、monkeypatch：隔离路径及一次原子替换读锁注入。
+# 输出：
+#   None：载荷最终写出且收尾完整。
+def test_snapshot_writer_recovers_transient_read_lock(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    original = Path.replace
+    calls = []
+
+    # 功能：
+    #   只让第一次替换遇到读锁，其余调用使用真实文件系统。
+    # 输入：
+    #   self、target：暂存文件和明确目标。
+    # 输出：
+    #   path：成功替换后的路径。
+    def transient_lock(self, target):
+        calls.append(target)
+        if len(calls) == 1:
+            raise PermissionError('synthetic transient reader')
+        path = original(self, target)
+        return path
+
+    monkeypatch.setattr(Path, 'replace', transient_lock)
+    snapshots = ExecutorSnapshots(tmp_path)
+    snapshots.submit(tmp_path / 'runtime-phase.json', {'phase': 'PREFLIGHT', 'source_time': 1000})
+    summary = snapshots.close(timeout_seconds=2)
+    assert summary['complete'] and len(calls) == 2
+    assert json.loads((tmp_path / 'runtime-phase.json').read_text())['source_time'] == 1000
 from dronedream_agent_core.local_packet_channel import LatestPacketPublisher
 from dronedream_agent_core.runtime_phase_channel import PHASE_CONTRACT, RuntimePhaseBroadcaster
 from dronedream_agent_core.simulation_phase_monitor import SimulationPhaseMonitor
@@ -90,7 +125,7 @@ def test_snapshot_writer_failure_and_nonowned_paths_are_explicit(tmp_path):
 def test_phase_channel_retains_original_packet_age_and_never_falls_back(tmp_path, monkeypatch):
     wall = Mock(return_value=10.08)
     mono = Mock(return_value=20.)
-    monkeypatch.setattr("dronedream_agent_core.runtime_phase_channel.time.time", wall)
+    isolate_time(monkeypatch, runtime_phase_channel, time=wall)
     descriptor = tmp_path / "phase-channel.json"
     phase_file = tmp_path / "runtime-phase.json"
     phase_file.write_text('{"phase":"TRACK"}')

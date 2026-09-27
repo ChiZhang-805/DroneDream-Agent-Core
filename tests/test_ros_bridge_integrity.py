@@ -7,6 +7,7 @@ import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 from test_domain_action_logic import _logic_module, _targets
 
 
@@ -89,6 +90,7 @@ def _observer(module):
     node._entity_name, node._gazebo_topic = "drone-current", "/world/current/pose"
     node._contract_id, node._segment_id = "current-mission", "segment-001"
     node._runtime_phase_path = None
+    node.get_logger = lambda: SimpleNamespace(warning=lambda message: None, info=lambda message: None)
     node.get_clock = lambda: SimpleNamespace(
         now=lambda: SimpleNamespace(to_msg=lambda: SimpleNamespace(sec=900))
     )
@@ -155,7 +157,7 @@ def test_pose_timer_does_not_refresh_old_measurements(ros_modules):
 def test_pose_rejects_invalid_or_expired_samples(ros_modules, monkeypatch, defect):
     module = ros_modules[0]
     clock = [100.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    isolate_monotonic(monkeypatch, module, lambda: clock[0])
     node, published = _observer(module)
     node._on_gazebo_pose(_raw_pose())
     if defect == "stale":
@@ -194,6 +196,33 @@ def test_invalid_phase_is_not_reported_as_preflight(ros_modules, tmp_path, raw):
     node._runtime_phase_path = tmp_path / "phase.json"
     node._runtime_phase_path.write_text(raw)
     assert node._runtime_phase().startswith("UNRECOGNIZED:")
+
+
+# 功能：验证短暂阶段读取失败可恢复，但重复失败不续期、明确非法阶段不被缓存遮蔽。
+# 输入：真实 ROS 节点、隔离文件和单调时钟；输出：有界元数据恢复的断言结果。
+@pytest.mark.parametrize("error", [PermissionError("sharing"), json.JSONDecodeError("partial", "", 0)])
+def test_phase_read_transient_does_not_abort_or_extend_lease(ros_modules, tmp_path, monkeypatch, error):
+    module = ros_modules[0]
+    node, _ = _observer(module)
+    node._runtime_phase_path = tmp_path / "phase.json"
+    clock = [10.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module, "read_object", lambda path: {"phase": "MODEL_AUTHORITY_HOLD"})
+    assert node._runtime_phase() == "MODEL_AUTHORITY_HOLD"
+    def interrupted(path):
+        raise error
+    monkeypatch.setattr(module, "read_object", interrupted)
+    for elapsed in (.025, .05, .09):
+        clock[0] = 10 + elapsed
+        assert node._runtime_phase() == "MODEL_AUTHORITY_HOLD"
+    clock[0] = 10.101
+    assert node._runtime_phase() == "UNRECOGNIZED:INVALID_PHASE_RECORD"
+    monkeypatch.setattr(module, "read_object", lambda path: {"phase": "TRACK"})
+    assert node._runtime_phase() == "TRACK"
+    monkeypatch.setattr(module, "read_object", lambda path: {"phase": "UNKNOWN"})
+    assert node._runtime_phase() == "UNRECOGNIZED:UNKNOWN"
+    monkeypatch.setattr(module, "read_object", interrupted)
+    assert node._runtime_phase() == "UNRECOGNIZED:INVALID_PHASE_RECORD"
 
 
 # 功能：

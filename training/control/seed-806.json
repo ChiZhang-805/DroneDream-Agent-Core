@@ -1,0 +1,12 @@
+{
+  "history_length": 16,
+  "encoder_width": 64,
+  "recurrent_width": 64,
+  "head_width": 128,
+  "visual_feature_count": 139,
+  "epochs": 120,
+  "batch_size": 64,
+  "learning_rate": 0.001,
+  "gradient_norm": 1.0,
+  "seed": 806
+}

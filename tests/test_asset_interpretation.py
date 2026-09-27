@@ -17,6 +17,8 @@ from dronedream_agent_app.custom_models import ModelConnection
 from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.contracts import ModelCallRecord
 
+pytestmark = pytest.mark.usefixtures("isolated_server_credentials")
+
 
 # 功能：
 #   构造明确的测试模型端口，记录输入并返回带实际测试调用次数的结构化回包。
@@ -130,6 +132,10 @@ def test_cache_invalidates_for_identity_asset_model_and_prompt_inputs(setup, cha
     else:
         options["locale"] = "en-US"
     second = service.interpret(**options)
+    if change == "hash":
+        assert second["cached"] and second["reuse_mode"] == "unchanged_dependencies"
+        assert len(options["port"].calls) == 1
+        return
     assert not second["cached"] and first["cache_key"] != second["cache_key"]
     assert len(options["port"].calls) == 2
 

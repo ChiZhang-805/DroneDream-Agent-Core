@@ -892,3 +892,28 @@ def qualification_matches_environment(
         and manifest.qualification.maturity == "qualified"
     )
     return matches
+
+
+# 功能：
+#   1. 为显式候选仿真实验核对旧资产证据和同一 Gazebo/PX4/ROS 基础环境。
+#   2. 仅允许应用 Runtime 资源修订改变，不将旧证据升级为新 Runtime 的正式资格。
+# 输入：
+#   record：内容绑定的资产记录；environment_versions：当前实际基础环境与资源摘要。
+# 输出：
+#   matches：是否仅存在允许试验的资源修订差异。
+def trial_asset_environment_matches(record, environment_versions):
+    try:
+        manifest = DDPkgManifest.model_validate(record["manifest"])
+        if manifest.qualification is None:
+            return False
+        previous = manifest.qualification.environment_versions
+        required = {"runtime_manifest_sha256", "ros_distribution", "gazebo_sim", "px4_commit"}
+        if set(previous) != required or set(environment_versions) != required:
+            return False
+        if not all(previous[key] == environment_versions[key]
+                   for key in required - {"runtime_manifest_sha256"}):
+            return False
+        matches = qualification_matches_environment(record, previous)
+    except (KeyError, TypeError, ValueError):
+        matches = False
+    return matches

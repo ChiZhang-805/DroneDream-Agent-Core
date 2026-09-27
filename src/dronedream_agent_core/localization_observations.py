@@ -111,11 +111,12 @@ class GeometryObservationCapture:
     #   calibration_sha256：当前光学校准摘要。
     #   native_pose_binding_sha256：当前原生位姿绑定摘要。
     #   source_clock：有界来源时钟诊断；None 表示未取得该诊断。
+    #   native_odometry_snapshot：原生协方差的独立时钟快照；不宣称与图像同步。
     # 输出：
     #   accepted：本条记录成功进入后台队列时为 True，不代表已经写盘。
     def record(self, scan: RawMetricRangeScan, *, mount: CalibratedRangeSensorMount,
                calibration_sha256: str, native_pose_binding_sha256: str,
-               source_clock: dict | None) -> bool:
+               source_clock: dict | None, native_odometry_snapshot: dict | None = None) -> bool:
         if self._closed or self._issue is not None or self._writer.issue is not None:
             return False
         if self._accepted >= self.maximum_records:
@@ -134,6 +135,11 @@ class GeometryObservationCapture:
             if source_clock is not None and type(source_clock) is not dict:
                 raise ValueError("capture source clock is not an object")
             source_clock = copy_json(source_clock, limit=8192)
+            if native_odometry_snapshot is not None:
+                if (type(native_odometry_snapshot) is not dict
+                        or native_odometry_snapshot.get("image_synchronized") is not False):
+                    raise ValueError("capture odometry cannot claim image synchronization")
+                native_odometry_snapshot = copy_json(native_odometry_snapshot, limit=8192)
         except (ValueError, TypeError, AttributeError, OverflowError):
             self._issue = "LOCALIZATION_CAPTURE_INPUT_INVALID"
             return False
@@ -167,6 +173,8 @@ class GeometryObservationCapture:
             "scan": scan.model_dump(mode="json"),
             "mount": mount.model_dump(mode="json"),
         }
+        if native_odometry_snapshot is not None:
+            record["native_odometry_snapshot"] = native_odometry_snapshot
         if not self._writer.submit(self.path, record):
             self._issue = "LOCALIZATION_CAPTURE_ENQUEUE_FAILED"
             return False

@@ -334,3 +334,55 @@ def test_projection_rejects_ambiguous_pixel_buffers(kind):
 def test_calibration_rejects_nonstring_no_return_mode():
     with pytest.raises(ValueError):
         _calibration(no_return_mode=[])
+
+
+# 功能：以独立逐像素参考验证批量归约、边缘区块、并列选择和未知区域完全一致。
+# 输入：多种尺寸、超图幅步长及带行填充的随机坏像素/命中/无回波混合图。
+# 输出：每条射线方向、距离、命中及有效像素计数等价，不以提速改变几何语义。
+@pytest.mark.parametrize("width,height,stride", [(31, 19, 8), (8, 5, 8192), (2, 2, 1),
+                                               (160, 120, 8), (320, 240, 16)])
+@pytest.mark.parametrize("mode", ["unknown", "gazebo-far-clip"])
+def test_batched_tiles_match_independent_pixel_reference(width, height, stride, mode):
+    import random
+
+    rng = random.Random(width * height + stride)
+    choices = [math.nan, math.inf, -math.inf, -.1, .1, .2, 1., 2., 9., 10., 11.]
+    values = [rng.choice(choices) for _ in range(width * height)]
+    values[0] = 1.
+    data = b"".join(struct.pack(f"<{width}f", *values[row*width:(row+1)*width]) + b"pad!"
+                    for row in range(height))
+    calibration = _calibration(width=width, height=height, sample_stride_pixels=stride,
+                               no_return_mode=mode)
+    fx, fy, cx, cy = calibration.intrinsics
+    far = calibration.maximum_depth_m
+    expected, valid_count = [], 0
+    for top in range(0, height, stride):
+        for left in range(0, width, stride):
+            hits, free = [], []
+            for row in range(top, min(height, top+stride)):
+                for col in range(left, min(width, left+stride)):
+                    value = struct.unpack("<f", struct.pack("<f", values[row*width+col]))[0]
+                    finite = math.isfinite(value)
+                    valid = finite and calibration.minimum_depth_m <= value <= far + 1e-5
+                    valid = (valid or value == math.inf) if mode == "gazebo-far-clip" else (
+                        valid and value < far-1e-5)
+                    if not valid:
+                        continue
+                    valid_count += 1
+                    y, z = (cx-col)/fx, (cy-row)/fy
+                    radial = min(value, far)**2 * (1.+y*y+z*z) if finite else math.inf
+                    if finite and radial < far*far and value < far-1e-5:
+                        hits.append((radial, row, col, y, z))
+                    free.append((abs(row % stride-stride//2)+abs(col % stride-stride//2),
+                                 row, col, y, z))
+            if hits or free:
+                cost, _, _, y, z = min(hits or free)
+                expected.append((y, z, math.sqrt(cost) if hits else far, bool(hits)))
+    actual = project_metric_depth_frame(data=data, row_step_bytes=width*4+4,
+                                       calibration=calibration)
+    assert actual.valid_pixel_count == valid_count
+    assert len(actual.samples) == len(expected)
+    for sample, (y, z, distance, hit) in zip(actual.samples, expected, strict=True):
+        assert (sample.direction_sensor.y, sample.direction_sensor.z, sample.range_m) == (
+            pytest.approx((y, z, distance), rel=1e-14, abs=1e-14))
+        assert sample.hit is hit

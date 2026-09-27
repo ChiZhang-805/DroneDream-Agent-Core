@@ -14,11 +14,12 @@ from typing import Any
 
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
 
-from .contracts import CatalogEntity, MapAsset, MapCatalog, Vector3
+from .contracts import CatalogEntity, MapAsset, MapCatalog, PlanarCatalogLandmark, Vector3
 from .plugin_files import read_plugin_file
 
 SUPPORTED_MAP_SEMANTIC_SCHEMAS = {"dronedream.map-semantic.v1"}
 MAX_SEMANTIC_BYTES = 16 * 1024 * 1024
+MAX_SEMANTIC_NODES = 1_000_000
 
 UNQUALIFIED_TOPOLOGY_LIMIT = (
     "This asset exposes road polylines and facility anchors, not a qualified 3-D route graph."
@@ -38,13 +39,24 @@ class AssetQualificationError(ValueError):
 def _load_object(path: Path) -> tuple[dict[str, Any], bytes]:
     try:
         raw = read_plugin_file(path, limit=MAX_SEMANTIC_BYTES)
-        value = decode_json(raw, limit=MAX_SEMANTIC_BYTES, node_limit=1_000_000)
+        value = decode_json(raw, limit=MAX_SEMANTIC_BYTES, node_limit=MAX_SEMANTIC_NODES)
     except (OSError, ValueError) as error:
         raise AssetQualificationError("MAP_SEMANTIC_READ_INVALID") from error
     if not isinstance(value, dict):
         raise AssetQualificationError("MAP_SEMANTIC_OBJECT_REQUIRED")
     snapshot = value, raw
     return snapshot
+
+
+# 功能：
+#   按地图专用的字节及结构预算读取完整语义，不误用小型实时控制消息的节点限制。
+# 输入：
+#   path：当前资产的明确语义文件路径。
+# 输出：
+#   semantic：有界、有限、无重复键的对象；具体地图及执行契约由调用方继续校验。
+def read_map_semantic_object(path: Path) -> dict[str, Any]:
+    semantic, _raw = _load_object(path)
+    return semantic
 
 
 # 功能：
@@ -102,6 +114,35 @@ def _text_list(value: object, *, field: str, maximum: int) -> list[str]:
         raise AssetQualificationError(f"MAP_SEMANTIC_{field}_INVALID")
     texts = list(dict.fromkeys(_text(item, field=field, maximum=240) for item in value))
     return texts
+
+
+# 功能：
+#   保留地图道路数据明确声明的二维地标，不给它补高度，也不把它变成飞行终点。
+# 输入：
+#   raw、semantic：同一文件内的实体和完整语义；entity_id、aliases：已验证的身份与别名。
+# 输出：
+#   landmark：与原始道路锚点逐值绑定的平面地标，不合格输入抛出错误。
+def _planar_landmark(raw, semantic, entity_id: str, aliases: list[str]) -> PlanarCatalogLandmark:
+    position = raw.get("position_m")
+    pointer = f"/roads/facility_anchors/{entity_id}"
+    roads = semantic.get("roads")
+    anchors = roads.get("facility_anchors") if isinstance(roads, dict) else None
+    source = anchors.get(entity_id) if isinstance(anchors, dict) else None
+    if (raw.get("source_pointer") != pointer
+            or raw.get("semantic") not in {"landmark", "facility-anchor"}
+            or not isinstance(position, list) or len(position) != 2
+            or not isinstance(source, list) or len(source) != 2):
+        raise AssetQualificationError("MAP_SEMANTIC_ENU_ANCHOR_INVALID")
+    # 必须同时检查引用处和实体处；True == 1 不能冒充数值绑定。
+    try:
+        valid = all(type(v) in (int, float) and math.isfinite(v) for v in [*position, *source])
+    except OverflowError:
+        valid = False
+    if not valid or position != source:
+        raise AssetQualificationError("MAP_SEMANTIC_PLANAR_SOURCE_INVALID")
+    landmark = PlanarCatalogLandmark(entity_id=entity_id, aliases=aliases,
+        east_m=position[0], north_m=position[1], semantic=raw["semantic"], source_pointer=pointer)
+    return landmark
 
 
 # 功能：
@@ -190,6 +231,7 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
         if not isinstance(raw_entities, list) or not 1 <= len(raw_entities) <= 2000:
             raise AssetQualificationError("map semantic entities are missing")
         entities: list[CatalogEntity] = []
+        planar_landmarks: list[PlanarCatalogLandmark] = []
         seen: set[str] = set()
         for index, raw in enumerate(raw_entities):
             if not isinstance(raw, dict):
@@ -210,6 +252,10 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
             )
             if len(aliases) > 24:
                 raise AssetQualificationError("MAP_SEMANTIC_ALIAS_LIMIT_EXCEEDED")
+            position = raw.get("position_m")
+            if isinstance(position, list) and len(position) == 2:
+                planar_landmarks.append(_planar_landmark(raw, semantic, entity_id, aliases))
+                continue
             entities.append(
                 CatalogEntity(
                     entity_id=entity_id,
@@ -228,6 +274,12 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
             raise AssetQualificationError("MAP_SEMANTIC_NAVIGATION_INVALID")
         segment_ids = _text_list(navigation.get("segment_ids", []), field="SEGMENTS", maximum=2000)
         known_limits = _text_list(semantic.get("known_limits", []), field="LIMITS", maximum=64)
+        if planar_landmarks:
+            limitation = "Planar landmarks have no measured altitude and are not flight targets."
+            if limitation not in known_limits:
+                if len(known_limits) >= 64:
+                    raise AssetQualificationError("MAP_SEMANTIC_LIMITS_CAPACITY_EXCEEDED")
+                known_limits.append(limitation)
         if qualified_graph is None and UNQUALIFIED_TOPOLOGY_LIMIT not in known_limits:
             if len(known_limits) >= 64:
                 raise AssetQualificationError("MAP_SEMANTIC_LIMITS_CAPACITY_EXCEEDED")
@@ -241,6 +293,7 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
                 ),
                 semantic_sha256=hashlib.sha256(raw_bytes).hexdigest(),
                 entities=entities,
+                planar_landmarks=planar_landmarks,
                 road_segment_ids=segment_ids,
                 topology_available=False,
                 known_limits=known_limits,

@@ -6,13 +6,19 @@ Offline agreement with a nominal teacher is distinct from physical safety.
 
 import hashlib
 import math
+import re
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-from ..control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
+from ..control_feature_contract import (
+    CURRENT_POLICY_FEATURE_CONTRACT_SHA256,
+    FLIGHT_STATE_FEATURE_COUNT,
+    GEOMETRY_FEATURE_COUNT,
+    SENSOR_FEATURE_COUNT,
+)
 from ..local_policy_quality import LocalRiskCriticMetrics
 from ..local_policy_training import (
     LocalPolicyTrainingConfig,
@@ -27,8 +33,49 @@ from ..plugin_files import check_plain_plugin_path, read_plugin_file
 from ..realtime_feature_encoders import POLICY_REALTIME_FEATURE_COUNT
 from .action_risk_artifacts import validate_action_risk_splits
 from .dagger_artifacts import write_rows
+from .evidence_publication import publish_evidence_bytes
 from .evidence_snapshot import detach_evidence
 from .mission_groups import SPATIAL_SPLIT_CONTRACT
+from .risk_nearfield import (
+    embed_nearfield_transform,
+    nearfield_descriptor,
+    project_nearfield_inputs,
+)
+from .risk_training_sampling import training_selection_receipt
+
+
+# 功能：
+#   为名义几何风险屏蔽任务方向、策略速度尺度和图像采样密度，保留物理运动、净空和动作。
+# 输入：
+#   samples：原始、已接纳的训练样本，不原地修改。
+# 输出：
+#   projected：同宽度副本；屏蔽列在归一化训练中保持零权重并折叠入部署网络。
+def project_physical_risk_inputs(samples):
+    projected = []
+    for source in samples:
+        sample = LocalPolicyTrainingSample.model_validate(source.model_dump())
+        if len(sample.realtime_features) != POLICY_REALTIME_FEATURE_COUNT:
+            raise ValueError('ACTION_RISK_REALTIME_WIDTH_INVALID')
+        # 风险提案和26格几何都是机体系；世界速度已有机体系速度等价输入，
+        # 全局目的地和世界朝向不是相对障碍碰撞的原因，避免地图朝向成为捷径。
+        sample.state_features[:7] = [0.] * 7
+        # 提案已按固定20m/s物理单位编码；同一个实际动作不能因为策略杆量
+        # 的满刻度不同而改变风险。保留13列真实净空要求，不混同于12列杆量尺度。
+        sample.state_features[12] = 0.
+        flight_offset = SENSOR_FEATURE_COUNT - FLIGHT_STATE_FEATURE_COUNT
+        sample.realtime_features[flight_offset:flight_offset + 4] = [0.] * 4
+        # 这八个历史导航扇区相对于目标方向，并非机头方向。目标已屏蔽时，
+        # 保留其距离会让同一个“前进”提案对应不同方位的障碍；风险网络只用
+        # 下方明确的 FRU 26 格几何与掩码，不把目标朝向扇区误当作机体系。
+        sample.state_features[14:] = [0.] * (len(sample.state_features) - 14)
+        # 几何标签比较扫掠净空，不应把远处场景的像素占比学成障碍概率。
+        for offset in range(0, GEOMETRY_FEATURE_COUNT, 5):
+            sample.realtime_features[offset + 2:offset + 5] = [0.] * 3
+        # 此末段前三列是速度/策略满刻度，前面的飞行状态已提供速度/20m/s。
+        # 只保留后者，防止网络把训练课程的限速差异当成障碍或制动距离。
+        sample.realtime_features[SENSOR_FEATURE_COUNT:] = [0.] * 10
+        projected.append(sample)
+    return projected
 
 
 # 功能：
@@ -89,6 +136,36 @@ def risk_class_coverage(datasets):
         "route_map_group_count": len(set().union(*(dataset.groups for dataset in datasets))),
     }
     return coverage
+
+
+# 功能：按互斥运动类型分别统计源观测与风险类别，暴露总样本数掩盖的方向覆盖缺口。
+# 输入：datasets：已接纳的风险数据；动作使用部署中的物理归一化提案，不读取模型预测。
+# 输出：coverage：各类探针数、独立观测数及双类支持量，不将重复探针当作新观测。
+def risk_motion_coverage(datasets):
+    kinds = ("descending", "ascending", "level-translation", "stationary-or-yaw")
+    rows = {kind: {"sample_count": 0, "safe_sample_count": 0, "unsafe_sample_count": 0}
+            for kind in kinds}
+    identities = {kind: {"all": set(), "safe": set(), "unsafe": set()} for kind in kinds}
+    for sample, record in _metric_records(datasets):
+        action = sample.risk_proposed_control
+        if (type(action) is not list or len(action) != 4
+                or any(type(v) not in (int, float) or not math.isfinite(v)
+                       or not -1 <= v <= 1 for v in action)):
+            raise ValueError("ACTION_RISK_MOTION_CONTROL_INVALID")
+        # 组合动作优先按升降分组；仅严格零垂直速度的平移动作计入平飞，不丢掉斜向动作。
+        kind = ("descending" if action[2] < 0 else "ascending" if action[2] > 0
+                else "level-translation" if action[0] != 0 or action[1] != 0
+                else "stationary-or-yaw")
+        category = "unsafe" if sample.risk_target >= .5 else "safe"
+        rows[kind]["sample_count"] += 1
+        rows[kind][category + "_sample_count"] += 1
+        identities[kind]["all"].add(record["observation_sha256"])
+        identities[kind][category].add(record["observation_sha256"])
+    for kind in kinds:
+        rows[kind].update(independent_observation_count=len(identities[kind]["all"]),
+                          safe_observation_count=len(identities[kind]["safe"]),
+                          unsafe_observation_count=len(identities[kind]["unsafe"]))
+    return rows
 
 
 # 功能：
@@ -224,14 +301,76 @@ def action_discrimination(datasets, predictions):
 #   validation：已接纳且空间独立的验证分区。
 #   config：风险网络训练参数。
 #   output：尚不存在的本次离线训练输出目录。
+#   classification_margin：仅用于优化的分类间隔；验证仍使用原始几何标签与既定门槛。
+#   normalize_inputs：训练集内的量纲归一化开关，导出时折叠为原接口权重。
+#   physical_context_only：屏蔽与名义碰撞无关的任务方向和采样密度，不屏蔽有效性掩码。
+#   monotonic_geometry：启用并记录几何距离的偏单调实验约束，不更改验收标准。
+#   monotonic_uncertainty：约束定位方差到风险输出的有效路径非负，防止低方差域反向外推。
+#   geometry_distance_cap_m：可选米制近场范围，变换随模型导出，不裁剪标签。
+#   position_uncertainty_floor_m：与教师一致的定位余量下限，生成径向学习特征而非放宽净空。
+#   unsafe_sample_cost：仅优化时提高危险样本损失成本，仍独立检查正常动作放行率。
+#   contrast_loss_weight：按同一观测的完整动作组训练排序，不读取验证观测进行优化。
+#   diagnostic_sources：来源读取器核验过的旧失败分析元数据，不载入其标签参与优化。
 # 输出：
 #   receipt：明确包含优化、离线验收及后续物理验证要求的回执。
-def train_action_risk_expert(training, validation, config: LocalPolicyTrainingConfig, output: Path):
+def train_action_risk_expert(training, validation, config: LocalPolicyTrainingConfig, output: Path,
+                            *, classification_margin: float = 0.0, normalize_inputs: bool = False,
+                            physical_context_only: bool = False, monotonic_geometry: bool = False,
+                            geometry_distance_cap_m: float | None = None, unsafe_sample_cost=1.,
+                            contrast_loss_weight=0., diagnostic_sources=(), monotonic_uncertainty=False,
+                            position_uncertainty_floor_m=None):
+    if (type(contrast_loss_weight) not in (int, float) or not math.isfinite(contrast_loss_weight)
+            or not 0 <= contrast_loss_weight <= 4.):
+        raise ValueError('ACTION_CONTRAST_WEIGHT_INVALID')
+    if (type(unsafe_sample_cost) not in (int, float) or not math.isfinite(unsafe_sample_cost)
+            or not 1. <= unsafe_sample_cost <= 4.):
+        raise ValueError('ACTION_RISK_UNSAFE_SAMPLE_COST_INVALID')
+    if type(normalize_inputs) is not bool:
+        raise ValueError("ACTION_RISK_NORMALIZATION_INVALID")
+    if type(monotonic_geometry) is not bool:
+        raise ValueError("ACTION_RISK_MONOTONICITY_INVALID")
+    if type(monotonic_uncertainty) is not bool:
+        raise ValueError('ACTION_RISK_UNCERTAINTY_CONSTRAINT_INVALID')
+    if type(physical_context_only) is not bool or (physical_context_only and not normalize_inputs):
+        raise ValueError('ACTION_RISK_PHYSICAL_PROJECTION_REQUIRES_NORMALIZATION')
+    transform = None
+    if position_uncertainty_floor_m is not None:
+        if geometry_distance_cap_m is None:
+            raise ValueError('ACTION_RISK_POSITION_RESERVE_REQUIRES_NEARFIELD')
+        # 原始方差路径单调不等于经过非线性几何变换后的整个网络单调，禁止错误声明。
+        if monotonic_uncertainty:
+            raise ValueError('ACTION_RISK_COMPOSED_MONOTONICITY_NOT_VERIFIED')
+    if geometry_distance_cap_m is not None:
+        transform = nearfield_descriptor(geometry_distance_cap_m, position_uncertainty_floor_m)
+        if not physical_context_only:
+            raise ValueError('ACTION_RISK_NEARFIELD_REQUIRES_PHYSICAL_PROJECTION')
+    if (type(classification_margin) not in (int, float)
+            or not math.isfinite(classification_margin) or not 0 <= classification_margin < .5):
+        raise ValueError("ACTION_RISK_CLASSIFICATION_MARGIN_INVALID")
     config = LocalPolicyTrainingConfig.model_validate(config.model_dump(), strict=True)
     output = Path(output).absolute()
     check_plain_plugin_path(output)
     _metric_records(training)
     _metric_records(validation)
+    selections = [training_selection_receipt(dataset) for dataset in training]
+    if any(dataset.training_observation_selection is not None for dataset in validation):
+        raise ValueError('ACTION_RISK_VALIDATION_SUBSAMPLING_FORBIDDEN')
+    if type(diagnostic_sources) not in (list, tuple) or len(diagnostic_sources) > 16:
+        raise ValueError('ACTION_RISK_DIAGNOSTIC_DATASET_COUNT_INVALID')
+    diagnostic_sources = detach_evidence(list(diagnostic_sources))
+    seen_diagnostics = set()
+    for source in diagnostic_sources:
+        if (type(source) is not dict or set(source) != {
+                'dataset_receipt_sha256', 'teacher_config_sha256', 'groups'}
+                or type(source['groups']) is not list or not 1 <= len(source['groups']) <= 10000
+                or any(type(value) is not str or re.fullmatch('[0-9a-f]{64}', value) is None
+                       for value in [source['dataset_receipt_sha256'], *source['groups']])
+                or len(set(source['groups'])) != len(source['groups'])
+                or source['dataset_receipt_sha256'] in seen_diagnostics):
+            raise ValueError('ACTION_RISK_DIAGNOSTIC_SOURCE_INVALID')
+        if source['teacher_config_sha256'] != training[0].teacher_config_sha256:
+            raise ValueError('ACTION_RISK_DIAGNOSTIC_TEACHER_MISMATCH')
+        seen_diagnostics.add(source['dataset_receipt_sha256'])
     # 数据集冻结类内部仍有可变字典和模型；优化器只拿副本，回执不共享调用方容器。
     training, validation = (
         [
@@ -251,18 +390,39 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
         for split in (training, validation)
     )
     validate_action_risk_splits(training, validation)
+    if (position_uncertainty_floor_m is not None
+            and any(d.receipt['teacher_config']['position_uncertainty_m']
+                    != position_uncertainty_floor_m for d in [*training, *validation])):
+        raise ValueError('ACTION_RISK_POSITION_RESERVE_TEACHER_MISMATCH')
     output.mkdir(parents=True, exist_ok=False)
     issues = coverage_issues(training, validation)
     receipt = {
         "purpose": "native-action-risk-offline-training",
+        "physical_input_projection": (
+            "body-geometry-fixed-physical-units-v4" if physical_context_only else None
+        ),
         "control_feature_contract_sha256": CURRENT_POLICY_FEATURE_CONTRACT_SHA256,
         "training_config": config.model_dump(),
+        "classification_margin": classification_margin,
+        "training_only_input_normalization_folded": normalize_inputs,
+        "physical_context_only": physical_context_only,
+        "monotonic_geometry_distances": monotonic_geometry,
+        "monotonic_localization_uncertainty": monotonic_uncertainty,
+        "embedded_input_transform": transform,
+        "unsafe_sample_cost": unsafe_sample_cost,
+        "action_contrast_loss_weight": contrast_loss_weight,
+        "action_contrast_margin": .1 if contrast_loss_weight else None,
+        "action_contrast_batch_weighting": (
+            'global-training-mean-v1' if contrast_loss_weight else None),
         "teacher_config": training[0].receipt["teacher_config"],
         "teacher_config_sha256": training[0].teacher_config_sha256,
         "split_method": "whole-route-map-holdout",
         "split_contract": SPATIAL_SPLIT_CONTRACT,
         "training_groups": sorted(set().union(*(d.groups for d in training))),
         "validation_groups": sorted(set().union(*(d.groups for d in validation))),
+        "selection_diagnostic_sources": diagnostic_sources,
+        "training_observation_selection": [
+            detach_evidence(selection) for selection in selections if selection is not None],
         "dataset_receipts_sha256": {
             "training": [d.receipt_sha256 for d in training],
             "validation": [d.receipt_sha256 for d in validation],
@@ -270,6 +430,10 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
         "coverage": {
             "training": risk_class_coverage(training),
             "validation": risk_class_coverage(validation),
+        },
+        "motion_coverage": {
+            "training": risk_motion_coverage(training),
+            "validation": risk_motion_coverage(validation),
         },
         "optimized": False,
         "offline_validation_passed": False,
@@ -281,11 +445,34 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
     if not issues:
         train_samples = [sample for d in training for sample in d.samples]
         validation_samples = [sample for d in validation for sample in d.samples]
+        optimizer_samples = (project_physical_risk_inputs(train_samples) if physical_context_only
+                             else [detach_evidence(row) for row in train_samples])
+        if transform is not None:
+            optimizer_samples = project_nearfield_inputs(optimizer_samples, geometry_distance_cap_m,
+                                                         position_uncertainty_floor_m)
         model, train_metrics = train_local_risk_critic(
-            [detach_evidence(row) for row in train_samples], config.model_copy(deep=True)
+            optimizer_samples, config.model_copy(deep=True),
+            classification_margin=classification_margin,
+            normalize_inputs=normalize_inputs,
+            **({'monotonic_geometry': True} if monotonic_geometry else {}),
+            **({'monotonic_uncertainty': True} if monotonic_uncertainty else {}),
+            **({'unsafe_sample_cost': unsafe_sample_cost} if unsafe_sample_cost != 1. else {}),
+            **({'contrast_loss_weight': contrast_loss_weight,
+                'contrast_group_ids': [record['observation_sha256']
+                                       for dataset in training for record in dataset.records]}
+               if contrast_loss_weight else {}),
         )
+        # 非线性近场变换不能折叠进矩阵；参考端显式应用，导出验收仍给实际图原始输入。
+        train_reference = (project_nearfield_inputs(train_samples, geometry_distance_cap_m,
+                                                    position_uncertainty_floor_m)
+                           if transform is not None else train_samples)
+        validation_reference = (
+            project_nearfield_inputs(validation_samples, geometry_distance_cap_m,
+                                    position_uncertainty_floor_m)
+            if transform is not None else validation_samples)
+        train_metrics = evaluate_local_risk_critic(model, train_reference)
         validation_metrics = evaluate_local_risk_critic(
-            model, [detach_evidence(row) for row in validation_samples]
+            model, validation_reference
         )
         train_metrics = LocalRiskCriticMetrics.model_validate(
             train_metrics.model_dump(), strict=True
@@ -304,7 +491,7 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
                 or metrics.safe_sample_count != len(rows) - risky_count
             ):
                 raise ValueError("ACTION_RISK_METRICS_SAMPLE_COUNTS_DIFFER")
-        predictions, _ = _predict(model, validation_samples)
+        predictions, _ = _predict(model, validation_reference)
         discrimination = action_discrimination(validation, predictions)
         receipt.update(
             optimized=True,
@@ -322,9 +509,23 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
         if discrimination["correct_fraction"] is None or discrimination["correct_fraction"] < 0.95:
             issues.append("ACTION_RISK_VALIDATION_ACTION_DISCRIMINATION_BELOW_THRESHOLD")
         path = output / "risk-critic.onnx"
-        export_local_risk_critic_onnx(model, path)
+        source = output / "unwrapped-risk-network.onnx" if transform is not None else path
+        export_local_risk_critic_onnx(model, source)
+        if transform is not None:
+            source_content = read_plugin_file(source, limit=16 * 1024 * 1024)
+            receipt["unwrapped_model_sha256"] = hashlib.sha256(source_content).hexdigest()
+            publish_evidence_bytes(
+                path, embed_nearfield_transform(source_content, geometry_distance_cap_m,
+                                                position_uncertainty_floor_m),
+                limit=16 * 1024 * 1024)
         content = read_plugin_file(path, limit=16 * 1024 * 1024)
-        equivalence = verify_risk_export(model, content, train_samples + validation_samples)
+        from .risk_uncertainty_monotonicity import validate_uncertainty_graph
+
+        validate_uncertainty_graph(content, monotonic_uncertainty)
+        equivalence = verify_risk_export(model, content, train_samples + validation_samples,
+                                        **({'geometry_distance_cap_m': geometry_distance_cap_m,
+                                            'position_uncertainty_floor_m': position_uncertainty_floor_m}
+                                           if transform is not None else {}))
         receipt.update(
             model_sha256=hashlib.sha256(content).hexdigest(),
             model_bytes=len(content),
@@ -345,9 +546,12 @@ def train_action_risk_expert(training, validation, config: LocalPolicyTrainingCo
 #   model：待核对的动作条件风险网络。
 #   content：已经从同一文件有界读取的 ONNX 原始字节。
 #   samples：非空且有界的保留样本。
+#   geometry_distance_cap_m：参考端使用的近场距离；ONNX 端始终接收未截断原始输入。
+#   position_uncertainty_floor_m：参考端与图内一致的定位余量下限；None 保留旧模型语义。
 # 输出：
 #   maximum：所有批次中的最大绝对误差。
-def verify_risk_export(model, content: bytes, samples):
+def verify_risk_export(model, content: bytes, samples, *, geometry_distance_cap_m=None,
+                       position_uncertainty_floor_m=None):
     import onnxruntime as ort
 
     if type(content) is not bytes or not 0 < len(content) <= 16 * 1024 * 1024:
@@ -362,6 +566,10 @@ def verify_risk_export(model, content: bytes, samples):
     maximum = 0.0
     for start in range(0, len(samples), 256):
         expected, feeds = _predict(model, samples[start : start + 256])
+        if geometry_distance_cap_m is not None:
+            expected, _ = _predict(model, project_nearfield_inputs(
+                samples[start : start + 256], geometry_distance_cap_m,
+                position_uncertainty_floor_m))
         raw = session.run(["risk_score"], feeds)[0]
         if (
             not isinstance(raw, np.ndarray)

@@ -47,8 +47,12 @@ from dronedream_agent_core.gazebo_adapter import (
 )
 from dronedream_agent_core.gazebo_subscriptions import GazeboSubscriptions
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.hybrid_control import BoundedHybridArbiter, require_hybrid_provider
 from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
-from dronedream_agent_core.learning_observation_recorder import LearningObservationRecorder
+from dronedream_agent_core.learning_observation_recorder import (
+    LearningObservationRecorder,
+    learning_recovery_task_context,
+)
 from dronedream_agent_core.local_policy_packages import (
     LocalPolicyQualificationReceipt,
     LocalPolicySimulationAdmissionReceipt,
@@ -57,10 +61,12 @@ from dronedream_agent_core.local_policy_packages import (
     select_local_policy_for_simulation,
 )
 from dronedream_agent_core.local_policy_port import LocalPolicyPort
+from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort
 from dronedream_agent_core.local_safety_channel import LocalSafetyPublisher
 from dronedream_agent_core.local_vision_training import load_local_vision_label_map
 from dronedream_agent_core.local_world_model import MetricVoxelMap
 from dronedream_agent_core.localization_observations import GeometryObservationCapture
+from dronedream_agent_core.metric_scan_native import backend as metric_scan_backend
 from dronedream_agent_core.model_harness.model_port import (
     FailoverStructuredModelPort,
     StructuredModelPort,
@@ -72,18 +78,21 @@ from dronedream_agent_core.native_state_stream import NativeStateSampler
 from dronedream_agent_core.navigation_context import build_navigation_context
 from dronedream_agent_core.navigation_snapshot import NavigationSnapshotRequest
 from dronedream_agent_core.occupancy_collision import fully_contained_box_mask
+from dronedream_agent_core.payload_collection_contract import payload_collection_mode
 from dronedream_agent_core.perception_health_channel import PerceptionHealthPublisher
 from dronedream_agent_core.perception_runtime import (
     EventDrivenIndoorNavigationCoordinator,
     RuntimePerceptionFusion,
 )
+from dronedream_agent_core.perception_source_diagnostics import PerceptionSourceDiagnostics
 from dronedream_agent_core.pipeline_timing import (
     PhaseTimings,
     PhaseTimingSummary,
     sensor_processing_timing,
 )
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
-from dronedream_agent_core.plugin_values import plugin_json_value
+from dronedream_agent_core.plugin_values import plugin_json_text
+from dronedream_agent_core.preferred_airspace import PreferredAirspace
 from dronedream_agent_core.realtime_feature_encoders import (
     body_control_intent_for_pilot_control,
     body_to_world_enu,
@@ -107,15 +116,19 @@ from dronedream_agent_core.runtime_multimodal_dataset import (
 from dronedream_agent_core.runtime_phase import runtime_phase_context as _runtime_phase_context
 from dronedream_agent_core.runtime_phase_channel import RuntimePhaseReceiver
 from dronedream_agent_core.runtime_phase_observer import RuntimePhaseObserver
+from dronedream_agent_core.runtime_receipt_reader import RuntimeReceiptReader
 from dronedream_agent_core.runtime_scheduling import (
     InterpreterPauseMonitor,
     ReadyControlScheduler,
     SensorArrivalScheduler,
     configure_sensor_thread_handoff,
     local_input_cadence_enabled,
+    model_handoff_budget_ready,
     model_input_work_allowed,
     retained_interpreter_baseline,
     sensor_input_maximum_rate_hz,
+    sensor_worker_gc_budget,
+    teacher_state_handoff_ready,
 )
 from dronedream_agent_core.runtime_sensor_contracts import (
     RuntimeMultimodalSensorSnapshot,
@@ -131,8 +144,18 @@ from dronedream_agent_core.sensor_frame_clock import (
     require_model_frame_time,
 )
 from dronedream_agent_core.simulation_camera_profile import CameraProfileReadback
-from dronedream_agent_core.simulation_teacher import teacher_heading_rate, teacher_input_deadline
+from dronedream_agent_core.simulation_teacher import (
+    teacher_heading_rate,
+    teacher_input_deadline,
+    teacher_observation_target,
+)
+from dronedream_agent_core.simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from dronedream_agent_core.static_geometry_index import StaticGeometryIndex
+from dronedream_agent_core.vertical_navigation import (
+    CeilingTransition,
+    VerticalMotionGuard,
+    load_flight_dynamics_envelope,
+)
 from dronedream_plugin_sdk.protocol import copy_json, decode_json, encode_json
 
 Point = tuple[float, float, float]
@@ -180,6 +203,20 @@ def _expired_model_control_observation(
 
 
 # 功能：
+#   将安全求解状态绑定到当前已验证位姿，保持原深度的时间、覆盖及健康判定不变。
+# 输入：
+#   observation：深度融合生成的安全观测。
+#   position、velocity：同一原生状态样本中的当前位置与速度。
+# 输出：
+#   bound：用于本周期安全求解的重新验证观测。
+def _bind_current_control_state(observation, *, position, velocity):
+    bound = RuntimeLocalSafetyObservation.model_validate({
+        **observation.model_dump(mode='python'),
+        'current_position_m': position, 'current_velocity_mps': velocity})
+    return bound
+
+
+# 功能：
 #   判断授权剩余时间是否不足以覆盖执行端的一个控制周期及传输预算。
 # 输入：
 #   published_at_unix_ms：准备发布的时刻。
@@ -210,6 +247,19 @@ def _safety_hold_call_id(directive, completed_cycle):
             and (directive is None or not directive.model_navigation_authorized)):
         return completed_cycle.model_call_id
     return directive.model_call_id if directive is not None else None
+
+
+# 功能：保留有效模型悬停的因果输入身份，不把悬停归因转换为运动授权。
+# 输入：当前指令、归属调用及发布UNIX毫秒；输出：同一有效指令的快照摘要或None。
+# 被新拒绝调用替换、过期或无模型指令时，禁止借用上一调用的输入摘要。
+def _directive_source_snapshot(directive, call_id, now_unix_ms):
+    if (
+        directive is None or directive.model_call_id != call_id or call_id is None
+        or now_unix_ms >= directive.valid_until_unix_ms
+        or not (directive.model_navigation_authorized or directive.reason == "model-requested-hold")
+    ):
+        return None
+    return directive.navigation_snapshot_sha256
 
 
 # 功能：
@@ -593,6 +643,23 @@ def _poll_ready_navigation_cycle(coordinator, *, fusion, stale_tick, goal, goal_
     )
 
 
+# 功能：
+#   在异步结果接纳之后重新读取真实裁决时钟，避免周期旧时刻撤销刚接纳的模型权限。
+#   不修改传感器观测时间或模型租约；真实时钟倒退仍由协调器拒绝。
+# 输入：
+#   coordinator：模型权限协调器；position、target：原生位置及原后备目标。
+#   goal_id：本轮语义目标身份；maximum_step_m：已有控制步长上限。
+# 输出：
+#   directive、decision_ms：经过当前时钟检查的控制意图及供下游复验的同一裁决时间。
+def _current_navigation_directive(coordinator, *, position, target, goal_id, maximum_step_m):
+    decision_ms = int(time.time() * 1000)
+    directive = coordinator.controller_directive(
+        current_position_m=position, fallback_target_m=target, now_unix_ms=decision_ms,
+        navigation_goal_id=goal_id, maximum_step_m=maximum_step_m,
+    )
+    return directive, decision_ms
+
+
 
 
 # 功能：
@@ -709,18 +776,32 @@ def _atomic_bytes(
 
 # 功能：
 #   本地端使用已认证图像字节并异步留档，云端仍同步保存其数据地址所需的 PNG 文件。
+#   本地推理的实时图像已内联绑定摘要，归档背压只影响留档；训练及文件传输仍要求归档。
 # 输入：
 #   provider：模型提供方类型。
 #   writer：有界后台快照写入器。
 #   path、png：图像归档路径与 PNG 字节。
 # 输出：
-#   None：不返回业务数据。
-def _persist_navigation_image(*, provider: str, writer, path: Path, png: bytes) -> None:
+#   accepted：是否入队；不是已经落盘，也不能作为训练证据完整的证明。
+def _persist_navigation_image(*, provider: str, writer, path: Path, png: bytes,
+                              allow_embedded_only: bool = False) -> bool:
+    if allow_embedded_only and provider != "local-policy":
+        raise ValueError("EMBEDDED_ONLY_ARCHIVE_REQUIRES_LOCAL_POLICY")
     if provider in {"local-policy", "simulation-training"}:
-        writer.submit_bytes(path, png)
+        # Only this control thread produces navigation images. The consumer
+        # can free capacity, but cannot consume a reserved admission slot.
+        if not writer.available_for_new_path:
+            if allow_embedded_only:
+                return False
+            raise ValueError("MODEL_IMAGE_ARCHIVE_BACKPRESSURE")
+        if not writer.submit_bytes(path, png):
+            if allow_embedded_only:
+                return False
+            raise ValueError("MODEL_IMAGE_ARCHIVE_REJECTED")
     else:
         # Cloud transports still construct their data URL from a saved file.
         _atomic_bytes(path, png)
+    return True
 
 
 # 功能：
@@ -730,8 +811,7 @@ def _persist_navigation_image(*, provider: str, writer, path: Path, png: bytes) 
 # 输出：
 #   line：不带行终止符的 JSON 文本。
 def _jsonl_line(payload: object) -> str:
-    line = encode_json(plugin_json_value(payload, limit=_MAX_SNAPSHOT_BYTES),
-                       limit=_MAX_SNAPSHOT_BYTES)
+    line = plugin_json_text(payload, limit=_MAX_SNAPSHOT_BYTES)
     return line
 
 
@@ -806,6 +886,19 @@ class _LatestRuntimeSnapshotWriter:
     def issue(self) -> str | None:
         with self._condition:
             return self._issue_code
+
+    # 功能：
+    #   为可选采样提供非阻塞背压信号，不把跳过可选图片当成关键证据写入失败。
+    # 输入：
+    #   self：单生产者拥有的有界图像写入器。
+    # 输出：
+    #   available：仍可接收一个新路径时为真。
+    @property
+    def available_for_new_path(self) -> bool:
+        with self._condition:
+            available = (not self._closed and self._issue_code is None
+                         and len(self._pending) < self.maximum_pending_paths)
+        return available
 
     # 功能：
     #   在调用线程完成有限 JSON 序列化，后台只持有稳定字节，避免借用可变字典。
@@ -1362,6 +1455,7 @@ def _strategic_sensor_context(
 #   vehicle：经核对的机体与负载上限元数据。
 #   identity_telemetry_path：未提供当前内存包时才使用的原生遥测文件。
 #   identity_telemetry_payload：本控制周期已接入的原生遥测包，优先复用。
+#   receipt_reader：运行期间复用的回执句柄读取器，不缓存状态内容。
 # 输出：
 #   context：载荷状态、质量限制及可选的动力学摘要。
 def _payload_context(
@@ -1370,18 +1464,25 @@ def _payload_context(
     *,
     identity_telemetry_path: Path | None = None,
     identity_telemetry_payload: dict | None = None,
+    receipt_reader: RuntimeReceiptReader | None = None,
 ) -> dict[str, object]:
     state = "no-runtime-payload-evidence"
     payload_mass_kg: float | None = None
     payload_mass_invalid = False
     accepted_steps: list[str] = []
-    if receipts_dir.is_dir():
-        for path in sorted(receipts_dir.glob("*.receipt.json")):
-            try:
-                receipt = read_runtime_object(path)
-            except (OSError, ValueError) as error:
-                # 不能跳过损坏的装卸记录后继续假设无负载；上层会撤回本轮控制。
-                raise ValueError("RUNTIME_PAYLOAD_RECEIPT_UNREADABLE") from error
+    try:
+        if receipt_reader is not None:
+            if receipt_reader.directory != receipts_dir.absolute():
+                raise ValueError("RUNTIME_PAYLOAD_RECEIPT_READER_MISMATCH")
+            receipts = receipt_reader.read()
+        else:
+            # 离线兼容调用也采用相同校验，不让两个入口对损坏目录作不同判断。
+            with contextlib.closing(RuntimeReceiptReader(receipts_dir)) as temporary_reader:
+                receipts = temporary_reader.read()
+    except (OSError, ValueError) as error:
+        raise ValueError("RUNTIME_PAYLOAD_RECEIPT_UNREADABLE") from error
+    if receipts:
+        for path, receipt in receipts:
             if receipt.get("status") != "accepted":
                 continue
             accepted_steps.append(str(receipt.get("task_id", path.stem)))
@@ -1816,6 +1917,7 @@ def _reuse_learning_image(image, *, output_size, sample: PreparedCameraSample):
 #   size、directory：学习图像尺寸与归档目录。
 #   frame_time：摄像头来源时钟绑定。
 #   prepared_sample：可选的同一消息编码结果，不提供时按原路径编码。
+#   writer：可选有界后台写入器，拒绝入队时必须失败，最终验收检查写入完整性。
 # 输出：
 #   references：学习记录使用的图像路径、摘要、尺寸及来源时间列表。
 def _prepare_learning_visual(
@@ -1823,6 +1925,7 @@ def _prepare_learning_visual(
     received_utc_ms: int, size: tuple[int, int], directory: Path,
     frame_time: SensorFrameTime | None = None,
     prepared_sample: PreparedCameraSample | None = None,
+    writer=None,
 ) -> list[dict]:
     decoder = _gazebo_image_model_payload
     if prepared_sample is not None:
@@ -1841,7 +1944,10 @@ def _prepare_learning_visual(
     )
     payload = prepared.multimodal(directory)
     if new_frame:
-        _atomic_bytes(Path(payload["path"]), prepared.png)
+        if writer is None:
+            _atomic_bytes(Path(payload["path"]), prepared.png)
+        elif writer.submit_bytes(Path(payload["path"]), prepared.png) is not True:
+            raise ValueError("LEARNING_VISUAL_PERSISTENCE_REJECTED")
     return [{"kind": "forward-rgb-camera", "sha256": payload["content_sha256"],
              "model_rgb_sha256": payload["model_rgb_sha256"], "content_type": "image/png",
              "path": payload["path"],
@@ -2010,6 +2116,27 @@ def _drain_model_calls(coordinator, writer, path: Path) -> int:
     raise ValueError("MODEL_CALL_EVIDENCE_QUEUE_EXCEEDS_BUDGET")
 
 
+# 功能：限定数值采集的 RGB 解耦，禁止正式模型及教师静默降级。
+# 输入：args：实际工作器配置，包括采集通道、原生源钟和媒体目录。
+# 输出：bool：控制是否需要 RGB；非法降级配置抛出 ValueError。
+def _control_uses_rgb(args) -> bool:
+    """Separate explicitly archived learner images from production visual inputs."""
+    # 功能：限定数值采集的 RGB 解耦；输入：实际工作器配置；输出：控制是否需要 RGB。
+    # 仅允许有原生源钟和媒体存档的仿真学习通道，禁止正式模型及教师静默降级。
+    if args.recording_only_rgb and (
+        not args.simulation_training_channel
+        or args.local_navigation_provider != "simulation-training"
+        or not args.require_model_control_authority
+        or args.multimodal_dataset_root is None
+        or not args.rgb_topic
+        or not args.native_camera_epoch
+        or args.render_scene_epoch is not None
+        or args.record_learning_observations
+    ):
+        raise ValueError("RECORDING_ONLY_RGB_REQUIRES_NATIVE_SIMULATION_LEARNER")
+    return bool(args.rgb_topic) and not args.recording_only_rgb
+
+
 # 功能：
 #   1. 绑定地图、机体、相机与原生估计来源，装载明确选择且获准运行的模型或教师模式。
 #   2. 优先处理新感知及已就绪模型控制，独立复核时效和授权后发布有界连续控制。
@@ -2031,6 +2158,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--observation", type=Path, required=True)
     parser.add_argument("--local-safety-channel", type=Path)
     parser.add_argument("--native-state-channel", type=Path)
+    parser.add_argument("--localization-source-channel", type=Path)
+    parser.add_argument("--native-source-clock-domain", default=None,
+                        help="Verified PX4/Gazebo SITL clock; never infer from timestamp values")
     parser.add_argument("--perception-health-channel", type=Path)
     parser.add_argument("--runtime-phase-channel", type=Path)
     parser.add_argument("--command", type=Path, required=True)
@@ -2058,6 +2188,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--simulation-teacher-control", action="store_true")
     parser.add_argument("--local-navigation-fallback-provider")
     parser.add_argument("--local-policy-package", type=Path, action="append", default=[])
+    parser.add_argument("--local-policy-trial", type=Path)
     parser.add_argument("--local-policy-qualification", type=Path, action="append", default=[])
     parser.add_argument(
         "--local-policy-simulation-admission", type=Path, action="append", default=[]
@@ -2079,6 +2210,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     )
     parser.add_argument("--local-navigation-context-id")
     parser.add_argument("--require-model-control-authority", action="store_true")
+    parser.add_argument("--bounded-hybrid-control", action="store_true")
+    parser.add_argument("--independent-route-control", action="store_true")
     parser.add_argument(
         "--omit-coordinate-candidates",
         action="store_true",
@@ -2092,7 +2225,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--model-navigation-call-evidence", type=Path)
     parser.add_argument("--model-navigation-snapshot-evidence", type=Path)
     parser.add_argument("--rgb-topic")
+    parser.add_argument('--recording-only-rgb', action='store_true',
+                        help='Simulation learner only: archive RGB without making it actor input')
     parser.add_argument("--render-scene-epoch", help="Pinned isolated-render source identity")
+    parser.add_argument("--native-camera-epoch", help="Pinned native pre-update capture clock identity")
     parser.add_argument("--model-navigation-frame-dir", type=Path)
     parser.add_argument("--multimodal-dataset-root", type=Path)
     parser.add_argument("--multimodal-flight-id")
@@ -2102,6 +2238,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--multimodal-record-period-seconds", type=float, default=0.1)
     parser.add_argument("--development-depth-drop-after-seconds", type=float)
     parser.add_argument("--development-depth-drop-duration-seconds", type=float)
+    parser.add_argument("--flight-dynamics-envelope", type=Path,
+                        help="Measured vehicle-bound climb/descent/braking envelope.")
     parser.add_argument("--development-fault-evidence", type=Path)
     parser.add_argument(
         "--development-payload-collection",
@@ -2117,6 +2255,14 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         numbers = value if isinstance(value, (tuple, list)) else (value,)
         if any(type(number) is float and not _finite_number(number) for number in numbers):
             parser.error(f"--{name.replace('_', '-')} must contain only finite numbers")
+    from dronedream_agent_core.route_control_mode import validate_route_control_mode
+    validate_route_control_mode(enabled=args.independent_route_control,
+        model_required=args.require_model_control_authority,
+        provider=args.local_navigation_provider, hybrid=args.bounded_hybrid_control,
+        teacher=args.simulation_teacher_control,
+        training=args.record_learning_observations or args.simulation_training_channel is not None)
+    if args.independent_route_control:
+        args.rate_hz = max(20., args.rate_hz)
     if args.require_model_control_authority and args.local_navigation_provider not in {
         "local-policy", "simulation-training",
     }:
@@ -2128,9 +2274,36 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     vehicle = _load_worker_vehicle(args.vehicle_metadata, radius_m=args.vehicle_radius,
         height_m=args.vehicle_height, speed_mps=args.max_speed,
         acceleration_mps2=args.max_acceleration)
+    trial_permit = None
+    if args.local_policy_trial is not None:
+        from dronedream_agent_core.simulation_trial import validate_trial_configuration
+
+        trial_permit = validate_trial_configuration(
+            args.local_policy_trial, args.local_policy_package, args.semantic, vehicle,
+            qualifications=args.local_policy_qualification,
+            admissions=args.local_policy_simulation_admission,
+            fallback=args.local_navigation_fallback_provider,
+            incompatible=(args.local_navigation_provider != "local-policy"
+                          or args.simulation_teacher_control
+                          or args.development_payload_collection
+                          or args.simulation_training_channel is not None
+                          or not args.require_model_control_authority),
+        )
+        args.max_speed = min(args.max_speed, trial_permit.maximum_speed_mps)
+    flight_dynamics_envelope = (
+        load_flight_dynamics_envelope(args.flight_dynamics_envelope)
+        if args.flight_dynamics_envelope is not None else None)
+    if flight_dynamics_envelope is not None and (
+            flight_dynamics_envelope.vehicle_sha256 != sha256_json(vehicle)
+            or flight_dynamics_envelope.domain != "simulation"):
+        parser.error("flight dynamics envelope does not belong to this simulation vehicle")
     # 机体资产用于资格摘要；控制侧只收紧本次限制，不反向修改物理资产身份。
     control_vehicle = VehicleAsset.model_validate({**vehicle.model_dump(mode="python"),
         "max_speed_mps": min(args.max_speed, vehicle.max_speed_mps),
+        "body_radius_m": max(vehicle.body_radius_m, flight_dynamics_envelope.collision_radius_m
+                             if flight_dynamics_envelope is not None else 0.),
+        "body_height_m": max(vehicle.body_height_m, flight_dynamics_envelope.collision_height_m
+                             if flight_dynamics_envelope is not None else 0.),
         "max_acceleration_mps2": min(args.max_acceleration, vehicle.max_acceleration_mps2)},
         strict=True)
     from dronedream_agent_core.simulation_sensor_frames import load_simulation_frame_contract
@@ -2138,7 +2311,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     observer_frames = load_simulation_frame_contract(
         args.command.with_name("simulation-sensor-frames.json"), vehicle_name=args.vehicle,
         collision_center_model_m=args.collision_offset)
-    image_ingress = SensorImageIngress(expected_scene_epoch=args.render_scene_epoch)
+    image_ingress = SensorImageIngress(expected_scene_epoch=args.render_scene_epoch,
+                                       expected_native_epoch=args.native_camera_epoch)
     if args.render_scene_epoch is not None and args.semantic_label_topic:
         parser.error("isolated-render semantic-label source is not yet supported")
     cleanup.callback(lambda: _atomic_json(
@@ -2187,7 +2361,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         or args.require_model_control_authority
     ):
         parser.error("simulation teacher requires observation recording and no model authority")
-    if (args.local_navigation_provider or args.record_learning_observations) and (
+    if (args.local_navigation_provider or args.record_learning_observations
+            or args.independent_route_control) and (
         args.qualified_route is None or args.qualified_clearance is None
     ):
         parser.error("model navigation requires --qualified-route and --qualified-clearance")
@@ -2200,6 +2375,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     if args.local_navigation_provider == "local-policy":
         if not args.local_policy_package or not (
             args.local_policy_qualification or args.local_policy_simulation_admission
+            or args.local_policy_trial
         ):
             parser.error(
                 "local-policy navigation requires packages and qualification "
@@ -2218,6 +2394,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         args.development_depth_drop_duration_seconds,
         args.development_fault_evidence,
     )
+    if args.localization_source_channel is not None and any(
+        value is not None for value in development_fault_values
+    ):
+        parser.error("independent localization and development depth-drop injection "
+                     "cannot be combined")
     if any(value is not None for value in development_fault_values) and not all(
         value is not None for value in development_fault_values
     ):
@@ -2233,12 +2414,15 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     ):
         parser.error("--development-depth-drop-duration-seconds must be positive")
     if args.development_payload_collection:
-        if args.local_navigation_provider != "local-policy":
-            parser.error("development payload collection requires the local-policy provider")
-        if not args.local_policy_simulation_admission or args.local_policy_qualification:
-            parser.error("development payload collection requires simulation admission only")
-        if args.multimodal_dataset_root is None:
-            parser.error("development payload collection requires multimodal recording")
+        payload_collection_mode(
+            provider=args.local_navigation_provider, teacher=args.simulation_teacher_control,
+            recording=args.record_learning_observations,
+            model_authority=args.require_model_control_authority,
+            model_packages=bool(args.local_policy_package),
+            admission=bool(args.local_policy_simulation_admission),
+            qualification=bool(args.local_policy_qualification),
+            multimodal=args.multimodal_dataset_root is not None,
+            fallback=args.local_navigation_fallback_provider is not None)
 
     from gz.msgs10.image_pb2 import Image
     from gz.msgs10.pose_v_pb2 import Pose_V
@@ -2246,6 +2430,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
 
     semantic, semantic_bytes = _read_semantic_snapshot(args.semantic)
     active_semantic_sha256 = hashlib.sha256(semantic_bytes).hexdigest()
+    preferred_space = PreferredAirspace(
+        semantic, {"semantic_file_sha256": active_semantic_sha256,
+                   "vehicle_sha256": sha256_json(vehicle)},
+        max(vehicle.body_radius_m, flight_dynamics_envelope.collision_radius_m
+            if flight_dynamics_envelope is not None else 0.),
+        max(vehicle.body_height_m, flight_dynamics_envelope.collision_height_m
+            if flight_dynamics_envelope is not None else 0.))
     primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
     if not isinstance(primitives, list) or not primitives:
         raise SystemExit("semantic artifact has no runtime collision primitives")
@@ -2257,8 +2448,21 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         maximum_bound_m=maximum,
         unknown_is_occupied=True,
     )
+    _atomic_json(args.command.with_name('metric-scan-kernel.json'),
+        {'contract': metric_scan_backend.CONTRACT,
+         'depth_contract': getattr(metric_scan_backend, 'DEPTH_CONTRACT', None),
+         'sha256': hashlib.sha256(Path(metric_scan_backend.__file__).read_bytes()).hexdigest()}
+        if metric_scan_backend is not None else {'implementation': 'numpy-python'})
     strategic_map_context: dict[str, object] = {}
-    if args.local_navigation_provider or args.record_learning_observations:
+    if args.bounded_hybrid_control:
+        require_hybrid_provider(provider=args.local_navigation_provider,
+            model_authority=args.require_model_control_authority,
+            teacher_control=args.simulation_teacher_control,
+            training_channel=args.simulation_training_channel)
+    hybrid_arbiter = (BoundedHybridArbiter(require_execution_feedback=True)
+                      if args.bounded_hybrid_control else None)
+    if (args.local_navigation_provider or args.record_learning_observations
+            or args.independent_route_control):
         # 三处使用同一已解析的路线/报告，禁止先验和模型背景各自重读后混入替换文件。
         qualified_route = _read_worker_contract(args.qualified_route, GraphRoute)
         qualified_clearance = _read_worker_contract(args.qualified_clearance, RouteClearanceReport)
@@ -2267,8 +2471,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             semantic_path=args.semantic,
             route_path=args.qualified_route,
             clearance_path=args.qualified_clearance,
-            vehicle_radius_m=args.vehicle_radius,
-            vehicle_height_m=args.vehicle_height,
+            vehicle_radius_m=control_vehicle.body_radius_m,
+            vehicle_height_m=control_vehicle.body_height_m,
             required_clearance_m=args.required_clearance,
             expected_semantic_sha256=active_semantic_sha256,
             qualified_route=qualified_route,
@@ -2300,6 +2504,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         or args.local_policy_simulation_admission or args.simulation_teacher_control
     ):
         raise ValueError("simulation learner cannot mix teacher, package or cloud authority")
+    # 显式数值风险采集仍存原始 RGB；不能在正式视觉策略中静默删除相机输入。
+    control_uses_rgb = _control_uses_rgb(args)
     model_navigation = None
     close_model_navigation = None
     local_navigation_output_mode = "legacy-candidate-selection"
@@ -2321,7 +2527,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             local_navigation_output_mode = "normalized-body-velocity"
             args.omit_coordinate_candidates = True
             model_navigation_visual_size = (
-                tuple(args.learning_image_size) if args.rgb_topic else None
+                tuple(args.learning_image_size) if control_uses_rgb else None
             )
         elif args.local_navigation_provider == "local-policy":
             packages = [load_local_policy_package(path) for path in args.local_policy_package]
@@ -2334,7 +2540,14 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 for path in args.local_policy_simulation_admission
             ]
             active_map_sha256 = active_semantic_sha256
-            if simulation_admissions:
+            if trial_permit is not None:
+                from dronedream_agent_core.simulation_trial import select_simulation_trial
+
+                selection = select_simulation_trial(
+                    trial_permit, packages, map_sha256=active_map_sha256,
+                    vehicle_sha256=sha256_json(vehicle), sensor_sha256=sha256_json(mount),
+                )
+            elif simulation_admissions:
                 selection = select_local_policy_for_simulation(
                     packages=packages,
                     admissions=simulation_admissions,
@@ -2370,7 +2583,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     "qualified continuous pilot-control head"
                 )
             has_visual_encoder = "perception-encoder" in selected_package.artifact_paths
-            if has_visual_encoder != bool(args.rgb_topic):
+            if has_visual_encoder != control_uses_rgb:
                 raise SystemExit(
                     "selected local policy and forward-RGB runtime configuration do not match"
                 )
@@ -2389,11 +2602,15 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     "sensor_contract_sha256": sha256_json(mount),
                     "development_payload_collection": bool(args.development_payload_collection),
                     "flight_qualification_granted": False
-                    if args.development_payload_collection
+                    if args.development_payload_collection or trial_permit is not None
                     else None,
                 },
             )
-            model_port: Any = LocalPolicyPort(
+            # 连续推理独占解释器，避免与深度融合/原生状态接收争抢 GIL。
+            # 权重、历史、来源期限和下游安全检查仍使用原契约。
+            policy_port_type = (ProcessLocalPolicyPort if local_navigation_output_mode
+                                == "normalized-body-velocity" else LocalPolicyPort)
+            model_port: Any = policy_port_type(
                 selected_package,
                 development_payload_collection=args.development_payload_collection,
                 visual_worker_cpu_ids=tuple(args.local_navigation_cpu_ids),
@@ -2534,12 +2751,28 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         if args.local_navigation_provider == "simulation-training" else (),
     )
     close_evidence_writer = _register_resource_close(
-        cleanup, runtime_evidence_writer, timeout_seconds=8.0)
+        cleanup, runtime_evidence_writer,
+        # 连续采集保留完整快照，挂载盘可产生尾部积压；此等待仅在工作循环停止后。
+        # 父进程须在确认落地后给予匹配的有限退出预算，不修改飞行控制超时。
+        timeout_seconds=45.0 if args.local_navigation_provider == "simulation-training" else 8.0)
     runtime_snapshot_writer = _LatestRuntimeSnapshotWriter(
         args.command.with_name("runtime-snapshot-writer-summary.json")
     )
     close_snapshot_writer = _register_resource_close(
         cleanup, runtime_snapshot_writer, timeout_seconds=4.0)
+    # 每帧图像是独立路径，不能占用按固定路径合并的诊断队列。
+    model_image_writer = _LatestRuntimeSnapshotWriter(
+        args.command.with_name("model-image-writer-summary.json"), maximum_pending_paths=2)
+    close_model_image_writer = _register_resource_close(
+        cleanup, model_image_writer, timeout_seconds=4.0)
+    model_image_archive_skipped = 0
+    # 可选训练图片不能挤占阶段／遥测快照队列；背压时只停止采图，数值历史继续。
+    learning_image_writer = (_LatestRuntimeSnapshotWriter(
+        args.command.with_name("learning-image-writer-summary.json"), maximum_pending_paths=2)
+        if args.record_learning_observations else None)
+    close_learning_image_writer = (_register_resource_close(
+        cleanup, learning_image_writer, timeout_seconds=4.0)
+        if learning_image_writer is not None else None)
     safety_publisher = (LocalSafetyPublisher(args.local_safety_channel)
                         if args.local_safety_channel is not None else None)
     close_safety_publisher = (_register_resource_close(cleanup, safety_publisher)
@@ -2551,7 +2784,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     learning_recorder = (
         LearningObservationRecorder(lambda record: runtime_evidence_writer.submit(
             args.command.with_name("learning-observations.jsonl"), record,
-        )) if args.record_learning_observations else None
+        ), synchronous=True) if args.record_learning_observations else None
     )
     close_learning_recorder = (_register_resource_close(cleanup, learning_recorder)
                                if learning_recorder is not None else None)
@@ -2560,11 +2793,25 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         summary_publisher=_atomic_json) if args.record_learning_observations else None)
     if geometry_capture is not None:
         cleanup.callback(geometry_capture.close)
+    localization_publisher = None
+    if args.localization_source_channel is not None:
+        from dronedream_agent_core.local_packet_channel import LatestPacketPublisher
+        from dronedream_agent_core.localization_source_channel import (
+            LOCALIZATION_SOURCE_CONTRACT,
+        )
+        expected_channel = args.command.parent / "runtime-state" / "localization-source.json"
+        if (args.native_source_clock_domain is None
+                or args.localization_source_channel.absolute() != expected_channel.absolute()):
+            raise ValueError("LOCALIZATION_SOURCE_RUN_BINDING_INVALID")
+        localization_publisher = LatestPacketPublisher(
+            expected_channel, contract=LOCALIZATION_SOURCE_CONTRACT)
+        cleanup.callback(localization_publisher.close)
     bridge = MetricRangeSensorBridge(mount)
     tracker = DepthMotionTracker(known_static_primitives=primitives)
     # Native state progresses independently of depth rendering and inference.
     native_state_sampler = NativeStateSampler(
         args.identity_telemetry, channel_path=args.native_state_channel,
+        source_clock_domain=args.native_source_clock_domain,
     )
     close_native_sampler = _register_resource_close(cleanup, native_state_sampler)
     native_state_sampler.start()
@@ -2576,6 +2823,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                      PinnedRuntimeObjectReader(args.target, maximum_bytes=128 * 1024))
     if target_reader is not None:
         cleanup.callback(target_reader.close)
+    payload_receipt_reader = RuntimeReceiptReader(
+        args.command.parent / "runtime-actions" / "receipts")
+    cleanup.callback(payload_receipt_reader.close)
     lock = threading.Lock()
     latest_pose: tuple[Any, float] | None = None
     latest_image: tuple[Any, float, int] | None = None
@@ -2690,6 +2940,35 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         subscriptions.subscribe(Image, args.rgb_topic, on_rgb)
     if args.semantic_label_topic:
         subscriptions.subscribe(Image, args.semantic_label_topic, on_semantic_label)
+
+    # 功能：短锁复制已核对光学配置的深度历史，后台定位只读原消息，不接触控制或仿真真值。
+    # 输入：无；使用本次运行独占的接收历史和时钟账本。
+    # 输出：至多 16 对原始图像及来源时钟；配置尚未回读时返回空列表。
+    def localization_snapshot():
+        with lock:
+            if camera_profile_readback is not None:
+                try:
+                    camera_profile_readback.require_ready(required_streams=("depth",))
+                except ValueError as error:
+                    if str(error) != "SIMULATION_CAMERA_PROFILE_READBACK_PENDING":
+                        raise
+                    return ()
+            items = tuple(depth_history)
+        return tuple((image, clock) for image, stamp, _ in items
+                     for clock in (image_ingress.lookup("depth", stamp),) if clock is not None)
+
+    localization_producer = None
+    close_localization_producer = None
+    if localization_publisher is not None:
+        from dronedream_agent_core.live_localization_producer import LiveLocalizationProducer
+        localization_producer = LiveLocalizationProducer(
+            snapshot=localization_snapshot, native_buffer=native_state_sampler.buffer,
+            publisher=localization_publisher, mount=mount, vehicle_id=vehicle.asset_id,
+            map_sha256=active_semantic_sha256, clock_domain=args.native_source_clock_domain,
+            maximum_acceleration_mps2=args.max_acceleration,
+            maximum_alignment_variance_m2=fusion.maximum_localization_covariance_m2)
+        close_localization_producer = _register_resource_close(cleanup, localization_producer)
+        localization_producer.start()
     sequence = 0
     identity_alignment = _NativeIdentityTracker()
     control_session_id = uuid4().hex
@@ -2711,6 +2990,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     precision_latched_goal_id: str | None = None
     last_live_evidence_prune_at = -math.inf
     latest_realtime_feature_snapshot = None
+    ceiling_transition = CeilingTransition()
     if args.development_fault_evidence is not None:
         _atomic_json(
             args.development_fault_evidence,
@@ -2729,7 +3009,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             },
         )
     stop_requested = threading.Event()
-    local_input_wake_enabled = local_input_cadence_enabled(
+    local_input_wake_enabled = args.independent_route_control or local_input_cadence_enabled(
         args.local_navigation_provider, local_navigation_output_mode,
         simulation_teacher_control=args.simulation_teacher_control)
     if local_input_wake_enabled:
@@ -2750,6 +3030,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     ready_control_scheduler = ReadyControlScheduler()
+    last_control_state_source_ms = 0
+    teacher_feedback_enabled = bool(args.simulation_teacher_control
+        and model_navigation is None and local_input_wake_enabled)
     # Stage metadata must not perform mounted-filesystem I/O in the input or
     # reply deadline. This observer grants no target/action authority and its
     # missing/stale state never skips a control tick or renews a sensor source.
@@ -2761,9 +3044,20 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     close_pause_monitor = _register_resource_close(cleanup, interpreter_pause_monitor)
     previous_tick_timing = None
     perception_timing_summary = PhaseTimingSummary()
+    source_diagnostics = PerceptionSourceDiagnostics()
+    handoff_wait_started = None
     while not stop_requested.is_set():
+        # 许可到期即停止续发控制租约，由既有执行器失联处置接管，不延长旧动作。
+        if trial_permit is not None and int(time.time() * 1000) >= trial_permit.expires_at_unix_ms:
+            raise RuntimeError("SIMULATION_TRIAL_EXPIRED")
+        if localization_producer is not None:
+            localization_producer.raise_if_failed()
         if runtime_evidence_writer.issue is not None or runtime_snapshot_writer.issue is not None:
             raise RuntimeError("RUNTIME_CONTROL_RECORDING_FAILED")
+        if model_image_writer.issue is not None and args.local_navigation_provider != "local-policy":
+            raise RuntimeError(f"MODEL_IMAGE_ARCHIVE_FAILED:{model_image_writer.issue}")
+        if learning_image_writer is not None and learning_image_writer.issue is not None:
+            raise RuntimeError("LEARNING_VISUAL_RECORDING_FAILED")
         now = time.monotonic()
         tick_ms = int(time.time() * 1000)
         fault_active = _development_depth_frame_suppressed(
@@ -2772,28 +3066,35 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             drop_after_seconds=args.development_depth_drop_after_seconds,
             drop_duration_seconds=args.development_depth_drop_duration_seconds,
         )
-        result_ready = bool(model_navigation is not None
-                            and model_navigation.continuous_result_ready)
+        handoff_state = (model_navigation.continuous_handoff_state
+                         if model_navigation is not None else (False, False))
+        request_running, result_ready = handoff_state
         local_pending = bool(model_navigation is not None
             and args.local_navigation_provider in {"local-policy", "simulation-training"}
-            and model_navigation.continuous_request_pending)
-        control_perception_healthy = bool((result_ready or local_pending) and fusion.has_frame
+            and request_running)
+        control_perception_healthy = bool(
+            (result_ready or local_pending or teacher_feedback_enabled) and fusion.has_frame
             and fusion.health(now_unix_ms=tick_ms, now_monotonic_seconds=now).stream_healthy)
         # Feature retention (e.g. 350/500 ms geometry/tracks) is not a model
         # action lease. Waiting for an already non-dispatchable reply would
         # delay the independent new depth frame that the next action needs.
-        dispatch_budget_ready = bool(latest_realtime_feature_snapshot is not None
-            and latest_realtime_feature_snapshot.control_deadline_unix_ms(
-                now_unix_ms=tick_ms) - tick_ms >= LOCAL_DISPATCH_RESERVE_MS
-            and model_navigation is not None
-            and model_navigation.continuous_request_remaining_ms(
-                now_unix_ms=tick_ms) >= LOCAL_DISPATCH_RESERVE_MS)
+        dispatch_budget_ready = model_handoff_budget_ready(
+            model_navigation, latest_realtime_feature_snapshot,
+            handoff_state=(local_pending, result_ready), now_unix_ms=tick_ms,
+            state_buffer=native_state_sampler.buffer)
         prioritize_ready_control = ready_control_scheduler.eligible(
             depth_sequence=sequence, result_ready=result_ready,
             perception_healthy=control_perception_healthy,
             features_retain_dispatch_budget=dispatch_budget_ready,
             depth_processing_failed=last_depth_processing_failed, fault_active=fault_active,
         )
+        prioritize_teacher_state = teacher_state_handoff_ready(
+            enabled=teacher_feedback_enabled, scheduler=ready_control_scheduler,
+            state_buffer=native_state_sampler.buffer, features=latest_realtime_feature_snapshot,
+            previous_state_ms=last_control_state_source_ms, depth_sequence=sequence,
+            now_unix_ms=tick_ms, perception_healthy=control_perception_healthy,
+            depth_processing_failed=last_depth_processing_failed, fault_active=fault_active)
+        prioritize_ready_control = prioritize_ready_control or prioritize_teacher_state
         with lock:
             arrival_sample = latest_image[1] if latest_image is not None else None
         sensor_arrival_due = bool(local_input_wake_enabled
@@ -2808,12 +3109,30 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 features_retain_dispatch_budget=dispatch_budget_ready,
                 depth_processing_failed=last_depth_processing_failed, fault_active=fault_active)
         ):
+            if handoff_wait_started is None:
+                handoff_wait_started = now
             time.sleep(.002)
             continue
         if now < next_tick and not prioritize_ready_control and not sensor_arrival_due:
             time.sleep(min(.002 if local_input_wake_enabled or (model_navigation is not None
                            and model_navigation.request_pending) else .02, next_tick - now))
             continue
+        # 只记录调度提示，不用该摘要授予权限；保留新深度开始前的原请求余量，
+        # 才能区分模型未完成、等待预算耗尽和感知失效导致的交接延后。
+        handoff_diagnostic = {
+            "sampled_at_unix_ms": tick_ms,
+            "result_ready": result_ready,
+            "local_pending": local_pending,
+            "dispatch_budget_ready": dispatch_budget_ready,
+            "perception_healthy": control_perception_healthy,
+            "pending_request_remaining_ms": (
+                model_navigation.continuous_request_remaining_ms(now_unix_ms=tick_ms)
+                if model_navigation is not None else 0),
+            "wait_elapsed_ms": (
+                max(0., (now - handoff_wait_started) * 1000)
+                if handoff_wait_started is not None else 0.),
+        }
+        handoff_wait_started = None
         if not prioritize_ready_control:
             next_tick = now + 1.0 / args.rate_hz
             if sensor_arrival_due:
@@ -2832,14 +3151,23 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             semantic_label_items = tuple(semantic_label_history)
         if image_item is None:
             continue
-        selected_image_time = None if prioritize_ready_control else (
-            native_state_sampler.buffer.select_image_time(
-            tuple(item[2] for item in depth_items if item[1] > last_image_received_at),
-            now_unix_ms=int(time.time() * 1000),
-            maximum_range_m=mount.maximum_range_m,
-            maximum_acceleration_mps2=args.max_acceleration,
-            maximum_alignment_variance_m2=fusion.maximum_localization_covariance_m2,
-        ))
+        selected_image_time = None
+        if not prioritize_ready_control:
+            candidates = tuple(item for item in depth_items if item[1] > last_image_received_at)
+            selection_limits = dict(now_unix_ms=int(time.time() * 1000),
+                maximum_range_m=mount.maximum_range_m,
+                maximum_acceleration_mps2=args.max_acceleration,
+                maximum_alignment_variance_m2=fusion.maximum_localization_covariance_m2)
+            if args.native_source_clock_domain is not None:
+                source_candidates = tuple((item[2], clock.simulation_ns if clock else None)
+                    for item in candidates
+                    for clock in (image_ingress.lookup("depth", item[1]),))
+                selected_image_time = native_state_sampler.buffer.select_source_image_time(
+                    source_candidates, clock_domain=args.native_source_clock_domain,
+                    now_monotonic=time.monotonic(), **selection_limits)
+            else:
+                selected_image_time = native_state_sampler.buffer.select_image_time(
+                    tuple(item[2] for item in candidates), **selection_limits)
         if selected_image_time is not None:
             image_item = next(item for item in reversed(depth_items)
                               if item[2] == selected_image_time)
@@ -2892,14 +3220,27 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         z=(truth_position.z - previous_pose[1].z) / elapsed,
                     )
                 previous_pose = pose_received_at, truth_position
+        # 消费钟必须在本轮消息快照选取之后捕获；否则回调在线程切换时
+        # 到达的新帧可能晚于循环入口的旧 now，被误判为来自未来。
+        # 这里只推进消费时刻，图像和原生状态的来源时钟完全保留。
+        now = time.monotonic()
         now_unix_ms = int(time.time() * 1_000)
         cycle_outcome = "rejected"
         try:
             cycle_timing.mark("image_selection")
             if camera_profile_readback is not None:
                 with lock:
-                    profile_proof = camera_profile_readback.require_ready()
-                if not camera_profile_recorded:
+                    camera_profile_readback.require_ready(required_streams=("depth",))
+                    profile_proof = None
+                    if not camera_profile_recorded:
+                        try:
+                            profile_proof = camera_profile_readback.require_ready()
+                        except ValueError as error:
+                            if str(error) != "SIMULATION_CAMERA_PROFILE_READBACK_PENDING":
+                                raise
+                # RGB 尚未到达不能阻止深度避障、定位和数值历史；双流回执仍只在
+                # 双流实际验证后保存。下方依赖视觉的模型调用继续检查真实 RGB。
+                if not camera_profile_recorded and profile_proof is not None:
                     _atomic_json(args.command.with_name("camera-profile-readback.json"),
                                  profile_proof)
                     camera_profile_recorded = True
@@ -2946,6 +3287,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             )
             native_sample = native_observation.sample
             latest_flight_state_encoding = native_observation.encoding
+            source_diagnostics.record("selected", now_ms=int(time.time() * 1000),
+                depth_ms=image_received_at_unix_ms, state_ms=native_sample.observed_at_unix_ms)
             # State history advances on native evidence, including ticks with
             # no new depth image. Re-reading a packet never renews its lease.
             # Native IMU acceleration is in physical m/s². Differentiating
@@ -2969,13 +3312,26 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 health = fusion.health(now_unix_ms=now_unix_ms)
             else:
                 sequence += 1
-                aligned_native = native_state_sampler.buffer.align_image(
-                    image_received_at_unix_ms=image_received_at_unix_ms,
-                    now_unix_ms=now_unix_ms,
-                    maximum_range_m=mount.maximum_range_m,
-                    maximum_acceleration_mps2=args.max_acceleration,
-                )
-                projection = depth_binding.project(image)
+                alignment_limits = dict(image_received_at_unix_ms=image_received_at_unix_ms,
+                    now_unix_ms=now_unix_ms, maximum_range_m=mount.maximum_range_m,
+                    maximum_acceleration_mps2=args.max_acceleration)
+                if args.native_source_clock_domain is not None:
+                    input_clock = image_ingress.lookup("depth", image_received_at)
+                    if input_clock is None or input_clock.simulation_ns is None:
+                        raise ValueError("IMAGE_NATIVE_SOURCE_STAMP_UNAVAILABLE")
+                    aligned_native = native_state_sampler.buffer.align_source_image(
+                        image_timestamp_ns=input_clock.simulation_ns,
+                        clock_domain=args.native_source_clock_domain,
+                        now_monotonic=time.monotonic(), **alignment_limits)
+                else:
+                    aligned_native = native_state_sampler.buffer.align_image(**alignment_limits)
+                cached_projection = (localization_producer.prepared(input_clock.source_unix_ns)
+                    if localization_producer is not None and input_clock is not None else None)
+                if cached_projection is None:
+                    projection = depth_binding.project(image)
+                else:
+                    projection, projection_contract = cached_projection
+                    sensor_registry.register_contract(projection_contract)
                 scan = RawMetricRangeScan(
                     sensor_id="oakd-lite-depth",
                     sequence=sequence,
@@ -2990,13 +3346,16 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     samples=list(projection.samples),
                     source_coverage=projection.source_coverage,
                 )
-                frame = bridge.assemble(scan)
                 cycle_timing.mark("depth_projection")
+                # 定位由独立所有者发布；本线程仍完整执行避障，不借定位通道跳过检查。
+                frame = bridge.assemble(scan)
+                cycle_timing.mark("depth_bridge_assembly")
                 if geometry_capture is not None:
                     geometry_capture.record(scan, mount=mount,
                         calibration_sha256=projection.calibration_sha256,
                         native_pose_binding_sha256=aligned_native.pose.binding_sha256,
-                        source_clock=depth_input_timing)
+                        source_clock=depth_input_timing,
+                        native_odometry_snapshot=aligned_native.native_odometry_snapshot)
                     cycle_timing.mark("localization_capture_enqueue")
                 last_image_received_at = image_received_at
                 last_depth_processing_failed = True
@@ -3009,6 +3368,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 # validates and freezes the complete graph at its boundary.
                 # Rebuilding every measured ray here adds no source evidence.
                 frame.dynamic_obstacles = list(prepared_tracks.observations)
+                cycle_timing.mark("dynamic_tracking")
                 health = fusion.ingest(
                     frame,
                     now_unix_ms=now_unix_ms,
@@ -3092,6 +3452,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     (geometry_encoding, dynamic_encoding, latest_flight_state_encoding),
                     captured_at_unix_ms=now_unix_ms,
                 )
+            # 来源推进由原生采样器证明；失败周期也不重用同一状态反复抢占深度处理。
+            last_control_state_source_ms = native_sample.observed_at_unix_ms
             health = _fault_adjusted_perception_health(
                 health,
                 development_depth_fault_active=fault_active,
@@ -3164,7 +3526,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         if model_navigation is not None
                         else None
                     ),
-                    "local_navigation_visual_enabled": bool(args.rgb_topic),
+                    "local_navigation_visual_enabled": control_uses_rgb,
+                    "recording_only_rgb": args.recording_only_rgb,
                     "local_navigation_visual_frame_age_seconds": (
                         max(0.0, now - rgb_item[1]) if rgb_item is not None else None
                     ),
@@ -3189,6 +3552,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     "last_local_safety_decision_compute_seconds": (last_decision_compute_seconds),
                     "updated_at_unix_ms": now_unix_ms,
                 }
+            source_diagnostics.record("health", now_ms=int(time.time() * 1000),
+                depth_ms=frame.observed_at_unix_ms, state_ms=native_sample.observed_at_unix_ms)
+            if latest_realtime_feature_snapshot is not None:
+                source_diagnostics.record_feature_issues(latest_realtime_feature_snapshot.issue_codes)
             if health_publisher is not None:
                 health_publisher.send(health_payload)
             runtime_snapshot_writer.submit_json(args.health, health_payload)
@@ -3263,6 +3630,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             )
             model_directive = None
             common_navigation_task = {
+                "simulation_teacher_contract_sha256": (
+                    SIMULATION_TEACHER_CONTRACT_SHA256 if args.simulation_teacher_control else None
+                ),
                 "control_session_id": control_session_id,
                 "navigation_goal_id": navigation_goal_id,
                 "control_profile": control_profile,
@@ -3282,6 +3652,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             }
             active_controller_step_m = None
             completed_model_cycle = None
+            hybrid_model_fault = False
             early_model_poll = False
             if model_navigation is not None:
                 active_controller_step_m = _controller_step_for_profile(
@@ -3299,15 +3670,18 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         goal=model_goal_revalidation, goal_id=navigation_goal_id,
                         frame=frame, position=position, velocity=velocity,
                     )
+                    if hybrid_arbiter is not None and completed_model_cycle is not None:
+                        hybrid_model_fault = hybrid_arbiter.observe_model_failure(
+                            completed_model_cycle.failure_reason_code)
                     early_model_poll = True
                 # RGB preparation, new invocation and evidence I/O stay after
                 # safety publication. Legacy candidate revalidation stays there
                 # as well; it has a different, potentially expensive workload.
-                model_directive = model_navigation.controller_directive(
-                    current_position_m=position,
-                    fallback_target_m=route_target,
-                    now_unix_ms=now_unix_ms,
-                    navigation_goal_id=navigation_goal_id,
+                model_directive, now_unix_ms = _current_navigation_directive(
+                    model_navigation,
+                    position=position,
+                    target=route_target,
+                    goal_id=navigation_goal_id,
                     maximum_step_m=active_controller_step_m,
                 )
                 target = _navigation_target_for_control_authority(
@@ -3329,24 +3703,21 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     acceleration_world_enu_mps2
                 ),
             )
-            if stale_tick:
-                # Pose/velocity identity telemetry remains independently live
-                # while the depth frame is stale. Bind the braking command to
-                # that current physical state, but retain the stale sensor age
-                # and unhealthy verdict from the last accepted depth frame.
-                observation = RuntimeLocalSafetyObservation.model_validate(
-                    {
-                        **observation.model_dump(mode="python"),
-                        "current_position_m": position,
-                        "current_velocity_mps": velocity,
-                    }
-                )
+            # 投影之后原生状态可能已经更新；无论深度是否过期，都用同一份
+            # 当前位姿绑定安全求解和垂直约束。几何时钟、覆盖及健康结论不刷新。
+            observation = _bind_current_control_state(
+                observation, position=position, velocity=velocity)
             if not identity_ok or not health.stream_healthy:
                 observation = observation.model_copy(update={"stream_healthy": False})
             realtime_control_features_ready = bool(
                 latest_realtime_feature_snapshot is not None
                 and latest_realtime_feature_snapshot.fresh_at(now_unix_ms)
             )
+            independent_stream_healthy = observation.stream_healthy
+            if args.independent_route_control:
+                from dronedream_agent_core.route_control_mode import route_observation_eligible
+                observation = observation.model_copy(update={"stream_healthy":
+                    route_observation_eligible(observation.source, independent_stream_healthy)})
             if (
                 args.require_model_control_authority
                 and model_directive is not None
@@ -3379,6 +3750,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     now_unix_ms=now_unix_ms,
                     authority_deadline_unix_ms=model_directive.valid_until_unix_ms,
                     requested_validity_ms=600,
+                    minimum_publication_window_ms=LOCAL_DISPATCH_RESERVE_MS,
                 )
                 if model_directive is not None and model_directive.model_navigation_authorized
                 else None
@@ -3403,7 +3775,99 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             # 复用本周期同一原生包；后续模型与训练背景不另开遥测文件拼接不同时刻。
             tick_payload_context = _payload_context(
                 args.command.parent / "runtime-actions" / "receipts", vehicle,
-                identity_telemetry_payload=native_observation.payload)
+                identity_telemetry_payload=native_observation.payload,
+                receipt_reader=payload_receipt_reader)
+            # 几何先验已膨胀机体；实时测距空地尚未膨胀，两个来源不能混作同一种覆盖。
+            # 功能：
+            #   核查已资格化走廊或整机身的观测空地，任意未知方向及工作量超限均拒绝。
+            # 输入：
+            #   points、margin：完整米制路径与额外净空。
+            # 输出：
+            #   covered：有空间证据支持且未发现障碍的标志。
+            def motion_coverage(points, margin):
+                path = [Vector3(x=p[0], y=p[1], z=p[2]) for p in points]
+                if not world.unknown_is_occupied:
+                    return False
+                try:
+                    covered = (world.qualified_static_path_covered(
+                        path, extra_clearance_m=max(0., margin - args.required_clearance))
+                               or world.path_clearance_valid(
+                        path, required_clearance_m=(margin + max(
+                            vehicle.body_radius_m, vehicle.body_height_m / 2,
+                            flight_dynamics_envelope.collision_radius_m
+                            if flight_dynamics_envelope is not None else 0.,
+                            flight_dynamics_envelope.collision_height_m / 2
+                            if flight_dynamics_envelope is not None else 0.))))
+                except ValueError:
+                    covered = False
+                return covered
+
+            motion_guard = VerticalMotionGuard(
+                vehicle=vehicle, payload=tick_payload_context, primitives=static,
+                position=(position.x, position.y, position.z),
+                source_seconds=max(0., last_image_received_at), transition=ceiling_transition,
+                clearance=args.required_clearance, coverage_check=motion_coverage,
+                coverage_identity=world.motion_coverage_identity(),
+                envelope=flight_dynamics_envelope,
+                measurement_only=args.development_payload_collection)
+            hybrid_lease = None
+            hybrid_input_checks = None
+            if hybrid_arbiter is not None:
+                # 功能：按独立实测状态与已校验路线决定是否可临时衔接；
+                #       请求悬停、几何未知、观测过期都不能靠路线先验绕过。
+                # 输入：当前位姿、同一帧健康状态、路线覆盖、模型当前许可。
+                # 输出：本周期独立租期；碰撞预测仍由下面的安全求解器执行。
+                bridge_reason = getattr(model_directive, "reason", "model-disabled")
+                if (not live_model_authority and model_directive is not None
+                        and model_directive.model_navigation_authorized):
+                    bridge_reason = "model-lease-dispatch-delay"
+                # 双时钟在同一位置采样，不把本轮几何处理耗时误判成系统时钟跳变。
+                # 原始观测时间不刷新，独立特征仍按当前时刻检查实际新鲜度。
+                bridge_now = time.monotonic()
+                bridge_wall_ms = int(time.time() * 1000)
+                # 保留逐项根因，避免把感知过期、几何问题与模型迟到都写成同一个失败码。
+                # 不刷新原始时钟，不扩大接管条件；路径检查仍仅在其余条件满足时执行。
+                hybrid_input_checks = {
+                    "model_not_faulted": not hybrid_model_fault,
+                    "independent_stream_healthy": bool(independent_stream_healthy),
+                    "control_features_ready": bool(realtime_control_features_ready),
+                    "feature_sources_fresh": bool(latest_realtime_feature_snapshot is not None
+                        and latest_realtime_feature_snapshot.fresh_at(bridge_wall_ms)),
+                    "vertical_guard_ready": not motion_guard.issues,
+                    "source_is_onboard": observation.source != "simulation-ground-truth",
+                }
+                hybrid_input_checks["path_covered"] = (
+                    motion_coverage([(position.x, position.y, position.z),
+                        (route_target.x, route_target.y, route_target.z)], args.required_clearance)
+                    if all(hybrid_input_checks.values()) else None)
+                hybrid_arbiter.observe_execution(
+                    phase_receiver.read_model_applications() if phase_receiver is not None else ())
+                hybrid_lease = hybrid_arbiter.update(
+                    now=bridge_now, now_unix_ms=bridge_wall_ms,
+                    position=(position.x, position.y, position.z),
+                    route_sha256=qualified_clearance.route_sha256,
+                    goal_id=navigation_goal_id or "",
+                    sensors_and_route_ready=all(value is True for value in hybrid_input_checks.values()),
+                    model_live=live_model_authority,
+                    model_speed_mps=(math.hypot(
+                        model_directive.pilot_control.forward_axis * active_planner_speed_mps,
+                        model_directive.pilot_control.right_axis * active_planner_speed_mps,
+                        model_directive.pilot_control.up_axis * active_vertical_speed_limit_mps,
+                    ) * model_directive.controller_step_scale if live_model_authority else None),
+                    model_call_id=getattr(model_directive, "model_call_id", None),
+                    model_reason=bridge_reason)
+                if hybrid_lease is not None:
+                    if hybrid_lease.expires_at_unix_ms - bridge_wall_ms < 100:
+                        hybrid_lease = None
+                    else:
+                        observation = observation.model_copy(update={
+                            "stream_healthy": independent_stream_healthy,
+                            "target_position_m": route_target})
+            observation = observation.model_copy(
+                update={"motion_context_sha256": motion_guard.sha256})
+            # 将背景留给云端规划、本地专家和训练记录；不改变已冻结的神经网络特征宽度。
+            tick_payload_context["vertical_motion"] = motion_guard.context
+            preferred_context = preferred_space.context((position.x, position.y, position.z))
             command = None
             requested_control_intent = None
             if live_model_authority:
@@ -3437,9 +3901,12 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 evaluated = evaluate_runtime_local_safety(
                     observation=observation,
                     vehicle=control_vehicle,
+                    motion_guard=motion_guard,
                     static_primitives=static,
                     required_clearance_m=args.required_clearance,
-                    generated_at_unix_ms=now_unix_ms,
+                    # 接管许可在较晚的配对时钟签发，命令不得反向早于租期起点。
+                    # 只更新命令签发时间；观测和深度来源时间保持原样参与预算校验。
+                    generated_at_unix_ms=(bridge_wall_ms if hybrid_lease is not None else now_unix_ms),
                     command_horizon_seconds=0.2,
                     # Keep authority short-lived even when Gazebo renders the
                     # full School Map below real time.  Any lease gap causes a
@@ -3449,14 +3916,18 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     tracking_recovery_active=tracking_recovery_active,
                     navigation_goal_id=navigation_goal_id,
                     navigation_control_authority=(
-                        "model-required"
+                        "bounded-hybrid" if hybrid_lease is not None else "model-required"
                         if args.require_model_control_authority
                         else "route-fallback"
                     ),
+                    hybrid_lease=hybrid_lease,
                     model_navigation_authorized=live_model_authority,
                     model_navigation_snapshot_sha256=(
-                        model_directive.navigation_snapshot_sha256
-                        if live_model_authority else None
+                        _directive_source_snapshot(
+                            model_directive,
+                            _safety_hold_call_id(model_directive, completed_model_cycle),
+                            now_unix_ms,
+                        ) if args.require_model_control_authority else None
                     ),
                     model_call_id=(
                         _safety_hold_call_id(model_directive, completed_model_cycle)
@@ -3484,9 +3955,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     ),
                     requested_control_intent=requested_control_intent,
                     route_yaw_rate_dps=(teacher_heading_rate(
-                        orientation=orientation, position=position, goal=navigation_goal,
+                        orientation=orientation, position=position,
+                        goal=teacher_observation_target(position=position, goal=navigation_goal,
+                                                        obstacles=list(observation.dynamic_obstacles)),
                         maximum_rate_dps=min(45., active_yaw_rate_limit_dps),
-                    ) if args.simulation_teacher_control else 0.),
+                    ) if (args.simulation_teacher_control or args.independent_route_control) else 0.),
                 )
                 decision_compute_seconds = time.monotonic() - decision_started_at
                 last_decision_compute_seconds = decision_compute_seconds
@@ -3510,6 +3983,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     evaluated = evaluate_runtime_local_safety(
                         observation=expired_observation,
                         vehicle=control_vehicle,
+                        motion_guard=motion_guard,
                         static_primitives=static,
                         required_clearance_m=args.required_clearance,
                         generated_at_unix_ms=published_at_unix_ms,
@@ -3573,6 +4047,16 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 if command is not None:
                     _atomic_json(args.command, command.model_dump(mode="json"))
             cycle_timing.mark("safety_evaluation_and_publication")
+            # 恢复身份属于实际观测，不依赖导航模型是否启用；教师采集也使用同一事件时间线。
+            dynamic_signature = sha256_json([
+                {"obstacle_id": obstacle.obstacle_id, "position_m": obstacle.position_m,
+                 "velocity_mps": obstacle.velocity_mps} for obstacle in dynamic
+            ])
+            dynamic_recovery_episode = _advance_dynamic_recovery_episode(
+                state=dynamic_recovery_episode, navigation_goal_id=navigation_goal_id,
+                dynamic_signature=dynamic_signature, dynamic_present=bool(dynamic),
+                now_monotonic=now,
+            )
             # One native packet and one set of attachment receipts per tick.
             # Data capture and model context must not reopen a mutable telemetry
             # file and silently describe a different moment than the encoders.
@@ -3598,6 +4082,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         )
                     )
                     if receipt is not None:
+                        if hybrid_arbiter is not None and not early_model_poll:
+                            hybrid_arbiter.observe_model_failure(receipt.failure_reason_code)
                         runtime_evidence_writer.submit(
                             model_navigation_evidence,
                             {
@@ -3628,23 +4114,6 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                             "action_checkpoint_goal": action_checkpoint_goal,
                         }
                     )
-                    dynamic_signature = sha256_json(
-                        [
-                            {
-                                "obstacle_id": obstacle.obstacle_id,
-                                "position_m": obstacle.position_m,
-                                "velocity_mps": obstacle.velocity_mps,
-                            }
-                            for obstacle in dynamic
-                        ]
-                    )
-                    dynamic_recovery_episode = _advance_dynamic_recovery_episode(
-                        state=dynamic_recovery_episode,
-                        navigation_goal_id=navigation_goal_id,
-                        dynamic_signature=dynamic_signature,
-                        dynamic_present=bool(dynamic),
-                        now_monotonic=now,
-                    )
                     phase_context = phase_observer.latest()
                     # Projection/fusion can occupy most of a sensor period. Check
                     # the invocation timer here, not with the old loop-entry clock.
@@ -3671,7 +4140,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                             and waiting_image_time > last_image_received_at),
                     )
                     if (trigger is not None and input_work_allowed
-                            and not model_navigation.request_pending) and (
+                            and (not model_navigation.request_pending
+                                 or getattr(model_navigation.port,
+                                            'supports_observation_history', False) is True)) and (
                         not stale_tick or local_navigation_output_mode == "normalized-body-velocity"
                         and health.stream_healthy
                     ):
@@ -3686,7 +4157,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                 else None
                             )
                         multimodal = None
-                        visual_ready = not args.rgb_topic
+                        visual_ready = not control_uses_rgb
                         visual_now = time.monotonic()
                         if model_image_worker is not None:
                             # Encoding may finish while metric perception runs.
@@ -3705,9 +4176,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                     rgb_item[0], source_monotonic=rgb_item[1],
                                     source_unix_ms=rgb_received_at_unix_ms,
                                     frame_time=prepared_rgb_sample.image.frame_time,
-                                    now_monotonic=visual_now)
+                                    now_monotonic=visual_now,
+                                    # 同源质量已在后台算好；晚选帧不能重新同步解码大图。
+                                    prepared_measurement=prepared_rgb_sample.measurement)
                         if (
-                            args.rgb_topic
+                            control_uses_rgb
                             and rgb_item is not None
                             and 0 <= visual_now - rgb_item[1] <= (
                                 0.2 if local_navigation_output_mode == "normalized-body-velocity"
@@ -3732,10 +4205,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                     if prepared_rgb_sample is None:
                                         raise ValueError("MODEL_RGB_PREPARED_SOURCE_MISSING")
                                     prepared = prepared_rgb_sample.image
-                                    new_image = (prepared.received_monotonic_seconds
-                                                 != last_model_image_time)
                                 else:
-                                    prepared, new_image = model_image_cache.prepare(
+                                    prepared, _ = model_image_cache.prepare(
                                         rgb_item[0], received_monotonic_seconds=rgb_item[1],
                                         received_at_unix_ms=rgb_received_at_unix_ms,
                                         size=image_size, decoder=_gazebo_image_model_payload,
@@ -3743,20 +4214,34 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                     )
                                 image_payload = prepared.multimodal(model_navigation_frame_dir)
                                 frame_path = Path(image_payload["path"])
+                                # 编码缓存命中不等于图像已入档；上次背压拒绝后必须重试。
+                                new_image = (prepared.received_monotonic_seconds
+                                             != last_model_image_time)
                                 if new_image:
-                                    _persist_navigation_image(
+                                    image_archive_admitted = _persist_navigation_image(
                                         provider=args.local_navigation_provider,
-                                        writer=runtime_snapshot_writer,
+                                        writer=model_image_writer,
                                         path=frame_path, png=prepared.png,
+                                        allow_embedded_only=(args.local_navigation_provider == "local-policy"),
                                     )
-                                    last_model_image_time = prepared.received_monotonic_seconds
+                                    if image_archive_admitted:
+                                        last_model_image_time = prepared.received_monotonic_seconds
+                                    else:
+                                        # 缺失计数保留，不能把内存推理的成功当成磁盘证据完整。
+                                        model_image_archive_skipped += 1
                                 multimodal = [image_payload]
                                 # schedule() validates source age BEFORE starting
                                 # the visual encoder. Do not prefetch around that gate.
                                 visual_ready = True
                             except (OSError, ValueError):
                                 visual_ready = False
-                        if visual_ready:
+                        # 当前 RGB 暂不可用只阻止视觉推理，不应把已经测到的连续
+                        # 状态/深度历史一并丢弃。历史不含伪造图像，也不签发动作。
+                        history_supported = (
+                            local_navigation_output_mode == "normalized-body-velocity"
+                            and getattr(model_navigation.port, "supports_observation_history", False) is True
+                        )
+                        if visual_ready or history_supported:
                             model_timing.mark("visual_preparation")
                             strategic_sensor_snapshot = fusion.multimodal_sensor_snapshot(
                                 now_monotonic_seconds=visual_now
@@ -3768,10 +4253,12 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                 task={**phase_context, **common_navigation_task,
                                       "decision_trigger": trigger,
                                       "recovery_episode_id": active_recovery_episode_id},
-                                map_context=strategic_map_context,
+                                map_context={**strategic_map_context,
+                                             "preferred_airspace": preferred_context,
+                                             "vertical_motion": motion_guard.context},
                                 sensor_context=_strategic_sensor_context(strategic_sensor_snapshot),
                                 vehicle=vehicle, payload=payload_context,
-                                rgb_enabled=bool(args.rgb_topic),
+                                rgb_enabled=control_uses_rgb,
                             )
                             model_timing.mark("strategic_context")
                             schedule_now_unix_ms = now_unix_ms
@@ -3803,13 +4290,15 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                     if schedule_features is not None
                                     else None
                                 ),
+                                observation_only=not visual_ready,
                             )
                             model_timing.mark("schedule_and_freeze")
                             runtime_evidence_writer.submit(
                                 args.command.with_name("model-navigation-timing.jsonl"),
                                 {"recorded_at_unix_ms": now_unix_ms,
                                  "scheduled_at_unix_ms": int(time.time() * 1000),
-                                 "phase_ms": model_timing.snapshot()},
+                                 "phase_ms": model_timing.snapshot(),
+                                 "input_preparation_ms": model_navigation.input_preparation_timing},
                             )
                             if immediate is not None:
                                 runtime_evidence_writer.submit(
@@ -3838,42 +4327,54 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                             last_model_target_sha256 = target_sha256
                             last_dynamic_signature = dynamic_signature
             finally:
-                # Record the already-published control even if model
-                # preparation fails. No frame, timestamp or authority is
-                # refreshed by moving non-control work after submission.
+                # 保留本轮有效观测，是否存在获准指令由记录明确区分；没有指令不能
+                # 删除仍有效的历史，也不能生成动作标签。此记录不刷新来源或控制期限。
                 cycle_timing.mark("model_scheduling")
+                learning_sensors = None
                 try:
                     if learning_recorder is not None:
                         learning_recorder.poll()
                         learning_sensors = fusion.multimodal_sensor_snapshot(
                             now_monotonic_seconds=now)
                         learning_visual_ready = not args.rgb_topic or (
+                            learning_image_writer.available_for_new_path
+                            and
                             rgb_item is not None and rgb_received_at_unix_ms is not None
                             and _learning_visual_current(source_monotonic=rgb_item[1],
                                 source_unix_ms=rgb_received_at_unix_ms,
                                 reference_monotonic=now, reference_unix_ms=now_unix_ms)
                         )
                         if (learning_recorder.ready_for_submission
-                                and command is not None
                                 and latest_realtime_feature_snapshot is not None
-                                and health.stream_healthy and learning_sensors is not None
-                                and learning_visual_ready):
+                                and identity_ok
+                                and health.stream_healthy and learning_sensors is not None):
+                            # 数值历史与相机帧频独立：没有新鲜图像仍保留真实状态，
+                            # 但离线入口不得把缺图的这一帧作为视觉动作监督样本。
                             learning_context = build_navigation_context(
                                 task={**phase_observer.latest(),
                                       **common_navigation_task,
-                                      "decision_trigger": target_payload.get(
-                                          "decision_trigger", "periodic"),
-                                      "recovery_episode_id": recovery_episode_id},
-                                map_context=strategic_map_context,
+                                      **learning_recovery_task_context(
+                                          target_payload, navigation_goal_id,
+                                          dynamic_recovery_episode,
+                                          command is not None
+                                          and command.decision.avoidance_obstacle_id in {
+                                              obstacle.obstacle_id for obstacle in dynamic
+                                              if obstacle.confidence >= .35
+                                              and obstacle.age_seconds <= .25})},
+                                map_context={**strategic_map_context,
+                                             "preferred_airspace": preferred_context},
                                 sensor_context=_strategic_sensor_context(learning_sensors),
                                 vehicle=vehicle, rgb_enabled=bool(args.rgb_topic),
                                 payload=tick_payload_context,
                             )
                             learning_recorder.submit(NavigationSnapshotRequest(
-                                world=world.navigation_clone(center_m=position, radius_m=12.),
+                                # 教师记录器在本协调线程同步编译；返回后没有活地图后台读者。
+                                # 部署模型自己的异步导航克隆路径不变。
+                                world=world,
+                                # submit 同步冻结导航状态；此临时视图不深拷贝已融合的原始射线。
                                 frame=frame.model_copy(update={
                                     "localization_position_m": position,
-                                    "localization_velocity_mps": velocity}, deep=True),
+                                    "localization_velocity_mps": velocity}),
                                 health=health, goal_position_m=navigation_goal,
                                 required_clearance_m=args.required_clearance,
                                 candidate_speed_mps=active_planner_speed_mps,
@@ -3897,7 +4398,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                 prepared_sample=prepared_rgb_sample,
                                 size=tuple(args.learning_image_size),
                                 directory=args.command.parent / "learning-observation-frames",
-                            ) if args.rgb_topic and rgb_item is not None else None))
+                                writer=learning_image_writer,
+                            ) if args.rgb_topic and learning_visual_ready else None))
                     synchronized_sensor_pair = (
                         None
                         if args.semantic_label_topic and not semantic_label_items
@@ -3960,6 +4462,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                     else None
                                 ),
                                 "payload": dataset_payload_context,
+                                "preferred_airspace": preferred_context,
                             },
                         ):
                             last_dataset_rgb_received_at = dataset_rgb_item[1]
@@ -3974,12 +4477,19 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                             "tracking_recovery_active": tracking_recovery_active,
                             "decision_compute_seconds": decision_compute_seconds,
                             "pipeline_phase_ms": cycle_timing.snapshot(),
+                            "bounded_hybrid_diagnostic": (
+                                hybrid_arbiter.snapshot() if hybrid_arbiter is not None else None
+                            ),
+                            "bounded_hybrid_input_checks": hybrid_input_checks,
                             "depth_input_timing": depth_input_timing,
                             "previous_completed_tick_timing": previous_tick_timing,
                             "prioritized_ready_control": prioritize_ready_control,
+                            "handoff_scheduling": handoff_diagnostic,
+                            "prioritized_teacher_state": prioritize_teacher_state,
                             "sensor_arrival_wake": (
                                 sensor_arrival_due and not prioritize_ready_control),
                             "route_target_m": route_target.model_dump(mode="json"),
+                            "navigation_goal_id": navigation_goal_id,
                             "effective_controller_target_m": target.model_dump(mode="json"),
                             "observation": observation.model_dump(mode="json"),
                             "command": (
@@ -3988,6 +4498,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                                 latest_realtime_feature_snapshot.model_dump(mode="json")
                                 if latest_realtime_feature_snapshot is not None
                                 else None
+                            ),
+                            # 只在明确的教师采集模式保存同一时刻的真实模态诊断。
+                            # 健康快照被拒绝时，这份记录仍说明传感器为何不可用于控制；
+                            # 不更新来源时间，不补造观测，也不赋予动作监督资格。
+                            "multimodal_sensor_snapshot": (
+                                learning_sensors.model_dump(mode="json")
+                                if learning_sensors is not None else None
                             ),
                         },
                     )
@@ -4014,9 +4531,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     "effective_controller_target_m": target.model_dump(mode="json"),
                     "local_navigation_model_enabled": model_navigation is not None,
                     "local_navigation_controller_step_m": (active_controller_step_m),
-                    "local_navigation_visual_enabled": bool(args.rgb_topic),
+                    "local_navigation_visual_enabled": control_uses_rgb,
+                    "recording_only_rgb": args.recording_only_rgb,
                     "local_navigation_model_pending": (
                         model_navigation.request_pending if model_navigation is not None else False
+                    ),
+                    "bounded_hybrid_diagnostic": (
+                        hybrid_arbiter.snapshot() if hybrid_arbiter is not None else None
                     ),
                     "multimodal_sensor_snapshot": (
                         fusion.multimodal_sensor_snapshot(now_monotonic_seconds=now).model_dump(
@@ -4042,6 +4563,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             }
             cycle_outcome = "control"
         except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
+            if hybrid_arbiter is not None:
+                hybrid_arbiter.invalidate("control-state-exception:" + type(error).__name__)
             error_kind = f"{type(error).__name__}:{error}"
             log_key = error_kind.splitlines()[0]
             if log_key not in logged_error_kinds and len(logged_error_kinds) < 32:
@@ -4065,8 +4588,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             cycle_timing.mark("cycle_tail")
             perception_timing_summary.record(cycle_timing, outcome=cycle_outcome)
     subscription_summary = subscriptions.close()
+    if close_localization_producer is not None:
+        _atomic_json(args.command.with_name("localization-producer-summary.json"),
+                     close_localization_producer())
     _atomic_json(args.command.with_name("perception-phase-timing-summary.json"),
                  perception_timing_summary.snapshot())
+    _atomic_json(args.command.with_name("perception-source-diagnostics.json"),
+                 source_diagnostics.snapshot())
     _atomic_json(args.command.with_name("sensor-subscription-shutdown.json"), subscription_summary)
     _atomic_json(args.command.with_name("sensor-interpreter-pauses.json"),
                  close_pause_monitor())
@@ -4092,9 +4620,27 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     learning_summary = None
     if close_learning_recorder is not None:
         learning_summary = close_learning_recorder()
+        image_summary = close_learning_image_writer()
+        learning_summary["image_writer"] = image_summary
+        learning_summary["complete"] = (learning_summary["complete"]
+                                        and image_summary.get("complete") is True)
         _atomic_json(args.command.with_name("learning-observation-summary.json"),
                      learning_summary)
     runtime_snapshot_summary = close_snapshot_writer()
+    control_snapshot_complete = runtime_snapshot_summary.get("complete") is True
+    model_image_summary = close_model_image_writer()
+    model_image_summary["skipped_admission_count"] = model_image_archive_skipped
+    model_image_summary["complete"] = bool(
+        model_image_summary["complete"] and model_image_archive_skipped == 0)
+    # 复合回执让父进程也独立校验图像排空，不能只凭退出码或诊断队列判定完整。
+    runtime_snapshot_summary["schema_version"] = "dronedream.runtime-snapshot-writer.v2"
+    runtime_snapshot_summary["model_image_writer"] = model_image_summary
+    runtime_snapshot_summary["control_snapshots_complete"] = control_snapshot_complete
+    runtime_snapshot_summary["image_archive_degraded"] = not model_image_summary["complete"]
+    runtime_snapshot_summary["complete"] = (
+        runtime_snapshot_summary["complete"] and model_image_summary["complete"])
+    _atomic_json(args.command.with_name("runtime-snapshot-writer-summary.json"),
+                 runtime_snapshot_summary)
     runtime_evidence_summary = close_evidence_writer()
     dataset_summary = None
     if close_dataset_writer is not None:
@@ -4107,7 +4653,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         if subscription_summary["complete"] is True
         and model_shutdown_complete
         and runtime_evidence_summary.get("complete") is True
-        and runtime_snapshot_summary.get("complete") is True
+        and control_snapshot_complete
+        and (args.local_navigation_provider == "local-policy" or model_image_summary["complete"])
         and (learning_summary is None or learning_summary.get("complete") is True)
         and (geometry_summary is None or geometry_summary.get("complete") is True)
         and (dataset_summary is None or dataset_summary.get("writer_complete") is True)
@@ -4118,5 +4665,5 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
 if __name__ == "__main__":
     # This is an exec-created process. Retain only imported startup objects;
     # all sensor/runtime objects are created inside main and remain collectible.
-    with retained_interpreter_baseline():
+    with retained_interpreter_baseline(), sensor_worker_gc_budget():
         raise SystemExit(main())

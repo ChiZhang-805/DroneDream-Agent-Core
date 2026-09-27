@@ -147,6 +147,8 @@ def test_semantic_context_is_bound_to_catalog_bytes(tmp_path):
         ("collision_primitives", None),
         ("runtime_collision_primitives", "walls"),
         ("known_export_limits", [None]),
+        ("geometry_scope", [None]),
+        ("geometry_scope", {"kind": "walls"}),
     ],
 )
 def test_semantic_context_rejects_coerced_environment_fields(tmp_path, field, value):
@@ -169,6 +171,21 @@ def test_absent_environment_fields_remain_unknown(tmp_path):
     assert summary["available"] is True
     assert summary["occupancy_ready"] is None
     assert summary["dynamic_obstacles_runtime_required"] is None
+
+
+# 功能：
+#   接受当前编译器的几何类别列表，不将有效碰撞库存误报为不可用。
+# 输入：
+#   tmp_path：测试目录。
+# 输出：
+#   无：摘要保留已验证类别。
+def test_current_geometry_scope_list_is_preserved(tmp_path):
+    semantic = _semantic()
+    semantic["geometry_scope"] = ["terrain", "building-shells", "switchback-stairs"]
+    path = _write(tmp_path, semantic)
+    summary = reasoning._semantic_summary(path, hashlib.sha256(path.read_bytes()).hexdigest())
+    assert summary["available"] is True
+    assert summary["geometry_scope"] == semantic["geometry_scope"]
 
 
 # 功能：

@@ -75,7 +75,9 @@ def test_command_is_short_lived_hash_bound_and_avoids_crossing_track() -> None:
     assert command.evaluated_target_position_m == observation.target_position_m
     assert command.tracking_recovery_active is False
     assert command.estimator_to_world_position_offset_m == Vector3(x=0.0, y=0.0, z=0.0)
-    assert command.valid_until_unix_ms == 10_510
+    # 新筛选器可以找到仍有时效余量的替代动作；不能再固定期待旧的制动租期。
+    assert 10_010 < command.valid_until_unix_ms <= observation.observed_at_unix_ms + 250
+    assert command.observation_budget.disposition == "control-eligible"
     assert command.decision.action in {"slow", "replan", "hold"}
     assert command.decision.threat_obstacle_id == "person-crossing"
     assert command.command_position_m.x == pytest.approx(

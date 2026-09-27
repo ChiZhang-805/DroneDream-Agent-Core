@@ -137,12 +137,19 @@ def test_history_reader_checks_complete_dataset_identity(history_case, failure):
 # 输出：
 #   None：不返回业务数据。
 def test_actual_onnx_admission_consumes_unlabelled_sensor_history(base_package, tmp_path):
+    from test_risk_admission_evidence import synthetic_risk_evidence
+
+    from dronedream_agent_core.local_policy_packages import load_local_policy_package
+
     root = complete_current_base(base_package, tmp_path)
+    manifest = load_local_policy_package(root).manifest
+    risk_sha = next(a.sha256 for a in manifest.artifacts if a.role == 'risk-critic')
     rows = [row.model_copy(update={"visual_features": [0.1]}) for row in samples()[:10]]
     path = tmp_path / "labels.jsonl"
     path.write_bytes(b"".join((row.model_dump_json() + "\n").encode() for row in rows[-2:]))
     metrics, latencies = evaluation._evaluate_runtime_package(
-        root, path, observations=history_rows(rows)
+        root, path, observations=history_rows(rows),
+        action_risk_evidence=synthetic_risk_evidence(risk_sha),
     )
     assert metrics.sample_count == 2
     assert len(latencies) == 2
@@ -191,7 +198,7 @@ def test_vehicle_rebinding_preserves_complete_training_lineage(base_package, tmp
 # 输入：
 #   base_package：轻量合成模型来源。
 #   tmp_path：本例所有测试文件目录。
-#   monkeypatch：只设置两个真实命令行入口的参数，不替换推理或指标。
+#   monkeypatch：设置命令行和独立风险证据夹具；视觉与行为 ONNX 仍实际执行。
 # 输出：
 #   None：不返回业务数据。
 def test_current_admission_cli_connects_visual_history_and_frozen_inputs(
@@ -273,6 +280,17 @@ def test_current_admission_cli_connects_visual_history_and_frozen_inputs(
             str(output),
         ],
     )
+    # 先证明真实入口拒绝缺失的动作风险证据；行为成功标签不能代替该证据。
+    with pytest.raises(ValueError, match="CAUSAL_ADMISSION_ACTION_RISK_EVIDENCE_REQUIRED"):
+        evaluation.main()
+    assert not output.exists()
+    assert not list(tmp_path.glob(".admission-inputs-*"))
+    from test_risk_admission_evidence import synthetic_risk_evidence
+
+    risk_sha = next(a.sha256 for a in package.manifest.artifacts if a.role == "risk-critic")
+    # 本例只隔离风险证据来源，专测真实视觉/历史/行为入口；不算实际风险验收。
+    monkeypatch.setattr(evaluation, "_evaluate_frozen_action_risk",
+                        lambda *_args: synthetic_risk_evidence(risk_sha))
     assert evaluation.main() == 1
     result = json.loads(output.read_bytes())
     assert result["sample_count"] == 2

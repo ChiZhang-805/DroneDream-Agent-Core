@@ -7,11 +7,14 @@ weights. Planning and execution go through the same HTTP contracts as the UI.
 from __future__ import annotations
 
 import re
+import struct
 import time
+from io import BytesIO
 from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
+from PIL import Image
 from pydantic import Field, SecretStr, field_validator
 
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
@@ -164,6 +167,25 @@ class ProductConsoleClient:
         self._http.close()
 
     # 功能：
+    #   根据固定业务目的地构造授权头；云端请求不能携带本机会话秘密。
+    # 输入：
+    #   cloud：是否访问账户网关。
+    #   accept：本模块指定的响应媒体类型。
+    # 输出：
+    #   headers：本次请求独占的头字段。
+    def _headers(self, *, cloud: bool, accept: str) -> dict[str, str]:
+        headers = {"Accept": accept, "Accept-Encoding": "identity"}
+        if cloud:
+            headers["Authorization"] = "Bearer " + self.session.identity_token.get_secret_value()
+        else:
+            headers["Authorization"] = "Bearer " + self.session.local_token.get_secret_value()
+            headers["X-DroneDream-Identity-Token"] = self.session.identity_token.get_secret_value()
+            headers["X-DroneDream-Supabase-Publishable-Key"] = (
+                self.session.publishable_key.get_secret_value()
+            )
+        return headers
+
+    # 功能：
     #   1. 单次请求共享服务，限制响应大小并拒绝压缩、重定向和不合法 JSON。
     #   2. 写请求超时后报告结果未知，不重试、伪造成功或取消已经接收的后台工作。
     # 输入：
@@ -184,17 +206,8 @@ class ProductConsoleClient:
         cloud: bool = False,
         timeout: float = 30.0,
     ) -> dict:
-        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
-        if cloud:
-            headers["Authorization"] = "Bearer " + self.session.identity_token.get_secret_value()
-            base = self.gateway
-        else:
-            headers["Authorization"] = "Bearer " + self.session.local_token.get_secret_value()
-            headers["X-DroneDream-Identity-Token"] = self.session.identity_token.get_secret_value()
-            headers["X-DroneDream-Supabase-Publishable-Key"] = (
-                self.session.publishable_key.get_secret_value()
-            )
-            base = self.session.core_url
+        headers = self._headers(cloud=cloud, accept="application/json")
+        base = self.gateway if cloud else self.session.core_url
         raw = None
         if body is not None:
             raw = encode_json(body, limit=MAX_RESPONSE_BYTES, node_limit=65536).encode("utf-8")
@@ -432,6 +445,70 @@ class ProductConsoleClient:
     def evidence(self, thread_id: str) -> dict:
         evidence = self._request("GET", self._thread_path(thread_id) + "/execution-evidence")
         return evidence
+
+    # 功能：
+    #   读取当前任务的实际画面与遥测来源目录，不把来源就绪当成飞行成功。
+    # 输入：
+    #   thread_id：当前账户有权读取的任务标识。
+    # 输出：
+    #   sources：共享运行管理器返回的来源、传输类型与就绪状态。
+    def live_sources(self, thread_id: str) -> dict:
+        sources = self._request("GET", self._thread_path(thread_id) + "/live-sources")
+        return sources
+
+    # 功能：
+    #   1. 读取共享服务的实际俯视 PNG，不执行飞行、不跟随重定向、不调用云端模型。
+    #   2. 限制传输字节和声明尺寸；画面只供检查，不据下载时间认定传感器新鲜或任务成功。
+    # 输入：
+    #   thread_id：当前账户有权读取的任务标识。
+    # 输出：
+    #   png：服务返回的原始 PNG 字节，不是机载前视模型输入。
+    def live_frame(self, thread_id: str) -> bytes:
+        path = self._thread_path(thread_id) + "/live-frame"
+        deadline = time.monotonic() + 10.0
+        try:
+            with self._http.stream("GET", self.session.core_url + path,
+                    headers=self._headers(cloud=False, accept="image/png"),
+                    timeout=httpx.Timeout(10.0, connect=5.0)) as response:
+                if response.is_redirect:
+                    raise ConsoleError("CONSOLE_REDIRECT_REJECTED")
+                if not response.is_success:
+                    raise ConsoleError(f"CONSOLE_HTTP_{response.status_code}")
+                if response.headers.get("content-encoding", "identity") != "identity":
+                    raise ConsoleError("CONSOLE_COMPRESSED_RESPONSE_REJECTED")
+                if response.headers.get("content-type", "").split(";", 1)[0].strip() != "image/png":
+                    raise ConsoleError("CONSOLE_FRAME_TYPE_INVALID")
+                chunks = bytearray()
+                for chunk in response.iter_bytes():
+                    if time.monotonic() > deadline:
+                        raise httpx.ReadTimeout("deadline")
+                    if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise ConsoleError("CONSOLE_RESPONSE_TOO_LARGE")
+                    chunks.extend(chunk)
+                png = bytes(chunks)
+                if (len(png) < 33 or png[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"):
+                    raise ConsoleError("CONSOLE_FRAME_HEADER_INVALID")
+                width, height = struct.unpack(">II", png[16:24])
+                if not (0 < width <= 4096 and 0 < height <= 4096 and width * height <= 8_388_608):
+                    raise ConsoleError("CONSOLE_FRAME_DIMENSIONS_INVALID")
+                try:
+                    with Image.open(BytesIO(png)) as frame:
+                        frame.verify()
+                except (OSError, ValueError, SyntaxError) as error:
+                    raise ConsoleError("CONSOLE_FRAME_CONTENT_INVALID") from error
+                return png
+        except httpx.RequestError as error:
+            raise ConsoleError("CONSOLE_NETWORK_ERROR") from error
+
+    # 功能：
+    #   读取仿真显示遥测，缺失或损坏时保留服务错误，不生成占位状态或飞行指令。
+    # 输入：
+    #   thread_id：当前账户有权读取的任务标识。
+    # 输出：
+    #   telemetry：服务返回的实时显示数据，控制侧仍独立检查传感器时效。
+    def telemetry(self, thread_id: str) -> dict:
+        telemetry = self._request("GET", self._thread_path(thread_id) + "/live-telemetry")
+        return telemetry
 
     # 功能：
     #   将临时自然语言要求提交到当前任务的运行消息链路，不直接写飞控设定值。

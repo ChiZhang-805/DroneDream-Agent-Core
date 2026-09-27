@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 from dronedream_agent_core import runtime_control_io, runtime_interrupt
 from dronedream_agent_core.contracts import Vector3
@@ -167,7 +168,7 @@ def test_publication_retry_caps_sleep_to_remaining_budget(tmp_path, monkeypatch)
         clock[0] += seconds
 
     monkeypatch.setattr(Path, "replace", transient_lock)
-    monkeypatch.setattr(runtime_control_io.time, "monotonic", lambda: clock[0])
+    isolate_monotonic(monkeypatch, runtime_control_io, lambda: clock[0])
     monkeypatch.setattr(runtime_control_io.time, "sleep", advance)
     path = tmp_path / "evidence.json"
     with pytest.raises(PermissionError):

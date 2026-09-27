@@ -10,9 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from .contracts import StrictModel
+from .training.risk_admission_evidence import (
+    ActionRiskAdmissionEvidence,
+    action_risk_evidence_issues,
+    action_risk_summary,
+)
 
 PILOT_AXES = ("forward", "right", "up", "yaw")
 AXIS_ACTIVITY_THRESHOLD = 0.05
@@ -56,6 +61,7 @@ class LocalRiskCriticMetrics(StrictModel):
 
 
 class LocalPolicyTrainingMetrics(StrictModel):
+    action_risk_evidence: ActionRiskAdmissionEvidence | None = None
     sample_count: int = Field(ge=1)
     motion_sample_count: int = Field(default=0, ge=0)
     non_motion_sample_count: int = Field(default=0, ge=0)
@@ -73,6 +79,19 @@ class LocalPolicyTrainingMetrics(StrictModel):
     mean_cross_entropy: float = Field(ge=0.0)
     pilot_control_mean_absolute_error: float | None = Field(default=None, ge=0.0, le=2.0)
     pilot_axis_evidence: dict[str, PilotAxisEvidence] = Field(default_factory=dict, max_length=4)
+
+    # 功能：
+    #   未使用独立动作风险验收的旧回执保持原字段身份，新回执显式保留不同分母的风险证据。
+    # 输入：
+    #   self、handler：当前指标与标准序列化器。
+    # 输出：
+    #   payload：不会给旧来源补造风险证据的指标对象。
+    @model_serializer(mode='wrap')
+    def serialize_action_risk_evidence(self, handler):
+        payload = handler(self)
+        if self.action_risk_evidence is None:
+            payload.pop('action_risk_evidence', None)
+        return payload
 
 
 # 功能：
@@ -157,8 +176,15 @@ def navigation_quality_issues(
         metrics.model_dump(mode="python"), strict=True,
     )
     issues: list[str] = []
-    if metrics.risky_sample_count + metrics.safe_sample_count != metrics.sample_count:
-        issues.append("RISK_CLASS_SUPPORT_INCOMPLETE")
+    if metrics.action_risk_evidence is None:
+        if metrics.risky_sample_count + metrics.safe_sample_count != metrics.sample_count:
+            issues.append("RISK_CLASS_SUPPORT_INCOMPLETE")
+    else:
+        # 行为样本与风险探针各有自己的分母；仍执行同等或更严格的逐区域风险门槛。
+        expected = action_risk_summary(metrics.action_risk_evidence)
+        if any(getattr(metrics, name) != value for name, value in expected.items()):
+            issues.append('ACTION_RISK_SUMMARY_MISMATCH')
+        issues.extend(action_risk_evidence_issues(metrics.action_risk_evidence))
     if metrics.risky_sample_count < minimum_risk_class_samples:
         issues.append("INSUFFICIENT_RISKY_SAMPLES")
     if metrics.safe_sample_count < minimum_risk_class_samples:

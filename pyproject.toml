@@ -19,6 +19,7 @@ dependencies = [
   "pydantic>=2.10,<3",
   "Pillow>=11,<13",
   "pypdf>=5,<7",
+  "PyYAML>=6.0.2,<7",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,7 @@ local-policy-refinement = [
 local-vision-training = [
   "numpy>=2,<3",
   "onnx>=1.22,<2",
+  "onnxruntime>=1.29,<2",
   "torch>=2.13,<2.14",
   "torchvision>=0.28,<0.29",
 ]
@@ -64,6 +66,9 @@ dronedream-console = "dronedream_agent_app.console:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dronedream_agent_app = ["bundled_interpretations/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"

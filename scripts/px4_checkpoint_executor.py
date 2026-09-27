@@ -63,15 +63,18 @@ from dronedream_agent_core.control_execution_evidence import control_application
 from dronedream_agent_core.control_timing import (
     LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
     LOCAL_TRANSPORT_BUDGET_MS,
+    validate_model_dispatch_rate,
 )
 from dronedream_agent_core.control_uncertainty import finite_positive_number
 from dronedream_agent_core.executor_finalization import finalize_executor_resources
+from dronedream_agent_core.executor_brake_evidence import ExecutorBrakeApplication
 from dronedream_agent_core.executor_snapshots import ACTIVE_SNAPSHOTS, ExecutorSnapshots
 from dronedream_agent_core.flight_command_cleanup import (
     FlightCommandAttempts,
     cleanup_flight_commands,
 )
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.localization_evidence import native_localization_evidence
 from dronedream_agent_core.perception_lifecycle import capture_control_completion
 from dronedream_agent_core.plugin_contracts import PluginResourcePolicy
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
@@ -85,17 +88,19 @@ from dronedream_agent_core.runtime_control_io import (
 from dronedream_agent_core.runtime_evidence import BoundedRuntimeEvidenceWriter
 from dronedream_agent_core.runtime_multimodal_dataset import RuntimeMultimodalDatasetRecord
 from dronedream_agent_core.runtime_progress import next_track_point_index
+from dronedream_agent_core.runtime_replan import replacement_localization_budget_accepted
 from dronedream_agent_core.runtime_scheduling import (
     InterpreterPauseMonitor,
     configure_sensor_thread_handoff,
     retained_interpreter_baseline,
 )
 from dronedream_agent_core.simulation_sensor_runtime import verify_magnetic_parameters
+from dronedream_agent_core.training.payload_checkpoint import decide_payload_teacher_checkpoint
 from dronedream_plugin_sdk.protocol import MAX_MESSAGE_BYTES, decode_json
 
 
 # 功能：
-#   加载本次明确指定的飞控基础模块；初始化失败时恢复模块注册表，避免复用半初始化对象。
+#   直接编译本次指定的飞控源码，不读写安装资源目录的字节码缓存；失败时恢复模块注册表。
 # 输入：
 #   path：基础执行器的本地 Python 路径。
 # 输出：
@@ -108,7 +113,8 @@ def _load_base(path: Path) -> ModuleType:
     previous = sys.modules.get(spec.name)
     sys.modules[spec.name] = module
     try:
-        spec.loader.exec_module(module)
+        # 基础执行器属于只读、带哈希索引的发布资源，不能由 importlib 生成 __pycache__。
+        exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     except BaseException:
         if sys.modules.get(spec.name) is module:
             if previous is None:
@@ -160,6 +166,14 @@ _LOCAL_CONTROL_PHASES = {
 }
 _ENCLOSING_EXECUTOR_STATE_KEY = "enclosing_executor_state"
 _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS = 0.05
+_STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M = 0.08
+_CONTROLLED_LANDING_DESCENT_RATE_MPS = 0.18
+_CONTROLLED_LANDING_HANDOFF_HEIGHT_M = 0.08
+_CONTROLLED_LANDING_HORIZONTAL_TOLERANCE_M = 0.15
+_CONTROLLED_LANDING_VERTICAL_TOLERANCE_M = 0.08
+_CONTROLLED_LANDING_VERTICAL_SPEED_TOLERANCE_MPS = 0.15
+_CONTROLLED_LANDING_STABLE_WINDOW_SECONDS = 0.4
+_CONTROLLED_LANDING_TIMEOUT_MARGIN_SECONDS = 5.0
 
 
 # 功能：
@@ -299,6 +313,7 @@ class SpawnRelativeOffboardClient:
         *,
         heading_hold_deg: float | None = None,
         heading_policy: str = "measured-hold",
+        independent_route_control: bool = False,
         maximum_yaw_rate_deg_s: float = 20.0,
         world_name: str | None = None,
         gazebo_vehicle_model_name: str | None = None,
@@ -309,6 +324,7 @@ class SpawnRelativeOffboardClient:
         self._origin = origin
         self._heading_hold_deg = heading_hold_deg
         self._heading_policy = heading_policy
+        self._independent_route_control = independent_route_control
         self._maximum_yaw_rate_deg_s = maximum_yaw_rate_deg_s
         self._world_name = world_name
         self._gazebo_vehicle_model_name = gazebo_vehicle_model_name
@@ -1081,6 +1097,17 @@ async def _stabilize_runtime_hold(
     }
     if not all(gates.values()):
         raise RuntimeError("runtime hold failed deterministic telemetry gates")
+    # 悬停成功不等于地图定位准确。只绑定实际来源，缺失定位仍允许安全停留/降落，禁止新路线。
+    localization_variance = localization_observed = None
+    dynamics_getter = getattr(client, "latest_dynamics_telemetry", None)
+    if callable(dynamics_getter):
+        try:
+            dynamics = dynamics_getter(0.25)
+            localization_variance, localization_observed = native_localization_evidence(
+                {"dynamics": dynamics}, now_unix_ms=int(time.time() * 1000), maximum_age_ms=250)
+        except (ValueError, TimeoutError):
+            # 不创建默认协方差，也不让可选定位流失败中断已经建立的保护悬停。
+            localization_variance = localization_observed = None
     stable_at = datetime.now(UTC)
     acknowledgement = RuntimeHoldAcknowledgement(
         message_sha256=sha256_json(interruption.message),
@@ -1107,6 +1134,8 @@ async def _stabilize_runtime_hold(
         observed_velocity_ned_mps=Vector3(x=latest.north_m_s, y=latest.east_m_s, z=latest.down_m_s),
         position_error_m=position_error,
         speed_mps=speed,
+        localization_variance_m2=localization_variance,
+        localization_observed_at_unix_ms=localization_observed,
         deterministic_gates=gates,
     )
     _atomic_json(
@@ -1258,6 +1287,15 @@ async def _wait_runtime_replacement(
             if not all(gates.values()):
                 failed = ",".join(name for name, accepted in gates.items() if not accepted)
                 raise UserDirectedLanding(f"runtime replacement binding failed: {failed}")
+            getter = getattr(client, "latest_dynamics_telemetry", None)
+            try:
+                dynamics = getter(0.25) if callable(getter) else {}
+                localization_ready = replacement_localization_budget_accepted(
+                    replacement, dynamics, now_unix_ms=int(time.time() * 1000))
+            except (ValueError, TimeoutError):
+                localization_ready = False
+            if not localization_ready:
+                raise UserDirectedLanding("RUNTIME_REPLACEMENT_LIVE_LOCALIZATION_BUDGET_UNFUNDED")
             return replacement
         await asyncio.sleep(1.0 / rate_hz)
     raise UserDirectedLanding("runtime replan was not supplied within the bounded safe-hold window")
@@ -1608,7 +1646,15 @@ async def _handle_runtime_interruption(
         )
         source_schedule_setpoints = len(schedule)
         heading_policy = getattr(client, "_heading_policy", "measured-hold")
-        if heading_policy == "route-tangent-relative":
+        if getattr(client, "_independent_route_control", False) is True:
+            measured_heading_deg = await base._await_with_setpoint_keepalive(
+                client,
+                client.sample_heading_deg(min(2.0, replan_hold_seconds)),
+                hold_setpoint=hold_setpoint,
+                rate_hz=rate_hz,
+            )
+            schedule = base.hold_setpoint_schedule_heading(schedule, measured_heading_deg)
+        elif heading_policy == "route-tangent-relative":
             world_name = getattr(client, "_world_name", None)
             gazebo_vehicle_model_name = getattr(
                 client,
@@ -2126,6 +2172,7 @@ async def _run_operator_takeover(
 #   setpoint_refresh：局部安全／模型控制刷新回调。
 #   sample_observer：实际遥测发布回调。
 #   target_frame_position_resolver：将实测位置换算到目标坐标的回调。
+#   control_maintained_externally：动作保护协程已独占控制时，仅采样与判稳，禁止重复发送位置控制。
 # 输出：
 #   stable_result：通过连续稳定检查的样本、位置误差和速度三元组。
 async def _wait_checkpoint_stable(
@@ -2144,7 +2191,10 @@ async def _wait_checkpoint_stable(
     setpoint_refresh: Callable[[Any], Awaitable[Any]] | None = None,
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
+    control_maintained_externally: bool = False,
 ) -> tuple[Any, float, float]:
+    if type(control_maintained_externally) is not bool:
+        raise ValueError("external settle control flag must be boolean")
     for value, label in (
         (rate_hz, "settle control rate"),
         (timeout_seconds, "settle timeout"),
@@ -2210,16 +2260,26 @@ async def _wait_checkpoint_stable(
 
     while time.monotonic() < deadline:
         check_settle_interruption()
-        latest = await base._await_with_setpoint_keepalive(
-            client,
-            client.sample_position_velocity_ned(1.0),
-            hold_setpoint=setpoint,
-            rate_hz=rate_hz,
-            abort_check=check_settle_interruption,
-            **(
-                {"setpoint_refresh": refresh_settle_control} if setpoint_refresh is not None else {}
-            ),
-        )
+        if control_maintained_externally:
+            # 动作外层的保护协程持续执行安全仲裁；稳定性测量不再竞争同一刷新锁，
+            # 也不因省略刷新而发送未经仲裁的固定位置。外层仍负责异常及期限。
+            latest = await base._await_with_abort_polling(
+                client.sample_position_velocity_ned(1.0),
+                abort_check=check_settle_interruption,
+                poll_interval_seconds=min(0.05, 1.0 / rate_hz),
+            )
+        else:
+            latest = await base._await_with_setpoint_keepalive(
+                client,
+                client.sample_position_velocity_ned(1.0),
+                hold_setpoint=setpoint,
+                rate_hz=rate_hz,
+                abort_check=check_settle_interruption,
+                **(
+                    {"setpoint_refresh": refresh_settle_control}
+                    if setpoint_refresh is not None else {}
+                ),
+            )
         if sample_observer is not None:
             sample_observer(latest)
         target_frame_position = (
@@ -2633,6 +2693,7 @@ async def _execute_ros2_domain_action(
 #   setpoint_refresh：局部控制刷新回调。
 #   sample_observer：实际遥测观察回调。
 #   target_frame_position_resolver：位置稳定判定的坐标变换。
+#   control_maintained_externally：外层已有持续控制任务，内嵌稳定检查只采样，不重复操纵。
 # 输出：
 #   output：驱动实际返回的设备状态和验证证据。
 async def _invoke_runtime_action_driver(
@@ -2646,6 +2707,7 @@ async def _invoke_runtime_action_driver(
     setpoint_refresh: Callable[[Any], Awaitable[Any]] | None = None,
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
+    control_maintained_externally: bool = False,
 ) -> dict[str, Any]:
     if step.driver == "mavsdk-camera":
         simulation_capture = _verified_simulation_onboard_rgb_capture(step.parameters)
@@ -2670,6 +2732,7 @@ async def _invoke_runtime_action_driver(
                 setpoint_refresh=setpoint_refresh,
                 sample_observer=sample_observer,
                 target_frame_position_resolver=target_frame_position_resolver,
+                control_maintained_externally=control_maintained_externally,
             )
             state = await client.sample_payload_state(str(step.parameters["output_topic"]), 3.0)
             if state.get("detached") is not True:
@@ -2718,6 +2781,7 @@ async def _invoke_runtime_action_driver(
                 setpoint_refresh=setpoint_refresh,
                 sample_observer=sample_observer,
                 target_frame_position_resolver=target_frame_position_resolver,
+                control_maintained_externally=control_maintained_externally,
             )
             return {
                 **state,
@@ -2972,6 +3036,12 @@ async def _await_runtime_action_while_holding(
             last_refresh_at = asyncio.get_running_loop().time()
             return latest_hold_setpoint
 
+    # 在安排设备协程前检查停止请求，不能让即时完成的设备副作用抢在保护协程之前。
+    base._raise_if_external_abort_requested(abort_file)
+    if runtime_interrupt_probe is not None:
+        existing_interruption = runtime_interrupt_probe()
+        if existing_interruption is not None:
+            raise existing_interruption
     operation = asyncio.create_task(
         _invoke_runtime_action_driver(
             base=base,
@@ -2985,14 +3055,20 @@ async def _await_runtime_action_while_holding(
             ),
             sample_observer=sample_observer,
             target_frame_position_resolver=target_frame_position_resolver,
+            control_maintained_externally=True,
         )
     )
-    deadline = asyncio.get_running_loop().time() + step.timeout_seconds
     pending_interruption: RuntimeInterruptDetected | None = None
-    try:
+
+    # 功能：
+    #   独立维持动作期间的保护控制；刷新不能阻止已经完成的设备回执交接到下一状态。
+    # 输入：
+    #   无显式参数；使用本次动作绑定的控制目标与刷新器。
+    # 输出：
+    #   None：保护协程结束，异常仍交给外层处理。
+    async def maintain_hold() -> None:
+        nonlocal pending_interruption
         while not operation.done():
-            if asyncio.get_running_loop().time() >= deadline:
-                raise TimeoutError(f"runtime action timed out: {step.step_id}")
             base._raise_if_external_abort_requested(abort_file)
             # Refresh every action, including payload state reads outside the
             # embedded stability gates. The coordinated callback prevents the
@@ -3006,13 +3082,30 @@ async def _await_runtime_action_while_holding(
             if pending_interruption is None and runtime_interrupt_probe is not None:
                 pending_interruption = runtime_interrupt_probe()
             await asyncio.sleep(1.0 / rate_hz)
+
+    holding = asyncio.create_task(maintain_hold())
+    try:
+        # 原先串行 await refresh 会等待旧载荷状态恢复，导致已确认的挂载/托管
+        # 不能发布新状态，形成互相等待。现在设备完成与保护刷新独立竞争；
+        # 动作预算同时约束两者，保护失败仍优先传播，不吞掉安全降落请求。
+        completed, _ = await asyncio.wait(
+            (operation, holding), timeout=step.timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not completed:
+            raise TimeoutError(f"runtime action timed out: {step.step_id}")
+        if holding in completed:
+            await holding
+        base._raise_if_external_abort_requested(abort_file)
+        if runtime_interrupt_probe is not None and pending_interruption is None:
+            pending_interruption = runtime_interrupt_probe()
         return await operation, pending_interruption
-    except BaseException:
-        if not operation.done():
-            operation.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await operation
-        raise
+    finally:
+        # 所有退出路径都回收两条自有协程；不能留下晚到的旧状态刷新。
+        for task in (holding, operation):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(holding, operation, return_exceptions=True)
 
 
 # 功能：
@@ -3117,7 +3210,7 @@ async def _execute_runtime_action_step(
             issue_codes = [
                 name.upper() for name, accepted in deterministic_gates.items() if not accepted
             ]
-        except RuntimeInterruptDetected:
+        except (RuntimeInterruptDetected, UserDirectedLanding, base.ExternalSafetyAbort):
             raise
         except Exception as exc:
             issue_codes = [f"{type(exc).__name__}:{str(exc)[:240]}"]
@@ -3403,6 +3496,7 @@ def _world_enu_setpoint(
 #   transport：实际使用的纯速度或位置速度接口。
 #   accepted_at_unix_ms：适配器返回时刻，未提供时读取当前 UTC 毫秒。
 #   position_ned_m：位置接口实际发送的位置，纯速度时不需要。
+#   measured_hold_anchor：本次实际使用的PX4测量锚点及其选取时间，不给旧观测续期。
 # 输出：
 #   None：不返回业务数据。
 def _record_model_control_application(
@@ -3414,6 +3508,7 @@ def _record_model_control_application(
     transport: str = "velocity-ned",
     accepted_at_unix_ms: int | None = None,
     position_ned_m: tuple[float, float, float] | None = None,
+    measured_hold_anchor: dict | None = None,
 ) -> None:
     """Account for an actual transport acceptance, never a proposed action.
 
@@ -3433,6 +3528,10 @@ def _record_model_control_application(
         control_source=command.decision.control_source,
         heading_assisted=intent is not None and intent.yaw_control_mode == "route-heading-assist",
     )
+    if command.navigation_control_authority == "bounded-hybrid":
+        category = "bounded-hybrid-bridge" if command.decision.action != "hold" else "bounded-hybrid-hold"
+    elif getattr(args, "independent_route_control", False):
+        category = "independent-route-motion" if command.decision.action in {"continue", "slow"} else "independent-route-hold"
     counts = dict(getattr(args, "_model_control_application_counts", {}))
     counts[category] = counts.get(category, 0) + 1
     args._model_control_application_counts = counts
@@ -3448,6 +3547,7 @@ def _record_model_control_application(
             velocity_ned_mps=velocity_ned_mps,
             yaw_heading_deg=yaw_deg,
             position_ned_m=position_ned_m,
+            measured_hold_anchor=measured_hold_anchor,
             yaw_rate_application=(
                 args._last_model_yaw_application[1]
                 if getattr(args, "_last_model_yaw_application", (None,))[0] == sha256_json(command)
@@ -3467,15 +3567,26 @@ def _record_model_control_application(
     ):
         raise UserDirectedLanding("CONTROL_TRANSPORT_ACCEPTANCE_EXCEEDED_INPUT_DEADLINE")
     if accepted_at <= command.valid_until_unix_ms:
+        # 计算设定值不等于执行；只有同一命令的实际接收回执才能推进下一轮偏航目标。
+        # 过期未发出或转入刹停的候选不得在内部积累未执行的转角。
+        pending_yaw = getattr(args, "_last_model_yaw_application", (None, None))
+        if (transport == "velocity-ned" and yaw_deg is not None
+                and pending_yaw[0] == sha256_json(command) and pending_yaw[1] is not None):
+            args._model_body_control_yaw_deg = float(yaw_deg)
         _clear_dispatch_input_gap(args)
     if command.model_navigation_authorized:
         args._model_authorized_control_applied_count = (
             getattr(args, "_model_authorized_control_applied_count", 0) + 1
         )
+        if command.decision.action in {"continue", "slow"} and accepted_at < command.valid_until_unix_ms:
+            receipts = list(getattr(args, "_hybrid_model_receipts", ()))
+            if not receipts or receipts[-1][0] != command.model_call_id:
+                receipts.append((command.model_call_id, command.navigation_goal_id, accepted_at))
+                args._hybrid_model_receipts = tuple(receipts[-3:])
 
 
 # 功能：
-#   模型控制的保护悬停使用新鲜实测航向，并清除旧偏航积分；明确兼容模式才允许回退航向。
+#   模型及仿真示范的保护悬停使用新鲜实测航向，并清除旧偏航积分；明确路线兼容模式才回退。
 # 输入：
 #   args：模型偏航积分与来源状态。
 #   client：当前原生姿态客户端。
@@ -3490,11 +3601,12 @@ def _local_hold_yaw(
     fallback_heading_deg: float,
     model_control_required: bool = False,
 ) -> float:
-    """Latch native attitude on a safety handover; do not undo a model turn."""
     required = (
         model_control_required
         or bool(getattr(args, "require_model_control_authority", False))
         or bool(getattr(args, "_last_model_control_required", False))
+        or bool(getattr(args, "simulation_teacher_control", False))
+        or bool(getattr(args, "independent_route_control", False))
     )
     if not required:
         # Explicit route-following compatibility does not claim model control.
@@ -3516,7 +3628,92 @@ def _local_hold_yaw(
 
 
 # 功能：
-#   按本地周期积分模型授权偏航速率，安全覆盖禁止继续旧转向；不以路线航向替代模型输出。
+#   1. 新鲜航向缺失时仅发送零速、零偏航角速度刹停，最长等待一秒，不复用旧航向。
+#   2. 恢复后返回空值让调用方重新采样位置和命令；保护动作不作为模型示范标签。
+# 输入：
+#   args：本次航向断档计时及控制状态。
+#   client：支持零速刹停的多旋翼客户端。
+#   observed：调用方刚获取的位置和速度遥测。
+#   fallback_heading_deg：显式非模型兼容模式的备用航向。
+#   model_control_required：是否强制要求原生航向。
+# 输出：
+#   heading：可用航向；本轮已刹停、必须重新开始控制周期时为 None。
+async def _hold_heading_or_brake(
+    args: argparse.Namespace, client: Any, observed: Any,
+    fallback_heading_deg: float, model_control_required: bool = False,
+) -> float | None:
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    started = getattr(args, "_heading_gap_started_at", None)
+    if started is not None and now - started >= 1.0:
+        raise UserDirectedLanding("NATIVE_HEADING_RECOVERY_TIMEOUT")
+    try:
+        heading = _local_hold_yaw(args=args, client=client,
+            fallback_heading_deg=fallback_heading_deg,
+            model_control_required=model_control_required)
+    except UserDirectedLanding as error:
+        if str(error) != "MODEL_HOLD_REQUIRES_FRESH_NATIVE_HEADING":
+            raise
+        heading = None
+        if started is None:
+            started = args._heading_gap_started_at = now
+        args._heading_recovery_fresh_since = None
+        args._heading_gap_cause = type(error.__cause__).__name__
+    if started is None:
+        return heading
+    # 外部航向缺口不等于机载估计失效；但位置/速度也不可用时不能继续此恢复模式。
+    values = [getattr(observed, key, None) for key in (
+        "north_m", "east_m", "down_m", "north_m_s", "east_m_s", "down_m_s")]
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+        raise UserDirectedLanding("NATIVE_HEADING_BRAKE_REQUIRES_FRESH_POSITION")
+    sender = getattr(client, "set_braking_hold", None)
+    if not callable(sender):
+        raise UserDirectedLanding("NATIVE_HEADING_BRAKE_TRANSPORT_UNAVAILABLE")
+    args._last_model_control_authorized = False
+    args._model_body_control_yaw_deg = None
+    args._last_model_yaw_application = None, None
+    args._model_authority_hold_setpoint = None
+    args._dispatch_input_hold_setpoint = None
+    try:
+        await asyncio.wait_for(sender(), timeout=min(0.1, max(0.001, 1.0 - (now - started))))
+    except (TimeoutError, RuntimeError) as error:
+        raise UserDirectedLanding("NATIVE_HEADING_BRAKE_TRANSPORT_FAILED") from error
+    now = loop.time()
+    if now - started >= 1.0:
+        raise UserDirectedLanding("NATIVE_HEADING_RECOVERY_TIMEOUT")
+    if heading is not None:
+        # 传输等待也消耗样本寿命，不能把发送前有效、发送后过期的帧算作稳定恢复。
+        try:
+            heading = _local_hold_yaw(args=args, client=client,
+                fallback_heading_deg=fallback_heading_deg, model_control_required=True)
+        except UserDirectedLanding:
+            heading = None
+            args._heading_recovery_fresh_since = None
+        args._model_body_control_yaw_deg = None
+    fresh_since = getattr(args, "_heading_recovery_fresh_since", None)
+    if heading is not None:
+        if fresh_since is None:
+            args._heading_recovery_fresh_since = now
+        elif now - fresh_since >= LOCAL_CONTROL_MAXIMUM_AGE_SECONDS:
+            # 持续超过一整段有效期，旧的单帧不能凭重复读取满足恢复条件。
+            args._heading_gap_started_at = None
+            args._heading_recovery_fresh_since = None
+    recovered = args._heading_gap_started_at is None
+    _record_local_safety_executor_event(args,
+        status="native-heading-recovered" if recovered else "native-heading-brake", details={
+        "gap_elapsed_seconds": now - started,
+        "heading_available": heading is not None,
+        "cause_type": getattr(args, "_heading_gap_cause", None),
+        "recovered": recovered,
+        "body_velocity_mps": [0.0, 0.0, 0.0], "yaw_rate_dps": 0.0,
+        "schedule_advancement_authorized": False,
+        "training_label_authorized": False,
+    })
+    return None
+
+
+# 功能：
+#   按本地周期积分模型或仿真示范授权的偏航速率，安全覆盖禁止旧转向；不以路线航向替代。
 # 输入：
 #   base：设定值构造模块。
 #   args：周期限制及最近偏航积分状态。
@@ -3530,12 +3727,12 @@ def _setpoint_with_model_body_yaw(
     args: argparse.Namespace,
     setpoint: Any,
     command: RuntimeLocalSafetyCommand,
+    anchor_heading_deg: float | None = None,
 ) -> Any:
-    """Integrate the approved rate, including an explicit safety yaw veto."""
-
     decision = command.decision
     args._last_model_yaw_application = None, None
     simulation_teacher = bool(getattr(args, "simulation_teacher_control", False))
+    independent_route = bool(getattr(args, "independent_route_control", False))
     safety_velocity_override = (
         getattr(decision, "control_source", None) == "deterministic-safety-override"
         and getattr(command, "navigation_control_authority", None) == "model-required"
@@ -3543,7 +3740,7 @@ def _setpoint_with_model_body_yaw(
     )
     if safety_velocity_override and decision.selected_yaw_rate_dps != 0.0:
         raise UserDirectedLanding("SAFETY_VELOCITY_OVERRIDE_CANNOT_AUTHOR_A_TURN")
-    if not simulation_teacher and (
+    if not (simulation_teacher or independent_route) and (
         (
             getattr(decision, "control_source", "route-target") != "local-model-body-control"
             and not safety_velocity_override
@@ -3557,7 +3754,13 @@ def _setpoint_with_model_body_yaw(
             else None
         )
         return setpoint
-    previous = getattr(args, "_model_body_control_yaw_deg", None)
+    # 实测航向可建立首次速度接管或零偏航制动的积分起点；路线航向不是当前姿态。
+    if anchor_heading_deg is not None and (
+        type(anchor_heading_deg) not in (int, float) or not math.isfinite(anchor_heading_deg)
+    ):
+        raise UserDirectedLanding("CONTROL_YAW_ANCHOR_INVALID")
+    previous = (anchor_heading_deg if anchor_heading_deg is not None
+                else getattr(args, "_model_body_control_yaw_deg", None))
     if not isinstance(previous, int | float) or not math.isfinite(float(previous)):
         previous = float(setpoint.yaw_deg)
     rate_limit = min(
@@ -3583,7 +3786,7 @@ def _setpoint_with_model_body_yaw(
         maximum_rate_dps=rate_limit,
         step_seconds=1.0 / float(args.setpoint_rate_hz),
     )
-    args._model_body_control_yaw_deg = next_yaw
+    # 这里只准备候选。真正发出且在原期限内被接受后，记录函数才提交积分状态。
     args._last_model_yaw_application = (
         sha256_json(command),
         {
@@ -3710,6 +3913,7 @@ def _read_local_safety_command(args: argparse.Namespace) -> RuntimeLocalSafetyCo
             if command.decision.action in {"continue", "slow", "replan"}
             and (
                 getattr(args, "simulation_teacher_control", False)
+                or getattr(args, "independent_route_control", False)
                 or command.navigation_control_authority == "model-required"
             )
             else 0
@@ -3750,6 +3954,7 @@ def _read_local_safety_command(args: argparse.Namespace) -> RuntimeLocalSafetyCo
                 command.decision.action in {"continue", "slow", "replan"}
                 and (
                     getattr(args, "simulation_teacher_control", False)
+                    or getattr(args, "independent_route_control", False)
                     or command.navigation_control_authority == "model-required"
                 )
                 and command.valid_until_unix_ms - int(time.time() * 1000)
@@ -4097,6 +4302,52 @@ def _schedule_velocity_feedforward(
 
 
 # 功能：
+#   飞行器已经沿当前路线切向领先参考点时关闭路线速度前馈，让位置环先把稠密参考追上。
+# 输入：
+#   observed：本控制周期的 PX4 位置速度观测。
+#   planned_setpoint：当前路线参考点。
+#   planned_velocity_ned_mps：原始路线切向速度前馈。
+#   estimator_offset_world_enu_m：PX4 估计器到地图世界坐标的短时对齐量。
+#   lead_deadband_m：允许的微小时间超前，避免厘米级估计抖动反复开关前馈。
+# 输出：
+#   policy_result：本轮应发送的速度前馈、是否抑制及测得的沿线超前距离。
+def _lead_aware_route_velocity_feedforward(
+    *,
+    observed: Any,
+    planned_setpoint: Any,
+    planned_velocity_ned_mps: tuple[float, float, float] | None,
+    estimator_offset_world_enu_m: Vector3,
+    lead_deadband_m: float = 0.02,
+) -> tuple[tuple[float, float, float] | None, bool, float]:
+    """Do not push an already-leading vehicle farther past the route reference."""
+
+    if planned_velocity_ned_mps is None:
+        return None, False, 0.0
+    lead_deadband_m = _control_scalar(
+        lead_deadband_m,
+        "route feedforward lead deadband",
+        minimum=0,
+    )
+    observed_route_frame_ned = (
+        _control_scalar(observed.north_m, "observed north")
+        + _control_scalar(estimator_offset_world_enu_m.y, "north estimator offset"),
+        _control_scalar(observed.east_m, "observed east")
+        + _control_scalar(estimator_offset_world_enu_m.x, "east estimator offset"),
+        _control_scalar(observed.down_m, "observed down")
+        - _control_scalar(estimator_offset_world_enu_m.z, "up estimator offset"),
+    )
+    components = _route_tracking_error_components(
+        observed_route_frame_ned=observed_route_frame_ned,
+        planned_setpoint=planned_setpoint,
+        planned_velocity_ned_mps=planned_velocity_ned_mps,
+    )
+    lead_m = float(components["along_track_lead_m"])
+    if bool(components["tangent_available"]) and lead_m > lead_deadband_m:
+        return (0.0, 0.0, 0.0), True, lead_m
+    return planned_velocity_ned_mps, False, lead_m
+
+
+# 功能：
 #   分离三维路线横向偏差和沿线时间落后，避免把正常控制响应滞后误算成障碍净空消耗。
 # 输入：
 #   observed_route_frame_ned：目标参考系内的实测位置。
@@ -4365,8 +4616,9 @@ def _advance_local_repair_progress(
 #   setpoint：安全位置目标及航向。
 #   velocity_ned_mps：北、东、向下速度前馈。
 #   deadline_unix_ms：原始输入授权期限，None 表示非运动授权保护路径。
+#   transport_reserve_ms：本次发送前所需余量（毫秒），只能大于等于基础传输预算。
 # 输出：
-#   accepted_at：组合接口返回的 UTC 毫秒时刻，兼容纯位置调用时为 None。
+#   accepted_at：实际传输成功返回后的 UTC 毫秒时刻；发送异常时不生成回执。
 async def _send_position_with_velocity(
     *,
     base: ModuleType,
@@ -4374,9 +4626,13 @@ async def _send_position_with_velocity(
     setpoint: Any,
     velocity_ned_mps: tuple[float, float, float] | None,
     deadline_unix_ms: int | None = None,
-) -> int | None:
+    transport_reserve_ms: int = LOCAL_TRANSPORT_BUDGET_MS,
+) -> int:
     """Send a local safety setpoint without restoring the pre-arm heading."""
 
+    if (type(transport_reserve_ms) is not int
+            or not LOCAL_TRANSPORT_BUDGET_MS <= transport_reserve_ms <= 251):
+        raise ValueError("CONTROL_TRANSPORT_RESERVE_INVALID")
     velocity_type = getattr(base, "VelocitySetpoint", None)
     sender = getattr(client, "set_local_position_velocity_ned", None)
     if sender is None:
@@ -4388,13 +4644,13 @@ async def _send_position_with_velocity(
         if position_sender is None:
             position_sender = client.set_position_ned
         await position_sender(setpoint)
-        return
+        return int(time.time() * 1000)
     north_m_s, east_m_s, down_m_s = velocity_ned_mps
     if not all(math.isfinite(value) for value in velocity_ned_mps):
         raise UserDirectedLanding("velocity feedforward contained non-finite values")
     if (
         deadline_unix_ms is not None
-        and deadline_unix_ms - int(time.time() * 1000) < LOCAL_TRANSPORT_BUDGET_MS
+        and deadline_unix_ms - int(time.time() * 1000) < transport_reserve_ms
     ):
         raise ControlInputLeaseUnavailable("CONTROL_TRANSPORT_HAS_INSUFFICIENT_INPUT_LEASE")
     await sender(
@@ -4417,6 +4673,7 @@ async def _send_position_with_velocity(
 #   velocity_ned_mps：仲裁后的北、东、向下速度。
 #   yaw_deg：仲裁后的航向。
 #   deadline_unix_ms：命令授权失效的 UTC 毫秒时刻。
+#   transport_reserve_ms：实测较慢时提高的预留毫秒；不改变命令原始到期时刻。
 # 输出：
 #   accepted_at：底层发送返回时刻，用于再次验证接收回执。
 async def _send_model_velocity(
@@ -4426,6 +4683,7 @@ async def _send_model_velocity(
     velocity_ned_mps: tuple[float, float, float],
     yaw_deg: float,
     deadline_unix_ms: int | None = None,
+    transport_reserve_ms: int = LOCAL_TRANSPORT_BUDGET_MS,
 ) -> int:
     """Send one model-authorized motion command using velocity control only.
 
@@ -4435,6 +4693,9 @@ async def _send_model_velocity(
     command from silently becoming another moving world-coordinate target.
     """
 
+    if (type(transport_reserve_ms) is not int
+            or not LOCAL_TRANSPORT_BUDGET_MS <= transport_reserve_ms <= 251):
+        raise ValueError("CONTROL_TRANSPORT_RESERVE_INVALID")
     velocity_type = getattr(base, "VelocitySetpoint", None)
     # Adapters with route/prearm heading policy must expose the explicit
     # model path so that the authorized yaw is not silently rewritten.
@@ -4447,7 +4708,7 @@ async def _send_model_velocity(
         raise UserDirectedLanding("model velocity command contained non-finite values")
     if (
         deadline_unix_ms is not None
-        and deadline_unix_ms - int(time.time() * 1000) < LOCAL_TRANSPORT_BUDGET_MS
+        and deadline_unix_ms - int(time.time() * 1000) < transport_reserve_ms
     ):
         raise ControlInputLeaseUnavailable("CONTROL_TRANSPORT_HAS_INSUFFICIENT_INPUT_LEASE")
     north_m_s, east_m_s, down_m_s = velocity_ned_mps
@@ -4529,6 +4790,13 @@ async def _dispatch_motion_or_brake(
         navigation_goal_deadline_monotonic,
         asyncio.get_running_loop().time(),
     )
+    # 本次运行实测的较慢传输会提高后续预留，不延长原命令的期限。
+    # 251 ms 大于整个 250 ms 输入寿命，因此过慢传输不能继续授权运动。
+    reserve = getattr(args, "_measured_transport_reserve_ms", LOCAL_TRANSPORT_BUDGET_MS)
+    if type(reserve) is not int or not LOCAL_TRANSPORT_BUDGET_MS <= reserve <= 251:
+        raise ValueError("CONTROL_TRANSPORT_RESERVE_INVALID")
+    dispatch_started = asyncio.get_running_loop().time()
+    dispatch_started_ms = int(time.time() * 1000)
     try:
         if position_control:
             accepted_at = await _send_position_with_velocity(
@@ -4537,6 +4805,7 @@ async def _dispatch_motion_or_brake(
                 setpoint=setpoint,
                 velocity_ned_mps=velocity_ned_mps,
                 deadline_unix_ms=command.valid_until_unix_ms,
+                transport_reserve_ms=reserve,
             )
         else:
             accepted_at = await _send_model_velocity(
@@ -4545,6 +4814,7 @@ async def _dispatch_motion_or_brake(
                 velocity_ned_mps=velocity_ned_mps,
                 yaw_deg=float(setpoint.yaw_deg),
                 deadline_unix_ms=command.valid_until_unix_ms,
+                transport_reserve_ms=reserve,
             )
     except ControlInputLeaseUnavailable:
         now = asyncio.get_running_loop().time()
@@ -4566,12 +4836,15 @@ async def _dispatch_motion_or_brake(
         if not all(math.isfinite(v) for v in values):
             raise UserDirectedLanding("CONTROL_INPUT_BRAKE_TELEMETRY_INVALID") from None
         speed = math.sqrt(sum(v * v for v in values[3:]))
-        heading = _local_hold_yaw(
+        heading = await _hold_heading_or_brake(
             args=args,
             client=client,
+            observed=observed,
             fallback_heading_deg=float(setpoint.yaw_deg),
             model_control_required=True,
         )
+        if heading is None:
+            return None
         hold = getattr(args, "_dispatch_input_hold_setpoint", None)
         # Never pull a moving vehicle back toward an earlier braking position.
         if hold is None or speed > _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS:
@@ -4581,8 +4854,8 @@ async def _dispatch_motion_or_brake(
             args._dispatch_input_hold_setpoint = (
                 hold if speed <= _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS else None
             )
-        await _send_position_with_velocity(
-            base=base, client=client, setpoint=hold, velocity_ned_mps=(0.0, 0.0, 0.0)
+        await _send_executor_brake(
+            args=args, base=base, client=client, setpoint=hold, reason="input-lease-unavailable"
         )
         args._last_model_control_authorized = False
         _record_local_safety_executor_event(
@@ -4610,6 +4883,24 @@ async def _dispatch_motion_or_brake(
             },
         )
         return None
+    elapsed_ms = (asyncio.get_running_loop().time() - dispatch_started) * 1000
+    if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+        raise UserDirectedLanding("CONTROL_TRANSPORT_MONOTONIC_CLOCK_INVALID")
+    next_reserve = max(reserve, min(251, math.ceil(elapsed_ms) + 5))
+    args._measured_transport_reserve_ms = next_reserve
+    if next_reserve > reserve or (
+        accepted_at is not None and accepted_at > command.valid_until_unix_ms
+    ):
+        _record_local_safety_executor_event(args, status="transport-budget-measured", details={
+            "command_sequence": command.observation_sequence,
+            "dispatch_started_at_unix_ms": dispatch_started_ms,
+            "accepted_at_unix_ms": accepted_at,
+            "command_valid_until_unix_ms": command.valid_until_unix_ms,
+            "elapsed_monotonic_ms": elapsed_ms,
+            "reserved_ms": reserve,
+            "next_reserved_ms": next_reserve,
+            "deadline_extended": False,
+        })
     # A late adapter return must still reach the receipt/failure check, without
     # pretending that usable input has resumed in the meantime.
     if accepted_at is not None and accepted_at <= command.valid_until_unix_ms:
@@ -4743,6 +5034,30 @@ def _record_local_safety_executor_event(
     writer.submit(path, {"recorded_at_unix_ms": now_unix_ms, "status": status, **details})
 
 
+# 功能：发送真实保护性悬停后逐条记录传输接受时间，独立于被节流的诊断事件。
+# 输入：原执行上下文、实际NED设定值（米）和缺失原因；输出：实际接受UNIX毫秒。
+# 该回执不绑定过期模型、不伪造新鲜传感器，也不自动成为合格训练动作或成功飞行。
+async def _send_executor_brake(*, args, base, client, setpoint, reason):
+    accepted = await _send_position_with_velocity(
+        base=base, client=client, setpoint=setpoint, velocity_ned_mps=(0., 0., 0.)
+    )
+    count = getattr(args, "_executor_brake_application_count", 0) + 1
+    args._executor_brake_application_count = count
+    record = ExecutorBrakeApplication(
+        sequence=count,
+        after_command_application_sequence=sum(
+            getattr(args, "_model_control_application_counts", {}).values()),
+        accepted_at_unix_ms=accepted, reason=reason,
+        position_ned_m=(setpoint.north_m, setpoint.east_m, setpoint.down_m),
+        yaw_heading_deg=float(setpoint.yaw_deg),
+    )
+    writer = getattr(args, "_control_application_writer", None)
+    if writer is not None:
+        writer.submit(Path(args.run_dir) / "runtime-state" / "executor-brake-applications.jsonl",
+                      record.model_dump(mode="json"))
+    return accepted
+
+
 # 功能：
 #   判断当前安全命令是否适用于当前目标及恢复模式，拒绝沿用上一目标的有效期限。
 # 输入：
@@ -4873,6 +5188,64 @@ def _local_safety_control_context_diagnostic(
 
 
 # 功能：
+#   区分“目标点本身已到达”与“前方路径被阻挡”。前者即使安全层保持，也应只完成本航点，
+#   让下一航点在下一控制周期接受全新的感知与碰撞检查，不能永久卡住稠密路线首点。
+# 输入：
+#   command：已通过时效、身份和目标上下文校验的本轮安全命令。
+#   observed：本轮 PX4 原生状态；缺失速度时不能证明飞机已经稳定。
+#   tracking_recovery_active：恢复模式中的固定目标仍由恢复门控负责，不能走普通路线捷径。
+# 输出：
+#   completed：仅当普通路线目标已在严格距离内且飞机近乎静止时为 True。
+def _stationary_route_setpoint_is_complete(
+    *,
+    command: RuntimeLocalSafetyCommand,
+    observed: Any | None,
+    tracking_recovery_active: bool,
+) -> bool:
+    """Allow a zero-displacement route point to finish without authorizing new motion."""
+
+    if observed is None or tracking_recovery_active:
+        return False
+    if getattr(command, "navigation_control_authority", "route-fallback") != "route-fallback":
+        return False
+    if command.decision.action != "hold":
+        return False
+    selected = command.decision.selected_velocity_mps
+    if any(abs(float(value)) > 1e-9 for value in (selected.x, selected.y, selected.z)):
+        return False
+    target = getattr(command, "evaluated_target_position_m", None)
+    current = getattr(command, "command_position_m", None)
+    if target is None or current is None:
+        return False
+    values = (
+        target.x,
+        target.y,
+        target.z,
+        current.x,
+        current.y,
+        current.z,
+        getattr(observed, "north_m_s", None),
+        getattr(observed, "east_m_s", None),
+        getattr(observed, "down_m_s", None),
+    )
+    if any(value is None or not math.isfinite(float(value)) for value in values):
+        return False
+    target_distance_m = math.dist(
+        (float(target.x), float(target.y), float(target.z)),
+        (float(current.x), float(current.y), float(current.z)),
+    )
+    observed_speed_mps = math.sqrt(
+        float(observed.north_m_s) ** 2
+        + float(observed.east_m_s) ** 2
+        + float(observed.down_m_s) ** 2
+    )
+    return (
+        target_distance_m <= _STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M
+        and observed_speed_mps <= _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS
+    )
+
+
+# 功能：
 #   在必须由模型控制的运行中拒绝普通路线回退许可，不能用兼容命令冒充模型授权。
 # 输入：
 #   args：本次运行的控制权限要求。
@@ -4886,15 +5259,71 @@ def _local_safety_command_matches_required_authority(
 ) -> bool:
     """Reject compatibility commands when this run requires model-owned control."""
 
+    if getattr(command, "navigation_control_authority", None) == "bounded-hybrid":
+        return bool(getattr(args, "bounded_hybrid_control", False)
+            and getattr(args, "require_model_control_authority", False)
+            and command.hybrid_lease is not None
+            and command.hybrid_lease.route_sha256 == getattr(args, "hybrid_route_sha256", None))
+    if getattr(args, "independent_route_control", False):
+        return (command.navigation_control_authority == "route-fallback"
+                and not command.model_navigation_authorized
+                and command.requested_control_intent is None
+                and command.source == "onboard"
+                and not any(command.estimator_to_world_position_offset_m.model_dump().values()))
     return not bool(getattr(args, "require_model_control_authority", False)) or (
         command.navigation_control_authority == "model-required"
     )
+
+
+# 功能：飞控端独立累计接管实际路程并检查近期模型执行回执，禁止只凭工作进程自报续期。
+# 输入：args：本运行状态；observed：当前原生 NED 位置；command：待执行命令。
+# 输出：是否可接受接管；普通模型命令不受接管授权限制。
+def _hybrid_transport_admissible(args, observed, command, *, now, now_unix_ms):
+    args._hybrid_rejection_reason = None
+    state = getattr(args, "_hybrid_execution_state", None)
+    position = None if observed is None else (
+        observed.north_m, observed.east_m, observed.down_m)
+    if position is not None and not all(math.isfinite(v) for v in position):
+        position = None
+    if state is not None and position is not None:
+        state["distance"] += math.dist(state["position"], position)
+        state["position"] = position
+    if command is None or getattr(command, "navigation_control_authority", None) != "bounded-hybrid":
+        return True
+    lease = command.hybrid_lease
+    if position is None or lease is None or not _local_safety_command_matches_required_authority(
+            args=args, command=command):
+        args._hybrid_rejection_reason = "hybrid-observation-or-binding-unavailable"
+        return False
+    identity = (lease.route_sha256, lease.navigation_goal_id, lease.episode)
+    if state is None or state["identity"] != identity:
+        receipts = getattr(args, "_hybrid_model_receipts", ())
+        if (len(receipts) < 3 or len({r[0] for r in receipts}) != 3
+                or any(r[1] != lease.navigation_goal_id or r[2] > now_unix_ms
+                    or now_unix_ms - r[2] > 1500 for r in receipts)
+                or (state is not None and (lease.episode <= state["identity"][2]
+                    or receipts[0][2] <= state["started_wall"]))):
+            args._hybrid_rejection_reason = "hybrid-actual-execution-history-insufficient"
+            return False
+        state = dict(identity=identity, started_wall=lease.started_at_unix_ms,
+            expires_wall=lease.expires_at_unix_ms,
+            deadline=now + max(0, lease.expires_at_unix_ms - now_unix_ms) / 1000,
+            distance=0., position=position)
+        args._hybrid_execution_state = state
+    admissible = bool(state["started_wall"] == lease.started_at_unix_ms
+        and state["expires_wall"] == lease.expires_at_unix_ms
+        and lease.started_at_unix_ms <= now_unix_ms < lease.expires_at_unix_ms
+        and now < state["deadline"] and state["distance"] < lease.maximum_distance_m)
+    if not admissible:
+        args._hybrid_rejection_reason = "hybrid-distance-deadline-or-identity-invalid"
+    return admissible
 
 
 # 功能：
 #   1. 结合实测状态、目标身份和安全命令驱动每个控制周期，模型运动走纯速度接口。
 #   2. 输入过期、权限缺失或目标错配时保护悬停，不推进任务；局部修复始终有停滞与总时限。
 #   3. 只有明确配置的非模型兼容模式才允许路线位置控制，安全制动不冒充模型自主运动。
+#   4. 显式仿真教师的恢复动作走带期限的纯速度接口并留执行回执，恢复期间不推进路线时钟。
 # 输入：
 #   args：控制通道、频率、权限、保护时限和当前状态。
 #   base：飞控类型和基础函数。
@@ -4932,6 +5361,10 @@ async def _apply_local_safety(
     navigation_goal_deadline_monotonic: float | None = None,
 ) -> Any:
     """Pause schedule advancement while a short-lived repair command is active."""
+
+    args._last_route_feedforward_suppressed_for_lead = False
+    args._last_route_feedforward_lead_m = 0.0
+    args._last_applied_velocity_feedforward_ned_mps = planned_velocity_ned_mps
 
     _require_live_navigation_goal(
         navigation_goal_deadline_monotonic,
@@ -4973,6 +5406,9 @@ async def _apply_local_safety(
     context_mismatch_started_at: float | None = None
     command_unavailable_started_at: float | None = None
     while True:
+        # 局部等待/重规划不能吞掉用户停止或上层故障请求。
+        if getattr(args, "abort_file", None) is not None:
+            base._raise_if_external_abort_requested(args.abort_file)
         await _begin_local_control_tick(args)
         _require_live_navigation_goal(navigation_goal_deadline_monotonic, loop.time())
         observed = await _refresh_px4_identity_telemetry(
@@ -4985,7 +5421,39 @@ async def _apply_local_safety(
         # same fresh sample instead of awaiting the next PX4 telemetry frame a
         # second time in one nominal control period.
         args._last_px4_control_observation = observed
+        effective_planned_velocity_ned_mps = planned_velocity_ned_mps
+        if observed is not None:
+            (
+                effective_planned_velocity_ned_mps,
+                feedforward_suppressed,
+                feedforward_lead_m,
+            ) = _lead_aware_route_velocity_feedforward(
+                observed=observed,
+                planned_setpoint=planned_setpoint,
+                planned_velocity_ned_mps=planned_velocity_ned_mps,
+                estimator_offset_world_enu_m=getattr(
+                    args,
+                    "_last_estimator_to_world_position_offset_m",
+                    Vector3(x=0.0, y=0.0, z=0.0),
+                ),
+            )
+            args._last_route_feedforward_suppressed_for_lead = feedforward_suppressed
+            args._last_route_feedforward_lead_m = feedforward_lead_m
+            args._last_applied_velocity_feedforward_ned_mps = (
+                effective_planned_velocity_ned_mps
+            )
+        if getattr(args, "_heading_gap_started_at", None) is not None:
+            await _hold_heading_or_brake(args, client, observed, planned_setpoint.yaw_deg, True)
+            unavailable_hold_setpoint = None
+            repair_hold_setpoint = None
+            continue
         command = _read_local_safety_command(args)
+        if not _hybrid_transport_admissible(args, observed, command,
+                now=loop.time(), now_unix_ms=int(time.time() * 1000)):
+            _record_local_safety_executor_event(args, status="hybrid-admission-rejected",
+                details={"reason": args._hybrid_rejection_reason,
+                         "command_sha256": sha256_json(command) if command else None})
+            command = None
         if command is not None and not _local_safety_command_matches_required_authority(
             args=args,
             command=command,
@@ -5046,6 +5514,10 @@ async def _apply_local_safety(
                 args,
                 status="accepted",
                 details={
+                    # 同一观测序号可因失效而改发制动，必须记录完整身份区分在途旧命令。
+                    "command_sha256": sha256_json(command),
+                    "command_observation_sha256": command.observation_sha256,
+                    "command_generated_at_unix_ms": command.generated_at_unix_ms,
                     "command_sequence": getattr(command, "observation_sequence", None),
                     "command_valid_until_unix_ms": getattr(command, "valid_until_unix_ms", None),
                     "tracking_recovery_active": tracking_recovery_active,
@@ -5094,21 +5566,21 @@ async def _apply_local_safety(
                                 "required local safety command is unreadable without PX4 telemetry"
                             )
                         if unavailable_hold_setpoint is None:
+                            heading = await _hold_heading_or_brake(
+                                args, client, observed, planned_setpoint.yaw_deg)
+                            if heading is None:
+                                continue
                             unavailable_hold_setpoint = base.Setpoint(
                                 north_m=observed.north_m,
                                 east_m=observed.east_m,
                                 down_m=observed.down_m,
-                                yaw_deg=_local_hold_yaw(
-                                    args=args,
-                                    client=client,
-                                    fallback_heading_deg=planned_setpoint.yaw_deg,
-                                ),
+                                yaw_deg=heading,
                             )
-                        await _send_position_with_velocity(
-                            base=base,
-                            client=client,
+                        await _send_executor_brake(
+                            args=args, base=base, client=client,
                             setpoint=unavailable_hold_setpoint,
-                            velocity_ned_mps=(0.0, 0.0, 0.0),
+                            reason=("hybrid-execution-contract" if args._hybrid_rejection_reason
+                                    else "command-unreadable"),
                         )
                         continue
                     stale_age_seconds = max(
@@ -5127,15 +5599,15 @@ async def _apply_local_safety(
                             "required local safety command is stale without PX4 telemetry"
                         )
                     if unavailable_hold_setpoint is None:
+                        heading = await _hold_heading_or_brake(
+                            args, client, observed, planned_setpoint.yaw_deg)
+                        if heading is None:
+                            continue
                         unavailable_hold_setpoint = base.Setpoint(
                             north_m=observed.north_m,
                             east_m=observed.east_m,
                             down_m=observed.down_m,
-                            yaw_deg=_local_hold_yaw(
-                                args=args,
-                                client=client,
-                                fallback_heading_deg=planned_setpoint.yaw_deg,
-                            ),
+                            yaw_deg=heading,
                         )
                     _publish_local_control_phase(
                         phase_path,
@@ -5146,11 +5618,11 @@ async def _apply_local_safety(
                             "schedule_advancement_authorized": False,
                         },
                     )
-                    await _send_position_with_velocity(
-                        base=base,
-                        client=client,
+                    await _send_executor_brake(
+                        args=args, base=base, client=client,
                         setpoint=unavailable_hold_setpoint,
-                        velocity_ned_mps=(0.0, 0.0, 0.0),
+                        reason=("hybrid-execution-contract" if args._hybrid_rejection_reason
+                                else "command-stale"),
                     )
                     continue
                 if getattr(args, "_local_safety_command_established", False):
@@ -5191,15 +5663,15 @@ async def _apply_local_safety(
                     )
                     missing_hold_setpoint = unavailable_hold_setpoint
                     if missing_hold_setpoint is None:
+                        heading = await _hold_heading_or_brake(
+                            args, client, observed, planned_setpoint.yaw_deg)
+                        if heading is None:
+                            continue
                         missing_hold_setpoint = base.Setpoint(
                             north_m=observed.north_m,
                             east_m=observed.east_m,
                             down_m=observed.down_m,
-                            yaw_deg=_local_hold_yaw(
-                                args=args,
-                                client=client,
-                                fallback_heading_deg=planned_setpoint.yaw_deg,
-                            ),
+                            yaw_deg=heading,
                         )
                         if not braking_to_rest:
                             unavailable_hold_setpoint = missing_hold_setpoint
@@ -5218,11 +5690,9 @@ async def _apply_local_safety(
                             "schedule_advancement_authorized": False,
                         },
                     )
-                    await _send_position_with_velocity(
-                        base=base,
-                        client=client,
-                        setpoint=missing_hold_setpoint,
-                        velocity_ned_mps=(0.0, 0.0, 0.0),
+                    await _send_executor_brake(
+                        args=args, base=base, client=client,
+                        setpoint=missing_hold_setpoint, reason="command-missing",
                     )
                     continue
                 if loop.time() >= command_startup_deadline:
@@ -5232,13 +5702,15 @@ async def _apply_local_safety(
                         "required local safety command is unavailable without PX4 telemetry"
                     )
                 if unavailable_hold_setpoint is None:
+                    heading = await _hold_heading_or_brake(
+                        args, client, observed, planned_setpoint.yaw_deg)
+                    if heading is None:
+                        continue
                     unavailable_hold_setpoint = base.Setpoint(
                         north_m=observed.north_m,
                         east_m=observed.east_m,
                         down_m=observed.down_m,
-                        yaw_deg=_local_hold_yaw(
-                            args=args, client=client, fallback_heading_deg=planned_setpoint.yaw_deg
-                        ),
+                        yaw_deg=heading,
                     )
                 _publish_local_control_phase(
                     phase_path,
@@ -5247,11 +5719,9 @@ async def _apply_local_safety(
                         "schedule_advancement_authorized": False,
                     },
                 )
-                await _send_position_with_velocity(
-                    base=base,
-                    client=client,
-                    setpoint=unavailable_hold_setpoint,
-                    velocity_ned_mps=(0.0, 0.0, 0.0),
+                await _send_executor_brake(
+                    args=args, base=base, client=client,
+                    setpoint=unavailable_hold_setpoint, reason="command-startup",
                 )
                 continue
             if not waited_for_first_command:
@@ -5260,14 +5730,14 @@ async def _apply_local_safety(
                     base=base,
                     client=client,
                     setpoint=planned_setpoint,
-                    velocity_ned_mps=planned_velocity_ned_mps,
+                    velocity_ned_mps=effective_planned_velocity_ned_mps,
                 )
                 continue
             await _send_position_with_velocity(
                 base=base,
                 client=client,
                 setpoint=planned_setpoint,
-                velocity_ned_mps=planned_velocity_ned_mps,
+                velocity_ned_mps=effective_planned_velocity_ned_mps,
             )
             return planned_setpoint
         action = command.decision.action
@@ -5297,16 +5767,114 @@ async def _apply_local_safety(
         # the tracking gate compares the route in the Gazebo/world frame, not
         # the deliberately shifted PX4 estimator frame.
         args._last_estimator_to_world_position_offset_m = estimator_offset
-        if getattr(args, "simulation_teacher_control", False) and action in {"continue", "slow"}:
+        if observed is not None:
+            (
+                effective_planned_velocity_ned_mps,
+                feedforward_suppressed,
+                feedforward_lead_m,
+            ) = _lead_aware_route_velocity_feedforward(
+                observed=observed,
+                planned_setpoint=planned_setpoint,
+                planned_velocity_ned_mps=planned_velocity_ned_mps,
+                estimator_offset_world_enu_m=estimator_offset,
+            )
+            args._last_route_feedforward_suppressed_for_lead = feedforward_suppressed
+            args._last_route_feedforward_lead_m = feedforward_lead_m
+            args._last_applied_velocity_feedforward_ned_mps = (
+                effective_planned_velocity_ned_mps
+            )
+        simulation_teacher = bool(getattr(args, "simulation_teacher_control", False))
+        deterministic_velocity = simulation_teacher or bool(getattr(args, "independent_route_control", False))
+        if _stationary_route_setpoint_is_complete(
+            command=command,
+            observed=observed,
+            tracking_recovery_active=tracking_recovery_active,
+        ):
+            # This does not permit movement through an unobserved corridor. It
+            # merely acknowledges that the current zero-displacement schedule
+            # point has already been reached. The next point is published as a
+            # new target and must obtain its own fresh local-safety verdict.
+            planned_world = _setpoint_world_enu(planned_setpoint, coordinate_contract)
+            corrected_world = Vector3(
+                x=planned_world.x - estimator_offset.x,
+                y=planned_world.y - estimator_offset.y,
+                z=planned_world.z - estimator_offset.z,
+            )
+            completed_setpoint = _world_enu_setpoint(
+                base=base,
+                world=corrected_world,
+                yaw_deg=float(planned_setpoint.yaw_deg),
+                coordinate_contract=coordinate_contract,
+            )
+            await _send_position_with_velocity(
+                base=base,
+                client=client,
+                setpoint=completed_setpoint,
+                velocity_ned_mps=(0.0, 0.0, 0.0),
+            )
+            _record_local_safety_executor_event(
+                args,
+                status="stationary-route-setpoint-complete",
+                details={
+                    "navigation_goal_id": navigation_goal_id,
+                    "schedule_advancement_authorized": True,
+                    "new_motion_authorized": False,
+                    "completion_tolerance_m": (
+                        _STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M
+                    ),
+                },
+            )
+            _clear_local_control_phase(phase_path)
+            return completed_setpoint
+        if getattr(command, "navigation_control_authority", None) == "bounded-hybrid" and action not in {"continue", "slow"}:
+            model_control_required = True
+            args._last_model_control_required = True
+        if getattr(command, "navigation_control_authority", None) == "bounded-hybrid" and action in {"continue", "slow"}:
+            # 独立衔接只发送经过碰撞预测的低速，不使用路线位置控制或旧模型偏航指令。
+            # 未获运动许可时刹停，等待新观测；不将 replan 当作继续沿原路线的许可。
+            heading = await _hold_heading_or_brake(
+                args, client, observed, planned_setpoint.yaw_deg, True)
+            if heading is None:
+                continue
+            bridge_setpoint = base.Setpoint(north_m=observed.north_m, east_m=observed.east_m,
+                down_m=observed.down_m, yaw_deg=heading)
+            selected = command.decision.selected_velocity_mps
+            velocity_ned = (selected.y, selected.x, -selected.z)
+            accepted_at = await _dispatch_motion_or_brake(args=args, base=base, client=client,
+                setpoint=bridge_setpoint, velocity_ned_mps=velocity_ned, command=command,
+                coordinate_contract=coordinate_contract, phase_path=phase_path,
+                navigation_goal_deadline_monotonic=navigation_goal_deadline_monotonic)
+            if accepted_at is None:
+                continue
+            _record_model_control_application(args, command, velocity_ned_mps=velocity_ned,
+                yaw_deg=float(heading), transport="velocity-ned", accepted_at_unix_ms=accepted_at)
+            _clear_local_control_phase(phase_path)
+            return bridge_setpoint
+        if deterministic_velocity and action in {"continue", "slow", "replan"}:
             if model_control_required or command.requested_control_intent is not None:
                 raise UserDirectedLanding("simulation teacher cannot replace model authority")
             if any(abs(value) > 1e-9 for value in estimator_offset.model_dump().values()):
                 raise UserDirectedLanding("simulation teacher cannot use fitted truth offsets")
+            if action == "replan" and (
+                command.decision.control_source != "deterministic-brake"
+                or command.decision.selected_yaw_rate_dps != 0.0
+            ):
+                raise UserDirectedLanding(
+                    "simulation teacher recovery requires safety-authored translation"
+                )
+        if (simulation_teacher or getattr(args, "independent_route_control", False)) and action in {"continue", "slow"}:
+            initial_heading = None
+            if getattr(args, "_model_body_control_yaw_deg", None) is None:
+                initial_heading = await _hold_heading_or_brake(
+                    args, client, observed, planned_setpoint.yaw_deg, True)
+                if initial_heading is None:
+                    continue
             teacher_setpoint = _setpoint_with_model_body_yaw(
                 base=base,
                 args=args,
                 setpoint=planned_setpoint,
                 command=command,
+                anchor_heading_deg=initial_heading,
             )
             selected = command.decision.selected_velocity_mps
             velocity_ned = selected.y, selected.x, -selected.z
@@ -5371,7 +5939,7 @@ async def _apply_local_safety(
                     deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
                 )
                 if tracking_recovery_active
-                else planned_velocity_ned_mps
+                else effective_planned_velocity_ned_mps
             )
             args._last_applied_velocity_feedforward_ned_mps = recovery_velocity_ned_mps
             await _send_position_with_velocity(
@@ -5414,17 +5982,24 @@ async def _apply_local_safety(
                 and observed_speed_mps > _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS
             )
             if latched_model_hold is None:
+                heading = await _hold_heading_or_brake(
+                    args, client, observed, planned_setpoint.yaw_deg, True)
+                if heading is None:
+                    continue
                 latched_model_hold = base.Setpoint(
                     north_m=observed.north_m,
                     east_m=observed.east_m,
                     down_m=observed.down_m,
-                    yaw_deg=_local_hold_yaw(
-                        args=args,
-                        client=client,
-                        fallback_heading_deg=planned_setpoint.yaw_deg,
-                        model_control_required=True,
-                    ),
+                    yaw_deg=heading,
                 )
+                args._model_authority_hold_anchor = {
+                    "source": ("px4-measured-braking-position" if braking_to_rest
+                               else "px4-measured-latched-position"),
+                    "selected_at_unix_ms": int(time.time() * 1000),
+                    "north_m": float(observed.north_m),
+                    "east_m": float(observed.east_m),
+                    "down_m": float(observed.down_m),
+                }
                 # A fixed position captured while the aircraft still has
                 # material velocity makes PX4 brake, overshoot, and then pull
                 # back toward a stale point.  In a confined workspace that
@@ -5474,9 +6049,10 @@ async def _apply_local_safety(
                     float(safe_setpoint.east_m),
                     float(safe_setpoint.down_m),
                 ),
+                measured_hold_anchor=getattr(args, "_model_authority_hold_anchor", None),
             )
             return safe_setpoint
-        if model_control_required and (
+        if (model_control_required or deterministic_velocity) and (
             action in {"hold", "replan"}
             # A safety-authored velocity is not permission to turn toward the
             # route or to finish the interrupted model turn. Latch measured
@@ -5484,22 +6060,24 @@ async def _apply_local_safety(
             or getattr(command.decision, "control_source", None) == "deterministic-safety-override"
             or getattr(args, "_model_body_control_yaw_deg", None) is None
         ):
+            heading = await _hold_heading_or_brake(
+                args, client, observed, planned_setpoint.yaw_deg, True)
+            if heading is None:
+                continue
             safe_setpoint = base.Setpoint(
                 north_m=safe_setpoint.north_m,
                 east_m=safe_setpoint.east_m,
                 down_m=safe_setpoint.down_m,
-                yaw_deg=_local_hold_yaw(
-                    args=args,
-                    client=client,
-                    fallback_heading_deg=planned_setpoint.yaw_deg,
-                    model_control_required=True,
-                ),
+                yaw_deg=heading,
             )
         safe_setpoint = _setpoint_with_model_body_yaw(
             base=base,
             args=args,
             setpoint=safe_setpoint,
             command=command,
+            anchor_heading_deg=(float(safe_setpoint.yaw_deg)
+                if (model_control_required or deterministic_velocity)
+                and action in {"hold", "replan"} else None),
         )
         if model_control_required and model_control_authorized and action == "continue":
             selected_velocity = command.decision.selected_velocity_mps
@@ -5593,7 +6171,7 @@ async def _apply_local_safety(
             )
             if accepted_at is None:
                 continue
-        elif model_control_required and action == "replan":
+        elif (model_control_required or deterministic_velocity) and action == "replan":
             accepted_at = await _dispatch_motion_or_brake(
                 args=args,
                 base=base,
@@ -5603,7 +6181,9 @@ async def _apply_local_safety(
                 command=command,
                 coordinate_contract=coordinate_contract,
                 phase_path=phase_path,
-                position_control=True,
+                # 教师恢复也执行已仲裁的连续速度，不让位置环额外叠加未知推力。
+                # 产品模型的既有安全位置恢复不改变；两者都保留原始期限和停滞界限。
+                position_control=not deterministic_velocity,
                 navigation_goal_deadline_monotonic=navigation_goal_deadline_monotonic,
             )
             if accepted_at is None:
@@ -5615,7 +6195,8 @@ async def _apply_local_safety(
                 setpoint=safe_setpoint,
                 velocity_ned_mps=selected_velocity_ned_mps,
             )
-        if model_control_required:
+        teacher_velocity_recovery = deterministic_velocity and action == "replan"
+        if model_control_required or teacher_velocity_recovery:
             _record_model_control_application(
                 args,
                 command,
@@ -5623,13 +6204,13 @@ async def _apply_local_safety(
                 yaw_deg=float(safe_setpoint.yaw_deg),
                 transport=(
                     "velocity-ned"
-                    if model_control_authorized and action == "slow"
+                    if (model_control_authorized and action == "slow") or teacher_velocity_recovery
                     else "position-velocity-ned"
                 ),
                 accepted_at_unix_ms=accepted_at,
                 position_ned_m=(
                     None
-                    if model_control_authorized and action == "slow"
+                    if (model_control_authorized and action == "slow") or teacher_velocity_recovery
                     else (
                         float(safe_setpoint.north_m),
                         float(safe_setpoint.east_m),
@@ -6264,6 +6845,12 @@ async def _tracking_gate_tick(
         "route_cross_track_error_m": route_cross_track_error_m,
         "route_along_track_lag_m": route_along_track_lag_m,
         "route_along_track_lead_m": route_along_track_lead_m,
+        "route_feedforward_suppressed_for_lead": bool(
+            getattr(args, "_last_route_feedforward_suppressed_for_lead", False)
+        ),
+        "route_feedforward_policy_lead_m": float(
+            getattr(args, "_last_route_feedforward_lead_m", 0.0)
+        ),
         "route_along_track_lag_limit_m": route_along_track_lag_limit_m,
         "route_along_track_lag_rejoin_limit_m": (route_along_track_lag_rejoin_limit_m),
         "estimator_to_world_position_offset_m": estimator_offset.model_dump(mode="json"),
@@ -7095,6 +7682,157 @@ async def _follow_runtime_target(
 
 
 # 功能：
+#   在仍保有 Offboard 水平位置控制权时完成最后一段垂直下降，再把近地状态交给 PX4 原生降落。
+#   这避免窄空间中先退出 Offboard 后因原生 LAND 漂移而撞墙；ON_GROUND 仍由后续原生遥测确认。
+# 输入：
+#   base：提供已验证 Setpoint 类型的基础执行器模块。
+#   client：出生点相对 NED 飞控客户端。
+#   landing_setpoint：任务末端已到达且通过路线/安全验证的水平位置和航向。
+#   rate_hz：持续发布 Offboard 指令的控制频率。
+#   timeout_seconds：受控下降总时限。
+#   timing：运行证据字典。
+# 输出：
+#   handoff_setpoint：近地、保持原水平位置的最终 Offboard 设定值。
+async def _controlled_offboard_landing_handoff(
+    *,
+    base: ModuleType,
+    client: Any,
+    landing_setpoint: Any,
+    rate_hz: float,
+    timeout_seconds: float,
+    timing: dict[str, Any],
+) -> Any:
+    if not finite_positive_number(rate_hz) or not finite_positive_number(timeout_seconds):
+        raise ValueError("controlled landing timing must be finite and positive")
+    for name in ("north_m", "east_m", "down_m", "yaw_deg"):
+        _control_scalar(getattr(landing_setpoint, name, None), f"landing setpoint {name}")
+
+    started = time.monotonic()
+    deadline = started + float(timeout_seconds)
+    start_down = min(
+        -_CONTROLLED_LANDING_HANDOFF_HEIGHT_M,
+        float(landing_setpoint.down_m),
+    )
+    control_period = 1.0 / float(rate_hz)
+    sample_period = max(0.1, control_period * 5.0)
+    next_sample_at = started
+    stable_started: float | None = None
+    latest_observation: Any | None = None
+    maximum_horizontal_error_m = 0.0
+    samples: list[dict[str, float]] = []
+    target_down = start_down
+
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            raise TimeoutError("CONTROLLED_OFFBOARD_LANDING_HANDOFF_TIMEOUT")
+        elapsed = now - started
+        target_down = min(
+            -_CONTROLLED_LANDING_HANDOFF_HEIGHT_M,
+            start_down + _CONTROLLED_LANDING_DESCENT_RATE_MPS * elapsed,
+        )
+        handoff_setpoint = base.Setpoint(
+            north_m=float(landing_setpoint.north_m),
+            east_m=float(landing_setpoint.east_m),
+            down_m=target_down,
+            yaw_deg=float(landing_setpoint.yaw_deg),
+        )
+        await client.set_position_ned(handoff_setpoint)
+
+        if now >= next_sample_at:
+            latest_observation = await client.sample_position_velocity_ned(
+                min(0.5, max(0.1, sample_period * 2.0))
+            )
+            horizontal_error_m = math.hypot(
+                float(latest_observation.north_m) - float(landing_setpoint.north_m),
+                float(latest_observation.east_m) - float(landing_setpoint.east_m),
+            )
+            vertical_error_m = abs(float(latest_observation.down_m) - target_down)
+            vertical_speed_mps = abs(float(latest_observation.down_m_s))
+            if not all(
+                math.isfinite(value)
+                for value in (horizontal_error_m, vertical_error_m, vertical_speed_mps)
+            ):
+                raise RuntimeError("CONTROLLED_OFFBOARD_LANDING_TELEMETRY_NONFINITE")
+            maximum_horizontal_error_m = max(maximum_horizontal_error_m, horizontal_error_m)
+            sample = {
+                "elapsed_seconds": time.monotonic() - started,
+                "target_down_m": target_down,
+                "observed_down_m": float(latest_observation.down_m),
+                "horizontal_error_m": horizontal_error_m,
+                "vertical_error_m": vertical_error_m,
+                "vertical_speed_mps": vertical_speed_mps,
+            }
+            samples.append(sample)
+            if len(samples) > 512:
+                del samples[:-512]
+            within_handoff = (
+                target_down >= -_CONTROLLED_LANDING_HANDOFF_HEIGHT_M - 1e-6
+                and horizontal_error_m <= _CONTROLLED_LANDING_HORIZONTAL_TOLERANCE_M
+                and vertical_error_m <= _CONTROLLED_LANDING_VERTICAL_TOLERANCE_M
+                and vertical_speed_mps <= _CONTROLLED_LANDING_VERTICAL_SPEED_TOLERANCE_MPS
+            )
+            if within_handoff:
+                stable_started = stable_started or time.monotonic()
+                if (
+                    time.monotonic() - stable_started
+                    >= _CONTROLLED_LANDING_STABLE_WINDOW_SECONDS
+                ):
+                    timing["controlled_offboard_landing"] = {
+                        "status": "handoff-ready",
+                        "descent_rate_mps": _CONTROLLED_LANDING_DESCENT_RATE_MPS,
+                        "handoff_height_m": _CONTROLLED_LANDING_HANDOFF_HEIGHT_M,
+                        "duration_seconds": time.monotonic() - started,
+                        "maximum_horizontal_error_m": maximum_horizontal_error_m,
+                        "samples": samples,
+                    }
+                    return handoff_setpoint
+            else:
+                stable_started = None
+            next_sample_at = time.monotonic() + sample_period
+
+        remaining = control_period - (time.monotonic() - now)
+        if remaining > 0.0:
+            await asyncio.sleep(remaining)
+
+
+# 功能：
+#   根据末端实际高度计算受控垂直下降时限，避免高层航路被固定十五秒错误截断。
+# 输入：
+#   landing_setpoint：任务末端位置；landing_timeout_seconds：用户配置的降落上限。
+# 输出：
+#   timeout_seconds：覆盖物理下降、稳定窗口和调度余量且不超过配置上限的时限。
+def _controlled_landing_handoff_timeout_seconds(
+    *,
+    landing_setpoint: Any,
+    landing_timeout_seconds: float,
+) -> float:
+    configured = _control_scalar(
+        landing_timeout_seconds,
+        "landing timeout",
+        minimum=0.001,
+    )
+    start_down = min(
+        -_CONTROLLED_LANDING_HANDOFF_HEIGHT_M,
+        _control_scalar(landing_setpoint.down_m, "landing setpoint down"),
+    )
+    descent_distance_m = max(
+        0.0,
+        -_CONTROLLED_LANDING_HANDOFF_HEIGHT_M - start_down,
+    )
+    required = (
+        descent_distance_m / _CONTROLLED_LANDING_DESCENT_RATE_MPS
+        + _CONTROLLED_LANDING_STABLE_WINDOW_SECONDS
+        + _CONTROLLED_LANDING_TIMEOUT_MARGIN_SECONDS
+    )
+    if configured + 1e-9 < required:
+        raise ValueError(
+            "landing timeout cannot fund controlled descent from the route altitude"
+        )
+    return required
+
+
+# 功能：
 #   解析本次执行所需路径、时序、模型权限和兼容模式选项，不在参数解析期间连接飞控。
 # 输入：
 #   无显式参数；读取当前进程命令行。
@@ -7110,6 +7848,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--abort-file", type=Path, required=True)
     parser.add_argument("--setpoint-rate-hz", type=float, required=True)
     parser.add_argument("--takeoff-timeout-seconds", type=float, required=True)
+    parser.add_argument('--local-reference-prearm', action='store_true',
+                        help='Prepare measured local Offboard mode before final firmware readiness')
     parser.add_argument("--takeoff-climb-rate-m-s", type=float, required=True)
     parser.add_argument("--track-timeout-seconds", type=float, required=True)
     parser.add_argument("--landing-timeout-seconds", type=float, required=True)
@@ -7140,7 +7880,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--local-safety-target", type=Path)
     parser.add_argument("--local-safety-required", action="store_true")
     parser.add_argument("--require-model-control-authority", action="store_true")
+    parser.add_argument("--bounded-hybrid-control", action="store_true")
+    parser.add_argument("--independent-route-control", action="store_true")
+    parser.add_argument("--hybrid-route-sha256")
     parser.add_argument("--simulation-teacher-control", action="store_true")
+    parser.add_argument("--teacher-payload-checkpoints", action="store_true")
     parser.add_argument("--local-safety-command-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-runtime-stale-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-repair-timeout-seconds", type=float, default=15.0)
@@ -8209,6 +8953,21 @@ def _apply_native_preflight_tracking_budget(args: argparse.Namespace, receipt: d
 # 输出：
 #   None：不返回业务数据。
 async def _run(args: argparse.Namespace, base: ModuleType) -> None:
+    if getattr(args, "independent_route_control", False) and (
+        args.require_model_control_authority or not args.local_safety_required
+        or getattr(args, "simulation_teacher_control", False)
+        or getattr(args, "bounded_hybrid_control", False)
+    ):
+        raise ValueError("ROUTE_CONTROL_REQUIRES_EXCLUSIVE_INDEPENDENT_SAFETY")
+    if args.require_model_control_authority:
+        validate_model_dispatch_rate(args.setpoint_rate_hz)
+    if getattr(args, "teacher_payload_checkpoints", False) and (
+        not getattr(args, "simulation_teacher_control", False)
+        or args.require_model_control_authority or not args.local_safety_required
+        or args.checkpoint_contract is None or args.runtime_action_contract is None
+    ):
+        raise ValueError(
+            "payload teacher checkpoints require exclusive recorded simulation contracts")
     if getattr(args, "simulation_teacher_control", False) and (
         args.require_model_control_authority or not args.local_safety_required
     ):
@@ -8469,6 +9228,20 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
     ) -> tuple[float, float, float]:
         return _observed_route_frame_position_ned(args=args, observed=observed)
 
+    from dronedream_agent_core.native_telemetry_publisher import NativeTelemetryPublisher
+
+    # 功能：独立发布原生传感器缓存，启动定位不等待定位已就绪，避免视觉参考启动循环依赖。
+    # 输入：observed、dynamics：保留真实源时刻的状态快照，准备阶段尚未取得运动权限。
+    # 输出：同一部署坐标绑定下的来源证据；不会把未就绪状态改成已通过起飞检查。
+    def publish_independent_native_state(observed: Any, dynamics: dict) -> None:
+        _publish_px4_identity_telemetry(
+            args=args,
+            coordinate_contract=coordinate_contract,
+            observed=observed,
+            dynamics_telemetry=dynamics,
+            independent_stream=True,
+        )
+
     native_publisher = None
     try:
         args._control_application_writer = BoundedRuntimeEvidenceWriter(
@@ -8477,6 +9250,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             serializer=lambda record: json.dumps(record, allow_nan=False, sort_keys=True),
             flush_on_record_paths=(args.run_dir / "runtime-state" / "control-applications.jsonl",),
         )
+        # The publisher reads existing caches only. Before connect/first sample
+        # it reports missing data; it cannot manufacture estimator readiness.
+        # Map/visual localization needs these inputs BEFORE firmware readiness.
+        native_publisher = NativeTelemetryPublisher(client, publish_independent_native_state)
+        args._independent_native_publisher_active = True
+        native_publisher.start()
         health = await base.connect_preflight_with_recovery(
             client,
             connection=args.connection,
@@ -8484,7 +9263,20 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             abort_check=abort_check,
             log_path=args.log,
             evidence=timing["preflight_connection"],
+            local_mode_preparation_only=getattr(args, 'local_reference_prearm', False),
         )
+        if getattr(args, 'local_reference_prearm', False):
+            # Recovery ends before the first mode request. From here onward the
+            # outer command-attempt owner must clean up, never silently reconnect.
+            mode_preparer = getattr(client, 'prepare_local_offboard_mode', None)
+            if not callable(mode_preparer):
+                raise RuntimeError('LOCAL_PREARM_CLIENT_UNSUPPORTED')
+            health = await base._await_with_abort_polling(
+                mode_preparer(command_attempts=command_attempts,
+                    evidence=timing.setdefault('local_reference_prearm', {}),
+                    timeout_seconds=min(60., args.takeoff_timeout_seconds)),
+                abort_check=abort_check,
+            )
         if not health.armable or not health.home_position_ok or not health.local_position_ok:
             raise RuntimeError("PX4 readiness gate rejected checkpointed flight")
         timing["offboard_loss_failsafe"] = await base._await_with_abort_polling(
@@ -8510,7 +9302,11 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         planned_first_setpoint = plan.schedule[0]
         source_setpoint_count = len(plan.schedule)
         measured_body_heading_ned_deg: float | None = None
-        if args.heading_policy == "measured-hold":
+        if args.heading_policy == "measured-hold" or args.independent_route_control:
+            # Independent local control owns rate-limited yaw from live state.
+            # Do not insert the position executor's stationary turn samples:
+            # those keep its translation target behind the local controller.
+            # This heading is only the ascent/fallback reference, not a yaw lock.
             plan = replace(
                 plan,
                 schedule=base.hold_setpoint_schedule_heading(
@@ -8548,7 +9344,9 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         )
         timing["takeoff_gate"]["heading_control"] = {
             "policy": (
-                "measured_prearm_heading_hold"
+                "live_local_controller_heading"
+                if args.independent_route_control
+                else "measured_prearm_heading_hold"
                 if args.heading_policy == "measured-hold"
                 else "measured_origin_route_tangent_rate_limited"
             ),
@@ -8588,29 +9386,18 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 measured_heading_deg if args.heading_policy == "measured-hold" else None
             ),
             heading_policy=args.heading_policy,
+            independent_route_control=args.independent_route_control,
             maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
             world_name=args.world,
             gazebo_vehicle_model_name=args.gazebo_vehicle_model_name,
             heading_evidence_path=(args.run_dir / "runtime-state" / "px4-heading-tracking.json"),
         )
-        from dronedream_agent_core.native_telemetry_publisher import NativeTelemetryPublisher
-
-        # 功能：
-        #   发布独立遥测流的实际状态，明确区别于控制等待中的按需采样。
-        # 输入：
-        #   observed：独立流的位置和速度样本。
-        #   dynamics：与样本关联的动力学观测。
-        # 输出：
-        #   None：不返回业务数据。
-        def publish_independent_native_state(observed: Any, dynamics: dict) -> None:
-            _publish_px4_identity_telemetry(
-                args=args,
-                coordinate_contract=coordinate_contract,
-                observed=observed,
-                dynamics_telemetry=dynamics,
-                independent_stream=True,
-            )
-
+        # Drain the raw-frame producer before replacing it with the existing
+        # spawn-relative client. Never let two frame owners write concurrently.
+        bootstrap_publication = await native_publisher.close()
+        timing['native_preflight_publication'] = bootstrap_publication
+        if bootstrap_publication.get('drained') is not True:
+            raise RuntimeError('NATIVE_PREFLIGHT_PUBLICATION_NOT_DRAINED')
         native_publisher = NativeTelemetryPublisher(client, publish_independent_native_state)
         args._independent_native_publisher_active = True
         native_publisher.start()
@@ -8656,6 +9443,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         _atomic_json(phase_path, {"phase": "TAKEOFF", "checkpoint_id": None})
         if args.local_safety_required and (
             args.require_model_control_authority or args.simulation_teacher_control
+            or getattr(args, "independent_route_control", False)
         ):
             from dronedream_agent_core.native_preflight import (
                 PREFLIGHT_STABLE_WINDOW_MS,
@@ -8676,7 +9464,6 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             timing["native_perception_preflight"]["applied_tracking_limits"] = (
                 _apply_native_preflight_tracking_budget(args, timing["native_perception_preflight"])
             )
-            base._log(args.log, "independent native perception verified before arm")
         if "native_perception_preflight" in timing:
             from dronedream_agent_core.native_preflight import assert_native_preflight_current
 
@@ -8686,6 +9473,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         await command_attempts.arm(
             client, lambda command: base._await_with_abort_polling(command, abort_check=abort_check)
         )
+        if "native_perception_preflight" in timing:
+            base._log(args.log, "independent native perception verified before arm")
         base._log(args.log, "armed")
         timing["takeoff_start_t"] = time.monotonic() - started
         if "native_perception_preflight" in timing:
@@ -9267,19 +10056,31 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 checkpoint_started = loop.time()
                 while True:
                     try:
-                        decision = await _wait_checkpoint_decision(
-                            base=base,
-                            client=client,
-                            setpoint=setpoint,
-                            request=request,
-                            decision_path=decision_path,
-                            abort_file=args.abort_file,
-                            rate_hz=args.setpoint_rate_hz,
-                            timeout_seconds=args.checkpoint_timeout_seconds,
-                            runtime_interrupt_probe=runtime_interrupt_probe,
-                            sample_observer=live_settle_sample_observer,
-                            setpoint_refresh=live_settle_setpoint_refresh,
-                        )
+                        if getattr(args, "teacher_payload_checkpoints", False):
+                            base._raise_if_external_abort_requested(args.abort_file)
+                            if runtime_interrupt_probe is not None:
+                                interruption = runtime_interrupt_probe()
+                                if interruption is not None:
+                                    raise interruption
+                            decision = decide_payload_teacher_checkpoint(
+                                request, checkpoint_contract)
+                            # 与正式 model decision 分开，生产验证器不接纳教师代签。
+                            _atomic_json(request_path.with_name(
+                                f"{checkpoint.checkpoint_id}.teacher-decision.json"), decision)
+                        else:
+                            decision = await _wait_checkpoint_decision(
+                                base=base,
+                                client=client,
+                                setpoint=setpoint,
+                                request=request,
+                                decision_path=decision_path,
+                                abort_file=args.abort_file,
+                                rate_hz=args.setpoint_rate_hz,
+                                timeout_seconds=args.checkpoint_timeout_seconds,
+                                runtime_interrupt_probe=runtime_interrupt_probe,
+                                sample_observer=live_settle_sample_observer,
+                                setpoint_refresh=live_settle_setpoint_refresh,
+                            )
                         break
                     except RuntimeInterruptDetected as interruption:
                         _atomic_json(
@@ -9334,6 +10135,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                         "decision_sha256": sha256_json(decision),
                         "continue_authorized": decision.continue_authorized,
                         "assessment_action": decision.assessment.action,
+                        "decision_source": ("simulation-payload-teacher"
+                            if getattr(args, "teacher_payload_checkpoints", False) else "model"),
                     }
                 )
                 if not decision.continue_authorized or decision.assessment.action != "accept":
@@ -9424,11 +10227,24 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             completed_at_unix_ms=int(time.time() * 1000),
             receiver=getattr(args, "_perception_health_receiver", None),
         )
+        _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
+        timing["controlled_land_start_t"] = time.monotonic() - started
+        await _controlled_offboard_landing_handoff(
+            base=base,
+            client=client,
+            landing_setpoint=setpoint,
+            rate_hz=args.setpoint_rate_hz,
+            timeout_seconds=_controlled_landing_handoff_timeout_seconds(
+                landing_setpoint=setpoint,
+                landing_timeout_seconds=args.landing_timeout_seconds,
+            ),
+            timing=timing,
+        )
+        timing["controlled_land_handoff_t"] = time.monotonic() - started
         await client.stop_offboard()
         offboard_stopped = True
         timing["cleanup"]["stop_offboard"] = "completed"
         base._log(args.log, "offboard stopped")
-        _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
         timing["land_start_t"] = time.monotonic() - started
         await client.land()
         observation = await client.wait_until_landed(args.landing_timeout_seconds)
@@ -9461,11 +10277,31 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 completed_at_unix_ms=int(time.time() * 1000),
                 receiver=getattr(args, "_perception_health_receiver", None),
             )
+            _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
+            timing["controlled_land_start_t"] = time.monotonic() - started
+            replacement_landing_observation = await client.sample_position_velocity_ned(0.5)
+            replacement_landing_setpoint = base.Setpoint(
+                north_m=float(replacement_landing_observation.north_m),
+                east_m=float(replacement_landing_observation.east_m),
+                down_m=float(replacement_landing_observation.down_m),
+                yaw_deg=float(setpoint.yaw_deg),
+            )
+            await _controlled_offboard_landing_handoff(
+                base=base,
+                client=client,
+                landing_setpoint=replacement_landing_setpoint,
+                rate_hz=args.setpoint_rate_hz,
+                timeout_seconds=_controlled_landing_handoff_timeout_seconds(
+                    landing_setpoint=replacement_landing_setpoint,
+                    landing_timeout_seconds=args.landing_timeout_seconds,
+                ),
+                timing=timing,
+            )
+            timing["controlled_land_handoff_t"] = time.monotonic() - started
             await client.stop_offboard()
             offboard_stopped = True
             timing["cleanup"]["stop_offboard"] = "completed"
             base._log(args.log, "replacement offboard track completed")
-            _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
             timing["land_start_t"] = time.monotonic() - started
             await client.land()
             observation = await client.wait_until_landed(args.landing_timeout_seconds)
@@ -9501,6 +10337,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             evidence=timing["cleanup"],
         )
         timing["model_control_authority"] = {
+            "executor_brake_applied_count": int(
+                getattr(args, "_executor_brake_application_count", 0)),
             "control_application_counts": dict(
                 getattr(args, "_model_control_application_counts", {})
             ),
@@ -9561,7 +10399,8 @@ async def _run_with_live_snapshots(args: argparse.Namespace, base: ModuleType) -
         if args.runtime_phase_channel:
             from dronedream_agent_core.runtime_phase_channel import RuntimePhaseBroadcaster
 
-            broadcaster = RuntimePhaseBroadcaster(args.runtime_phase_channel, snapshots)
+            broadcaster = RuntimePhaseBroadcaster(args.runtime_phase_channel, snapshots,
+                model_applications=lambda: getattr(args, "_hybrid_model_receipts", ()))
             args._phase_broadcaster = broadcaster
             broadcaster.start()
         await _run(args, base)

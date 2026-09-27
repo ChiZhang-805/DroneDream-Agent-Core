@@ -61,13 +61,18 @@ def publish_evidence_bytes(path: Path, content: bytes, *, limit: int) -> None:
 #   严格编码有界训练对象并调用共享无覆盖发布器，拒绝歧义类型或非有限数值。
 # 输入：
 #   path：父目录已存在的新文件路径。
-#   value：最多 4 MiB 的标准训练记录对象，元组会明确转为数组。
+#   value：标准训练记录对象，元组会明确转为数组。
+#   limit/node_limit：默认4MiB/百万节点；多帧归档可显式申请最多16MiB/两百万节点。
 # 输出：
 #   None：不返回业务数据。
-def write_evidence_object(path: Path, value: dict) -> None:
+def write_evidence_object(
+    path: Path, value: dict, *, limit=MAX_TRAINING_ROW_BYTES, node_limit=1_000_000
+) -> None:
     if type(value) is not dict:
         raise ValueError("TRAINING_EVIDENCE_OBJECT_INVALID")
+    if type(limit) is not int or not 0 < limit <= 16 * 1024**2:
+        raise ValueError("TRAINING_EVIDENCE_BYTE_BUDGET_INVALID")
     content = encode_json(
-        training_json_value(value), limit=MAX_TRAINING_ROW_BYTES, node_limit=1_000_000
+        training_json_value(value, node_limit=node_limit), limit=limit, node_limit=node_limit
     ).encode("utf-8")
-    publish_evidence_bytes(path, content, limit=MAX_TRAINING_ROW_BYTES)
+    publish_evidence_bytes(path, content, limit=limit)

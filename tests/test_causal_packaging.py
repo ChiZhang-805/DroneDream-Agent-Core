@@ -323,6 +323,8 @@ def test_unbound_external_weights_never_enter_assembled_package(base_package, tm
 # 输出：
 #   None：不返回业务数据。
 def test_real_admission_backend_consumes_cross_role_history(base_package, tmp_path):
+    from test_risk_admission_evidence import synthetic_risk_evidence
+
     base_package = complete_current_base(base_package, tmp_path)
     paths = replacements(tmp_path)
     package = assemble_causal_package(
@@ -348,7 +350,9 @@ def test_real_admission_backend_consumes_cross_role_history(base_package, tmp_pa
     dataset = tmp_path / "admission.jsonl"
     dataset.write_text("\n".join(row.model_dump_json() for row in rows), encoding="utf-8")
     metrics, latencies = _module()._evaluate_runtime_package(
-        package.manifest_path.parent, dataset, navigation_role="precision-maneuver-policy"
+        package.manifest_path.parent, dataset, navigation_role="precision-maneuver-policy",
+        action_risk_evidence=synthetic_risk_evidence(
+            next(a.sha256 for a in package.manifest.artifacts if a.role == 'risk-critic')),
     )
     assert metrics.sample_count == 4  # 3,5,7,9; first three observations only warm history
     assert len(latencies) == 4

@@ -15,12 +15,28 @@ CONTINUOUS_CONTROL_MODE = "normalized-body-velocity"
 LOCAL_CONTROL_PERIOD_SECONDS = 0.05
 LOCAL_CONTROL_MAXIMUM_AGE_SECONDS = 0.25
 LOCAL_CONTROL_JOINT_P99_TARGET_SECONDS = 0.10
+LOCAL_SETPOINT_PERIOD_SECONDS = 0.02
 # Producer admission reserves the future control period plus transport. Once
 # the executor has reached its dispatch tick, only transport remains; do not
 # count that same scheduling wait twice. Pre-send and actual-acceptance checks
 # still enforce the original input deadline, without renewing any lease.
 LOCAL_TRANSPORT_BUDGET_MS = 20
-LOCAL_DISPATCH_RESERVE_MS = round(LOCAL_CONTROL_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS
+# Model decisions remain 20 Hz; the executor polls ready commands at 50 Hz.
+# Training replies use the same ready-result handoff and validated 50 Hz
+# executor as local inference. Preparation is charged before the reply; using
+# the 20 Hz inference period here double-counted scheduling rather than adding
+# transport protection. Actual dispatch/acceptance still check source expiry.
+LOCAL_DISPATCH_RESERVE_MS = round(LOCAL_SETPOINT_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS
+TRAINING_DISPATCH_RESERVE_MS = LOCAL_DISPATCH_RESERVE_MS
+
+
+# 功能：拒绝比生产交接余量所假设的轮询更慢的执行配置，不扩大原始观测寿命。
+# 输入：setpoint_rate_hz：实际执行器轮询频率。
+# 输出：无；非法频率在启动任何飞控命令前拒绝。
+def validate_model_dispatch_rate(setpoint_rate_hz: float) -> None:
+    if (type(setpoint_rate_hz) not in (int, float)
+            or not 1 / LOCAL_SETPOINT_PERIOD_SECONDS <= setpoint_rate_hz <= 100):
+        raise ValueError('MODEL_DISPATCH_RATE_INSUFFICIENT')
 
 
 # 功能：

@@ -499,6 +499,24 @@ def test_failed_base_import_restores_previous_module(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="fixture initialization failed"):
         executor._load_base(path)
     assert sys.modules[name] is previous
+    assert not (tmp_path / "__pycache__").exists()
+
+
+# 功能：
+#   重复加载基础执行器时不在只读资源树留下缓存，也不复用同长度旧源码的缓存。
+# 输入：
+#   tmp_path：隔离资源目录；monkeypatch：恢复模块注册表。
+# 输出：
+#   无。
+def test_base_import_preserves_resource_inventory(tmp_path, monkeypatch):
+    executor = _load_executor()
+    monkeypatch.setitem(sys.modules, "dronedream_proven_px4_base", None)
+    path = tmp_path / "base.py"
+    path.write_bytes(b"answer = 1\n")
+    assert executor._load_base(path).answer == 1
+    path.write_bytes(b"answer = 2\n")
+    assert executor._load_base(path).answer == 2
+    assert list(tmp_path.iterdir()) == [path]
 
 
 # 功能：

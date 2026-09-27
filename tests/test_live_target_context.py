@@ -5,8 +5,10 @@ import time
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 
 import scripts.runtime_depth_safety_worker as worker
+from dronedream_agent_core import runtime_phase_channel
 from dronedream_agent_core.executor_snapshots import ExecutorSnapshots
 from dronedream_agent_core.local_packet_channel import LatestPacketPublisher
 from dronedream_agent_core.runtime_phase_channel import (
@@ -55,7 +57,7 @@ def receive(receiver):
 #   None：不返回业务数据。
 def test_target_channel_preserves_source_and_rejects_stale_context(tmp_path, monkeypatch):
     clock = Mock(return_value=10.1)
-    monkeypatch.setattr('dronedream_agent_core.runtime_phase_channel.time.time', clock)
+    isolate_time(monkeypatch, runtime_phase_channel, time=clock)
     receiver = RuntimePhaseReceiver(tmp_path / 'endpoint.json')
     publisher = LatestPacketPublisher(receiver.path, contract=PHASE_CONTRACT)
     path = tmp_path / 'local-safety-target.json'

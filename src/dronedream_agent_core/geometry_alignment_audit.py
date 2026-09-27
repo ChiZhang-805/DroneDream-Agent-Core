@@ -18,9 +18,10 @@ import numpy as np
 
 from .contracts import CalibratedRangeSensorMount, RawMetricRangeScan
 from .hashing import sha256_json
-from .local_map_alignment import MapSurfaceIndex, fit_map_translation
+from .local_map_alignment import fit_map_translation
 from .local_pose_alignment import fit_map_pose
 from .localization_observations import MAXIMUM_CAPTURE_RECORDS, MAXIMUM_RECORD_BYTES
+from .optical_map import compile_optical_map
 from .sensor_bridge import MetricRangeSensorBridge
 
 
@@ -68,7 +69,10 @@ def nearest_box_surfaces(points, primitives) -> tuple[np.ndarray, np.ndarray]:
 def analyze_geometry_capture(capture_path: Path, semantic_path: Path, *,
                              fit_translation: bool = False,
                              check_perturbations: bool = False,
-                             fit_joint_pose: bool = False) -> dict:
+                             fit_joint_pose: bool = False,
+                             optical_world: Path | None = None,
+                             expected_world_sha256: str | None = None,
+                             render_receipt: Path | None = None) -> dict:
     if (any(type(flag) is not bool for flag in
             (fit_translation, fit_joint_pose, check_perturbations))
             or (fit_translation and fit_joint_pose)):
@@ -87,11 +91,25 @@ def analyze_geometry_capture(capture_path: Path, semantic_path: Path, *,
     primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
     if not isinstance(primitives, list) or not primitives:
         raise ValueError("GEOMETRY_AUDIT_MAP_PRIMITIVES_MISSING")
+    optical_receipt = None
+    translation_index = None
+    if fitting:
+        if optical_world is None or expected_world_sha256 is None:
+            raise ValueError("GEOMETRY_AUDIT_BOUND_OPTICAL_WORLD_REQUIRED")
+        resources = {}
+        if render_receipt is not None:
+            from .plugin_files import read_plugin_file
+            receipt = json.loads(read_plugin_file(render_receipt, limit=8*1024*1024))
+            if not isinstance(receipt, dict) or receipt.get('source_world_sha256') != expected_world_sha256:
+                raise ValueError("GEOMETRY_AUDIT_RENDER_WORLD_MISMATCH")
+            resources = receipt.get('preserved_relative_resources', {})
+        translation_index, primitives, optical_receipt = compile_optical_map(
+            optical_world, expected_world_sha256=expected_world_sha256, expected_resources=resources)
     boxes = [p for p in primitives if all(f"size_{axis}" in p for axis in "xyz")
+             and p.get("registration_eligible", True)
              and all(abs(float(p.get(f"{axis}_rad", 0.))) <= 1e-12 for axis in ("roll", "pitch"))]
     if not boxes and not fitting:
         raise ValueError("GEOMETRY_AUDIT_NO_SUPPORTED_SURFACES")
-    translation_index = MapSurfaceIndex(primitives) if fitting else None
     fit_key = "pose_fit" if fit_joint_pose else "translation_fit"
 
     def solve(hits, origins, reference):
@@ -192,6 +210,7 @@ def analyze_geometry_capture(capture_path: Path, semantic_path: Path, *,
             ("local_pose_alignment.py" if fit_joint_pose else "local_map_alignment.py"))
             .read_bytes()).hexdigest() if fitting else None),
         "map_sha256": map_sha256, "capture_sha256": capture_digest.hexdigest(),
+        "optical_map": optical_receipt,
         "frame_count": len(frames), "nearest_box_diagnostic_supported_count": len(boxes),
         "nearest_box_diagnostic_unassessed_count": len(primitives) - len(boxes), "frames": frames,
         "pose_correction_applied": False, "covariance_qualification_granted": False,

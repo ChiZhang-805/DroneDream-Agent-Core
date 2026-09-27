@@ -7,8 +7,10 @@ they are not command-line flags, persistent configuration, or printed output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
@@ -72,9 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="plan_revision_id",
         help="Exact plan-... ID that you have reviewed. No automatic confirmation.",
     )
-    for name in ("status", "evidence"):
+    for name in ("status", "evidence", "live-sources", "telemetry"):
         command = commands.add_parser(name)
         command.add_argument("thread_id")
+    frame = commands.add_parser("frame", help="Save the actual overview PNG; not a flight verdict.")
+    frame.add_argument("thread_id")
+    frame.add_argument("--output", type=Path, required=True, help="New PNG path; never overwrite.")
     message = commands.add_parser("message", help="Submit a runtime amendment; not emergency stop.")
     message.add_argument("thread_id")
     message.add_argument("--text", required=True)
@@ -138,9 +143,39 @@ def dispatch(client: ProductConsoleClient, args: argparse.Namespace) -> dict:
         return client.status(args.thread_id)
     if args.command == "evidence":
         return client.evidence(args.thread_id)
+    if args.command == "live-sources":
+        return client.live_sources(args.thread_id)
+    if args.command == "telemetry":
+        return client.telemetry(args.thread_id)
+    if args.command == "frame":
+        return save_overview_frame(client, args.thread_id, args.output)
     if args.command == "message":
         return client.message(args.thread_id, args.text)
     raise ConsoleError("CONSOLE_COMMAND_INVALID")
+
+
+# 功能：
+#   原样保存实际俯视画面到操作者指定的新文件，已有文件不覆盖；写入失败不报告成功。
+# 输入：
+#   client：有账户权限的产品客户端。
+#   thread_id：当前任务标识。
+#   output：由操作者指定的本地 PNG 路径，不从远端响应选择路径。
+# 输出：
+#   receipt：文件位置、原始字节摘要与长度，不授予飞行验收资格。
+def save_overview_frame(client: ProductConsoleClient, thread_id: str, output: Path) -> dict:
+    png = client.live_frame(thread_id)
+    try:
+        with output.open("xb") as stream:
+            stream.write(png)
+    except FileExistsError as error:
+        raise ConsoleError("CONSOLE_FRAME_OUTPUT_EXISTS") from error
+    except OSError as error:
+        # 部分写入文件不冒充完整画面，也不删除可能由操作者替换的路径。
+        raise ConsoleError("CONSOLE_FRAME_WRITE_FAILED") from error
+    receipt = {"thread_id": thread_id, "path": str(output.absolute()),
+               "sha256": hashlib.sha256(png).hexdigest(), "bytes": len(png),
+               "view": "runtime-overview", "qualification_granted": False}
+    return receipt
 
 
 # 功能：

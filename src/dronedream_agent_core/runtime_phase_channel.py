@@ -94,6 +94,21 @@ class RuntimePhaseReceiver(LatestPacketReceiver):
             raise ValueError("RUNTIME_TARGET_CONTEXT_INVALID")
         return target
 
+    # 功能：只返回在线执行端已实际接收的模型回执，不把阶段心跳时间当作回执时间。
+    # 输入：无；输出：独立小列表；丢包、过期或关闭返回空，执行端仍独立复核接管。
+    def read_model_applications(self):
+        with self._lock:
+            packet, failed = self._latest, self._failure
+        if self._stop.is_set() or failed is not None or packet is None:
+            return []
+        age = time.time() - packet["updated_at_unix_ms"] / 1000.
+        if not 0 <= age <= MAXIMUM_PHASE_HEARTBEAT_AGE_SECONDS:
+            return []
+        rows = copy_json(packet.get("model_applications", []), limit=2048)
+        if type(rows) is not list or len(rows) > 3:
+            raise ValueError("RUNTIME_MODEL_APPLICATIONS_INVALID")
+        return rows
+
     # 功能：
     #   停止唯一收包线程后关闭端点，未排空时保留所有权并明确报错。
     # 输入：
@@ -116,7 +131,9 @@ class RuntimePhaseBroadcaster:
     #   snapshots：当前执行器拥有的状态快照。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, descriptors: list[Path], snapshots):
+    def __init__(self, descriptors: list[Path], snapshots, *, model_applications=None):
+        if model_applications is not None and not callable(model_applications):
+            raise ValueError("RUNTIME_MODEL_APPLICATION_READER_INVALID")
         if not 1 <= len(descriptors) <= 4 or len(set(descriptors)) != len(descriptors):
             raise ValueError("RUNTIME_PHASE_ENDPOINTS_INVALID")
         self._publishers = []
@@ -128,6 +145,7 @@ class RuntimePhaseBroadcaster:
                 publisher.close()
             raise
         self._snapshots = snapshots
+        self._model_applications = model_applications
         self._stop = threading.Event()
         self._thread = None
         self._closed = False
@@ -167,6 +185,9 @@ class RuntimePhaseBroadcaster:
                     payload = {"schema_version": PHASE_CONTRACT.payload_schema,
                                "updated_at_unix_ms": int(time.time() * 1000), "state": state,
                                "control_target": self._snapshots.control_target()}
+                    if self._model_applications is not None:
+                        payload["model_applications"] = [
+                            list(row) for row in self._model_applications()]
                     for publisher in self._publishers:
                         publisher.send(payload)
                 # 关闭时同一写线程发送最终阶段，避免跨线程并发写同一个发布套接字。

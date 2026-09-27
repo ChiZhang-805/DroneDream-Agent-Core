@@ -10,9 +10,94 @@ from dronedream_agent_core.assets import (
     AssetQualificationError,
     load_map_catalog,
     map_entity_is_mentioned,
+    read_map_semantic_object,
     resolve_map_entity,
 )
 from dronedream_agent_core.contracts import MapAsset
+from dronedream_agent_core.navigation_readiness import _semantic
+from dronedream_agent_core.orchestrator import _intent_map_catalog_view
+from dronedream_agent_core.runtime_control_io import read_runtime_object
+from dronedream_plugin_sdk.protocol import MAX_JSON_NODES
+
+
+# 功能：
+#   将有来源的二维设施作为非飞行语义保留，同时维持办公室和取餐点的真实三维坐标。
+# 输入：
+#   tmp_path：独立测试语义目录。
+# 输出：
+#   None：模型可见平面地标，但三维目标目录不凭空生成高度。
+def test_source_bound_planar_landmark_is_context_not_flight_target(tmp_path):
+    path = tmp_path / "semantic.json"
+    _write_semantic(path, include_pickup_binding=True)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["roads"] = {"facility_anchors": {"cafeteria": [30., 6.245]}}
+    raw["entities"].append({"entity_id": "cafeteria", "aliases": ["食堂"],
+        "semantic": "landmark", "position_m": [30., 6.245],
+        "source_pointer": "/roads/facility_anchors/cafeteria"})
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    catalog = load_map_catalog(path)
+    assert len(catalog.entities) == 3
+    assert all(entity.entity_id != "cafeteria" for entity in catalog.entities)
+    landmark = catalog.planar_landmarks[0]
+    assert (landmark.east_m, landmark.north_m) == (30., 6.245)
+    assert landmark.flight_target_available is False
+    assert "position_m" not in landmark.model_dump()
+    view = _intent_map_catalog_view(catalog)
+    assert view["non_actionable_planar_landmarks"][0]["entity_id"] == "cafeteria"
+    assert all(entity["entity_id"] != "cafeteria" for entity in view["entities"])
+
+
+# 功能：
+#   拒绝缺失、错绑和非法平面来源，尤其不能将二维起飞点当作可执行三维位置。
+# 输入：
+#   mutation：需要拒绝的来源变体；tmp_path：测试目录。
+# 输出：
+#   None：输入在生成地图目录之前失败。
+@pytest.mark.parametrize(
+    "mutation", ["missing", "mismatch", "bool", "source-bool", "pointer", "launch"]
+)
+def test_planar_landmark_requires_exact_non_actuating_source(tmp_path, mutation):
+    path = tmp_path / "semantic.json"
+    _write_semantic(path, include_pickup_binding=True)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["roads"] = {"facility_anchors": {"facility": [1., 2.]}}
+    entity = {"entity_id": "facility", "aliases": ["facility"], "semantic": "landmark",
+              "position_m": [1., 2.], "source_pointer": "/roads/facility_anchors/facility"}
+    if mutation == "missing":
+        raw.pop("roads")
+    elif mutation == "mismatch":
+        raw["roads"]["facility_anchors"]["facility"] = [1., 3.]
+    elif mutation == "bool":
+        entity["position_m"] = [True, 2.]
+    elif mutation == "source-bool":
+        raw["roads"]["facility_anchors"]["facility"] = [True, 2.]
+    elif mutation == "pointer":
+        entity["source_pointer"] = "/unrelated/facility"
+    else:
+        entity["semantic"] = "launch"
+    raw["entities"].append(entity)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(AssetQualificationError, match="ANCHOR_INVALID|PLANAR_SOURCE_INVALID"):
+        load_map_catalog(path)
+
+
+# 功能：
+#   验证完整地图允许有界的大型几何，但不扩大实时控制消息的默认结构预算。
+# 输入：
+#   tmp_path：测试语义目录。
+# 输出：
+#   None：目录、执行前置和能力分析读取一致，控制消息仍拒绝超量节点。
+def test_large_map_uses_same_geometry_budget_across_planning_boundaries(tmp_path):
+    path = tmp_path / "semantic.json"
+    _write_semantic(path, include_pickup_binding=True)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["dense_geometry"] = [[1., 2., 3., 4., 5.] for _ in range(MAX_JSON_NODES // 6 + 1)]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert read_map_semantic_object(path) == raw
+    assert _semantic(path) == raw
+    assert len(load_map_catalog(path).entities) == 3
+    with pytest.raises(ValueError, match="COMPLEXITY_LIMIT"):
+        read_runtime_object(path, maximum_bytes=16 * 1024 * 1024)
 
 
 def _write_semantic(path: Path, *, include_pickup_binding: bool) -> None:

@@ -43,6 +43,19 @@ def test_camera_motion_is_closed_bounded_and_rotates():
         assert np.linalg.norm(pose["orientation_wxyz"]) == pytest.approx(1.)
 
 
+# 功能：验证诊断扫描初始朝向可配置，但不改变位置轨迹或接受错误角度。
+# 输入：无。
+# 输出：无。
+def test_fixture_declared_initial_heading_preserves_translation():
+    base = fixture_pose([1,2,3],[1,0,0],0)
+    turned = fixture_pose([1,2,3],[1,0,0],0,base_yaw_deg=90.)
+    assert turned['position_m'] == base['position_m']
+    np.testing.assert_allclose(turned['orientation_wxyz'],[np.sqrt(.5),0,0,np.sqrt(.5)])
+    for invalid in (True, float('nan'), 181., -181.):
+        with pytest.raises(ValueError):
+            fixture_pose([1,2,3],[1,0,0],0,base_yaw_deg=invalid)
+
+
 # 功能：
 #   验证错误维数、竖直方向、非有限坐标及布尔进度不能生成扫描轨迹。
 # 输入：
@@ -78,6 +91,28 @@ def test_world_has_real_camera_intrinsics_and_no_aircraft_actuators():
     assert model.findtext("plugin/use_pose_vector_msg") == "false"
     assert model.findtext("static") == "true"
     assert camera_calibration(CAMERA).sample_stride_pixels == 32
+
+
+# 功能：核对第一帧之前的世界初始姿态已应用目标朝向，不依赖后续 set_pose 命令。
+# 输入：heading：合法的目标偏航角，单位度。
+# 输出：无。
+@pytest.mark.parametrize("heading", [-180., -135., -90., 0., 45., 90., 135., 180.])
+def test_fixture_spawn_heading_matches_command_origin(heading):
+    result = ET.fromstring(build_fixture_world(WORLD, CAMERA, [1, 2, 3],
+                                               base_yaw_deg=heading))
+    pose = [float(value) for value in result.find(
+        f"world/model[@name='{RIG_NAME}']/pose").text.split()]
+    assert pose[:5] == [1., 2., 3., 0., 0.]
+    assert pose[5] == pytest.approx(math.radians(heading))
+
+
+# 功能：禁止在初始化地图时绕过动态轨迹相同的朝向输入校验。
+# 输入：heading：非法偏航值。
+# 输出：无。
+@pytest.mark.parametrize("heading", [True, "90", float("nan"), float("inf"), 181., -181.])
+def test_fixture_spawn_rejects_invalid_heading(heading):
+    with pytest.raises(ValueError):
+        build_fixture_world(WORLD, CAMERA, [1, 2, 3], base_yaw_deg=heading)
 
 
 # 功能：

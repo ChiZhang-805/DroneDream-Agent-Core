@@ -1,0 +1,11 @@
+{
+  "schema": "dronedream.vision-view-plan.v1",
+  "views": [
+    {"view_id": "office-east", "scene_group_id": "teaching-building", "split": "training", "position_m": [-42.25, 15.3, 8.15], "orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "setting": "indoor"},
+    {"view_id": "office-south", "scene_group_id": "teaching-building", "split": "training", "position_m": [-42.25, 15.3, 8.15], "orientation_wxyz": [0.7071067811865476, 0.0, 0.0, -0.7071067811865476], "setting": "indoor"},
+    {"view_id": "corridor-east", "scene_group_id": "teaching-building", "split": "training", "position_m": [-25.0, 3.5, 1.5], "orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "setting": "indoor"},
+    {"view_id": "gate-north", "scene_group_id": "campus-south-gate", "split": "validation", "position_m": [0.0, -37.0, 2.0], "orientation_wxyz": [0.7071067811865476, 0.0, 0.0, 0.7071067811865476], "setting": "outdoor"},
+    {"view_id": "gate-south", "scene_group_id": "campus-south-gate", "split": "validation", "position_m": [0.0, -37.0, 2.0], "orientation_wxyz": [0.7071067811865476, 0.0, 0.0, -0.7071067811865476], "setting": "outdoor"},
+    {"view_id": "pickup-east", "scene_group_id": "east-pickup", "split": "test", "position_m": [45.0, 1.25, 1.5], "orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "setting": "outdoor"}
+  ]
+}

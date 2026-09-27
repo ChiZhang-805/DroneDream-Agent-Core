@@ -32,6 +32,16 @@ class YawRateApplication(StrictModel):
     integration_seconds: float = Field(gt=0, le=0.25, strict=True)
 
 
+class MeasuredHoldAnchor(StrictModel):
+    """Executor-selected PX4 estimator-frame anchor, not a world-map position."""
+
+    source: Literal["px4-measured-braking-position", "px4-measured-latched-position"]
+    selected_at_unix_ms: int = Field(ge=0, strict=True)
+    north_m: float = Field(strict=True)
+    east_m: float = Field(strict=True)
+    down_m: float = Field(strict=True)
+
+
 class ControlApplicationRecord(StrictModel):
     """Actual NED transport receipt bound to one original command and observation.
 
@@ -47,6 +57,7 @@ class ControlApplicationRecord(StrictModel):
     transport: Literal["velocity-ned", "position-velocity-ned"]
     velocity_ned_mps: tuple[float, float, float]
     position_ned_m: tuple[float, float, float] | None = None
+    measured_hold_anchor: MeasuredHoldAnchor | None = None
     yaw_heading_deg: float = Field(strict=True)
     yaw_rate_application: YawRateApplication | None = None
     safety_action: Literal["continue", "slow", "hold", "replan"]
@@ -84,6 +95,8 @@ class ControlApplicationRecord(StrictModel):
         payload = handler(self)
         if self.position_ned_m is None:
             payload.pop("position_ned_m", None)
+        if self.measured_hold_anchor is None:
+            payload.pop("measured_hold_anchor", None)
         return payload
 
     # 功能：
@@ -99,6 +112,17 @@ class ControlApplicationRecord(StrictModel):
             raise ValueError("VELOCITY_RECEIPT_CANNOT_CLAIM_POSITION_CONTROL")
         if self.transport == "position-velocity-ned" and self.position_ned_m is None:
             raise ValueError("POSITION_CONTROL_RECEIPT_REQUIRES_ACTUAL_SETPOINT")
+        anchor = self.measured_hold_anchor
+        if anchor is not None and (
+            self.transport != "position-velocity-ned"
+            or self.model_authorized or self.safety_action != "hold"
+            or any(self.velocity_ned_mps)
+            or anchor.selected_at_unix_ms > self.accepted_at_unix_ms
+            or any(abs(a - b) > 1e-6 for a, b in zip(
+                self.position_ned_m, (anchor.north_m, anchor.east_m, anchor.down_m), strict=True
+            ))
+        ):
+            raise ValueError("CONTROL_APPLICATION_HOLD_ANCHOR_MISMATCH")
         yaw = self.yaw_rate_application
         if yaw is not None:
             expected = integrate_model_yaw(
@@ -125,6 +149,7 @@ class ControlApplicationRecord(StrictModel):
 #   yaw_heading_deg：实际发送的航向角，单位度。
 #   yaw_rate_application：偏航速度到航向的实际积分参数。
 #   position_ned_m：位置速度联合模式的实际 NED 位置，单位米。
+#   measured_hold_anchor：执行器实际选取的PX4悬停锚点，不是地图ENU坐标。
 # 输出：
 #   record：拥有独立内容的实际传输回执。
 def control_application_record(
@@ -137,11 +162,14 @@ def control_application_record(
     yaw_heading_deg: float,
     yaw_rate_application: YawRateApplication | None = None,
     position_ned_m: tuple[float, float, float] | None = None,
+    measured_hold_anchor: MeasuredHoldAnchor | dict | None = None,
 ) -> ControlApplicationRecord:
     # 模型实例可经嵌套修改或 model_copy 绕过赋值检查，回执边界重新拥有并校验它。
     command = RuntimeLocalSafetyCommand.model_validate(command.model_dump(mode="python"))
     if isinstance(yaw_rate_application, YawRateApplication):
         yaw_rate_application = yaw_rate_application.model_dump(mode="python")
+    if isinstance(measured_hold_anchor, MeasuredHoldAnchor):
+        measured_hold_anchor = measured_hold_anchor.model_dump(mode="python")
     record = ControlApplicationRecord(
         sequence=sequence,
         accepted_at_unix_ms=accepted_at_unix_ms,
@@ -152,6 +180,7 @@ def control_application_record(
         transport=transport,
         velocity_ned_mps=velocity_ned_mps,
         position_ned_m=position_ned_m,
+        measured_hold_anchor=measured_hold_anchor,
         yaw_heading_deg=yaw_heading_deg,
         yaw_rate_application=yaw_rate_application,
         safety_action=command.decision.action,
@@ -271,6 +300,7 @@ def verify_control_applications(
                                  if type(value) is int))):
         issues.add("CONTROL_APPLICATION_EVIDENCE_NOT_DRAINED")
     motion_count, safety_motion_count, maximum_input_age_ms, latest = 0, 0, 0, -1
+    hybrid_motion_count = 0
     for index, raw in enumerate(records, start=1):
         try:
             record = ControlApplicationRecord.model_validate(raw)
@@ -301,6 +331,24 @@ def verify_control_applications(
                 # lease. A completed route alone cannot bless late actuation.
                 issues.add("CONTROL_APPLICATION_TRANSPORT_DEADLINE_VIOLATION")
             safety_motion = record.control_source == "deterministic-safety-override"
+            # 有界衔接通过原始命令摘要追溯授权，不改写旧回执或冒充神经模型控制。
+            # 此处核对实际发送值；距离预算仍由独立遥测/执行器验收，不能用速度积分代替。
+            if command.navigation_control_authority == "bounded-hybrid":
+                if record.safety_action in {"continue", "slow"}:
+                    hybrid_motion_count += 1
+                    selected = command.decision.selected_velocity_mps
+                    if (record.transport != "velocity-ned" or record.model_authorized
+                            or intent is not None or record.yaw_rate_application is not None):
+                        issues.add("CONTROL_APPLICATION_HYBRID_TRANSPORT_INVALID")
+                    if any(abs(actual - expected) > 1e-6 for actual, expected in zip(
+                            record.velocity_ned_mps, (selected.y, selected.x, -selected.z), strict=True)):
+                        issues.add("CONTROL_APPLICATION_VELOCITY_DIFFERS_FROM_APPROVED_COMMAND")
+                    lease, budget = command.hybrid_lease, command.observation_budget
+                    if (lease is None or budget is None or not
+                            lease.started_at_unix_ms <= record.accepted_at_unix_ms
+                            <= min(lease.expires_at_unix_ms, budget.control_deadline_unix_ms)):
+                        issues.add("CONTROL_APPLICATION_HYBRID_AUTHORITY_EXPIRED")
+                continue
             if intent is None or (record.control_source != "local-model-body-control"
                                   and not safety_motion):
                 continue  # Safety/hold has its own attribution, not model motion.
@@ -369,6 +417,7 @@ def verify_control_applications(
         "record_count": len(records),
         "model_motion_record_count": motion_count,
         "safety_velocity_record_count": safety_motion_count,
+        "bounded_hybrid_motion_record_count": hybrid_motion_count,
         "maximum_model_input_age_ms": maximum_input_age_ms,
     }
     return result

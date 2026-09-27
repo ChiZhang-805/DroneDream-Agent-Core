@@ -14,6 +14,7 @@ from dronedream_agent_core.plugin_files import (
     hash_plugin_file,
     read_plugin_file,
 )
+from dronedream_agent_core.training.causal_device import causal_training_device
 from dronedream_agent_core.training.causal_policy import (
     CausalPolicyConfig,
     causal_examples,
@@ -68,6 +69,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--package-id", required=True)
     parser.add_argument("--cpu-threads", type=int, default=2)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu",
+                        help="Explicit optimization device; unavailable CUDA fails without CPU fallback")
     args = parser.parse_args()
     if not 1 <= args.cpu_threads <= 8:
         parser.error("cpu threads must be in [1, 8]")
@@ -84,6 +87,8 @@ def main() -> int:
 # 输出：
 #   exit_code：全部候选产物及回执成功写入时为零，不代表飞行验收。
 def train_ensemble(args) -> int:
+    device = getattr(args, "device", "cpu")
+    causal_training_device(device)
     args.output = args.output.absolute()
     check_plain_plugin_path(args.output)
     if args.output.exists():
@@ -151,7 +156,7 @@ def train_ensemble(args) -> int:
     metrics, paths, receipts = {}, {}, {}
     for role in NAVIGATION_EXPERT_ROLES:
         role_config = role_configs[role]
-        model, metrics[role] = train_causal_policy(*examples[role], role_config)
+        model, metrics[role] = train_causal_policy(*examples[role], role_config, device=device)
         metrics[role] = bind_source_group_metrics(metrics[role], split_groups)
         path = args.output / "weights" / f"{role}.onnx"
         digest = export_causal_policy(model, path)

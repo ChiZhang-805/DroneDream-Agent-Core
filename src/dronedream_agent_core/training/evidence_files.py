@@ -19,8 +19,10 @@ MAX_TRAINING_ROWS = 250_000
 #   value：由标准 Python 字典、列表、元组和 JSON 标量组成的记录。
 # 输出：
 #   payload：容器独立且仅含 JSON 类型的记录，数值及实际编码大小由后续编码器继续检查。
-def training_json_value(value):
-    remaining = 1_000_000
+def training_json_value(value, *, node_limit=1_000_000):
+    if type(node_limit) is not int or not 0 < node_limit <= 2_000_000:
+        raise ValueError("TRAINING_EVIDENCE_NODE_BUDGET_INVALID")
+    remaining = node_limit
 
     # 功能：
     #   在分配子容器前约束节点与嵌套深度，拒绝错误键和不能确定序列化语义的对象。

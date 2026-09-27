@@ -49,10 +49,20 @@ def _current_bundled_pair(
         packages = pair["packages"]
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
         raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID") from error
-    if index.get("schema_version") != "dronedream.bundled-assets.v2" or not isinstance(
-        packages, list
-    ):
+    schema_version = index.get("schema_version")
+    if schema_version not in {
+        "dronedream.bundled-assets.v2",
+        "dronedream.bundled-assets.v3",
+    } or not isinstance(packages, list):
         raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID")
+    if schema_version == "dronedream.bundled-assets.v3":
+        qualified_pairs = index.get("qualified_pairs")
+        if (
+            not isinstance(qualified_pairs, list)
+            or pair not in qualified_pairs
+            or index.get("default_qualification_id") != pair.get("qualification_id")
+        ):
+            raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID")
     by_kind = {str(entry.get("kind")): entry for entry in packages if isinstance(entry, dict)}
     if set(by_kind) != {"map", "vehicle"}:
         raise ValueError("CURRENT_BUNDLED_ASSET_PAIR_INCOMPLETE")

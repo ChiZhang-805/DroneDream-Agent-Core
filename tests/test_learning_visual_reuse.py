@@ -1,5 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+import threading
 
 import pytest
 from test_sensor_frame_clock import EPOCH, admit, frame
@@ -28,6 +30,81 @@ def _prepared_sample():
         decoder=worker._gazebo_image_model_payload)
     result = message, clock, PreparedCameraSample(message, prepared)
     return result
+
+
+# 功能：
+#   验证采集线程只提交不可变图像，磁盘发布在有界写入器内完成且最终字节一致。
+# 输入：
+#   tmp_path：独立图像及写入回执目录。
+# 输出：
+#   None：关闭写入器后图像完整，来源时钟及摘要不变。
+def test_learning_image_uses_bounded_background_publication(tmp_path):
+    message, clock, sample = _prepared_sample()
+    writer = worker._LatestRuntimeSnapshotWriter(tmp_path / 'summary.json')
+    try:
+        row, = worker._prepare_learning_visual(cache=ModelImageCache(), image=message,
+            received_monotonic=clock.sample_monotonic_seconds, received_utc_ms=1000,
+            size=(32, 32), directory=tmp_path / 'frames', frame_time=clock,
+            prepared_sample=sample, writer=writer)
+    finally:
+        writer.close(timeout_seconds=2)
+    assert writer.issue is None
+    assert Path(row['path']).read_bytes() == sample.image.png
+    assert row['observed_at_unix_ms'] == 1000
+
+
+# 功能：
+#   验证图像写入队列拒绝时停止当前记录，不能返回看似有效但无法落盘的图像引用。
+# 输入：
+#   tmp_path：独立测试目录。
+# 输出：
+#   None：拒绝入队明确抛错。
+def test_learning_image_rejected_publication_is_not_silenced(tmp_path):
+    message, clock, sample = _prepared_sample()
+    writer = SimpleNamespace(submit_bytes=lambda *args: False)
+    with pytest.raises(ValueError, match='PERSISTENCE_REJECTED'):
+        worker._prepare_learning_visual(cache=ModelImageCache(), image=message,
+            received_monotonic=clock.sample_monotonic_seconds, received_utc_ms=1000,
+            size=(32, 32), directory=tmp_path, frame_time=clock,
+            prepared_sample=sample, writer=writer)
+
+
+# 功能：
+#   验证磁盘忙时可选图片采样看到背压，待写容量有界且已接收图片排空后恢复。
+# 输入：
+#   tmp_path、monkeypatch：独立目录和受控磁盘写入暂停。
+# 输出：
+#   None：满队列不会被伪装成可以继续接收，也不制造写入错误。
+def test_optional_image_backpressure_is_bounded(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    original = worker._atomic_bytes
+
+    # 功能：
+    #   只暂停 PNG 的后台发布，保留回执写入与最终真实文件操作。
+    # 输入：
+    #   path、payload、kwargs：原发布器的路径、字节和预算。
+    # 输出：
+    #   None：完成原子的图像发布。
+    def delayed(path, payload, **kwargs):
+        if path.suffix == '.png':
+            entered.set()
+            assert release.wait(2)
+        original(path, payload, **kwargs)
+
+    monkeypatch.setattr(worker, '_atomic_bytes', delayed)
+    writer = worker._LatestRuntimeSnapshotWriter(tmp_path / 'summary.json', maximum_pending_paths=1)
+    try:
+        assert writer.submit_bytes(tmp_path / 'a.png', b'a')
+        assert entered.wait(1)
+        assert writer.available_for_new_path
+        assert writer.submit_bytes(tmp_path / 'b.png', b'b')
+        assert not writer.available_for_new_path
+        assert writer.issue is None
+    finally:
+        release.set()
+        writer.close(timeout_seconds=2)
+    assert (tmp_path / 'a.png').read_bytes() == b'a'
+    assert (tmp_path / 'b.png').read_bytes() == b'b'
 
 
 # 功能：

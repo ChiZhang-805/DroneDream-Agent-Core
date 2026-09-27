@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from .contracts import (
     CalibratedRangeSensorMount,
     OnboardPerceptionFrame,
@@ -18,6 +20,7 @@ from .contracts import (
     Vector3,
 )
 from .quaternion_geometry import rotate_vector as _rotate
+from .quaternion_geometry import rotate_vectors
 
 Point = tuple[float, float, float]
 
@@ -95,32 +98,33 @@ class MetricRangeSensorBridge:
         body_position = _tuple(scan.body_position_world_enu_m)
         origin = tuple(body_position[index] + sensor_offset_world[index] for index in range(3))
         rays: list[RangeRayObservation] = []
-        for sample in scan.samples:
-            if not mount.minimum_range_m <= sample.range_m <= mount.maximum_range_m:
-                raise ValueError("PERCEPTION_RANGE_OUTSIDE_CALIBRATED_LIMIT")
-            raw_direction = _tuple(sample.direction_sensor)
-            norm = math.dist((0.0, 0.0, 0.0), raw_direction)
-            if not math.isfinite(norm) or norm <= 1e-9:
-                raise ValueError("PERCEPTION_RAY_DIRECTION_ZERO")
-            sensor_direction = tuple(component / norm for component in raw_direction)
-            # 方向先经过安装旋转，再经过机体旋转；距离只在最后乘一次。
-            body_direction = _rotate(
-                mount.orientation_body_from_sensor,
-                sensor_direction,  # type: ignore[arg-type]
-            )
-            world_direction = _rotate(scan.body_orientation_world_from_body, body_direction)
-            endpoint = tuple(
-                origin[index] + world_direction[index] * sample.range_m for index in range(3)
-            )
-            rays.append(
-                RangeRayObservation(
-                    origin_m=Vector3(x=origin[0], y=origin[1], z=origin[2]),
-                    endpoint_m=Vector3(x=endpoint[0], y=endpoint[1], z=endpoint[2]),
-                    hit=sample.hit,
-                    confidence=sample.confidence,
-                    observed_at_monotonic_seconds=scan.observed_at_monotonic_seconds,
+        # 大扫描同样使用有界小批次，不因提高传感器分辨率创建巨型临时数组。
+        for start in range(0, len(scan.samples), 1024):
+            batch = scan.samples[start:start + 1024]
+            directions = []
+            for sample in batch:
+                if not mount.minimum_range_m <= sample.range_m <= mount.maximum_range_m:
+                    raise ValueError("PERCEPTION_RANGE_OUTSIDE_CALIBRATED_LIMIT")
+                raw_direction = _tuple(sample.direction_sensor)
+                norm = math.dist((0.0, 0.0, 0.0), raw_direction)
+                if not math.isfinite(norm) or norm <= 1e-9:
+                    raise ValueError("PERCEPTION_RAY_DIRECTION_ZERO")
+                directions.append(tuple(component / norm for component in raw_direction))
+            # 不合并两个姿态矩阵；保留安装旋转、机体旋转、米制距离的原运算顺序。
+            body_directions = rotate_vectors(mount.orientation_body_from_sensor,
+                                             np.asarray(directions, dtype=np.float64))
+            world_directions = rotate_vectors(scan.body_orientation_world_from_body, body_directions)
+            endpoints = np.asarray(origin) + world_directions * np.asarray([s.range_m for s in batch])[:, None]
+            for sample, endpoint in zip(batch, endpoints.tolist(), strict=True):
+                rays.append(
+                    RangeRayObservation(
+                        origin_m=Vector3(x=origin[0], y=origin[1], z=origin[2]),
+                        endpoint_m=Vector3(x=endpoint[0], y=endpoint[1], z=endpoint[2]),
+                        hit=sample.hit,
+                        confidence=sample.confidence,
+                        observed_at_monotonic_seconds=scan.observed_at_monotonic_seconds,
+                    )
                 )
-            )
         frame = OnboardPerceptionFrame(
             sensor_id=scan.sensor_id,
             sequence=scan.sequence,

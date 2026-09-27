@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 import dronedream_agent_core.capability_broker as module
 import dronedream_agent_core.pinned_https as https
@@ -342,7 +343,7 @@ def test_pinned_connection_refuses_host_or_port_switch():
 def test_broker_rejects_late_body_without_returning_data(monkeypatch):
     now = [0.0]
     scoped = CoreCapabilityBroker().scope(_manifest(["network.external"]))
-    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    isolate_monotonic(monkeypatch, module, lambda: now[0])
     monkeypatch.setattr(
         module.socket, "getaddrinfo", lambda *_, **__: [(2, 1, 6, "", ("93.184.216.34", 443))]
     )

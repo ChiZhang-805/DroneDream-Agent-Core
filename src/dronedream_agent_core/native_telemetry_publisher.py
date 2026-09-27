@@ -15,6 +15,8 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
+from .native_state_alignment import NativeReceiveAligner
+
 CLOSE_TIMEOUT_SECONDS = 2.0
 
 
@@ -41,6 +43,7 @@ class NativeTelemetryPublisher:
             "error_count": 0, "last_issue": None, "drained": False,
         }
         self._last_sources: tuple | None = None
+        self._aligner = NativeReceiveAligner()
 
     # 功能：
     #   在调用者正在运行的事件循环中启动唯一发布任务；已关闭实例不能重启。
@@ -96,6 +99,9 @@ class NativeTelemetryPublisher:
                     for name, payload in sources.items()
                 )):
                     raise ValueError("NATIVE_DYNAMICS_SOURCE_INVALID")
+                observed, dynamics = self._aligner.align(observed, dynamics)
+                received = observed.received_at_unix_ms
+                sources = dynamics.get("sources", {})
                 identities = []
                 for name, payload in sorted(sources.items()):
                     clocks = (payload.get("timestamp_us"), payload.get("received_at_unix_ms"))
@@ -113,6 +119,7 @@ class NativeTelemetryPublisher:
                     self._last_sources = source_ids
                 self.summary["last_issue"] = None
             except Exception as error:
+                self._aligner.clear()
                 self.summary["error_count"] += 1
                 self.summary["last_issue"] = f"{type(error).__name__}:{error}"
                 # 原文件及原始期限保持不变，消费者继续按期限拒绝过期状态。
@@ -139,4 +146,5 @@ class NativeTelemetryPublisher:
         else:
             self.summary["drained"] = True
         summary = dict(self.summary)
+        summary['receive_alignment'] = dict(self._aligner.summary)
         return summary

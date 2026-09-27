@@ -152,7 +152,8 @@ class McpPluginServer:
 
     # 功能：
     #   1. 检查工具名和参数，复制参数及配置后为唯一工作槽登记取消事件。
-    #   2. 启动失败时撤销登记；繁忙或重复标识不能提前结束另一条仍在执行的调用。
+    #   2. 资源不足时撤销登记并返回稳定错误，保留 ping、取消和后续恢复的通道。
+    #   3. 繁忙或重复标识不能提前结束另一条仍在执行的调用。
     # 输入：
     #   request_id：本次工具调用的请求标识。
     #   params：包含工具名和 arguments 的参数字典。
@@ -166,6 +167,7 @@ class McpPluginServer:
             return self._error(request_id, -32602, "TOOL_CALL_INVALID")
         arguments = copy_json(arguments)
         cancellation = threading.Event()
+        unavailable = False
         with self._state_lock:
             duplicate = request_id in self._cancelled
             busy = self._closed or bool(self._cancelled)
@@ -182,6 +184,10 @@ class McpPluginServer:
                 # 登记和启动使用同一状态锁，避免取消发生在登记已出现但线程尚未启动的间隙。
                 try:
                     worker.start()
+                except (RuntimeError, OSError, MemoryError):
+                    self._workers.remove(worker)
+                    self._cancelled.pop(request_id, None)
+                    unavailable = True
                 except BaseException:
                     self._workers.remove(worker)
                     self._cancelled.pop(request_id, None)
@@ -189,6 +195,9 @@ class McpPluginServer:
         if busy:
             # 重复标识的错误不能携带原标识，否则宿主可能误把原请求记为已完成。
             self._error(None if duplicate else request_id, -32000, "TOOL_SERVER_BUSY")
+        elif unavailable:
+            # 不把宿主资源或异常详情发到插件协议，也不因一次线程启动失败丢掉整个通道。
+            self._error(request_id, -32000, "TOOL_WORKER_UNAVAILABLE")
 
     # 功能：
     #   1. 在工具执行前后按 Schema 和 JSON 预算验证数据，错误仅发布稳定问题标识。

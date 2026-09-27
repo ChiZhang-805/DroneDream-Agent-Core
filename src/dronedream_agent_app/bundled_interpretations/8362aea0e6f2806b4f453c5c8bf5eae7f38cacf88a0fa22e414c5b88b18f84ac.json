@@ -1,0 +1,81 @@
+{
+  "schema_version": "dronedream.bundled-interpretation.v1",
+  "asset_id": "dronedream.school-map.v1",
+  "content_sha256": "bc88b79228ec7ae4c974957b6b692d7941607885c5489fc1d9f5f925dba10f2d",
+  "source_sha256": "c38a96e4bcdf2d335842c5d674b0f1e1cbdec5a21e716688df95ce6df11b48bf",
+  "prompt_sha256": "069a4baca39347fd083bf6de7eb294013937e91e701740288de79be5879dfc94",
+  "locale": "zh-CN",
+  "understanding": {
+    "summary": "学校地图资产，ENU坐标系。包含室内走廊与楼梯（verified-000至verified-036）及室外道路网络。室内三层通过楼梯连接：办公室起飞点verified-000（z=8.15m）经走廊至楼梯间（verified-007/008），下行至一层（verified-025，z≈1.07m），再通往教学楼、树廊、外卖取餐点。室外道路包括校园主入口脊线、东西向主干道、教学楼入口路、食堂入口路、外卖取餐路、西侧自行车服务路及北侧食堂服务路。设施地标与可用航点分离：takeout-pickup-pad（verified-036）为任务取餐航点，takeout-pickup为地标；office-launch-pad（verified-000）为任务起飞航点。几何包含建筑外壳、室内墙体门窗、家具、楼梯、树木、围栏等4023个碰撞体，动态障碍物需运行时生成。",
+    "items": [
+      {
+        "source_id": "verified-000",
+        "explanation": "办公室起飞航点，室内走廊三层（z=8.15m）。语义launch，任务绑定起点。经verified-edge-000通往verified-001。"
+      },
+      {
+        "source_id": "verified-032",
+        "explanation": "树廊对应的corridor节点，也是地图中道路与任务走廊的关联位置。具体相邻节点、边和可达性须读取当前图结构，不能由树廊名称推断。"
+      },
+      {
+        "source_id": "verified-036",
+        "explanation": "外卖取餐航点，语义pickup；与外卖设施地标不是同一个源条目。自然语言取餐需求可据此解析目的地，实际路线和悬停条件仍须单独求解与校验。"
+      },
+      {
+        "source_id": "road-campus-gate-spine-00",
+        "explanation": "校园大门对应的室外道路锚点，用于识别校园入口语义；不能把它当成任意起降点或推断与室内走廊直接相连。"
+      },
+      {
+        "source_id": "road-teaching-entrance-road-02",
+        "explanation": "教学楼对应的室外入口道路锚点，表示建筑入口的导航参考，不等同于办公室起飞航点；进入楼内须依据真实通路规划。"
+      },
+      {
+        "source_id": "road-cafeteria-entrance-road-03",
+        "explanation": "食堂入口道路终点（z=1.8m），语义outdoor，设施锚点cafeteria。经road-edge-cafeteria-entrance-road-02接入食堂入口路网络。"
+      },
+      {
+        "source_id": "road-takeout-pickup-road-03",
+        "explanation": "外卖取餐设施对应的室外道路锚点，区别于verified-036这一pickup航点，不能仅凭设施名称认定此处可落地。"
+      },
+      {
+        "source_id": "road-west-bicycle-service-road-04",
+        "explanation": "自行车棚对应的室外服务道路锚点，用于定位设施及相关任务区域；实际连接关系和空间净空须查阅当前地图。"
+      }
+    ],
+    "limitations": [
+      "楼梯段verified-007至verified-025为室内垂直通道，三层高差约7.08m，每段12级踏步，规划需校验机身尺寸与转弯间隙。",
+      "minimum_clearance_m为0.0的边没有提供正净空保证；不能擅自解释为测量遗漏并跳过检查，须由几何引擎和运行时校验决定。",
+      "geometry-derived道路边无飞行验证证据（evidence_sha256为null），运行时需占用栅格/ESDF确认可行。",
+      "动态行人非静态碰撞体，需运行时语义层生成，规划必须预留感知-规避周期。",
+      "takeout-pickup地标与takeout-pickup-pad航点为不同实体，任务取餐须明确指定pickup航点，不可默认地标为降落点。"
+    ]
+  },
+  "output_sha256": "117d62951957461b3c007f96754141c233134f75dbf5c07e890754667fcc50f6",
+  "model_call": {
+    "schema_version": "dronedream.model-call.v1",
+    "call_id": "model-0a818c2f0432411c8d14fa9f",
+    "role": "context_summarizer",
+    "attempt": 1,
+    "input_sha256": "2dfb507af0e423c6acb47d314ddabbe42bbac6ef0d4a0d399d2ddf9d6eb36bd6",
+    "output_sha256": "1b380b94ffb0b700d4f7aac2802f0a1f6a9aadb5728a4fe91148c051f913ffc3",
+    "output_schema": "AssetUnderstanding",
+    "provider": "kimi",
+    "model": "kimi-k2.6",
+    "response_id": "chatcmpl-6ab0fadf09bd9859bae9bc63",
+    "previous_response_id": null,
+    "input_tokens": 11003,
+    "output_tokens": 845,
+    "latency_ms": 26438,
+    "created_at": "2026-09-21T09:37:30.091203Z",
+    "local_expert_trace": null
+  },
+  "authority": "advisory-only",
+  "review": {
+    "method": "source-grounded-editor-review",
+    "changes": [
+      "Removed inferred graph connections",
+      "Zero clearance is not positive clearance"
+    ],
+    "model_draft_output_sha256": "1b380b94ffb0b700d4f7aac2802f0a1f6a9aadb5728a4fe91148c051f913ffc3",
+    "model_draft_preserved": true
+  }
+}

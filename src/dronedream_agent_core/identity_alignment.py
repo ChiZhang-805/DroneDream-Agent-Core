@@ -26,15 +26,25 @@ def identity_offset_innovation_m(
 ) -> float:
     """Measure a frame-transform change without conflating it with drift.
 
-    The first observation is still compared with the shared zero-origin
-    assumption.  Once an entity/frame binding has been established, identity
-    is guarded by the innovation from the last independently validated
-    transform.  A slowly evolving PX4 estimator offset is therefore tracked,
-    while an entity switch or coordinate-frame discontinuity remains a large
-    residual and fails closed.
+    The first independently synchronized observation establishes the transform
+    between the PX4 estimator frame and the Gazebo world frame.  Its absolute
+    magnitude is guarded separately by the caller.  Once that binding exists,
+    identity is guarded by the innovation from the last validated transform.
+    This permits PX4 to reset its local estimator origin during arming without
+    treating the legitimate frame transform as an entity switch, while a later
+    discontinuity still remains a large residual and fails closed.
     """
 
-    reference = reference_offset_m or Vector3(x=0.0, y=0.0, z=0.0)
+    if reference_offset_m is None:
+        values = (
+            estimator_offset_m.x,
+            estimator_offset_m.y,
+            estimator_offset_m.z,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("identity offset innovation inputs must be finite")
+        return 0.0
+    reference = reference_offset_m
     values = (
         estimator_offset_m.x,
         estimator_offset_m.y,

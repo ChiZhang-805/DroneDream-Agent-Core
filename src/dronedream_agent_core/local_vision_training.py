@@ -13,9 +13,10 @@ import os
 import tempfile
 from collections.abc import Iterable
 from contextlib import suppress
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -34,6 +35,9 @@ from .plugin_values import plugin_json_value
 _UnitTarget = Annotated[float, Field(ge=0.0, le=1.0, strict=True, allow_inf_nan=False)]
 _MAX_IMAGE_BYTES = 16 * 1024**2
 _MAX_MODEL_BYTES = 256 * 1024**2
+LOCAL_VISION_ARCHITECTURE = "mobilenet-v3-large-lraspp-supervised-embedding-v2"
+LOCAL_VISION_SPLIT_METHOD = "held-out-complete-flight-and-render-spatial-group"
+LOCAL_VISION_EMBEDDING_SUPERVISION = "traversability-scene-quality-through-embedding"
 
 LOCAL_VISION_SEMANTIC_CLASSES = (
     "background",
@@ -111,6 +115,9 @@ class LocalVisionTrainingSample(StrictModel):
     model_config = {"strict": True}
 
     flight_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=120)
+    source_kind: Literal["physical-flight", "rendered-view"] = "physical-flight"
+    scene_group_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]*$",
+                                       max_length=120)
     map_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     image_relative_path: str = Field(min_length=1, max_length=240)
     image_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -152,6 +159,25 @@ class LocalVisionTrainingSample(StrictModel):
         max_length=len(LOCAL_VISION_QUALITY_LABELS),
     )
     sample_weight: float = Field(default=1.0, gt=0.0, le=100.0)
+    # 严重曝光失效帧仍可学习质量告警，但不应监督模型猜测已经不可见的场景。
+    perception_supervision_enabled: bool = True
+
+    # 功能：
+    #   渲染视图须绑定场景划分组与渲染回执，不可声称物理飞行传感器历史。
+    # 输入：
+    #   self：已验证基础字段的视觉样本。
+    # 输出：
+    #   self：具有明确来源类型的样本。
+    @model_validator(mode="after")
+    def validate_render_source(self):
+        if self.source_kind == "rendered-view" and (
+            self.scene_group_id is None or self.source_record_sha256 is None
+            or self.source_sensor_snapshot_sha256 is not None
+            or self.semantic_mask_sha256 is None
+        ):
+            raise ValueError(
+                "rendered vision requires grouped renderer evidence, not flight history")
+        return self
 
     # 功能：
     #   规范历史反斜杠并校验跨平台相对路径，拒绝路径逃逸、设备名及含糊拼写。
@@ -197,11 +223,20 @@ class LocalVisionTrainingSample(StrictModel):
                 raise ValueError(f"{name} target weights must be within zero and one")
             if sum(weights) <= 0.0:
                 raise ValueError(f"{name} target weights must enable at least one label")
+        if not self.perception_supervision_enabled and not any(
+            self.quality_targets[index] >= 0.5 and self.quality_target_weights[index] > 0
+            for index in (0, 1)
+        ):
+            raise ValueError("quality-only supervision requires labelled exposure failure")
         return self
 
 
 class LocalVisionTrainingConfig(StrictModel):
     model_config = {"strict": True}
+    device: Literal["cpu", "cuda"] = "cpu"
+    pretrained_source: Literal["coco-voc-segmentation", "imagenet-backbone"] = (
+        "coco-voc-segmentation"
+    )
     width: int = Field(default=224, ge=64, le=1_024)
     height: int = Field(default=128, ge=64, le=1_024)
     embedding_feature_count: int = Field(default=128, ge=16, le=1_024)
@@ -219,7 +254,7 @@ class LocalVisionTrainingConfig(StrictModel):
     freeze_backbone_epochs: int = Field(default=2, ge=0, le=10_000)
 
     # 功能：
-    #   拒绝没有任何训练目标或输入张量规模明显超过本地开发预算的配置。
+    #   拒绝无监督嵌入及超预算配置；只训练分割头不能宣称控制端嵌入也已经学习。
     # 输入：
     #   self：字段范围通过检查的训练配置。
     # 输出：
@@ -231,6 +266,10 @@ class LocalVisionTrainingConfig(StrictModel):
             self.scene_loss_weight, self.quality_loss_weight,
         )):
             raise ValueError("vision training must enable at least one loss")
+        if not any(value > 0 for value in (
+            self.traversability_loss_weight, self.scene_loss_weight, self.quality_loss_weight,
+        )):
+            raise ValueError("vision training requires an embedding supervision loss")
         if self.width * self.height * self.batch_size > 16 * 1024**2:
             raise ValueError("vision training batch exceeds the input pixel budget")
         return self
@@ -284,30 +323,41 @@ def _checked_config(config: LocalVisionTrainingConfig) -> LocalVisionTrainingCon
 
 
 # 功能：
-#   构造 MobileNetV3-Large、Lite R-ASPP 及共享辅助头，只有显式许可才加载预训练骨干。
+#   解析显式训练设备；请求 CUDA 而环境不支持时拒绝，不静默转为长时间 CPU 训练。
+# 输入：
+#   config：已经校验的训练配置。
+# 输出：
+#   device：训练和评估共同使用的 PyTorch 设备。
+def local_vision_training_device(config: LocalVisionTrainingConfig) -> Any:
+    config = _checked_config(config)
+    torch, _nn, _functional = _require_torch()
+    if config.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("LOCAL_VISION_CUDA_UNAVAILABLE")
+    device = torch.device(config.device)
+    return device
+
+
+# 功能：
+#   构造 MobileNetV3-Large、Lite R-ASPP 及共享辅助头，显式选择完整分割或分类骨干迁移。
 # 输入：
 #   config：嵌入维数、图像尺寸和初始化种子。
-#   pretrained_backbone：是否允许使用可触发下载的 ImageNet 骨干权重。
+#   pretrained_backbone：是否允许预训练初始化；保留旧参数名，不静默更改调用许可。
+#   weights_path、weights_sha256：可选离线分割权重及完整摘要，避免租卡后下载等待。
 # 输出：
 #   model：开发训练使用的多输出视觉网络。
 def build_local_vision_model(config: LocalVisionTrainingConfig,
-                             *, pretrained_backbone: bool) -> Any:
+                             *, pretrained_backbone: bool, weights_path=None,
+                             weights_sha256=None) -> Any:
     if type(pretrained_backbone) is not bool:
         raise ValueError("pretrained backbone requires an explicit boolean")
     config = _checked_config(config)
     torch, nn, functional = _require_torch()
     torch.manual_seed(config.random_seed)
-    from torchvision.models import MobileNet_V3_Large_Weights
-    from torchvision.models.segmentation import lraspp_mobilenet_v3_large
+    from .training.vision_initialization import initialize_vision_base
 
-    base = lraspp_mobilenet_v3_large(
-        weights=None,
-        weights_backbone=(
-            MobileNet_V3_Large_Weights.IMAGENET1K_V2
-            if pretrained_backbone
-            else None
-        ),
-        num_classes=len(LOCAL_VISION_SEMANTIC_CLASSES),
+    base, initialization_record = initialize_vision_base(
+        LOCAL_VISION_SEMANTIC_CLASSES, pretrained=pretrained_backbone,
+        source=config.pretrained_source, weights_path=weights_path, weights_sha256=weights_sha256,
     )
 
     class DroneDreamForwardVision(nn.Module):
@@ -327,10 +377,14 @@ def build_local_vision_model(config: LocalVisionTrainingConfig,
                 nn.Linear(960, config.embedding_feature_count),
                 nn.Tanh(),
             )
-            # 嵌入投影当前没有独立监督损失；表征会随共享骨干变化，不宣称该头单独训练收敛。
-            self.traversability_head = nn.Linear(960, 1)
-            self.scene_head = nn.Linear(960, len(LOCAL_VISION_SCENE_LABELS))
-            self.quality_head = nn.Linear(960, len(LOCAL_VISION_QUALITY_LABELS))
+            # 控制端消费的嵌入必须位于监督路径内；不能让任务头绕过投影直接读骨干。
+            self.traversability_head = nn.Linear(config.embedding_feature_count, 1)
+            self.scene_head = nn.Linear(
+                config.embedding_feature_count, len(LOCAL_VISION_SCENE_LABELS)
+            )
+            self.quality_head = nn.Linear(
+                config.embedding_feature_count, len(LOCAL_VISION_QUALITY_LABELS)
+            )
 
         # 功能：
         #   提取共享视觉特征，将分割 logits 上采样到输入尺寸并拼接运行端特征向量。
@@ -349,11 +403,10 @@ def build_local_vision_model(config: LocalVisionTrainingConfig,
                 mode="bilinear",
                 align_corners=False,
             )
-            pooled = functional.adaptive_avg_pool2d(features["high"], 1).flatten(1)
             embedding = self.embedding_head(features["high"])
-            traversability_logits = self.traversability_head(pooled)
-            scene_logits = self.scene_head(pooled)
-            quality_logits = self.quality_head(pooled)
+            traversability_logits = self.traversability_head(embedding)
+            scene_logits = self.scene_head(embedding)
+            quality_logits = self.quality_head(embedding)
             visual_features = torch.cat(
                 (
                     embedding,
@@ -372,6 +425,7 @@ def build_local_vision_model(config: LocalVisionTrainingConfig,
             )
 
     model = DroneDreamForwardVision()
+    model.initialization_record = initialization_record
     return model
 
 
@@ -554,7 +608,7 @@ def local_vision_semantic_class_weights(
     class_count = len(LOCAL_VISION_SEMANTIC_CLASSES)
     counts = torch.zeros(class_count, dtype=torch.float64)
     for sample, _image_path, mask_path in resolved_samples:
-        if mask_path is None:
+        if mask_path is None or not sample.perception_supervision_enabled:
             continue
         mask = _mask_tensor(mask_path, config,
                              expected_sha256=sample.semantic_mask_sha256).reshape(-1)
@@ -578,23 +632,42 @@ def local_vision_semantic_class_weights(
 # 功能：
 #   用有来源摘要的整次飞行样本微调分割和辅助任务，冻结轮次禁止骨干更新统计量。
 # 输入：
-#   model：当前 CPU 视觉网络。
+#   model：将整体迁移到显式训练设备的视觉网络。
 #   resolved_samples：训练划分的样本与制品路径。
 #   config：优化器、轮数、损失权重和确定性洗牌配置。
+#   session、validation_samples：可选恢复作业与独立验证集，必须同时提供。
 # 输出：
 #   model、metrics：完成训练的网络及该训练集上的评估指标，不代表独立验证资格。
 def train_local_vision_model(
     model: Any,
     resolved_samples: list[tuple[LocalVisionTrainingSample, Path, Path | None]],
     config: LocalVisionTrainingConfig,
+    *, session: Any = None, validation_samples: list | None = None,
 ) -> tuple[Any, LocalVisionTrainingMetrics]:
     config = _checked_config(config)
     resolved_samples = _checked_samples(resolved_samples)
+    if (session is None) != (validation_samples is None):
+        raise ValueError("LOCAL_VISION_SESSION_VALIDATION_REQUIRED")
+    if validation_samples is not None:
+        validation_samples = _checked_samples(validation_samples)
+        if ({item[0].flight_id for item in resolved_samples}
+                & {item[0].flight_id for item in validation_samples}
+                or {item[0].image_sha256 for item in resolved_samples}
+                & {item[0].image_sha256 for item in validation_samples}):
+            raise ValueError("LOCAL_VISION_SESSION_VALIDATION_OVERLAP")
+        train_groups = {item[0].scene_group_id for item in resolved_samples
+                        if item[0].scene_group_id is not None}
+        val_groups = {item[0].scene_group_id for item in validation_samples
+                      if item[0].scene_group_id is not None}
+        if train_groups & val_groups:
+            raise ValueError("LOCAL_VISION_SPATIAL_GROUP_SPLIT_OVERLAP")
     if (not any(mask is not None for _, _, mask in resolved_samples)
             and not any(value > 0 for value in (config.traversability_loss_weight,
                        config.scene_loss_weight, config.quality_loss_weight))):
         raise ValueError("vision training has no supervised active loss")
     torch, _nn, functional = _require_torch()
+    device = local_vision_training_device(config)
+    model.to(device)
     torch.manual_seed(config.random_seed)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -604,41 +677,58 @@ def train_local_vision_model(
     semantic_class_weights = torch.tensor(
         local_vision_semantic_class_weights(resolved_samples, config),
         dtype=torch.float32,
+        device=device,
     )
-    generator = torch.Generator().manual_seed(config.random_seed)
-    for epoch in range(config.epoch_count):
+    start_epoch, start_batch = 0, 0
+    if session is not None:
+        session.restore(model, optimizer)
+        start_epoch, start_batch = session.next_epoch, session.next_batch
+        batch_count = math.ceil(len(resolved_samples) / config.batch_size)
+        session.validate_progress(batch_count, config.epoch_count)
+    for epoch in range(start_epoch, config.epoch_count):
+        if session is not None and session.stale_epochs >= session.patience:
+            break
         freeze_backbone = epoch < config.freeze_backbone_epochs
         for parameter in model.backbone.parameters():
             parameter.requires_grad_(not freeze_backbone)
+        # 每轮独立种子使恢复无需重放前几轮；随机网络层另由检查点恢复 RNG。
+        generator = torch.Generator().manual_seed(config.random_seed + epoch)
         order = torch.randperm(len(resolved_samples), generator=generator).tolist()
         model.train()
         if freeze_backbone:
             # requires_grad 不会冻结 BatchNorm 的运行统计；冻结轮次必须同时进入 eval。
             model.backbone.eval()
-        for indices in _batches(order, config.batch_size):
+        for batch_index_in_epoch, indices in enumerate(_batches(order, config.batch_size)):
+            if epoch == start_epoch and batch_index_in_epoch < start_batch:
+                continue
             batch = [resolved_samples[index] for index in indices]
             images = torch.stack([_image_tensor(item[1], config,
-                expected_sha256=item[0].image_sha256) for item in batch])
+                expected_sha256=item[0].image_sha256) for item in batch]).to(device)
             outputs = model(images)
             _visual, semantic, traversability, scene, quality = outputs
             weights = torch.tensor(
-                [item[0].sample_weight for item in batch], dtype=torch.float32
+                [item[0].sample_weight for item in batch], dtype=torch.float32, device=device
+            )
+            perception_weights = torch.tensor(
+                [float(item[0].perception_supervision_enabled) for item in batch],
+                dtype=torch.float32, device=device,
             )
             traversability_target = torch.tensor(
                 [[item[0].traversability_target] for item in batch],
-                dtype=torch.float32,
+                dtype=torch.float32, device=device,
             )
             scene_target = torch.tensor(
-                [item[0].scene_targets for item in batch], dtype=torch.float32
+                [item[0].scene_targets for item in batch], dtype=torch.float32, device=device
             )
             quality_target = torch.tensor(
-                [item[0].quality_targets for item in batch], dtype=torch.float32
+                [item[0].quality_targets for item in batch], dtype=torch.float32, device=device
             )
             scene_target_weights = torch.tensor(
-                [item[0].scene_target_weights for item in batch], dtype=torch.float32
+                [item[0].scene_target_weights for item in batch], dtype=torch.float32, device=device
             )
             quality_target_weights = torch.tensor(
-                [item[0].quality_target_weights for item in batch], dtype=torch.float32
+                [item[0].quality_target_weights for item in batch],
+                dtype=torch.float32, device=device,
             )
             loss = (
                 functional.binary_cross_entropy_with_logits(
@@ -646,7 +736,7 @@ def train_local_vision_model(
                     traversability_target,
                     reduction="none",
                 ).mean(1)
-                * weights
+                * weights * perception_weights
             ).mean() * config.traversability_loss_weight
             loss += (
                 (
@@ -656,7 +746,7 @@ def train_local_vision_model(
                     * scene_target_weights
                 ).sum(1)
                 / scene_target_weights.sum(1).clamp_min(1.0)
-                * weights
+                * weights * perception_weights
             ).mean() * config.scene_loss_weight
             loss += (
                 (
@@ -670,12 +760,12 @@ def train_local_vision_model(
             ).mean() * config.quality_loss_weight
             semantic_losses = []
             for batch_index, (sample, _image, mask_path) in enumerate(batch):
-                if mask_path is not None:
+                if mask_path is not None and sample.perception_supervision_enabled:
                     semantic_losses.append(
                         functional.cross_entropy(
                             semantic[batch_index : batch_index + 1],
                             _mask_tensor(mask_path, config,
-                                expected_sha256=sample.semantic_mask_sha256).unsqueeze(0),
+                                expected_sha256=sample.semantic_mask_sha256).unsqueeze(0).to(device),
                             weight=semantic_class_weights,
                         ) * weights[batch_index]
                     )
@@ -685,12 +775,27 @@ def train_local_vision_model(
                 raise RuntimeError("LOCAL_VISION_TRAINING_LOSS_NOT_FINITE")
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            # 逐批证明嵌入参与实际监督；旧结构、detach 或错误冻结不允许假装训练成功。
+            embedding_parameters = tuple(model.embedding_head.parameters())
+            if not embedding_parameters or any(
+                not parameter.requires_grad or parameter.grad is None
+                for parameter in embedding_parameters
+            ):
+                raise RuntimeError("LOCAL_VISION_EMBEDDING_SUPERVISION_DISCONNECTED")
             if any(parameter.grad is not None and not torch.isfinite(parameter.grad).all()
                    for parameter in model.parameters()):
                 raise RuntimeError("LOCAL_VISION_TRAINING_GRADIENT_NOT_FINITE")
             optimizer.step()
             if any(not torch.isfinite(parameter).all() for parameter in model.parameters()):
                 raise RuntimeError("LOCAL_VISION_TRAINING_PARAMETER_NOT_FINITE")
+            if session is not None:
+                session.batch_completed(model, optimizer, epoch, batch_index_in_epoch + 1)
+        if session is not None:
+            validation_metrics = evaluate_local_vision_model(model, validation_samples, config)
+            if session.epoch_completed(model, optimizer, epoch, validation_metrics):
+                break
+    if session is not None:
+        session.select_best(model)
     metrics = evaluate_local_vision_model(model, resolved_samples, config)
     return model, metrics
 
@@ -698,7 +803,7 @@ def train_local_vision_model(
 # 功能：
 #   计算无梯度逐样本误差、有效标签准确率与类别 IoU，均值损失保留未加训练权重的口径。
 # 输入：
-#   model：当前 CPU 视觉网络。
+#   model：将迁移到配置指定设备的视觉网络；评估不更新权重。
 #   resolved_samples：明确选定的训练集或独立验证集，来源由调用方管理。
 #   config：图像与标签输入尺寸。
 # 输出：
@@ -711,6 +816,8 @@ def evaluate_local_vision_model(
     config = _checked_config(config)
     resolved_samples = _checked_samples(resolved_samples)
     torch, _nn, functional = _require_torch()
+    device = local_vision_training_device(config)
+    model.to(device)
     model.eval()
     losses = []
     traversability_errors = []
@@ -726,22 +833,25 @@ def evaluate_local_vision_model(
     with torch.inference_mode():
         for sample, image_path, mask_path in resolved_samples:
             image = _image_tensor(image_path, config,
-                                   expected_sha256=sample.image_sha256).unsqueeze(0)
+                                   expected_sha256=sample.image_sha256).unsqueeze(0).to(device)
             outputs = model(image)
             if any(not torch.isfinite(output).all() for output in outputs):
                 raise RuntimeError("LOCAL_VISION_EVALUATION_OUTPUT_NOT_FINITE")
             _visual, semantic, traversability, scene, quality = outputs
             traversability_probability = torch.sigmoid(traversability)[0, 0]
-            traversability_errors.append(
-                abs(float(traversability_probability) - sample.traversability_target)
+            if sample.perception_supervision_enabled:
+                traversability_errors.append(
+                    abs(float(traversability_probability) - sample.traversability_target)
+                )
+            scene_target = torch.tensor(sample.scene_targets, dtype=torch.float32, device=device)
+            quality_target = torch.tensor(
+                sample.quality_targets, dtype=torch.float32, device=device
             )
-            scene_target = torch.tensor(sample.scene_targets, dtype=torch.float32)
-            quality_target = torch.tensor(sample.quality_targets, dtype=torch.float32)
             scene_weights = torch.tensor(
-                sample.scene_target_weights, dtype=torch.float32
-            )
+                sample.scene_target_weights, dtype=torch.float32, device=device
+            ) * float(sample.perception_supervision_enabled)
             quality_weights = torch.tensor(
-                sample.quality_target_weights, dtype=torch.float32
+                sample.quality_target_weights, dtype=torch.float32, device=device
             )
             scene_correct += int(
                 (
@@ -759,8 +869,8 @@ def evaluate_local_vision_model(
             quality_total += int((quality_weights > 0.0).sum())
             sample_loss = functional.binary_cross_entropy_with_logits(
                 traversability,
-                torch.tensor([[sample.traversability_target]], dtype=torch.float32),
-            )
+                torch.tensor([[sample.traversability_target]], dtype=torch.float32, device=device),
+            ) * float(sample.perception_supervision_enabled)
             sample_loss += (
                 functional.binary_cross_entropy_with_logits(
                     scene[0], scene_target, reduction="none"
@@ -773,8 +883,10 @@ def evaluate_local_vision_model(
                 )
                 * quality_weights
             ).sum() / quality_weights.sum().clamp_min(1.0)
-            if mask_path is not None:
-                mask = _mask_tensor(mask_path, config, expected_sha256=sample.semantic_mask_sha256)
+            if mask_path is not None and sample.perception_supervision_enabled:
+                mask = _mask_tensor(
+                    mask_path, config, expected_sha256=sample.semantic_mask_sha256
+                ).to(device)
                 sample_loss += functional.cross_entropy(semantic, mask.unsqueeze(0))
                 prediction = semantic.argmax(1)[0]
                 semantic_correct += int((prediction == mask).sum())
@@ -808,7 +920,8 @@ def evaluate_local_vision_model(
     ]
     metrics = LocalVisionTrainingMetrics(
         sample_count=len(resolved_samples),
-        semantic_sample_count=sum(item[2] is not None for item in resolved_samples),
+        semantic_sample_count=sum(item[2] is not None and item[0].perception_supervision_enabled
+                                  for item in resolved_samples),
         mean_loss=sum(losses) / len(losses),
         semantic_pixel_accuracy=(
             semantic_correct / semantic_total if semantic_total else None
@@ -822,6 +935,7 @@ def evaluate_local_vision_model(
         ),
         traversability_mean_absolute_error=(
             sum(traversability_errors) / len(traversability_errors)
+            if traversability_errors else 1.0
         ),
         scene_binary_accuracy=scene_correct / scene_total if scene_total else 0.0,
         quality_binary_accuracy=(
@@ -832,9 +946,9 @@ def evaluate_local_vision_model(
 
 
 # 功能：
-#   将固定输入形状的五输出网络导出到自有暂存流，校验图结构后无覆盖发布新 ONNX。
+#   将五输出网络导出到自有暂存流，校验图结构及全部输出数值一致性后无覆盖发布 ONNX。
 # 输入：
-#   model：准备冻结的 CPU 视觉网络。
+#   model：待导出网络；复制到 CPU 导出，不改变原模型的设备、模式或权重。
 #   output_path：必须尚不存在的最终模型文件。
 #   config：模型固定输入尺寸与特征维数。
 # 输出：
@@ -846,12 +960,12 @@ def export_local_vision_onnx(model: Any, output_path: Path,
         raise FileExistsError(output_path)
     config = _checked_config(config)
     torch, _nn, _functional = _require_torch()
-    model.eval()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     example = torch.zeros((1, 3, config.height, config.width), dtype=torch.float32)
     if sum(parameter.numel() * parameter.element_size() for parameter in model.parameters()
            ) > _MAX_MODEL_BYTES:
         raise ValueError("vision parameters exceed the export byte budget")
+    export_model = deepcopy(model).cpu().eval()
     temporary = None
     identity = None
     try:
@@ -860,7 +974,7 @@ def export_local_vision_onnx(model: Any, output_path: Path,
                                          suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             identity = os.fstat(stream.fileno())
-            torch.onnx.export(model, (example,), stream, input_names=["forward_rgb"],
+            torch.onnx.export(export_model, (example,), stream, input_names=["forward_rgb"],
                 output_names=["visual_features", "semantic_logits", "traversability_logits",
                               "scene_logits", "quality_logits"],
                 opset_version=17, do_constant_folding=True, dynamo=False, external_data=False)
@@ -888,6 +1002,10 @@ def export_local_vision_onnx(model: Any, output_path: Path,
         if (tensor.elem_type != onnx.TensorProto.FLOAT
                 or shape != [1, 3, config.height, config.width]):
             raise RuntimeError("LOCAL_VISION_ONNX_INPUT_SHAPE_MISMATCH")
+        from .training.vision_export import verify_vision_export
+
+        verify_vision_export(raw, export_model, config.height, config.width,
+                            local_vision_feature_count(config.embedding_feature_count))
         digest = hashlib.sha256(raw).hexdigest()
         publish_asset_file(temporary, output_path, expected_sha256=digest, limit=_MAX_MODEL_BYTES)
         return digest
@@ -918,7 +1036,13 @@ def benchmark_local_vision_onnx(path: Path, config: LocalVisionTrainingConfig,
     import onnxruntime as ort
 
     raw = read_plugin_file(path, limit=_MAX_MODEL_BYTES)
-    session = ort.InferenceSession(raw, providers=["CPUExecutionProvider"])
+    # 与飞行端一致地约束线程数，不能在独占全部 CPU 的基准上宣称部署延迟达标。
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session = ort.InferenceSession(raw, sess_options=options, providers=["CPUExecutionProvider"])
     sample = np.zeros((1, 3, config.height, config.width), dtype=np.float32)
     latencies = []
     for iteration in range(iterations + 3):
@@ -955,5 +1079,8 @@ def benchmark_local_vision_onnx(path: Path, config: LocalVisionTrainingConfig,
         "visual_feature_count": int(output.shape[1]),
         "measured_outputs": ["visual_features"],
         "includes_preprocessing": False,
+        "intra_op_threads": 1,
+        "inter_op_threads": 1,
+        "execution_mode": "sequential",
     }
     return benchmark

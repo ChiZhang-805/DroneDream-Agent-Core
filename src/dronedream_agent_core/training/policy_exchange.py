@@ -14,6 +14,7 @@ import secrets
 import socket
 import struct
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import Field
@@ -28,6 +29,22 @@ from .flight_environment import PilotAction
 
 MAX_PACKET_BYTES = 2 * 1024 * 1024
 PROTOCOL = "dronedream-simulation-policy-exchange"
+DEFER_REASONS = frozenset({"insufficient-input-budget", "proposal-budget-exhausted",
+                          "stream-native-state-not-new", "stream-input-expired-at-adoption"})
+
+
+class TrainingProposalDeferred(TimeoutError):
+    """经当前运行鉴权、请求摘要绑定的未执行声明；不是动作或新租期。"""
+
+    reason_code = "TRAINING_POLICY_PROPOSAL_DEFERRED"
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingIdentity:
+    """只保留认证消息的不可变绑定；不持有交给学习器的可变观测树。"""
+
+    request_sha256: str
+    valid_until_unix_ms: int
 
 
 class TrainingProposal(StrictModel):
@@ -175,8 +192,10 @@ def _remaining_lease(request: dict) -> float:
     if type(stamp) is not int or not 0 <= stamp < 2**63:
         raise ValueError("TRAINING_POLICY_REQUEST_INVALID")
     remaining_ms = stamp - int(_clock_seconds(time.time()) * 1000)
-    if not 0 < remaining_ms <= 250:
+    if remaining_ms <= 0:
         raise ValueError("TRAINING_POLICY_INPUT_EXPIRED")
+    if remaining_ms > 250:
+        raise ValueError("TRAINING_POLICY_INPUT_LEASE_EXCEEDS_BOUND")
     seconds = remaining_ms / 1000
     return seconds
 
@@ -213,6 +232,12 @@ class TrainingPolicyClient:
             stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             _send(stream, envelope, secret, deadline=deadline)
             response = _receive(stream, secret, deadline=deadline)
+        if response.get("status") == "deferred":
+            if (set(response) != {"status", "request_sha256", "reason"}
+                    or response["request_sha256"] != sha256_json(request)
+                    or response["reason"] not in DEFER_REASONS):
+                raise ValueError("TRAINING_POLICY_DEFERRED_RESPONSE_INVALID")
+            raise TrainingProposalDeferred(response["reason"])
         proposal = TrainingProposal.model_validate(response)
         if proposal.request_sha256 != sha256_json(request):
             raise ValueError("TRAINING_POLICY_RESPONSE_OBSERVATION_MISMATCH")
@@ -237,7 +262,7 @@ class TrainingPolicyExchange:
         check_plain_plugin_path(self.path)
         self._descriptor_identity = None
         self._stream: socket.socket | None = None
-        self._request: dict | None = None
+        self._request: _PendingIdentity | None = None
         self._deadline = 0.
         self._closed = False
         self._seen: set[str] = set()
@@ -269,12 +294,12 @@ class TrainingPolicyExchange:
             raise
 
     # 功能：
-    #   接纳一个未过期且未重放的请求，向学习器返回独立副本，不共享留存摘要对应的对象。
+    #   接纳未过期且未重放的请求，将解析树移交学习器，只留存不可变摘要和原始截止时刻。
     # 输入：
     #   self：当前运行的交换服务端。
     #   timeout_seconds：至多六十秒的等待连接时间，不替代观测自己的期限。
     # 输出：
-    #   owned：已通过运行身份、消息、时效和容量检查的独立请求对象。
+    #   request：已通过运行身份、消息、时效和容量检查的请求对象。
     def wait_request(self, *, timeout_seconds: float) -> dict:
         if self._closed or self._stream is not None:
             raise RuntimeError("TRAINING_POLICY_EXCHANGE_STATE_INVALID")
@@ -297,7 +322,9 @@ class TrainingPolicyExchange:
             remaining = _remaining_lease(request)
             deadline = _clock_seconds(time.monotonic()) + remaining
             digest = sha256_json(request)
-            owned = copy_json(request, limit=MAX_PACKET_BYTES - 32)
+            # _receive 的严格解析已创建独占 JSON 树；服务器后续只需要摘要和期限。
+            # 不再复制整棵树或在回复时重新散列，学习器改写内容也不能改写原始绑定。
+            identity = _PendingIdentity(digest, request["valid_until_unix_ms"])
             # Serialization and hashing consume the same lease as transport.
             # Reject before storing pending state or exposing expired data.
             if (_clock_seconds(time.monotonic()) >= deadline
@@ -307,10 +334,10 @@ class TrainingPolicyExchange:
             if len(self._seen) >= 100_000:
                 raise ValueError("TRAINING_POLICY_EPISODE_CAPACITY_EXCEEDED")
             self._seen.add(digest)
-            self._stream, self._request = stream, request
+            self._stream, self._request = stream, identity
             # Hashing/parsing may consume time; never add it back to the lease.
             self._deadline = deadline
-            return owned
+            return request
         except BaseException:
             stream.close()
             raise
@@ -330,8 +357,11 @@ class TrainingPolicyExchange:
             if not isinstance(proposal, TrainingProposal):
                 raise ValueError("TRAINING_POLICY_PROPOSAL_INVALID")
             proposal = TrainingProposal.model_validate(proposal.model_dump(mode="json"))
-            if proposal.request_sha256 != sha256_json(self._request):
+            if proposal.request_sha256 != self._request.request_sha256:
                 raise ValueError("TRAINING_POLICY_PROPOSAL_OBSERVATION_MISMATCH")
+            # 墙钟前跳时单调期限可能尚未到期；服务端也必须拒绝原始有效期已过的回复。
+            if int(_clock_seconds(time.time()) * 1000) >= self._request.valid_until_unix_ms:
+                raise TimeoutError("TRAINING_POLICY_EXCHANGE_EXPIRED")
             _send(stream, proposal.model_dump(mode="json"), self._secret, deadline=self._deadline)
         finally:
             stream.close()
@@ -384,9 +414,20 @@ class TrainingPolicyExchange:
     #   self：当前交换服务端。
     # 输出：
     #   None：不返回业务数据。
-    def discard_pending(self) -> None:
+    def discard_pending(self, *, reason: str | None = None) -> None:
+        # 功能：只对已鉴权请求发送明确的时效拒绝；其他取消/故障仍为断开。
+        # 输入：固定原因或 None；输出：无动作，保持请求的原截止时间并关闭连接。
+        if reason is not None and reason not in DEFER_REASONS:
+            raise ValueError("TRAINING_POLICY_DEFER_REASON_INVALID")
         if self._stream is not None:
             try:
-                self._stream.close()
+                if reason is not None and self._request is not None:
+                    try:
+                        _send(self._stream, {"status": "deferred",
+                            "request_sha256": self._request.request_sha256, "reason": reason},
+                            self._secret, deadline=self._deadline)
+                    except (OSError, TimeoutError):
+                        pass  # 超期仍关闭，不续租，也不伪造已送达的拒绝回执。
             finally:
+                self._stream.close()
                 self._stream = self._request = None

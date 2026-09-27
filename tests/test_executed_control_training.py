@@ -2,6 +2,7 @@
 
 import copy
 import math
+from contextlib import nullcontext
 
 import pytest
 from control_fixtures import complete_feature_snapshot
@@ -236,6 +237,42 @@ def test_replan_preserves_position_and_velocity_without_forging_joystick_axes():
         with pytest.raises(ValueError, match=issue):
             executed_training_action(snapshot, command,
                                      application.model_copy(update=update), limits=limits)
+
+
+# 功能：
+#   核验新教师恢复从真实纯速度回执还原四轴，不给模型冒用恢复权限或添加未经批准的偏航。
+# 输入：
+#   source、authorized、rate：教师来源、模型授权与偏航的边界组合。
+# 输出：
+#   None：唯一合法组合恢复实际轴，其余组合均被拒绝。
+@pytest.mark.parametrize('source,authorized,rate', [
+    ('deterministic-brake', False, 0.), ('route-target', False, 0.),
+    ('deterministic-brake', True, 0.), ('deterministic-brake', False, 1.),
+])
+def test_velocity_recovery_requires_teacher_safety_origin(source, authorized, rate):
+    snapshot, command, _, limits = teacher_evidence()
+    command = command.model_copy(update={'model_navigation_authorized': authorized,
+        'decision': command.decision.model_copy(update={'action': 'replan',
+            'control_source': source, 'selected_yaw_rate_dps': rate})})
+    # 先构造实际被传输层记录的零／非零偏航，不通过篡改回执绕过命令绑定。
+    expected_error = (pytest.raises(ValueError, match='route-fallback control cannot claim model authorization')
+                      if authorized else nullcontext())
+    with expected_error:
+        application = control_application_record(command, sequence=1, accepted_at_unix_ms=1050,
+            transport='velocity-ned', velocity_ned_mps=(-.2, .4, -.375),
+            yaw_heading_deg=20. + rate * .05,
+            yaw_rate_application={'previous_heading_deg': 20., 'clockwise_rate_dps': rate,
+                                  'integration_seconds': .05})
+    if authorized:
+        return
+    if source != 'deterministic-brake' or authorized or rate != 0.:
+        with pytest.raises(ValueError, match='SAFETY_OVERRIDE_IS_NOT_TEACHER_BEHAVIOR'):
+            executed_pilot_control(snapshot, command, application, limits=limits)
+    else:
+        target = executed_pilot_control(snapshot, command, application, limits=limits)
+        assert [target.forward_axis, target.right_axis, target.up_axis, target.yaw_axis] == pytest.approx([.5, .25, .5, 0.])
+        applied, expired = executed_training_action(snapshot, command, application, limits=limits)
+        assert not expired and applied.axes == pytest.approx([.5, .25, .5, 0.])
 
 
 # 功能：

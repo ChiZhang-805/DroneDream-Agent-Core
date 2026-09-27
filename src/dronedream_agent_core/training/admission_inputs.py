@@ -60,6 +60,10 @@ def freeze_admission_inputs(arguments: argparse.Namespace, root: Path) -> argpar
 
     package = load_local_policy_package(arguments.package)
     causal = package.manifest.navigation_architecture == "causal-gru-control"
+    heading_path = getattr(arguments, 'heading_observations', None)
+    if package.manifest.requires_heading_evidence() != (
+            heading_path is not None):
+        raise ValueError('HEADING_ADMISSION_EXPLICIT_SOURCE_REQUIRED')
     history_paths = [
         getattr(arguments, name, None) for name in ("validation_observations", "stream_groups")
     ]
@@ -86,6 +90,7 @@ def freeze_admission_inputs(arguments: argparse.Namespace, root: Path) -> argpar
         raise ValueError("ADMISSION_MANIFEST_CHANGED_WHILE_FREEZING")
     frozen.package = package_root
     frozen.expert_training_groups = set()
+    frozen.risk_training_evidence = None
     if causal:
         # 因果包必须把完整训练来源一起冻结，不能只复制权重后失去独立留出的依据。
         from .artifact_assembly import expert_spatial_groups, validate_expert_training_receipt
@@ -113,6 +118,8 @@ def freeze_admission_inputs(arguments: argparse.Namespace, root: Path) -> argpar
             validate_expert_training_receipt(
                 artifact.role, artifact.sha256, evidence, package.manifest
             )
+            if artifact.role == 'risk-critic':
+                frozen.risk_training_evidence = evidence_path
             if artifact.role != "perception-encoder":
                 trained, held_out = expert_spatial_groups(artifact.role, evidence)
                 training_groups.update(trained)
@@ -124,6 +131,7 @@ def freeze_admission_inputs(arguments: argparse.Namespace, root: Path) -> argpar
     for name, limit in (
         ("validation_observations", MAX_ADMISSION_DATA_BYTES),
         ("stream_groups", 64 * 1024 * 1024),
+        ("heading_observations", MAX_ADMISSION_DATA_BYTES),
     ):
         source = getattr(arguments, name, None)
         setattr(frozen, name, freeze_file(source, limit) if source is not None else None)
@@ -153,6 +161,22 @@ def freeze_admission_inputs(arguments: argparse.Namespace, root: Path) -> argpar
             else MAX_ADMISSION_RECEIPT_BYTES
         )
         setattr(frozen, name, [freeze_file(path, limit) for path in values])
+    risk_roots = getattr(arguments, 'risk_validation_data', [])
+    if type(risk_roots) is not list or len(risk_roots) > 16:
+        raise ValueError('ADMISSION_RISK_SOURCE_COUNT_INVALID')
+    frozen.risk_validation_data = []
+    if risk_roots:
+        from .action_risk_artifacts import FILES
+        for index, source_root in enumerate(risk_roots):
+            check_plain_plugin_path(source_root)
+            destination_root = root / f'action-risk-{index:02d}'
+            destination_root.mkdir()
+            for name in ('dataset-receipt.jsonl', *FILES.values()):
+                destination = destination_root / name
+                hash_plugin_file(source_root / name, limit=min(remaining, MAX_ADMISSION_DATA_BYTES),
+                                 destination=destination)
+                remaining -= destination.stat().st_size
+            frozen.risk_validation_data.append(destination_root)
     return frozen
 
 

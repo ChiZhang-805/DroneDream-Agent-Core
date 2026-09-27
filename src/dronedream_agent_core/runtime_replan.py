@@ -34,6 +34,8 @@ from .contracts import (
 )
 from .extensions import ExtensionExecutionError
 from .hashing import sha256_json
+from .control_uncertainty import finite_positive_number
+from .localization_evidence import native_localization_evidence
 from .plugin_api import (
     ToolEnvironment,
     build_discovered_extension_registry,
@@ -411,11 +413,14 @@ def _call_runtime_route(
 #   clearance：该路线的连续净空报告。
 # 输出：
 #   accepted：全部路段预算和报告一致性通过时为 True。
-def _route_tracking_budget_accepted(route: GraphRoute, clearance: RouteClearanceReport) -> bool:
+def _route_tracking_budget_accepted(
+    route: GraphRoute, clearance: RouteClearanceReport, localization_variance_m2: float,
+) -> bool:
     segment_clearances = list(clearance.segment_minimum_clearances_m)
     accepted = False
     if (
-        clearance.accepted is not True
+        not finite_positive_number(localization_variance_m2)
+        or clearance.accepted is not True
         or type(clearance.collision_count) is not int
         or clearance.collision_count != 0
         or clearance.collisions
@@ -427,11 +432,42 @@ def _route_tracking_budget_accepted(route: GraphRoute, clearance: RouteClearance
         return accepted
     try:
         for measured_m in segment_clearances:
-            build_tracking_corridor_budget(measured_m)
+            build_tracking_corridor_budget(
+                measured_m, localization_covariance_m2=localization_variance_m2)
     except ValueError:
         return accepted
     accepted = bool(segment_clearances)
     return accepted
+
+
+# 功能：读取与本次稳定悬停绑定的真实定位方差，拒绝缺失、过期或未来测量，不退回规划默认值。
+# 输入：ack：稳定悬停回执；测量在 stable_at 时须不超过 250 毫秒，路线采纳仍须再检当前状态。
+# 输出：variance_m2：可供候选搜索及连续路线验收使用的方差上界。
+def _hold_localization_variance(ack: RuntimeHoldAcknowledgement) -> float:
+    variance = ack.localization_variance_m2
+    observed = ack.localization_observed_at_unix_ms
+    if (type(variance) not in (int, float) or not math.isfinite(variance)
+            or not 0 < variance <= 10_000 or type(observed) is not int
+            or ack.stable_at.tzinfo is None):
+        raise RuntimeReplanError("RUNTIME_REPLAN_LOCALIZATION_EVIDENCE_REQUIRED")
+    age_ms = round(ack.stable_at.timestamp() * 1000) - observed
+    if not 0 <= age_ms <= 250:
+        raise RuntimeReplanError("RUNTIME_REPLAN_LOCALIZATION_EVIDENCE_EXPIRED")
+    return float(variance)
+
+
+# 功能：在执行器实际接收替换轨迹时重新核对定位，不能把几秒前悬停时的误差当作当前证据。
+# 输入：replacement：绑定路线与连续净空；dynamics：原生遥测快照；now_unix_ms：当前消费时刻。
+# 输出：accepted：来源新鲜且整条替换路线能覆盖当前误差时为 True；未知测量保守返回 False。
+def replacement_localization_budget_accepted(
+    replacement: RuntimeReplacementTrack, dynamics: dict, *, now_unix_ms: int,
+) -> bool:
+    try:
+        variance, _ = native_localization_evidence(
+            {"dynamics": dynamics}, now_unix_ms=now_unix_ms, maximum_age_ms=250)
+    except ValueError:
+        return False
+    return _route_tracking_budget_accepted(replacement.route, replacement.clearance, variance)
 
 
 # 功能：
@@ -483,6 +519,7 @@ def _validate_replan_input_binding(
 def _replacement_geometry_gates(
     route: GraphRoute, clearance: RouteClearanceReport, track: Px4Track,
     prior_track: Px4Track, vehicle: VehicleAsset, semantic_sha256: str,
+    localization_variance_m2: float,
 ) -> dict[str, bool]:
     counts_match = (
         len(route.node_ids) == len(route.positions_m) == len(track.points)
@@ -525,7 +562,7 @@ def _replacement_geometry_gates(
         ),
         "replacement_clearance_semantic_bound": clearance.semantic_sha256 == semantic_sha256,
         "replacement_tracking_corridor_budget_accepted": (
-            _route_tracking_budget_accepted(route, clearance)
+            _route_tracking_budget_accepted(route, clearance, localization_variance_m2)
         ),
     }
     return gates
@@ -685,6 +722,7 @@ def build_runtime_replacement(
     _validate_replan_input_binding(
         message, acknowledgement, decision, prior_track, prior_track_sha256
     )
+    localization_variance_m2 = _hold_localization_variance(acknowledgement)
     prior_return_node = return_node
     target_entity = decision.classification.target_entity
     amendment_action = decision.classification.requested_action
@@ -724,6 +762,7 @@ def build_runtime_replacement(
         vehicle_height_m=vehicle.body_height_m,
         waypoint_hold_seconds=prior_track.waypoint_hold_seconds,
         vehicle=vehicle,
+        planning_localization_variance_m2=localization_variance_m2,
     )
     if plugin_snapshot is None:
         registry, _snapshot = build_discovered_tool_registry(environment)
@@ -778,7 +817,8 @@ def build_runtime_replacement(
     receipts.extend([clearance_receipt, track_receipt])
     gates = {
         **_replacement_geometry_gates(
-            route, clearance, track, prior_track, vehicle, expected_semantic_sha256
+            route, clearance, track, prior_track, vehicle, expected_semantic_sha256,
+            localization_variance_m2,
         ),
         "message_matches_decision": decision.message_sha256 == sha256_json(message),
         "hold_matches_decision": decision.hold_ack_sha256 == sha256_json(acknowledgement),
@@ -791,7 +831,7 @@ def build_runtime_replacement(
         "vehicle_identity_matches_contract": vehicle.asset_id == expected_vehicle_asset_id,
         "replacement_clearance_accepted": clearance.accepted,
         "replacement_tracking_corridor_budget_accepted": (
-            _route_tracking_budget_accepted(route, clearance)
+            _route_tracking_budget_accepted(route, clearance, localization_variance_m2)
         ),
         "replacement_begins_at_stable_hold": (
             math.dist(
@@ -922,6 +962,7 @@ def build_runtime_speed_replacement(
     _validate_replan_input_binding(
         message, acknowledgement, decision, prior_track, prior_track_sha256
     )
+    localization_variance_m2 = _hold_localization_variance(acknowledgement)
     if (
         decision.authorized_action != "hold_for_replan"
         or decision.classification.requested_action != "set_speed"
@@ -972,6 +1013,7 @@ def build_runtime_speed_replacement(
         vehicle_height_m=vehicle.body_height_m,
         waypoint_hold_seconds=prior_track.waypoint_hold_seconds,
         vehicle=vehicle,
+        planning_localization_variance_m2=localization_variance_m2,
     )
     registry = (
         build_discovered_tool_registry(environment)[0]
@@ -1002,7 +1044,8 @@ def build_runtime_speed_replacement(
     )
     gates = {
         **_replacement_geometry_gates(
-            route, clearance, track, prior_track, vehicle, expected_semantic_sha256
+            route, clearance, track, prior_track, vehicle, expected_semantic_sha256,
+            localization_variance_m2,
         ),
         "message_matches_decision": decision.message_sha256 == sha256_json(message),
         "hold_matches_decision": decision.hold_ack_sha256 == sha256_json(acknowledgement),
@@ -1122,6 +1165,7 @@ def build_runtime_coverage_replacement(
     _validate_replan_input_binding(
         message, acknowledgement, decision, prior_track, prior_track_sha256
     )
+    localization_variance_m2 = _hold_localization_variance(acknowledgement)
     if (
         decision.authorized_action != "hold_for_replan"
         or decision.classification.requested_action != "set_coverage"
@@ -1176,6 +1220,7 @@ def build_runtime_coverage_replacement(
         vehicle_height_m=vehicle.body_height_m,
         waypoint_hold_seconds=prior_track.waypoint_hold_seconds,
         vehicle=vehicle,
+        planning_localization_variance_m2=localization_variance_m2,
     )
     registry = (
         build_discovered_tool_registry(environment)[0]
@@ -1255,7 +1300,8 @@ def build_runtime_coverage_replacement(
     track = Px4Track.model_validate(track_value)
     gates = {
         **_replacement_geometry_gates(
-            route, clearance, track, prior_track, vehicle, expected_semantic_sha256
+            route, clearance, track, prior_track, vehicle, expected_semantic_sha256,
+            localization_variance_m2,
         ),
         "message_matches_decision": decision.message_sha256 == sha256_json(message),
         "hold_matches_decision": decision.hold_ack_sha256 == sha256_json(acknowledgement),
@@ -1271,7 +1317,7 @@ def build_runtime_coverage_replacement(
         "safe_anchor_join": max_join > 0 and join_distance <= max_join,
         "replacement_clearance_accepted": clearance.accepted,
         "replacement_tracking_corridor_budget_accepted": (
-            _route_tracking_budget_accepted(route, clearance)
+            _route_tracking_budget_accepted(route, clearance, localization_variance_m2)
         ),
         "replacement_begins_at_stable_hold": (
             math.dist(

@@ -39,6 +39,22 @@ def call(port, snapshot=None):
     return result
 
 
+# 功能：实际端口完整保存四个后端和五个交接指标，不能因诊断字段数量阻断有效决策。
+# 输入：隔离模型包与固定推理后端；输出：真实回执可序列化并重验，不授予飞行资格。
+def test_complete_visual_pipeline_trace_fits_receipt(tmp_path):
+    package = _write_package(tmp_path / 'pipeline', package_id='test.pipeline')
+    class MeasuredBackend(_SelectingBackend):
+        def infer(self, *args, **kwargs):
+            raw = super().infer(*args, **kwargs)
+            return raw.model_copy(update={'pipeline_latency_ms': {
+                'tensor-assembly': .1, 'visual-input-preprocess': .2,
+                'visual-prefetch-wait': .3, 'backend-wall': .6}})
+    result = call(policy.LocalPolicyPort(package, backend=MeasuredBackend()))
+    trace = result.record.local_expert_trace
+    assert len(trace.pipeline_latency_ms) == 9
+    assert type(trace).model_validate(trace.model_dump()) == trace
+
+
 # 功能：
 #   恢复专家接管时仍根据真实飞行阶段启用精细稳定顾问，不能仅由 profile 名称决定。
 # 输入：

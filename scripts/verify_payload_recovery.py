@@ -21,7 +21,6 @@ from dronedream_agent_core.hashing import sha256_json
 _PAYLOAD_STATES = {"attached", "custody-confirmed", "loaded-stable"}
 _REQUIRED_ACTIONS = {
     "delivery.precontact-hold",
-    "delivery.scan-code",
     "pickup",
     "delivery.confirm-custody",
     "delivery.verify-loaded-stability",

@@ -12,6 +12,54 @@ from dronedream_agent_plugins._helpers import hook_plugin
 
 
 # 功能：
+#   验证历史资产导入记录只保留为证据，工具和运行钩子均不加载已退役代码。
+# 输入：
+#   tmp_path、monkeypatch：隔离环境；kind：地图或机型导入能力。
+# 输出：
+#   None：通过断言确认兼容且冻结摘要未变化。
+@pytest.mark.parametrize("kind", ["map-importer", "vehicle-importer"])
+def test_retired_readonly_asset_importers_do_not_block_execution(tmp_path, monkeypatch, kind):
+    plugin = definition(permissions=["asset.read"])
+    plugin.manifest.capabilities[0].kind = kind
+    plugin.manifest.capabilities[0].authority = "read"
+    plugin.manifest.capabilities[0].metadata = {}
+    snapshot = snapshot_for(plugin)
+    before = snapshot.model_dump_json()
+    monkeypatch.setattr(plugin_api, "discover_builtin_plugins", lambda: {})
+    plugin_api.build_discovered_extension_registry(snapshot)
+    plugin_api.build_snapshot_tool_registry(environment(tmp_path), snapshot)
+    assert snapshot.model_dump_json() == before
+
+
+# 功能：
+#   验证兼容历史资产不放宽执行钩子、控制权限或缺失清单的检查。
+# 输入：
+#   monkeypatch：模拟缺少实现；mutation：不允许兼容的能力变化。
+# 输出：
+#   None：无法重建的运行插件仍必须明确失败。
+@pytest.mark.parametrize("mutation", ["hook", "control", "permission", "missing"])
+def test_retired_asset_compatibility_never_skips_runtime_authority(monkeypatch, mutation):
+    plugin = definition(permissions=["asset.read"])
+    cap = plugin.manifest.capabilities[0]
+    cap.kind = "map-importer"
+    cap.authority = "read"
+    cap.metadata = {}
+    if mutation == "hook":
+        cap.metadata = {"extension_hook": "select_port"}
+    elif mutation == "control":
+        cap.authority = "control"
+    elif mutation == "permission":
+        plugin.manifest.permissions = ["mission.read"]
+    snapshot = snapshot_for(plugin)
+    if mutation == "missing":
+        snapshot.plugins[0].manifest = None
+        snapshot.catalog_sha256 = sha256_json(snapshot.plugins)
+    monkeypatch.setattr(plugin_api, "discover_builtin_plugins", lambda: {})
+    with pytest.raises(ValueError, match="PLUGIN_SNAPSHOT_EXTERNAL_METADATA_MISSING"):
+        plugin_api.build_discovered_extension_registry(snapshot)
+
+
+# 功能：
 #   创建不连接模型的单选钩子定义，允许测试替换处理函数或明确指定空权限。
 # 输入：
 #   handler：可选的测试钩子。

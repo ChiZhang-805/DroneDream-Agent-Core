@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .assets import read_map_semantic_object
 from .contracts import MapAsset, MapCatalog, NavigationReadinessReport, VehicleAsset
-from .runtime_control_io import read_runtime_object
 
 LOCALIZATION_SENSORS = frozenset(
     {"vio", "visual-inertial-odometry", "slam", "lidar-slam", "depth-slam", "stereo-vio"}
@@ -34,7 +34,7 @@ OBSTACLE_SENSORS = frozenset(
 #   value：经过结构检查的语义对象；证据不可用时为空字典。
 def _semantic(path: Path) -> dict[str, object]:
     try:
-        value = read_runtime_object(path, maximum_bytes=16 * 1024 * 1024)
+        value = read_map_semantic_object(path)
     except (OSError, ValueError, RecursionError):
         value = {}
     return value

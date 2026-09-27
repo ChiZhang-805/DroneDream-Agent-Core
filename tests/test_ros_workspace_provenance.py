@@ -21,8 +21,14 @@ def _workspace(tmp_path: Path) -> Path:
     return workspace
 
 
-def test_ros_workspace_receipt_binds_sources_and_install_tree(tmp_path: Path) -> None:
-    repository = Path(__file__).parents[1]
+# 功能：
+#   验证回执绑定当前真实 ROS 源码与本次安装树，使用独立 Git 元数据。
+# 输入：
+#   tmp_path、isolated_source_repository：隔离安装目录与当前源码副本。
+# 输出：
+#   None：无返回值。
+def test_ros_workspace_receipt_binds_sources_and_install_tree(tmp_path, isolated_source_repository):
+    repository = isolated_source_repository
     workspace = _workspace(tmp_path)
 
     receipt = write_ros_workspace_provenance(repository, workspace)
@@ -33,8 +39,14 @@ def test_ros_workspace_receipt_binds_sources_and_install_tree(tmp_path: Path) ->
     assert verified["install_snapshot"]["file_count"] == 2
 
 
-def test_ros_workspace_receipt_rejects_replaced_installed_binary(tmp_path: Path) -> None:
-    repository = Path(__file__).parents[1]
+# 功能：
+#   安装产物被替换后拒绝旧回执，独立 Git 夹具不改变真实文件摘要校验。
+# 输入：
+#   tmp_path、isolated_source_repository：隔离安装目录与当前源码副本。
+# 输出：
+#   None：无返回值。
+def test_ros_workspace_rejects_replaced_installed_binary(tmp_path, isolated_source_repository):
+    repository = isolated_source_repository
     workspace = _workspace(tmp_path)
     write_ros_workspace_provenance(repository, workspace)
     (workspace / "install" / "capability_host").write_bytes(b"stale-host")
@@ -43,8 +55,14 @@ def test_ros_workspace_receipt_rejects_replaced_installed_binary(tmp_path: Path)
         verify_ros_workspace_provenance(repository, workspace)
 
 
-def test_ros_workspace_receipt_rejects_different_source_snapshot(tmp_path: Path) -> None:
-    repository = Path(__file__).parents[1]
+# 功能：
+#   回执来源摘要被改写后拒绝复用，不能借用其他源码版本的安装资格。
+# 输入：
+#   tmp_path、isolated_source_repository：隔离安装目录与当前源码副本。
+# 输出：
+#   None：无返回值。
+def test_ros_workspace_rejects_different_source_snapshot(tmp_path, isolated_source_repository):
+    repository = isolated_source_repository
     workspace = _workspace(tmp_path)
     receipt_path = write_ros_workspace_provenance(repository, workspace)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))

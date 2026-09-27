@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!-- 隔离的 Gazebo 速度接口探针；无相机、不用于训练、不代表 PX4 或负载动力学校准。 -->
+<sdf version="1.9"><world name="vertical_exit">
+  <physics name="physics" type="ignored"><max_step_size>0.005</max_step_size><real_time_factor>1</real_time_factor></physics>
+  <gravity>0 0 0</gravity>
+  <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+  <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+  <model name="canopy"><static>true</static><pose>0 0 3 0 0 0</pose><link name="link">
+    <collision name="collision"><geometry><box><size>2 4 0.2</size></box></geometry></collision>
+  </link></model>
+  <model name="ground"><static>true</static><pose>2 0 -0.1 0 0 0</pose><link name="link">
+    <collision name="collision"><geometry><box><size>12 12 0.2</size></box></geometry></collision>
+  </link></model>
+  <model name="probe"><pose>0 0 2 0 0 0</pose>
+    <link name="body"><inertial><mass>2</mass><inertia><ixx>0.1</ixx><iyy>0.1</iyy><izz>0.1</izz></inertia></inertial>
+      <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.4</length></cylinder></geometry></collision>
+    </link>
+    <plugin filename="gz-sim-velocity-control-system" name="gz::sim::systems::VelocityControl"><topic>/vertical_probe/cmd_vel</topic></plugin>
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_model_pose>true</publish_model_pose><publish_link_pose>false</publish_link_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg><update_frequency>40</update_frequency>
+    </plugin>
+  </model>
+</world></sdf>

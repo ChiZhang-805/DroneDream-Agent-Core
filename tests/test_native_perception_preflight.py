@@ -45,6 +45,71 @@ def test_preflight_requires_distinct_progressing_frames_not_polls():
     assert gate.independent_frames == 0
 
 
+# 功能：连续窗口成立但来源只剩3毫秒时不发放回执，等待真正更鲜的下一帧。
+# 输入：前三帧247毫秒延迟、第四帧100毫秒延迟；输出：原始期限与至少70毫秒交接余量。
+def test_preflight_waits_for_real_dispatch_margin(tmp_path, monkeypatch):
+    from dronedream_agent_core import native_preflight
+    clock, sequence = [1000], [0]
+    monkeypatch.setattr(native_preflight, 'time', SimpleNamespace(
+        time=lambda: clock[0]/1000, monotonic=lambda: clock[0]/1000))
+    def read_latest():
+        clock[0] += 70
+        sequence[0] += 1
+        age = 247 if sequence[0] <= 3 else 100
+        return {**health(sequence[0], clock[0]), 'perception_observed_at_unix_ms': clock[0]-age}
+    evidence = {}
+    result = asyncio.run(wait_for_native_perception(tmp_path/'unused', timeout_seconds=1,
+        receiver=SimpleNamespace(read_latest=read_latest), require_source_timestamps=True,
+        evidence=evidence))
+    assert sequence[0] == 4
+    assert result['source_observed_at_unix_ms'] == clock[0] - 100
+    assert result['valid_until_unix_ms'] == clock[0] + 150
+    assert evidence['issue_counts']['NATIVE_PREFLIGHT_WAITING_FOR_DISPATCH_MARGIN'] == 1
+
+
+# 功能：真实来源每100毫秒推进，180毫秒处理延迟不能被重复加到帧间隔中。
+# 输入：连续独立帧及不变250毫秒时效；输出：完整一秒窗口通过，回执保持原始来源钟。
+def test_delayed_but_fresh_frames_keep_the_source_continuity_window():
+    gate = NativePerceptionReadiness(stable_window_ms=1000, require_source_timestamps=True)
+    for index in range(11):
+        source = 1000 + index * 100
+        now = source + 180
+        packet = {**health(index + 1, now), 'perception_observed_at_unix_ms': source}
+        assert gate.observe(packet, now_unix_ms=now) is (index == 10)
+    assert gate.independent_frames == 11
+    assert gate.source_observed_at_unix_ms == 2000
+    assert not gate.observe(packet, now_unix_ms=2251)
+    assert gate.independent_frames == 0
+
+
+# 功能：即使新帧本身新鲜，真实来源断流仍清空稳定窗口。
+# 输入：间隔251毫秒的两个来源；输出：拒绝沿用旧计数。
+def test_fresh_new_frame_does_not_hide_a_real_source_gap():
+    gate = NativePerceptionReadiness(require_source_timestamps=True)
+    assert not gate.observe({**health(1, 1180), 'perception_observed_at_unix_ms': 1000},
+                            now_unix_ms=1180)
+    assert not gate.observe({**health(2, 1300), 'perception_observed_at_unix_ms': 1251},
+                            now_unix_ms=1300)
+    assert gate.last_issue == 'NATIVE_PREFLIGHT_SOURCE_INTERRUPTED'
+    assert gate.independent_frames == 0
+
+
+# 功能：消费者失联和时钟回退不得凭一张新鲜图片继承之前的就绪窗口。
+# 输入：过长消费间隔或回退时钟；输出：清空窗口并保留具体原因。
+@pytest.mark.parametrize('now,source,issue', [
+    (1351, 1200, 'NATIVE_PREFLIGHT_SOURCE_INTERRUPTED'),
+    (1099, 1050, 'NATIVE_PREFLIGHT_SOURCE_REGRESSED'),
+])
+def test_consumer_gap_or_clock_regression_resets_window(now, source, issue):
+    gate = NativePerceptionReadiness(require_source_timestamps=True)
+    assert not gate.observe({**health(1, 1050), 'perception_observed_at_unix_ms': 1000},
+                            now_unix_ms=1100)
+    assert not gate.observe({**health(2, now), 'perception_observed_at_unix_ms': source},
+                            now_unix_ms=now)
+    assert gate.last_issue == issue
+    assert gate.independent_frames == 0
+
+
 # 功能：
 #   同一序列改写发布时间不能扩展独立帧跨度，必须等待新的来源序列。
 # 输入：

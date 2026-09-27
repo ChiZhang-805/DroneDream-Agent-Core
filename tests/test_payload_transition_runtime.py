@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 from dronedream_agent_core.contracts import (
     OnboardPerceptionFrame,
@@ -606,6 +607,170 @@ def test_domain_action_timeout_cancels_and_awaits_driver(tmp_path: Path) -> None
 
 
 # 功能：
+#   重现设备已完成但旧状态刷新仍等待的交接，证明回执及时返回且旧刷新被清理。
+# 输入：
+#   tmp_path：隔离终止文件目录；monkeypatch：替换设备驱动。
+# 输出：
+#   None：确认结果与协程清理断言通过。
+def test_completed_action_does_not_wait_for_old_state_repair(tmp_path, monkeypatch):
+    base, executor = _modules()
+    async def scenario():
+        started, cleaned = asyncio.Event(), asyncio.Event()
+        async def refresh(setpoint):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+        async def driver(**kwargs):
+            await started.wait()
+            return {"confirmed": True}
+        monkeypatch.setattr(executor, "_invoke_runtime_action_driver", driver)
+        output, _ = await asyncio.wait_for(executor._await_runtime_action_while_holding(
+            base=base, client=base.FakeOffboardClient(),
+            setpoint=base.Setpoint(1, 2, -3, 0), step=_step(operation="confirm-custody"),
+            abort_file=tmp_path / "abort.json", rate_hz=100,
+            runtime_interrupt_probe=None, setpoint_refresh=refresh), timeout=.5)
+        assert output["confirmed"] is True
+        assert cleaned.is_set()
+    asyncio.run(scenario())
+
+
+# 功能：
+#   外层保护正在等待安全刷新时，内层仍采集实际稳定状态，不竞争同一控制锁或发送固定位置。
+# 输入：
+#   tmp_path：隔离终止文件目录。
+# 输出：
+#   None：稳定测量完成、保护任务清理且没有未经刷新的位置控制。
+def test_loaded_stability_samples_independently_of_outer_control(tmp_path):
+    base, executor = _modules()
+
+    # 功能：
+    #   构造已稳定的实测遥测替身，同时令外层刷新保持等待，复现双层刷新争用。
+    # 输入：
+    #   无；闭包提供当前源码模块和隔离目录。
+    # 输出：
+    #   None：确认真实测量入口完成且未发生控制旁路。
+    async def scenario():
+        cleaned = asyncio.Event()
+        client = base.FakeOffboardClient()
+        client.payload_detached = False
+        client.position_velocity_samples = [base.PositionVelocityNed(
+            north_m=1.0, east_m=2.0, down_m=-3.0,
+            north_m_s=0.0, east_m_s=0.0, down_m_s=0.0)]
+
+        # 功能：
+        #   模拟尚未取得可用安全命令的保护刷新，退出时保留清理证据。
+        # 输入：
+        #   setpoint：当前检查点，不能直接发送给飞控。
+        # 输出：
+        #   None：本测试只经取消退出。
+        async def refresh(setpoint):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        output, _ = await asyncio.wait_for(executor._await_runtime_action_while_holding(
+            base=base, client=client, setpoint=base.Setpoint(1, 2, -3, 0),
+            step=_step(operation="postattach-stability"),
+            abort_file=tmp_path / "abort.json", rate_hz=100,
+            runtime_interrupt_probe=None, setpoint_refresh=refresh), timeout=.5)
+        assert output["loaded_hover_stable"] is True
+        assert output["position_error_m"] == 0
+        assert cleaned.is_set()
+        assert client.setpoints == []
+    asyncio.run(scenario())
+
+
+# 功能：
+#   证明保护刷新阻塞不延长动作截止时间，两条协程都必须收到取消并完成清理。
+# 输入：
+#   tmp_path、monkeypatch：隔离动作与保护刷新。
+# 输出：
+#   None：动作超时及两侧退出断言通过。
+def test_action_deadline_includes_blocked_hold_refresh(tmp_path, monkeypatch):
+    base, executor = _modules()
+    async def scenario():
+        cleaned = set()
+        async def driver(**kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.add("driver")
+        async def refresh(setpoint):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.add("refresh")
+        monkeypatch.setattr(executor, "_invoke_runtime_action_driver", driver)
+        step = _step(operation="confirm-custody").model_copy(update={"timeout_seconds": .03})
+        with pytest.raises(TimeoutError, match="runtime action timed out"):
+            await asyncio.wait_for(executor._await_runtime_action_while_holding(
+                base=base, client=base.FakeOffboardClient(),
+                setpoint=base.Setpoint(1, 2, -3, 0), step=step,
+                abort_file=tmp_path / "abort.json", rate_hz=100,
+                runtime_interrupt_probe=None, setpoint_refresh=refresh), timeout=.5)
+        assert cleaned == {"driver", "refresh"}
+    asyncio.run(scenario())
+
+
+# 功能：
+#   验证安全降落不能被普通动作重试吞掉或重新执行设备副作用。
+# 输入：
+#   tmp_path、monkeypatch：隔离底层动作执行与回执目录。
+#   external_abort：分别检查用户降落和带暂停语义的外部安全终止。
+# 输出：
+#   None：降落异常直接传播且仅调用一次。
+@pytest.mark.parametrize("external_abort", [False, True])
+def test_action_step_never_retries_safety_landing(tmp_path, monkeypatch, external_abort):
+    base, executor = _modules()
+    calls = []
+    error = (base.ExternalSafetyAbort("safety-stop", world_paused=True)
+             if external_abort else executor.UserDirectedLanding("safety-stop"))
+    async def attempt(**kwargs):
+        calls.append(kwargs)
+        raise error
+    monkeypatch.setattr(executor, "_await_runtime_action_while_holding", attempt)
+    step = _step(operation="confirm-custody")
+    contract = RuntimeActionExecutionContract(contract_id="mission-test",
+        task_graph_sha256="a" * 64, domain_action_catalog_sha256="b" * 64,
+        adapter_catalog_sha256="c" * 64, steps=[step])
+    with pytest.raises(type(error), match="safety-stop") as raised:
+        asyncio.run(executor._execute_runtime_action_step(base=base,
+            client=base.FakeOffboardClient(), setpoint=base.Setpoint(1, 2, -3, 0),
+            step=step, contract=contract, run_dir=tmp_path, abort_file=tmp_path / "abort.json",
+            rate_hz=100, runtime_interrupt_probe=None))
+    assert len(calls) == 1
+    assert raised.value is error
+    assert not (tmp_path / "runtime-actions" / "receipts").exists()
+
+
+# 功能：
+#   验证启动前的终止请求优先于任何设备协程调度，不允许瞬时设备动作抢先执行。
+# 输入：
+#   tmp_path、monkeypatch：隔离终止探针及设备驱动。
+# 输出：
+#   None：零设备调用且停止异常传播。
+def test_abort_is_checked_before_action_task_can_start(tmp_path, monkeypatch):
+    base, executor = _modules()
+    calls = []
+    async def driver(**kwargs):
+        calls.append(kwargs)
+        return {'confirmed': True}
+    def abort(path):
+        raise executor.UserDirectedLanding('already-aborted')
+    monkeypatch.setattr(base, '_raise_if_external_abort_requested', abort)
+    monkeypatch.setattr(executor, '_invoke_runtime_action_driver', driver)
+    with pytest.raises(executor.UserDirectedLanding, match='already-aborted'):
+        asyncio.run(executor._await_runtime_action_while_holding(base=base,
+            client=base.FakeOffboardClient(), setpoint=base.Setpoint(1, 2, -3, 0),
+            step=_step(operation='confirm-custody'), abort_file=tmp_path / 'abort.json',
+            rate_hz=100, runtime_interrupt_probe=None))
+    assert calls == []
+
+
+# 功能：
 #   验证旧准备任务带入的重复挂载次数不能重新启用整驱动重试，避免重复物理副作用。
 # 输入：
 #   monkeypatch：让首次挂载执行产生回读超时。
@@ -1095,7 +1260,9 @@ def test_waypoint_settle_precision_hard_window_keeps_strict_gates_while_convergi
 ) -> None:
     base, executor = _modules()
     clock = [0.0]
-    monkeypatch.setattr(executor.time, "monotonic", lambda: clock[0])
+    real_monotonic = time.monotonic
+    isolate_monotonic(monkeypatch, executor, lambda: clock[0])
+    assert time.monotonic is real_monotonic
 
     class SlowlyConvergingClient(base.FakeOffboardClient):
         sample_count = 0

@@ -11,7 +11,7 @@ from pathlib import Path
 from dronedream_plugin_sdk.protocol import decode_json
 
 from ..contracts import RuntimeLocalSafetyCommand, RuntimeLocalSafetyObservation
-from ..control_execution_evidence import ControlApplicationRecord
+from ..control_execution_evidence import ControlApplicationRecord, validate_application_binding
 from ..hashing import sha256_json
 from ..plugin_files import check_plain_plugin_path, read_plugin_file
 from .outcome_channel import OutcomeReceiver
@@ -407,6 +407,29 @@ class ControlReceiptMonitor:
                     result = command.model_copy(deep=True), application.model_copy(deep=True)
                     break
         return result
+
+    # 功能：
+    #   读取严格早于当前观测的最新真实回执，核对命令绑定；不以旧回执替代尚未齐全的新回执。
+    # 输入：
+    #   self：当前回合监视器；source_ms：原始观测 Unix 毫秒时间。
+    # 输出：
+    #   application：独立的已绑定回执，尚未齐全时为 None。
+    def latest_before(self, source_ms: int) -> ControlApplicationRecord | None:
+        if type(source_ms) is not int or not 0 <= source_ms < 2**63:
+            raise ValueError('TRAINING_RECEIPT_SOURCE_CLOCK_INVALID')
+        with self._lock:
+            if self._error is not None:
+                raise RuntimeError('TRAINING_CONTROL_RECEIPT_MONITOR_FAILED') from self._error
+            for row in reversed(self._known_applications.values()):
+                if row.accepted_at_unix_ms >= source_ms:
+                    continue
+                command = self._known_commands.get(row.command_sha256)
+                if command is None:
+                    return None
+                validate_application_binding(command, row)
+                application = row.model_copy(deep=True)
+                return application
+        return None
 
     # 功能：
     #   等待接收线程结束并报告后台错误，避免关闭操作掩盖此前的证据流失败。

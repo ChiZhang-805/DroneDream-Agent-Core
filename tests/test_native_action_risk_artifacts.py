@@ -95,8 +95,10 @@ def native_episode(root):
 #   monkeypatch：替换命令行参数的测试工具。
 # 输出：
 #   output：已生成的风险专用数据集目录。
-def dataset(root, monkeypatch):
+def dataset(root, monkeypatch, *, legacy=False):
     episode, config = native_episode(root)
+    if not legacy:
+        config.risk_label_semantics = "observation-clearance-v2"
     config_path = root / "teacher.json"
     config_path.write_text(config.model_dump_json())
     output = root / "risk-only"
@@ -116,6 +118,8 @@ def dataset(root, monkeypatch):
         ],
     )
     script = Path(__file__).resolve().parents[1] / "scripts/build_native_action_risk_dataset.py"
+    if legacy:
+        monkeypatch.setattr(sys, 'argv', [*sys.argv, '--reproduce-legacy-labels'])
     assert runpy.run_path(str(script))["main"]() == 0
     return output
 

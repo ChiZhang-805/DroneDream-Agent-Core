@@ -19,7 +19,10 @@ import math
 from collections import Counter, deque
 from pathlib import Path
 
-from dronedream_agent_core.control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
+from dronedream_agent_core.control_feature_contract import (
+    CURRENT_POLICY_FEATURE_CONTRACT_SHA256,
+    FLIGHT_STATE_MAXIMUM_GAP_MS,
+)
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.local_advisor_training import (
     LocalAdvisorTrainingSample,
@@ -32,14 +35,20 @@ from dronedream_agent_core.local_policy_packages import (
     LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH,
 )
 from dronedream_agent_core.local_policy_port import compile_local_policy_features
+from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
+from dronedream_agent_core.runtime_control_io import publish_runtime_json
+from dronedream_agent_core.temporal_evidence import ObservationHistory
 from dronedream_agent_core.training.advisor_sources import (
     RecordedSource,
     validate_advisor_spatial_splits,
 )
+from dronedream_agent_core.training.dagger_artifacts import write_rows
+from dronedream_agent_core.training.evidence_files import decode_evidence_rows
 from dronedream_agent_core.training.mission_groups import (
     SPATIAL_SPLIT_CONTRACT,
     recorded_mission_group,
 )
+from dronedream_plugin_sdk.protocol import decode_json
 
 ALL_ADVISOR_ROLES: tuple[TrainableAdvisorRole, ...] = (
     "perception-health-critic",
@@ -54,29 +63,63 @@ _MINIMUM_VERIFIED_PAYLOAD_MOTION_SAMPLES = 50
 _MINIMUM_PAYLOAD_COLLECTION_MISSIONS_PER_SPLIT = 2
 
 
+# 功能：
+#   获取已冻结来源或普通文件的有界字节，拒绝链接与读取期间的身份改变。
+# 输入：
+#   path：来源快照或明确文件路径。
+# 输出：
+#   content：最多 256 MiB 的不可变原始字节。
+def _source_bytes(path: Path | RecordedSource) -> bytes:
+    content = (path.read_bytes() if isinstance(path, RecordedSource)
+               else read_plugin_file(path, limit=256 * 1024**2))
+    return content
+
+
+# 功能：
+#   计算本次实际读取来源的内容身份。
+# 输入：
+#   path：冻结来源或有界文件路径。
+# 输出：
+#   digest：原始字节的 SHA-256。
 def _sha256(path: Path | RecordedSource) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(_source_bytes(path)).hexdigest()
+    return digest
 
 
+# 功能：
+#   严格读取回执对象，拒绝重复字段、非有限值和非对象结构。
+# 输入：
+#   path：冻结来源或回执文件路径。
+# 输出：
+#   value：无歧义的回执对象。
 def _json(path: Path | RecordedSource) -> dict[str, object]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = decode_json(_source_bytes(path), limit=4 * 1024**2, node_limit=1_000_000)
     if not isinstance(value, dict):
         raise ValueError(f"expected one JSON object: {path}")
     return value
 
 
+# 功能：
+#   逐行检查完整记录，拒绝截断、重复字段和超出预算的数据。
+# 输入：
+#   path：已固定来源或明确数据文件路径。
+# 输出：
+#   records：通过统一训练证据边界的对象列表。
 def _jsonl(path: Path | RecordedSource) -> list[dict[str, object]]:
-    records = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not line.strip():
-            continue
-        value = json.loads(line)
-        if not isinstance(value, dict):
-            raise ValueError(f"expected a JSON object at {path}:{line_number}")
-        records.append(value)
+    records = decode_evidence_rows(_source_bytes(path))
     return records
+
+
+# 功能：
+#   将额外恢复证明的解析值和摘要绑定到同一次读取，不能拿替换后的文件给旧判断背书。
+# 输入：
+#   path：开发采集或恢复证明文件。
+# 输出：
+#   value、digest：同一冻结字节产生的严格对象与 SHA-256。
+def _frozen_source_object(path: Path) -> tuple[dict, str]:
+    source = RecordedSource.read(path)
+    value, digest = _json(source), _sha256(source)
+    return value, digest
 
 
 def _number(value: object, default: float = 0.0) -> float:
@@ -131,7 +174,7 @@ def _verified_fault_recovery_source(
         if path is None or not path.is_file():
             raise RuntimeError("LOCAL_ADVISOR_FAULT_RECOVERY_EVIDENCE_MISSING")
 
-    receipt = _json(receipt_path)
+    receipt, receipt_digest = _frozen_source_object(receipt_path)
     source = _mapping(receipt.get("source"))
     gates = _mapping(receipt.get("gates"))
     source_run_root = source.get("run_root")
@@ -154,7 +197,7 @@ def _verified_fault_recovery_source(
     return {
         "verification": "verified-fail-closed-depth-fault-recovery",
         "fault_recovery_receipt": str(receipt_path.resolve()),
-        "fault_recovery_receipt_sha256": _sha256(receipt_path),
+        "fault_recovery_receipt_sha256": receipt_digest,
         "flight_qualification_granted": False,
     }
 
@@ -179,8 +222,8 @@ def _verified_payload_collection_source(run_dir: Path) -> dict[str, object]:
     ):
         if not path.is_file():
             raise RuntimeError("LOCAL_ADVISOR_PAYLOAD_COLLECTION_EVIDENCE_MISSING")
-    summary = _json(summary_path)
-    workflow = _json(workflow_path)
+    summary, summary_digest = _frozen_source_object(summary_path)
+    workflow, workflow_digest = _frozen_source_object(workflow_path)
     development = _mapping(summary.get("development_payload_collection"))
     multimodal_summary = _mapping(_mapping(summary.get("multimodal_dataset")).get("summary"))
     runtime = _mapping(workflow.get("runtime_evidence"))
@@ -203,7 +246,7 @@ def _verified_payload_collection_source(run_dir: Path) -> dict[str, object]:
         != "dronedream.pluginized-runtime-acceptance.v1"
         or summary.get("status") != "verified-development-payload-collection"
         or summary.get("flight_qualification_granted") is not False
-        or summary.get("workflow_sha256") != _sha256(workflow_path)
+        or summary.get("workflow_sha256") != workflow_digest
         or workflow.get("status") == "verified"
         or false_gates != allowed_false_gates
         or development.get("status") != "verified-development-data"
@@ -230,7 +273,7 @@ def _verified_payload_collection_source(run_dir: Path) -> dict[str, object]:
     return {
         "verification": "verified-development-payload-collection",
         "payload_collection_summary": str(summary_path.resolve()),
-        "payload_collection_summary_sha256": _sha256(summary_path),
+        "payload_collection_summary_sha256": summary_digest,
         "model_navigation_model_calls_sha256": _sha256(calls_path),
         "multimodal_dataset_records_sha256": _sha256(multimodal_records_path),
         "bounded_payload_motion_cycle_count": bounded_motion_count,
@@ -245,7 +288,7 @@ def _verified_payload_recovery_source(run_dir: Path) -> dict[str, object]:
     receipt_path = run_root / "payload-recovery-verification.json"
     if not receipt_path.is_file():
         raise RuntimeError("LOCAL_ADVISOR_PAYLOAD_RECOVERY_EVIDENCE_MISSING")
-    receipt = _json(receipt_path)
+    receipt, receipt_digest = _frozen_source_object(receipt_path)
     source = _mapping(receipt.get("source"))
     gates = _mapping(receipt.get("gates"))
     planning_root_value = source.get("planning_root")
@@ -303,13 +346,23 @@ def _verified_payload_recovery_source(run_dir: Path) -> dict[str, object]:
     return {
         "verification": "verified-development-payload-recovery",
         "payload_recovery_receipt": str(receipt_path.resolve()),
-        "payload_recovery_receipt_sha256": _sha256(receipt_path),
+        "payload_recovery_receipt_sha256": receipt_digest,
         "bounded_payload_motion_cycle_count": bounded_motion_count,
         "whole_mission_status": "failed",
         "flight_qualification_granted": False,
     }
 
 
+# 功能：
+#   按真实记录类型冻结辅助专家来源；当前记录校验失败不回退到旧格式或开发豁免。
+# 输入：
+#   run_dir：仿真运行目录。
+#   require_verified：旧记录是否要求验证通过；当前记录始终要求通过。
+#   allow_verified_fault_recovery：旧故障恢复证据的显式接纳范围。
+#   allow_verified_payload_collection、allow_verified_payload_recovery：旧载荷证据的显式接纳范围。
+#   retained_route：原运行路线缺失时显式指定的原始文件，仍须匹配运行记录的完整摘要。
+# 输出：
+#   source：来源回执及冻结的观测、可选旧周期、深度历史和多模态记录。
 def _source_receipt(
     run_dir: Path,
     *,
@@ -317,9 +370,39 @@ def _source_receipt(
     allow_verified_fault_recovery: bool,
     allow_verified_payload_collection: bool,
     allow_verified_payload_recovery: bool,
-) -> tuple[dict[str, object], RecordedSource, RecordedSource,
+    retained_route: Path | None = None,
+) -> tuple[dict[str, object], RecordedSource, RecordedSource | None,
            RecordedSource | None, RecordedSource | None]:
+    check_plain_plugin_path(run_dir.absolute())
     resolved = run_dir.resolve()
+    # 当前采集没有旧模型调用周期；按自身协议校验，失败时不退回旧来源。
+    if (resolved / "learning-observations.jsonl").exists():
+        if retained_route is not None:
+            raise ValueError("ADVISOR_CURRENT_SOURCE_CANNOT_REPLACE_ROUTE")
+        if (allow_verified_payload_collection and not allow_verified_fault_recovery
+                and not allow_verified_payload_recovery):
+            from dronedream_agent_core.training.payload_teacher_sources import read_payload_teacher_source
+
+            receipt, observations = read_payload_teacher_source(resolved)
+            return receipt, observations, None, None, None
+        if (allow_verified_fault_recovery and not allow_verified_payload_collection
+                and not allow_verified_payload_recovery
+                and (resolved / "development-depth-fault.json").is_file()):
+            from dronedream_agent_core.training.teacher_fault_sources import (
+                read_teacher_fault_advisor_source,
+            )
+
+            receipt, observations, depth = read_teacher_fault_advisor_source(resolved)
+            return receipt, observations, None, depth, None
+        if any((allow_verified_fault_recovery, allow_verified_payload_collection,
+                allow_verified_payload_recovery)):
+            raise ValueError("ADVISOR_CURRENT_SOURCE_CANNOT_USE_LEGACY_RECOVERY_OVERRIDE")
+        from dronedream_agent_core.training.current_advisor_sources import (
+            read_current_advisor_source,
+        )
+
+        receipt, observations = read_current_advisor_source(resolved)
+        return receipt, observations, None, None, None
     evidence_path = resolved / "mission_evidence.json"
     snapshot_path = resolved / "model-navigation-snapshots.jsonl"
     cycle_path = resolved / "model-navigation-cycles.jsonl"
@@ -386,7 +469,9 @@ def _source_receipt(
             "depth_safety_history_sha256": depth_history_sha256,
             "multimodal_dataset_records_sha256": multimodal_records_sha256,
             "semantic_sha256": artifacts.get("semantic_sha256"),
-            "mission_split": recorded_mission_group(resolved, artifacts).model_dump(mode="json"),
+            "mission_split": recorded_mission_group(
+                resolved, artifacts, retained_route=retained_route).model_dump(mode="json"),
+            "retained_route_evidence": str(retained_route.absolute()) if retained_route else None,
             **source_verification,
         },
         snapshot_source,
@@ -833,9 +918,19 @@ def _payload_transition_samples_from_multimodal_dataset(
     return samples
 
 
+# 功能：
+#   1. 从冻结观测生成辅助专家监督，当前来源不要求或伪造旧模型调用周期。
+#   2. 当前观测在断流时清空时间历史；标签不是行为模仿动作或飞行准入。
+# 输入：
+#   snapshot_path：冻结的快照或当前学习观测。
+#   cycle_path：可选旧调用周期；None 表示按当前学习观测时间处理。
+#   depth_history_path、multimodal_records_path：可选独立绑定的旧补充来源。
+#   roles：本次选择的辅助专家；source_identity：来源证据摘要。
+# 输出：
+#   samples：按来源、快照、角色和监督内容去重的样本。
 def _collect_run_samples(
     snapshot_path: Path | RecordedSource,
-    cycle_path: Path | RecordedSource,
+    cycle_path: Path | RecordedSource | None,
     depth_history_path: Path | RecordedSource | None,
     multimodal_records_path: Path | RecordedSource | None,
     *,
@@ -853,7 +948,17 @@ def _collect_run_samples(
         snapshot_timeline.append(
             (int(_number(record.get("recorded_at_unix_ms"))), snapshot)
         )
-    snapshot_timeline.sort(key=lambda item: item[0])
+    # 当前来源按记录顺序检查传感器时钟，不排序掩盖真实回退。
+    if cycle_path is not None:
+        snapshot_timeline.sort(key=lambda item: item[0])
+    elif depth_history_path is not None:
+        from dronedream_agent_core.training.teacher_sensor_replay import (
+            replay_teacher_sensor_diagnostics,
+        )
+
+        # 当前故障任务只产生有原始日志绑定的感知标签，不能成为动作或载荷监督。
+        return replay_teacher_sensor_diagnostics(snapshot_timeline, _jsonl(depth_history_path),
+            roles=roles, source_identity=source_identity)
     history: deque[tuple[float, ...]] = deque(
         maxlen=LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH
     )
@@ -865,21 +970,48 @@ def _collect_run_samples(
     )
     samples: dict[str, LocalAdvisorTrainingSample] = {}
     cycles = sorted(
-        _jsonl(cycle_path),
+        _jsonl(cycle_path) if cycle_path is not None else [],
         key=lambda cycle: (
             int(_number(cycle.get("sequence"))),
             int(_number(cycle.get("recorded_at_unix_ms"))),
         ),
     )
-    for cycle in cycles:
-        snapshot_sha256 = str(cycle.get("snapshot_sha256", ""))
-        snapshot = snapshots.get(snapshot_sha256)
-        if snapshot is None:
-            raise RuntimeError("LOCAL_ADVISOR_CYCLE_SNAPSHOT_MISSING")
+    if cycle_path is None:
+        ordered_snapshots = snapshot_timeline
+    else:
+        ordered_snapshots = []
+        for cycle in cycles:
+            snapshot = snapshots.get(str(cycle.get("snapshot_sha256", "")))
+            if snapshot is None:
+                raise RuntimeError("LOCAL_ADVISOR_CYCLE_SNAPSHOT_MISSING")
+            ordered_snapshots.append((int(_number(cycle.get("recorded_at_unix_ms"))), snapshot))
+    current_history = ObservationHistory(LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH,
+                                         maximum_gap_ms=FLIGHT_STATE_MAXIMUM_GAP_MS)
+    current_velocity_history = ObservationHistory(LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH,
+                                                  maximum_gap_ms=FLIGHT_STATE_MAXIMUM_GAP_MS)
+    for _recorded_at, snapshot in ordered_snapshots:
+        snapshot_sha256 = _verified_snapshot(snapshot)
         batch = compile_local_policy_features(snapshot)
-        history.append(batch.state_features)
-        payload_history.append(batch.payload_features)
-        velocity_history.append(_velocity(snapshot))
+        if cycle_path is None:
+            # 与在线后端共用传感器来源去重、任务切换、重启及间隔规则；
+            # 日志写盘延迟不能改变有效历史，重复调用也不能填满窗口。
+            if batch.temporal_evidence is None:
+                current_history.clear()
+                current_velocity_history.clear()
+            else:
+                current_history.append(batch.temporal_evidence, batch.state_features,
+                                       batch.payload_features)
+                current_velocity_history.append(batch.temporal_evidence, _velocity(snapshot), ())
+            history = deque(row[0] for row in current_history.rows)
+            payload_history = deque(row[1] for row in current_history.rows)
+            velocity_history = deque(row[0] for row in current_velocity_history.rows)
+            if not velocity_history:
+                # 无来源身份时仍可判断当前速度，但不能伪造时序变化或有效掩码。
+                velocity_history.append(_velocity(snapshot))
+        else:
+            history.append(batch.state_features)
+            payload_history.append(batch.payload_features)
+            velocity_history.append(_velocity(snapshot))
         state_history, history_mask = _history_tensor(history)
         settle_unstable = _settle_unstable(snapshot, velocity_history)
         role_targets: list[tuple[TrainableAdvisorRole, float, float, float]] = []
@@ -993,6 +1125,15 @@ def _collect_run_samples(
     return samples
 
 
+# 功能：
+#   逐份核验并冻结辅助训练来源，拒绝重复样本和越权角色，不改写原始证据。
+# 输入：
+#   run_dirs、roles：明确的来源与专家；require_verified：来源准入要求。
+#   allow_verified_fault_recovery：显式故障恢复用途。
+#   allow_verified_payload_collection、allow_verified_payload_recovery：显式负载采集和恢复用途。
+#   retained_routes：运行绝对路径到原始路线文件的明确映射。
+# 输出：
+#   samples：去重样本；receipts：每份来源及原始路线身份。
 def _collect_sources(
     run_dirs: list[Path],
     *,
@@ -1001,6 +1142,7 @@ def _collect_sources(
     allow_verified_fault_recovery: bool,
     allow_verified_payload_collection: bool,
     allow_verified_payload_recovery: bool,
+    retained_routes: dict[Path, Path] | None = None,
 ) -> tuple[dict[str, LocalAdvisorTrainingSample], list[dict[str, object]]]:
     samples: dict[str, LocalAdvisorTrainingSample] = {}
     receipts = []
@@ -1017,8 +1159,11 @@ def _collect_sources(
             allow_verified_fault_recovery=allow_verified_fault_recovery,
             allow_verified_payload_collection=allow_verified_payload_collection,
             allow_verified_payload_recovery=allow_verified_payload_recovery,
+            retained_route=(retained_routes or {}).get(run_dir.resolve()),
         )
         source_identity = str(receipt["mission_evidence_sha256"])
+        if "allowed_roles" in receipt and not set(roles).issubset(receipt["allowed_roles"]):
+            raise ValueError("LOCAL_ADVISOR_SOURCE_ROLE_NOT_ALLOWED")
         run_samples = _collect_run_samples(
             snapshot_path,
             cycle_path,
@@ -1083,17 +1228,27 @@ def _validate_payload_collection_source_diversity(
             )
 
 
+# 功能：
+#   独占发布确定排序的完整样本文件，不覆盖其他作业已写入的结果。
+# 输入：
+#   path、samples：新输出路径及按内容身份索引的样本。
+# 输出：
+#   None：文件写入成功后不返回业务数据。
 def _write_jsonl(
     path: Path,
     samples: dict[str, LocalAdvisorTrainingSample],
 ) -> None:
+    check_plain_plugin_path(path.absolute())
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(sample.model_dump_json() + "\n" for _, sample in sorted(samples.items())),
-        encoding="utf-8",
-    )
+    write_rows(path, [sample for _, sample in sorted(samples.items())])
 
 
+# 功能：
+#   检查完整任务的空间隔离和各专家覆盖，先发布样本再提交最终回执，不授予飞行资格。
+# 输入：
+#   命令行参数：训练与验证运行目录、专家类别及三个互不重复的输出路径。
+# 输出：
+#   exit_code：所有样本及完整回执发布成功时为零。
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--training-run-dir", type=Path, action="append", required=True)
@@ -1111,6 +1266,10 @@ def main() -> int:
     parser.add_argument("--validation-output", type=Path, required=True)
     parser.add_argument("--receipt-output", type=Path, required=True)
     parser.add_argument("--require-verified-source", action="store_true")
+    parser.add_argument("--retained-route", type=Path, nargs=2, action="append", default=[],
+                        metavar=("RUN_DIRECTORY", "ORIGINAL_ROUTE"),
+                        help="Bind a missing legacy route to an explicitly retained file; "
+                             "the original mission SHA-256 must match.")
     parser.add_argument(
         "--allow-verified-fault-recovery-source",
         action="store_true",
@@ -1137,6 +1296,10 @@ def main() -> int:
     )
     args = parser.parse_args()
     outputs = (args.training_output, args.validation_output, args.receipt_output)
+    for path in outputs:
+        check_plain_plugin_path(path.absolute())
+    if len({str(path.absolute()).casefold() for path in outputs}) != len(outputs):
+        parser.error("dataset outputs must be distinct paths")
     if any(path.exists() for path in outputs):
         raise FileExistsError("local advisor dataset output already exists")
     training_dirs = {path.resolve() for path in args.training_run_dir}
@@ -1147,6 +1310,13 @@ def main() -> int:
         parser.error("run directories must be unique within each split")
     if training_dirs & validation_dirs:
         parser.error("a complete mission cannot appear in both dataset splits")
+    retained_routes = {}
+    for run, route in args.retained_route:
+        key = run.resolve()
+        if key not in training_dirs | validation_dirs or key in retained_routes:
+            parser.error("retained route must name one unique requested run directory")
+        check_plain_plugin_path(route.absolute())
+        retained_routes[key] = route.absolute()
     roles = tuple(dict.fromkeys(args.role or DEFAULT_ADVISOR_ROLES))
     if args.allow_verified_fault_recovery_source and not args.require_verified_source:
         parser.error(
@@ -1172,6 +1342,7 @@ def main() -> int:
         parser.error("development source modes are mutually exclusive")
     training, training_receipts = _collect_sources(
         args.training_run_dir,
+        retained_routes=retained_routes,
         roles=roles,
         require_verified=args.require_verified_source,
         allow_verified_fault_recovery=args.allow_verified_fault_recovery_source,
@@ -1184,6 +1355,7 @@ def main() -> int:
     )
     validation, validation_receipts = _collect_sources(
         args.validation_run_dir,
+        retained_routes=retained_routes,
         roles=roles,
         require_verified=args.require_verified_source,
         allow_verified_fault_recovery=args.allow_verified_fault_recovery_source,
@@ -1268,11 +1440,7 @@ def main() -> int:
         "validation_output_sha256": _sha256(args.validation_output),
         "qualification_granted": False,
     }
-    args.receipt_output.parent.mkdir(parents=True, exist_ok=True)
-    args.receipt_output.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    publish_runtime_json(args.receipt_output, receipt, replace_existing=False)
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
     return 0
 

@@ -142,6 +142,26 @@ def test_records_hash_chained_deduplicated_bounded_samples(tmp_path: Path) -> No
 
 
 # 功能：
+#   宿主时间前进但相机源时间不变时不重复记录；源时间倒退须拒绝。
+# 输入：
+#   tmp_path：隔离采集目录。
+# 输出：
+#   None：不返回业务数据。
+def test_camera_repoll_is_not_a_new_training_observation(tmp_path):
+    recorder = RuntimeMultimodalDatasetRecorder(tmp_path / "capture",
+        flight_id="same-source-frame", map_sha256="c" * 64)
+    arguments = {"rgb_png": b"synthetic", "frame": _frame(), "sensor_snapshot": _snapshot(),
+                 "recorded_at_unix_ms": 1000, "state": {},
+                 "rgb_sample_monotonic_seconds": 10.0}
+    assert recorder.record(**arguments, recorded_at_monotonic_seconds=10.1) is not None
+    assert recorder.record(**arguments, recorded_at_monotonic_seconds=10.3) is None
+    arguments["rgb_sample_monotonic_seconds"] = 9.9
+    with pytest.raises(ValueError, match="RGB_CLOCK_REVERSED"):
+        recorder.record(**arguments, recorded_at_monotonic_seconds=10.5)
+    assert recorder.summary()["record_count"] == 1
+
+
+# 功能：
 #   汇总统计不得随记录文件增长而重复读取文件内容。
 # 输入：
 #   tmp_path：隔离数据集根。

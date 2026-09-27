@@ -336,6 +336,8 @@ def inspect_simulation_sensor_frames(
             "depth_optics": dict(zip(("horizontal_fov_rad", "near_m", "far_m"),
                                      intrinsic_values, strict=True)),
             "sensor_translation_from_collision_center_body_m": sensor_offset.tolist()}
+        depth_fields["depth_optics"].update(image_width_px=optics.image_width(),
+                                          image_height_px=optics.image_height())
     # 最后的复核仍使用同一有界普通文件读取器；不覆盖首次摘要，也不分配无限量内容。
     # 这是读取期间的点时一致性检查，不声称阻止其他进程在检查结束后再替换文件。
     for name in sources:

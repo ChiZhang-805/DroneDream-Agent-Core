@@ -86,6 +86,39 @@ def test_measured_depth_rays_replay_without_truth_or_motion_authority(tmp_path):
     assert capture.close()["complete"]  # Cleanup callback is idempotent.
 
 
+# 功能：证明速度协方差的独立来源快照受摘要、容量和深拷贝保护，不把图像时间覆盖到里程计。
+# 输入：tmp_path：独立证据目录。
+# 输出：无；旧记录不要求补造新字段。
+def test_odometry_covariance_capture_preserves_original_packet(tmp_path):
+    capture = GeometryObservationCapture(tmp_path, map_sha256="b" * 64,
+        summary_publisher=_publish)
+    scan, kwargs = _scan()
+    snapshot = {"image_synchronized": False, "odometry": {
+        "timestamp_us": 900000, "received_at_unix_ms": 980,
+        "child_frame_id": "BODY_FRD", "twist_covariance_upper": [None] * 21}}
+    assert capture.record(scan, **kwargs, native_odometry_snapshot=snapshot)
+    snapshot["odometry"]["timestamp_us"] = 0
+    assert capture.close()["complete"]
+    record = json.loads(capture.path.read_text(encoding="utf-8"))
+    assert record["native_odometry_snapshot"]["odometry"]["timestamp_us"] == 900000
+    assert record["native_odometry_snapshot"]["odometry"]["received_at_unix_ms"] == 980
+    digest = record.pop("record_sha256")
+    assert digest == sha256_json(record)
+
+
+# 功能：拒绝虚构图像同步声明、超限快照和非对象输入，保留不完整采集状态。
+# 输入：tmp_path：测试目录；snapshot：三类无效来源快照。
+# 输出：无；断言未被记录为完整成功。
+@pytest.mark.parametrize("snapshot", [{"image_synchronized": True},
+    {"image_synchronized": False, "oversized": "x" * 8192}, []])
+def test_invalid_odometry_snapshot_cannot_claim_complete(tmp_path, snapshot):
+    capture = GeometryObservationCapture(tmp_path, map_sha256="b" * 64,
+        summary_publisher=_publish)
+    scan, kwargs = _scan()
+    assert not capture.record(scan, **kwargs, native_odometry_snapshot=snapshot)
+    assert not capture.close()["complete"]
+
+
 # 功能：
 #   验证重复来源、过快采样与配额用完分别计数，不把跳过记录计为已接收。
 # 输入：

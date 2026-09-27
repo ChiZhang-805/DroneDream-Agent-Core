@@ -449,11 +449,13 @@ class PredictiveSafetyDecision(StrictModel):
     minimum_predicted_clearance_m: float
     time_to_minimum_clearance_seconds: float = Field(ge=0.0, le=15.0)
     threat_obstacle_id: str | None = None
+    # 最近预测物体不一定阻碍原动作；只有原动作触及动态净空约束时记录避让原因。
+    avoidance_obstacle_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]*$")
     evaluated_candidate_count: int = Field(ge=1, le=1_000)
     issue_codes: list[str] = Field(default_factory=list, max_length=32)
 
     # 功能：
-    #   仅在没有制动预测时省略新增的可选字段，保留历史回执的原有摘要身份。
+    #   省略不存在的制动预测和避让原因，保留历史回执的原有摘要身份。
     # 输入：
     #   self：当前安全决策。
     #   handler：Pydantic 提供的其余字段序列化器。
@@ -464,6 +466,8 @@ class PredictiveSafetyDecision(StrictModel):
         payload = handler(self)
         if self.braking_prediction_velocity_mps is None:
             payload.pop("braking_prediction_velocity_mps", None)
+        if self.avoidance_obstacle_id is None:
+            payload.pop("avoidance_obstacle_id", None)
         return payload
 
     # 功能：
@@ -497,6 +501,7 @@ class RuntimeLocalSafetyObservation(StrictModel):
     stream_healthy: bool
     stream_age_seconds: float = Field(ge=0.0)
     localization_covariance_m2: float = Field(ge=0.0, le=10_000.0)
+    motion_context_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     current_position_m: Vector3
     current_velocity_mps: Vector3
     current_acceleration_world_enu_mps2: Vector3 | None = None
@@ -505,6 +510,19 @@ class RuntimeLocalSafetyObservation(StrictModel):
     dynamic_obstacles: list[DynamicObstacleObservation] = Field(
         default_factory=list, max_length=512
     )
+
+    # 功能：
+    #   保留旧回执摘要；当前运行提供的运动背景摘要始终参与观测身份计算。
+    # 输入：
+    #   self、handler：观测及其余字段序列化器。
+    # 输出：
+    #   payload：用于传输与摘要核验的观测字典。
+    @model_serializer(mode="wrap")
+    def preserve_motion_context_identity(self, handler):
+        payload = handler(self)
+        if self.motion_context_sha256 is None:
+            payload.pop("motion_context_sha256", None)
+        return payload
 
 
 class ControlObservationBudget(StrictModel):
@@ -521,6 +539,28 @@ class ControlObservationBudget(StrictModel):
     clearance_margin_m: float = Field(ge=0)
     uncertainty_margin_m: float = Field(ge=0)
     downstream_reserve_ms: int = Field(ge=0, strict=True)
+
+
+class HybridControlLease(StrictModel):
+    """独立衔接许可；不授予模型权限，也不替代实时碰撞检查。"""
+
+    route_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    navigation_goal_id: str = Field(min_length=1, max_length=160)
+    episode: int = Field(ge=1, strict=True)
+    started_at_unix_ms: int = Field(ge=0, strict=True)
+    expires_at_unix_ms: int = Field(ge=0, strict=True)
+    maximum_speed_mps: float = Field(gt=0, le=0.25)
+    maximum_distance_m: float = Field(gt=0, le=0.35)
+    reason: Literal["model-delay-bounded-bridge"] = "model-delay-bounded-bridge"
+
+    # 功能：限制单次接管的绝对期限，拒绝无限续期的许可。
+    # 输入：self：本次接管的开始与截止时间（毫秒）。
+    # 输出：self：经过时间边界校验的许可。
+    @model_validator(mode="after")
+    def bounded_duration(self):
+        if not 0 < self.expires_at_unix_ms - self.started_at_unix_ms <= 1500:
+            raise ValueError("HYBRID_EPISODE_DURATION_INVALID")
+        return self
 
 
 class RuntimeLocalSafetyCommand(StrictModel):
@@ -555,7 +595,8 @@ class RuntimeLocalSafetyCommand(StrictModel):
     # colocated while representing different control intentions.
     navigation_goal_id: str | None = Field(default=None, min_length=1, max_length=160)
     tracking_recovery_active: bool = False
-    navigation_control_authority: Literal["route-fallback", "model-required"] = "route-fallback"
+    navigation_control_authority: Literal["route-fallback", "model-required", "bounded-hybrid"] = "route-fallback"
+    hybrid_lease: HybridControlLease | None = None
     model_navigation_authorized: bool = False
     model_call_id: str | None = None
     model_selected_candidate_id: str | None = None
@@ -581,6 +622,8 @@ class RuntimeLocalSafetyCommand(StrictModel):
             payload.pop("evaluated_body_orientation_world_from_body", None)
         if self.observation_budget is None:
             payload.pop("observation_budget", None)
+        if self.hybrid_lease is None:
+            payload.pop("hybrid_lease", None)
         return payload
 
     # 功能：
@@ -606,6 +649,24 @@ class RuntimeLocalSafetyCommand(StrictModel):
             ):
                 raise ValueError("motion command exceeds its observation budget")
         offset = self.estimator_to_world_position_offset_m
+        if self.navigation_control_authority == "bounded-hybrid":
+            lease = self.hybrid_lease
+            if (lease is None or lease.navigation_goal_id != self.navigation_goal_id
+                    or self.model_navigation_authorized or self.requested_control_intent is not None
+                    or self.evaluated_target_position_m is None
+                    or any((offset.x, offset.y, offset.z))
+                    or self.source == "simulation-ground-truth"
+                    or not lease.started_at_unix_ms <= self.generated_at_unix_ms
+                    < self.valid_until_unix_ms <= lease.expires_at_unix_ms):
+                raise ValueError("HYBRID_COMMAND_BINDING_INVALID")
+            if self.decision.action != "hold":
+                velocity = self.decision.selected_velocity_mps
+                if (self.observation_budget is None
+                        or math.hypot(velocity.x, velocity.y, velocity.z)
+                        > lease.maximum_speed_mps + 1e-9):
+                    raise ValueError("HYBRID_COMMAND_SPEED_OR_OBSERVATION_INVALID")
+        elif self.hybrid_lease is not None:
+            raise ValueError("HYBRID_LEASE_REQUIRES_HYBRID_AUTHORITY")
         if math.dist((0.0, 0.0, 0.0), (offset.x, offset.y, offset.z)) > 1.0:
             raise ValueError("estimator/world alignment correction exceeds 1 metre")
         if self.navigation_control_authority == "model-required":
@@ -769,12 +830,25 @@ class CatalogEntity(StrictModel):
     source_pointer: str = Field(min_length=1, max_length=240)
 
 
+class PlanarCatalogLandmark(StrictModel):
+    """Map-authored horizontal landmark, not a three-dimensional flight target."""
+
+    entity_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    aliases: list[str] = Field(min_length=1, max_length=24)
+    east_m: float
+    north_m: float
+    semantic: Literal["landmark", "facility-anchor"]
+    source_pointer: str = Field(min_length=1, max_length=240)
+    flight_target_available: Literal[False] = False
+
+
 class MapCatalog(StrictModel):
     schema_version: Literal["dronedream.map-catalog.v1"] = "dronedream.map-catalog.v1"
     scene_id: str
     coordinate_frame: Literal["ENU"] = "ENU"
     semantic_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     entities: list[CatalogEntity] = Field(min_length=1, max_length=2_000)
+    planar_landmarks: list[PlanarCatalogLandmark] = Field(default_factory=list, max_length=2_000)
     road_segment_ids: list[str] = Field(default_factory=list, max_length=2_000)
     topology_available: bool
     known_limits: list[str] = Field(default_factory=list, max_length=64)
@@ -1717,6 +1791,9 @@ class RuntimeHoldAcknowledgement(StrictModel):
     observed_velocity_ned_mps: Vector3
     position_error_m: float = Field(ge=0.0)
     speed_mps: float = Field(ge=0.0)
+    # 历史回执仍可读取；无定位证据的旧回执不能用于授权新路线。
+    localization_variance_m2: float | None = Field(default=None, strict=True, gt=0, le=10_000)
+    localization_observed_at_unix_ms: int | None = Field(default=None, strict=True, ge=0, lt=2**63)
     side_effects_inhibited: Literal[True] = True
     deterministic_gates: dict[str, bool] = Field(min_length=1, max_length=32)
 
@@ -2106,6 +2183,8 @@ class LocalExpertInferenceTrace(StrictModel):
         "recovery-policy",
     ]
     fallback_used: bool
+    decision_reason_codes: list[str] = Field(default_factory=list, max_length=32)
+    temporal_history_ready: bool | None = None
     navigation_action: Literal[
         "select-candidate",
         "pilot-control",
@@ -2139,7 +2218,7 @@ class LocalExpertInferenceTrace(StrictModel):
     pipeline_latency_ms: dict[
         str,
         Annotated[float, Field(ge=0.0, le=60_000.0)],
-    ] = Field(default_factory=dict, max_length=8)
+    ] = Field(default_factory=dict, max_length=9)
     aggregate_risk_score: float = Field(ge=0.0, le=1.0)
     controller_step_scale: float = Field(ge=0.1, le=1.0)
     pilot_control: NormalizedPilotControl | None = None
@@ -2185,6 +2264,8 @@ class LocalExpertInferenceTrace(StrictModel):
             "port-input-preparation",
             "port-decision-record",
             "port-wall",
+            "qualified-latency-limit",
+            "deadline-bound-scheduling-grace",
         }
         if not set(self.pipeline_latency_ms).issubset(allowed_pipeline_stages):
             raise ValueError("local expert trace contains an unknown pipeline stage")
@@ -2431,6 +2512,7 @@ class Px4GazeboGates(StrictModel):
     model_navigation_authorized_schedule_advance_recorded: bool = False
     model_navigation_route_fallback_absent: bool = False
     local_policy_simulation_admission_recorded: bool = False
+    local_policy_candidate_trial_recorded: bool = False
     development_fault_injection_absent: bool = True
     development_payload_collection_absent: bool = True
     multimodal_dataset_summary_present: bool = False
@@ -2472,6 +2554,9 @@ class LiveSafetyEvent(StrictModel):
     maximum_offset_innovation_m: float | None = Field(default=None, gt=0.0)
     maximum_absolute_correction_m: float | None = Field(default=None, gt=0.0, le=1.0)
     identity_alignment_seconds: float | None = Field(default=None, ge=-0.5, le=0.5)
+    estimator_reset_counter: int | None = Field(default=None, ge=0, le=255)
+    estimator_reset_observed: bool | None = None
+    estimator_reset_settling_active: bool | None = None
     selected_entity_name: str | None = None
     pose_reference: str | None = None
     # 负年龄表示来源时间在未来；保留异常事实，不能夹成零并伪装为新鲜观测。
@@ -2557,6 +2642,9 @@ class ControlledVehicleIdentityEvidence(StrictModel):
     # Signed because either transport can lead the other. The runtime alignment
     # algorithm is independently bounded to this half-second freshness window.
     identity_alignment_seconds: float = Field(default=0.0, ge=-0.5, le=0.5)
+    estimator_reset_counter: int | None = Field(default=None, ge=0, le=255)
+    estimator_reset_observed: bool = False
+    estimator_reset_settling_active: bool = False
     maximum_correction_m: float | None = Field(default=None, gt=0.0, le=1.0)
     tracking_age_seconds: float
     tracking_fresh: bool = True
@@ -2594,6 +2682,8 @@ class Px4GazeboLocalSafetyMeasurements(StrictModel):
 
 
 class Px4GazeboModelControlAuthorityEvidence(StrictModel):
+    # 独立保护性制动单独统计，不计入模型授权控制或飞行成功次数；兼容旧报告默认0。
+    executor_brake_applied_count: int = Field(default=0, ge=0)
     control_application_counts: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     required: bool = False
     authorized_control_applied_count: int = Field(default=0, ge=0)
@@ -2716,6 +2806,8 @@ class Px4GazeboMeasurements(StrictModel):
 class Px4GazeboRunEvidence(StrictModel):
     schema_version: Literal["dronedream.generic-px4-gazebo-run.v1"]
     status: Literal["verified", "failed"]
+    candidate_simulation_trial: dict[str, Any] | None = None
+    model_qualification_granted: Literal[False] = False
     world: str
     vehicle: str
     gates: Px4GazeboGates

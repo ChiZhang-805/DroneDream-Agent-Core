@@ -13,6 +13,9 @@ def main() -> None:
     parser.add_argument("capture", type=Path)
     parser.add_argument("semantic", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--optical-world", type=Path, help="Source SDF visuals, not collision metadata")
+    parser.add_argument("--world-sha256", help="World digest from the preserved capture preparation receipt")
+    parser.add_argument("--render-receipt", type=Path, help="Captured resource hashes; required for mesh-dependent worlds")
     solver = parser.add_mutually_exclusive_group()
     solver.add_argument("--fit-translation", action="store_true",
                         help="Compute conditional translation candidates; do not apply to control")
@@ -32,7 +35,9 @@ def main() -> None:
     report = analyze_geometry_capture(args.capture, args.semantic,
                                       fit_translation=args.fit_translation,
                                       check_perturbations=args.check_perturbations,
-                                      fit_joint_pose=args.fit_joint_pose)
+                                      fit_joint_pose=args.fit_joint_pose,
+                                      optical_world=args.optical_world,
+                                      expected_world_sha256=args.world_sha256, render_receipt=args.render_receipt)
     if args.truth_capture:
         report["independent_truth_comparison"] = compare_geometry_truth(
             args.capture, report, args.truth_capture, args.sensor_frames)

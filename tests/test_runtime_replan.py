@@ -390,6 +390,8 @@ def _replan_inputs(tmp_path: Path) -> dict[str, Any]:
         observed_velocity_ned_mps=Vector3(x=0, y=0, z=0),
         position_error_m=0,
         speed_mps=0,
+        localization_variance_m2=0.0001,
+        localization_observed_at_unix_ms=round(now.timestamp() * 1000),
         deterministic_gates={"stable": True},
     )
     classification = RuntimeMessageClassification(

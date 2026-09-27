@@ -32,6 +32,7 @@ from dronedream_agent_core.ros_workspace_provenance import (
     verify_ros_workspace_provenance,
 )
 from dronedream_agent_core.runtime_interrupt import submit_runtime_message
+from dronedream_agent_core.windows_paths import windows_drive_path_to_wsl
 
 # The child executor owns the motion deadline (at most six hours), semantic
 # no-progress watchdog, recovery windows, and landing timeout.  This outer
@@ -53,12 +54,15 @@ REQUIRED_DYNAMICS_TELEMETRY_RATES_HZ = {
 MINIMUM_DEVELOPMENT_PAYLOAD_MOTION_SAMPLES = 50
 
 
+# 功能：
+#   使用与桌面入口相同的盘符映射规则，支持扩展长度路径并拒绝不支持的命名空间。
+# 输入：
+#   path：本机任务或资源路径。
+# 输出：
+#   mapped：供 WSL 使用的绝对路径。
 def _wsl_path(path: Path) -> str:
-    resolved = path.resolve()
-    drive = resolved.drive.rstrip(":").lower()
-    if len(drive) != 1:
-        raise ValueError(f"path cannot be mapped to WSL: {resolved}")
-    return f"/mnt/{drive}{resolved.as_posix().split(':', 1)[1]}"
+    mapped = windows_drive_path_to_wsl(str(path.resolve()))
+    return mapped
 
 
 def _secret_lines(provider: str, model: str, api_key: str) -> str:

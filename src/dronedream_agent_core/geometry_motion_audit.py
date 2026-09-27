@@ -25,10 +25,12 @@ from .geometry_motion_fixture import (
     fixture_sensor_mount,
     sensor_hits_world,
 )
-from .local_map_alignment import MapSurfaceIndex, fit_map_translation
+from .local_map_alignment import fit_map_translation
 from .local_pose_alignment import fit_map_pose
+from .optical_map import compile_optical_map
 from .plugin_files import read_plugin_file
 from .simulation_sensor_frames import _rotation
+from .temporal_map_pose import TemporalMapPoseTracker
 
 
 # 功能：
@@ -106,12 +108,16 @@ def nearest_source_pose(poses, times, target, *, maximum_gap_ns=8_000_000):
 #   semantic_path：与采集绑定的地图碰撞语义文件。
 #   allow_incomplete_capture：是否允许显式分析未完成采集，同时保留失败状态。
 #   joint_pose：是否联合求解平移和姿态，而非仅求解条件平移。
+#   temporal_pose：是否以真实输入位移连续传播上一帧修正；各扰动条件拥有独立历史。
 # 输出：
 #   report：含原始证据摘要、逐帧比较与条件统计的离线审计报告。
 def compare_moving_fixture(directory: Path, semantic_path: Path, *,
                            allow_incomplete_capture: bool = False,
-                           joint_pose: bool = False) -> dict:
-    if type(joint_pose) is not bool or type(allow_incomplete_capture) is not bool:
+                           joint_pose: bool = False, optical_world: Path | None = None,
+                           temporal_pose: bool = False) -> dict:
+    if (any(type(value) is not bool for value in
+            (joint_pose, allow_incomplete_capture, temporal_pose))
+            or (temporal_pose and not joint_pose)):
         raise ValueError("MOTION_AUDIT_MODE_INVALID")
     raw_report = _bounded(directory / "capture.json", 16*1024*1024)
     capture = decode_json(raw_report, limit=16*1024*1024, node_limit=1_000_000)
@@ -158,8 +164,13 @@ def compare_moving_fixture(directory: Path, semantic_path: Path, *,
     semantic = decode_json(semantic_raw, limit=16*1024*1024, node_limit=1_000_000)
     if not isinstance(semantic, dict):
         raise ValueError("MOTION_AUDIT_MAP_INVALID")
-    index = MapSurfaceIndex(semantic.get("runtime_collision_primitives",
-                                        semantic.get("collision_primitives")))
+    source_world = capture.get("sources", {}).get("world", {})
+    if not source_world.get("path") or not source_world.get("sha256"):
+        raise ValueError("MOTION_AUDIT_BOUND_OPTICAL_WORLD_REQUIRED")
+    index, _, optical_receipt = compile_optical_map(
+        optical_world or Path(source_world["path"]), expected_world_sha256=source_world["sha256"],
+        expected_resources=capture.get('render_receipt', {}).get('preserved_relative_resources', {})
+    )
     calibration = DepthProjectionCalibration(**capture["calibration"])
     if calibration.sha256 != capture["calibration_sha256"]:
         raise ValueError("MOTION_AUDIT_CALIBRATION_MISMATCH")
@@ -167,6 +178,11 @@ def compare_moving_fixture(directory: Path, semantic_path: Path, *,
     bias = np.array([.04, -.03, .02])
     attitude_error = euler_quaternion(np.radians([.3, -.2, .5]))
     rows = []
+    temporal_identity = dict(map_sha256=bytes_digest(semantic_raw),
+                             binding_sha256=bytes_digest(raw_report),
+                             clock_domain="camera-only-fixture:" + bytes_digest(raw_report))
+    trackers = {condition: TemporalMapPoseTracker(**temporal_identity)
+                for condition in ("exact_attitude", "biased_attitude", "delayed_pose_100ms")}
     last_time = -1
     for frame in frames:
         if not isinstance(frame, dict):
@@ -232,10 +248,18 @@ def compare_moving_fixture(directory: Path, semantic_path: Path, *,
             started = time.perf_counter_ns()
             points, origin = sensor_hits_world(projected.samples, estimated)
             solve_start = time.perf_counter_ns()
-            fit = (fit_map_pose(points, index, sensor_origins_world_m=origin,
-                               reference_position_world_m=estimated["position_m"])
-                   if joint_pose else fit_map_translation(points, index,
-                                                           sensor_origins_world_m=origin))
+            temporal_result = None
+            if temporal_pose:
+                temporal_result = trackers[condition].update(points, index,
+                    sensor_origins_world_m=origin,
+                    reference_position_world_m=estimated["position_m"],
+                    source_timestamp_ns=stamp, reset_counter=0, **temporal_identity)
+                fit = temporal_result.fit
+            else:
+                fit = (fit_map_pose(points, index, sensor_origins_world_m=origin,
+                                   reference_position_world_m=estimated["position_m"])
+                       if joint_pose else fit_map_translation(points, index,
+                                                             sensor_origins_world_m=origin))
             ended = time.perf_counter_ns()
             initial_error = np.asarray(estimated["position_m"])-reference["position_m"]
             corrected_error = initial_error+fit.correction_world_m
@@ -246,6 +270,8 @@ def compare_moving_fixture(directory: Path, semantic_path: Path, *,
                                  @ _rotation(reference["orientation_wxyz"]).T)
             angular_error = float(np.arccos(np.clip((np.trace(attitude_residual)-1)/2, -1, 1)))
             row["conditions"][condition] = {**asdict(fit),
+                "temporal_history": ({key: value for key, value in asdict(temporal_result).items()
+                                      if key != "fit"} if temporal_result else None),
                 "input_error_world_m": initial_error.tolist(),
                 "corrected_error_world_m": corrected_error.tolist(),
                 "corrected_attitude_error_rad": angular_error if fit.usable_candidate else None,
@@ -278,12 +304,16 @@ def compare_moving_fixture(directory: Path, semantic_path: Path, *,
                  if "projection_transform_fit_wall_ms" in v])}
     report = {"schema": "dronedream.camera-motion-geometry-audit",
         "solver": "joint-position-attitude" if joint_pose else "conditional-translation",
+        "temporal_pose": temporal_pose,
+        "temporal_implementation_sha256": (bytes_digest((Path(__file__).parent /
+            "temporal_map_pose.py").read_bytes()) if temporal_pose else None),
         "solver_implementation_sha256": bytes_digest((Path(__file__).parent /
             ("local_pose_alignment.py" if joint_pose else "local_map_alignment.py")).read_bytes()),
         "capture_complete": capture["complete"], "capture_issue": capture.get("issue"),
         "capture_close_errors": capture.get("close_errors", []), "capture_sha256":
         bytes_digest(raw_report), "capture_files": capture["files"],
         "map_sha256": bytes_digest(semantic_raw), "calibration_sha256": calibration.sha256,
+        "optical_map": optical_receipt,
         "implementation_sha256": bytes_digest(Path(__file__).read_bytes()),
         "frame_count": len(rows), "unmatched_frames": sum(
             r.get("issue") == "NO_SOURCE_TIME_POSE_WITHIN_8_MS" for r in rows),

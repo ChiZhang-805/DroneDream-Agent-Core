@@ -215,7 +215,7 @@ def require_unseen_validation(receipt: dict, validation_groups: set[str]) -> Non
 
 
 # 功能：
-#   从当前训练回执恢复必须继续保护的留出组，缺失或旧格式不能猜测补齐。
+#   从当前训练回执恢复当前及祖先调参留出组，迁移历史缺失时不能猜测补齐。
 # 输入：
 #   receipt：上一阶段保存的训练回执。
 # 输出：
@@ -230,7 +230,14 @@ def protected_validation_groups(receipt: dict) -> set[str]:
             or any(not isinstance(g, str) or len(g) != 64
                    or set(g) - set("0123456789abcdef") for g in groups)):
         raise ValueError("TRAINING_COLLECTION_REQUIRES_CURRENT_HELD_OUT_GROUPS")
-    protected = set(groups)
+    ancestors = metrics.get("historical_validation_groups", [])
+    has_parent = bool(receipt.get("initial_policy_sha256") or receipt.get("encoder_initialization"))
+    if (has_parent and "historical_validation_groups" not in metrics
+            or not isinstance(ancestors, list) or len(ancestors) > 10_000
+            or any(type(group) is not str or len(group) != 64
+                   or set(group) - set("0123456789abcdef") for group in ancestors)):
+        raise ValueError("TRAINING_COLLECTION_REQUIRES_ANCESTRAL_HELD_OUT_GROUPS")
+    protected = set(groups) | set(ancestors)
     return protected
 
 

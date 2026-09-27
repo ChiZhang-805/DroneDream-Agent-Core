@@ -12,7 +12,8 @@ import hashlib
 import json
 import math
 import re
-from collections import Counter, defaultdict
+import shlex
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -276,7 +277,43 @@ def batch_static_box_visuals(content: bytes, *, cell_size_m: float = 10.) -> Bat
 
 
 # 功能：
-#   1. 复制 SDF 文件相对资源并绑定实际读取字节，不遍历目录、不联网下载。
+#   读取 OBJ 材质引用及 MTL 简单纹理引用，未知纹理选项拒绝而非静默遗漏依赖。
+# 输入：
+#   relative：相对于世界目录的资源路径。
+#   data：已受大小限制的资源字节。
+# 输出：
+#   dependencies：相对于世界目录的嵌套依赖路径列表。
+def _resource_dependencies(relative: str, data: bytes) -> list[str]:
+    path = Path(relative)
+    dependencies = []
+    suffix = path.suffix.lower()
+    if suffix not in {".obj", ".mtl"}:
+        return dependencies
+    for line in data.decode("utf-8-sig").splitlines():
+        command = line.lstrip().split(maxsplit=1)
+        if not command:
+            continue
+        is_material = suffix == ".obj" and command[0] == "mtllib"
+        is_texture = suffix == ".mtl" and (
+            command[0].startswith("map_") or command[0] in {"bump", "disp", "decal", "refl", "norm"})
+        if not (is_material or is_texture):
+            continue
+        fields = shlex.split(line, comments=True, posix=True)[1:]
+        # 不猜测带选项纹理的文件名，避免把参数当成文件或复制后丢失贴图。
+        if not fields or (is_texture and (len(fields) != 1 or fields[0].startswith("-"))):
+            raise ValueError("STATIC_RENDER_RELATIVE_RESOURCE_UNSUPPORTED:" + relative)
+        for dependency in fields:
+            if (not dependency or urlsplit(dependency).scheme or Path(dependency).is_absolute()
+                    or "\\" in dependency or "\x00" in dependency):
+                raise ValueError("STATIC_RENDER_RELATIVE_RESOURCE_UNSUPPORTED:" + dependency)
+            dependencies.append((path.parent / dependency).as_posix())
+            if len(dependencies) > 4096:
+                raise ValueError("STATIC_RENDER_RESOURCE_BUDGET_EXCEEDED")
+    return dependencies
+
+
+# 功能：
+#   1. 复制 SDF 相对资源及 OBJ/MTL 依赖并绑定实际字节，不遍历目录、不联网下载。
 #   2. 拒绝越界、链接及超量资源；显式 model、file、网络或绝对引用保留原有解析方式。
 # 输入：
 #   content：包含资源引用的 SDF 字节。
@@ -290,7 +327,7 @@ def copy_relative_render_resources(content: bytes, source_parent: Path, output: 
     check_plain_plugin_path(source_parent)
     check_plain_plugin_path(output)
     source_parent, output = source_parent.resolve(), output.resolve()
-    resources, total = {}, 0
+    resources, total, pending = {}, 0, deque()
     names = {"uri", "albedo_map", "normal_map", "roughness_map", "metalness_map",
              "emissive_map", "environment_map", "light_map"}
     for element in ET.fromstring(content).iter():
@@ -299,12 +336,23 @@ def copy_relative_render_resources(content: bytes, source_parent: Path, output: 
         value = element.text.strip()
         if urlsplit(value).scheme or Path(value).is_absolute():
             continue  # Existing explicit model://, file://, URL or absolute reference.
+        pending.append(value)
+        if len(pending) > 4096:
+            raise ValueError("STATIC_RENDER_RESOURCE_BUDGET_EXCEEDED")
+    while pending:
+        value = pending.popleft()
         source, destination = source_parent / value, output / value
+        check_plain_plugin_path(source)
+        check_plain_plugin_path(destination)
         if (not source.resolve().is_relative_to(source_parent)
                 or not destination.resolve().is_relative_to(output) or not source.is_file()):
             raise ValueError("STATIC_RENDER_RELATIVE_RESOURCE_UNSUPPORTED:" + value)
+        # 同一材质可能被多个网格引用；规范化后只复制一次，仍保留原引用可解析的路径。
+        value = source.resolve().relative_to(source_parent).as_posix()
         if value in resources:
             continue
+        if len(resources) >= 4096:
+            raise ValueError("STATIC_RENDER_RESOURCE_BUDGET_EXCEEDED")
         # 大小检查不能代替实际读取上限；总预算也在读取前扣除已使用的字节。
         data = read_plugin_file(source, limit=min(128 * 1024 * 1024, 512 * 1024 * 1024-total))
         total += len(data)
@@ -316,6 +364,9 @@ def copy_relative_render_resources(content: bytes, source_parent: Path, output: 
         with destination.open("xb") as handle:
             handle.write(data)
         resources[value] = {"sha256": _digest(data), "bytes": len(data)}
+        pending.extend(_resource_dependencies(value, data))
+        if len(pending) > 4096:
+            raise ValueError("STATIC_RENDER_RESOURCE_BUDGET_EXCEEDED")
     return resources
 
 

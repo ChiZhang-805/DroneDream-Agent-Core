@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -13,7 +14,6 @@ from dronedream_plugin_sdk.protocol import (
     MAX_JSON_DEPTH,
     MAX_JSON_NODES,
     MAX_MESSAGE_BYTES,
-    copy_json,
     encode_json,
 )
 
@@ -28,6 +28,13 @@ from dronedream_plugin_sdk.protocol import (
 # 输出：
 #   detached：转换、预算校验并隔离可变引用后的 JSON 值。
 def plugin_json_value(value: Any, *, limit: int = MAX_MESSAGE_BYTES) -> Any:
+    detached = json.loads(plugin_json_text(value, limit=limit))
+    return detached
+
+
+# 功能：复用同一转换和预算校验，直接给日志队列独立的不可变文本，避免再解码、再遍历和再编码。
+# 输入：插件钩子或运行证据值及字节上限；输出：与原 JSON 值接口一致的完整 JSON 文本。
+def plugin_json_text(value: Any, *, limit: int = MAX_MESSAGE_BYTES) -> str:
     # 先复用协议预算检查，再遍历对象，错误预算不得触发模型序列化。
     encode_json(0, limit=limit)
     remaining = MAX_JSON_NODES
@@ -44,6 +51,11 @@ def plugin_json_value(value: Any, *, limit: int = MAX_MESSAGE_BYTES) -> Any:
         remaining -= 1
         if remaining < 0 or depth > MAX_JSON_DEPTH:
             raise ValueError("PLUGIN_EXTENSION_INPUT_TOO_COMPLEX")
+        # 实时张量绝大多数节点为原生标量；先分流，避免每个数值反复检查
+        # Pydantic、日期和路径类型。有限值、整数长度及字节预算仍由 encode_json 检查。
+        kind = type(item)
+        if item is None or kind is float or kind is int or kind is str or kind is bool:
+            return item
         if isinstance(item, BaseModel):
             # Python 模式保留 NaN 等非法值，不能先变成 null 后绕过严格数值检查。
             try:
@@ -72,14 +84,12 @@ def plugin_json_value(value: Any, *, limit: int = MAX_MESSAGE_BYTES) -> Any:
                 if isinstance(item, (set, frozenset))
                 else children
             )
-        elif type(item) in (str, int, float, bool) or item is None:
-            converted = item
         else:
             raise ValueError(f"PLUGIN_EXTENSION_INPUT_NOT_JSON:{type(item).__name__}")
         return converted
 
     try:
-        detached = copy_json(convert(value, 0), limit=limit)
+        rendered = encode_json(convert(value, 0), limit=limit)
     except RecursionError as error:
         raise ValueError("PLUGIN_EXTENSION_INPUT_TOO_COMPLEX") from error
-    return detached
+    return rendered

@@ -128,6 +128,7 @@ def test_first_party_action_packs_merge_without_conflict() -> None:
     }.issubset(action_ids(catalog))
     assert "survey.grid-capture" in movement_action_ids(catalog)
     assert action_by_id(catalog, "delivery.release-payload").authority == "actuate"
+    assert not {"delivery.scan-code", "delivery.verify-recipient"} & action_ids(catalog)
 
 
 def test_action_pack_conflict_is_rejected() -> None:
@@ -159,6 +160,12 @@ def test_action_pack_conflict_is_rejected() -> None:
         )
 
 
+# 功能：
+#   核对无扫码取件仍保留悬停、真实挂载、交接与负载稳定，旧身份动作不能自动加入。
+# 输入：
+#   无。
+# 输出：
+#   None：必要守卫可被删除、旧动作被重新授权或错误后备策略获准时测试失败。
 def test_task_graph_enforces_registered_action_fallback_and_evidence() -> None:
     catalog = _catalog()
     contract = _contract(catalog)
@@ -189,18 +196,10 @@ def test_task_graph_enforces_registered_action_fallback_and_evidence() -> None:
                     "fallback": "hold",
                 },
                 {
-                    "task_id": "verify",
-                    "action": "delivery.verify-recipient",
-                    "target_node": "pickup",
-                    "depends_on": ["precontact"],
-                    "success_evidence": ["recipient identity accepted"],
-                    "fallback": "hold",
-                },
-                {
                     "task_id": "pickup",
                     "action": "pickup",
                     "target_node": "pickup",
-                    "depends_on": ["verify"],
+                    "depends_on": ["precontact"],
                     "success_evidence": ["payload attached", "attachment state readback"],
                     "fallback": "return",
                 },
@@ -249,15 +248,41 @@ def test_task_graph_enforces_registered_action_fallback_and_evidence() -> None:
     )
     _validate_task_graph(valid, contract, _map(), catalog)
 
+    for removed_id, code in (
+        ("precontact", "MISSING_PRECONTACT_HOLD"),
+        ("custody", "MISSING_CUSTODY_CONFIRMATION"),
+        ("loaded-stability", "MISSING_LOADED_STABILITY_VERIFICATION"),
+    ):
+        broken = valid.model_copy(deep=True)
+        removed = next(task for task in broken.nodes if task.task_id == removed_id)
+        for task in broken.nodes:
+            task.depends_on = [replacement for dependency in task.depends_on
+                               for replacement in (removed.depends_on if dependency == removed_id
+                                                   else [dependency])]
+        broken.nodes = [task for task in broken.nodes if task.task_id != removed_id]
+        with pytest.raises(MissionPreparationBlocked, match=code):
+            _validate_task_graph(broken, contract, _map(), catalog)
+
+    for action in ("delivery.scan-code", "delivery.verify-recipient"):
+        broken = valid.model_copy(deep=True)
+        broken.nodes.append(valid.nodes[2].model_copy(update={"task_id": "unexpected-identity",
+                                                            "action": action}))
+        with pytest.raises(MissionPreparationBlocked, match="TASK_GRAPH_UNAUTHORIZED_ACTION"):
+            _validate_task_graph(broken, contract, _map(), catalog)
+
     invalid = valid.model_copy(deep=True)
     invalid.nodes[4].fallback = "continue"
     with pytest.raises(MissionPreparationBlocked, match="TASK_GRAPH_ACTION_FALLBACK_UNAUTHORIZED"):
         _validate_task_graph(invalid, contract, _map(), catalog)
 
 
-def test_runtime_action_contract_binds_verification_and_pickup_to_checkpoint(
-    tmp_path,
-) -> None:
+# 功能：
+#   将无扫码取件绑定到真实检查点与载荷接口，确认停留、挂载和负载验证不被省略。
+# 输入：
+#   tmp_path：独立载荷 SDF 夹具目录。
+# 输出：
+#   None：运行合同出现身份服务、依赖或物理约束不符时测试失败。
+def test_runtime_action_contract_binds_handoff_and_pickup_to_checkpoint(tmp_path) -> None:
     registry = build_discovered_extension_registry()
     action_outputs, _ = registry.invoke_multiple("mission.action-packs", "declare_actions")
     adapter_outputs, _ = registry.invoke_multiple(
@@ -293,18 +318,10 @@ def test_runtime_action_contract_binds_verification_and_pickup_to_checkpoint(
                     "fallback": "hold",
                 },
                 {
-                    "task_id": "verify",
-                    "action": "delivery.verify-recipient",
-                    "target_node": "pickup",
-                    "depends_on": ["precontact"],
-                    "success_evidence": ["recipient identity accepted"],
-                    "fallback": "hold",
-                },
-                {
                     "task_id": "pickup",
                     "action": "pickup",
                     "target_node": "pickup",
-                    "depends_on": ["verify"],
+                    "depends_on": ["precontact"],
                     "success_evidence": ["payload attached", "attachment state readback"],
                     "fallback": "return",
                 },
@@ -415,28 +432,27 @@ def test_runtime_action_contract_binds_verification_and_pickup_to_checkpoint(
 
     assert [step.task_id for step in runtime.steps] == [
         "precontact",
-        "verify",
         "pickup",
         "custody",
         "loaded-stability",
     ]
     assert all(step.checkpoint_id == "checkpoint-001" for step in runtime.steps)
     assert runtime.steps[1].depends_on == ["precontact"]
-    assert runtime.steps[2].depends_on == ["verify"]
-    assert runtime.steps[3].depends_on == ["pickup"]
-    assert runtime.steps[4].depends_on == ["custody"]
-    assert runtime.steps[2].parameters["topic"] == "/payload/attach"
-    assert runtime.steps[2].timeout_seconds == 25.0
-    assert runtime.steps[2].max_attempts == 1
-    assert runtime.steps[2].parameters["payload_mount_offset_model_m"] == [0.0, 0.0, 0.12]
+    assert runtime.steps[2].depends_on == ["pickup"]
+    assert runtime.steps[3].depends_on == ["custody"]
+    assert runtime.steps[1].parameters["topic"] == "/payload/attach"
+    assert runtime.steps[1].timeout_seconds == 25.0
+    assert runtime.steps[1].max_attempts == 1
+    assert runtime.steps[1].parameters["payload_mount_offset_model_m"] == [0.0, 0.0, 0.12]
     assert runtime.steps[0].parameters["operation"] == "precontact"
-    assert runtime.steps[3].parameters["operation"] == "confirm-custody"
-    assert runtime.steps[3].parameters["payload_mass_kg"] == pytest.approx(0.1)
-    assert runtime.steps[4].parameters["operation"] == "postattach-stability"
-    assert runtime.steps[1].parameters["request"]["contract_id"] == contract.contract_id
-    assert runtime.steps[1].parameters["service_name"] == (
-        "/dronedream/domain_actions/payload/verify_recipient"
-    )
+    assert runtime.steps[2].parameters["operation"] == "confirm-custody"
+    assert runtime.steps[2].parameters["payload_mass_kg"] == pytest.approx(0.1)
+    assert runtime.steps[3].parameters["operation"] == "postattach-stability"
+    assert all(step.driver != "ros2-service" for step in runtime.steps)
+    assert runtime.steps[0].parameters["stable_window_seconds"] == 10.0
+    assert not {"native.payload.scan-code", "native.payload.verify-recipient"} & {
+        executor for adapter in adapters.adapters for executor in adapter.runtime_executors
+    }
 
     with pytest.raises(
         RuntimeError, match="RUNTIME_ACTION_PAYLOAD_EXCEEDS_VEHICLE_CAPACITY"

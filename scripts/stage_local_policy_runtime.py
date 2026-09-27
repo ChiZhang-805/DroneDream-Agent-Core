@@ -105,6 +105,13 @@ def _verified_training_evidence(package) -> dict[str, bytes]:
                                      maximum_bytes=4 * 1024**2)
         receipt = decode_json(content, limit=4 * 1024**2)
         validate_expert_training_receipt(artifact.role, artifact.sha256, receipt, package.manifest)
+        if artifact.role == 'risk-critic':
+            from dronedream_agent_core.training.risk_nearfield import validate_nearfield_graph
+
+            graph_bytes = read_bound_content(package.artifact_paths[artifact.role], artifact.sha256,
+                                             maximum_bytes=16 * 1024**2)
+            validate_nearfield_graph(graph_bytes, receipt.get('embedded_input_transform'),
+                                     package.manifest.sensor_contract_sha256)
         if artifact.role != "perception-encoder":
             trained, held_out = expert_spatial_groups(artifact.role, receipt)
             training.update(trained)

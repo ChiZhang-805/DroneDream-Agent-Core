@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -334,7 +335,8 @@ class ToolRegistry:
             # 任一成员要求串行，整个共享批次就不能用另一成员的宽松上限覆盖它。
             maximum = min(maximum, parallelism)
         with ThreadPoolExecutor(max_workers=maximum) as executor:
-            futures = [executor.submit(self.call, tool_id, value) for tool_id, value in calls]
+            # 每个线程独立复制请求上下文，保证进度仍归属于原账户与请求。
+            futures = [executor.submit(copy_context().run, self.call, tool_id, value) for tool_id, value in calls]
             results = [future.result() for future in futures]
             return results
 
@@ -554,7 +556,7 @@ class ToolRegistry:
                     executor = ThreadPoolExecutor(max_workers=1)
                     try:
                         # 输入复制或 submit 本身也会失败，线程池从创建起就必须受清理保护。
-                        future = executor.submit(plugin.handler, copy.deepcopy(validated_input))
+                        future = executor.submit(copy_context().run, plugin.handler, copy.deepcopy(validated_input))
                         try:
                             raw_output = future.result(timeout=remaining)
                         except TimeoutError:

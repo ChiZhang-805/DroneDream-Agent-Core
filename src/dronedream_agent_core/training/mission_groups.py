@@ -165,14 +165,20 @@ def mission_group_evidence(route_content: bytes, semantic_sha256: str, *,
 # 输入：
 #   run_root：历史运行目录。
 #   artifacts：该运行独立记录的语义地图和路线摘要。
+#   retained_route：明确指定的原始路线文件，仅在运行和兄弟计划均缺失时使用。
 # 输出：
 #   evidence：与历史运行一致的路线分组证据。
-def recorded_mission_group(run_root: Path, artifacts: dict) -> MissionGroupEvidence:
+def recorded_mission_group(run_root: Path, artifacts: dict, *, retained_route=None):
     run_root = Path(run_root).absolute()
     path = run_root / "mission-route.json"
     check_plain_plugin_path(path)
     if not path.exists():
         path = run_root.parent / "plan" / "route.json"
+    if retained_route is not None:
+        if path.exists():
+            raise ValueError("MISSION_GROUP_RETAINED_ROUTE_CANNOT_REPLACE_EXISTING_SOURCE")
+        path = Path(retained_route).absolute()
+        check_plain_plugin_path(path)
     # 仅“原路线不存在”允许明确的布局兼容；存在但损坏时必须失败，不能偷换为兄弟计划。
     content = read_plugin_file(path, limit=MAX_ROUTE_EVIDENCE_BYTES)
     evidence = mission_group_evidence(content, _hash(artifacts.get("semantic_sha256")),

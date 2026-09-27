@@ -1,18 +1,21 @@
 """Console contract/fault tests, not paid-model or physical-flight qualification.
 
-The API integration cases use the real desktop router/store. Only identity,
-cloud transport and the slow planner are explicit test doubles.
+The API integration cases use the real desktop router/store. Identity, cloud
+transport and the slow planner are explicit test doubles; non-Windows tests
+also select an in-memory credential fixture instead of bypassing DPAPI safety.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import struct
 import tomllib
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 
 from dronedream_agent_app import console
@@ -22,6 +25,8 @@ from dronedream_agent_app.console_client import (
     ProductConsoleClient,
 )
 from dronedream_agent_app.models import ThreadCreate
+
+pytestmark = pytest.mark.usefixtures("isolated_server_credentials")
 
 THREAD = "thread-" + "1" * 32
 PLAN = "plan-" + "2" * 32
@@ -43,6 +48,123 @@ SELECTION = {
     "vehicle_id": "selected-vehicle",
     "vehicle_content_sha256": "b" * 64,
 }
+
+
+# 功能：
+#   生成独立 PNG 协议夹具，明确不来自真实相机或飞行。
+# 输入：
+#   无。
+# 输出：
+#   png：两像素宽的合法测试 PNG。
+def overview_png():
+    stream = io.BytesIO()
+    Image.new("RGB", (2, 1), (0, 40, 80)).save(stream, format="PNG")
+    png = stream.getvalue()
+    return png
+
+
+# 功能：
+#   核对画面命令只读共享相机端点，保留原始字节，拒绝覆盖操作者已有文件。
+# 输入：
+#   tmp_path：独立测试输出目录。
+# 输出：
+#   None：端点、身份、摘要、写入或覆盖保护有偏差时测试失败。
+def test_overview_command_saves_authenticated_original_png_without_overwrite(tmp_path):
+    import hashlib
+
+    calls, png = [], overview_png()
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, content=png, headers={"Content-Type": "image/png"})
+
+    client = make_client(handler)
+    output = tmp_path / "overview.png"
+    args = console.build_parser().parse_args(["frame", THREAD, "--output", str(output)])
+    try:
+        receipt = console.dispatch(client, args)
+        assert output.read_bytes() == png
+        assert receipt["sha256"] == hashlib.sha256(png).hexdigest()
+        assert receipt["qualification_granted"] is False
+        assert len(calls) == 1
+        assert calls[0].method == "GET"
+        assert calls[0].url.path == "/v1/threads/" + THREAD + "/live-frame"
+        assert calls[0].headers["authorization"] == "Bearer " + SESSION["local_token"]
+        assert calls[0].headers["x-dronedream-identity-token"] == SESSION["identity_token"]
+        assert calls[0].headers["accept"] == "image/png"
+        with pytest.raises(ConsoleError, match="OUTPUT_EXISTS"):
+            console.dispatch(client, args)
+        assert output.read_bytes() == png
+    finally:
+        client.close()
+
+
+# 功能：
+#   拒绝不可信媒体、越界尺寸、损坏、压缩及重定向，不能将错误页保存为验收画面。
+# 输入：
+#   fault：模拟响应故障类型。
+#   tmp_path：独立测试输出目录。
+#   monkeypatch：临时字节预算替换器。
+# 输出：
+#   None：错误响应落盘或未产生对应错误码时测试失败。
+@pytest.mark.parametrize("fault,code", [
+    ("type", "TYPE_INVALID"), ("header", "HEADER_INVALID"),
+    ("dimensions", "DIMENSIONS_INVALID"), ("corrupt", "CONTENT_INVALID"),
+    ("redirect", "REDIRECT_REJECTED"), ("compressed", "COMPRESSED_RESPONSE_REJECTED"),
+    ("large", "RESPONSE_TOO_LARGE"), ("missing", "HTTP_404"),
+])
+def test_overview_rejects_invalid_response_before_writing(fault, code, tmp_path, monkeypatch):
+    from dronedream_agent_app import console_client
+
+    png = overview_png()
+    content, status, headers = png, 200, {"Content-Type": "image/png"}
+    if fault == "type":
+        headers["Content-Type"] = "text/html"
+    elif fault == "header":
+        content = b"not a PNG"
+    elif fault == "dimensions":
+        content = png[:16] + struct.pack(">II", 5000, 1) + png[24:]
+    elif fault == "corrupt":
+        # 完整 IHDR 之后的损坏仍需要解码器验证，而不是仅检查文件魔数。
+        content = png[:33] + b"broken chunk data"
+    elif fault == "redirect":
+        status, headers["Location"] = 307, "https://example.org/steal"
+    elif fault == "compressed":
+        headers["Content-Encoding"] = "unknown"
+    elif fault == "large":
+        monkeypatch.setattr(console_client, "MAX_RESPONSE_BYTES", len(png) - 1)
+    elif fault == "missing":
+        status = 404
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, content=content, headers=headers)
+
+    client, output = make_client(handler), tmp_path / "refused.png"
+    try:
+        with pytest.raises(ConsoleError, match=code):
+            console.save_overview_frame(client, THREAD, output)
+        assert not output.exists()
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
+# 功能：
+#   验证目标目录不存在时返回明确写入错误，不打印路径内容或成功回执。
+# 输入：
+#   tmp_path：没有子目录的独立测试目录。
+# 输出：
+#   None：错误被吞掉或误报成功时测试失败。
+def test_overview_write_failure_does_not_claim_saved(tmp_path):
+    client = make_client(lambda request: httpx.Response(
+        200, content=overview_png(), headers={"Content-Type": "image/png"}))
+    try:
+        with pytest.raises(ConsoleError, match="WRITE_FAILED"):
+            console.save_overview_frame(client, THREAD, tmp_path / "missing" / "frame.png")
+    finally:
+        client.close()
 
 
 # 功能：
@@ -285,6 +407,30 @@ def test_untrusted_error_text_is_not_printed():
         with pytest.raises(ConsoleError, match="CONSOLE_HTTP_409") as caught:
             client.bootstrap()
         assert SESSION["identity_token"] not in str(caught.value)
+    finally:
+        client.close()
+
+
+# 功能：
+#   核对 CLI 观测命令仅访问账户绑定的读取接口，不调用模型或确认执行。
+# 输入：
+#   command、suffix：终端命令及唯一允许访问的产品端点。
+# 输出：
+#   None：请求路径、授权头与原始遥测均与产品接口一致。
+@pytest.mark.parametrize('command,suffix', [('live-sources', 'live-sources'),
+                                           ('telemetry', 'live-telemetry')])
+def test_console_observation_commands_use_only_authenticated_read(command, suffix):
+    calls = []
+    client = make_client(lambda req: contract_response(req, calls))
+    try:
+        args = console.build_parser().parse_args([command, THREAD])
+        assert console.dispatch(client, args) == {'status': 'fixture-response'}
+        assert len(calls) == 1
+        request = calls[0]
+        assert request.method == 'GET'
+        assert request.url.path == '/v1/threads/' + THREAD + '/' + suffix
+        assert request.headers['authorization'] == 'Bearer ' + SESSION['local_token']
+        assert request.headers['x-dronedream-identity-token'] == SESSION['identity_token']
     finally:
         client.close()
 

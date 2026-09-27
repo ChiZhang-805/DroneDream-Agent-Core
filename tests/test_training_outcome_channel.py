@@ -9,10 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 from test_training_runtime_evidence import pose
 
 from dronedream_agent_core import gazebo_adapter
 from dronedream_agent_core.contracts import Vector3
+from dronedream_agent_core.training import gazebo_witness as witness_module
 from dronedream_agent_core.training import outcome_channel as channel
 from dronedream_agent_core.training.gazebo_witness import GazeboOutcomeWitness
 from dronedream_agent_core.training.runtime_evidence import (
@@ -448,8 +450,7 @@ def test_witness_cadence_preserves_short_native_arrivals_at_window_edge(endpoint
     # 40 ms throttle retained only 0/109/217, losing the 144 ms observation.
     # Do not use the later 217 ms sample to fill the 215 ms window boundary.
     clock = [9.9]
-    monkeypatch.setattr("dronedream_agent_core.training.gazebo_witness.time.monotonic",
-                        lambda: clock[0])
+    isolate_monotonic(monkeypatch, witness_module, lambda: clock[0])
     # 先取得速度历史；首帧无速度证据不应参与健康窗口验收。
     observer.receive(model_entities(x=-.1), clock[0], 900, simulation_time_ns=900_000_000)
     assert receiver.read()[0].stream_healthy is False
@@ -483,8 +484,7 @@ def test_witness_throttle_remains_bounded_and_reports_omissions(endpoints, monke
     receiver, publisher = endpoints
     observer = witness(publisher)
     clock = [20.]
-    monkeypatch.setattr("dronedream_agent_core.training.gazebo_witness.time.monotonic",
-                        lambda: clock[0])
+    isolate_monotonic(monkeypatch, witness_module, lambda: clock[0])
     for offset in range(100):
         clock[0] = 20 + offset / 1000
         observer.receive(model_entities(), clock[0], 1000 + offset,
@@ -512,8 +512,7 @@ def test_physical_velocity_does_not_scale_with_runtime_speed(endpoints, monkeypa
     receiver, publisher = endpoints
     observer = witness(publisher)
     clock = [20.]
-    monkeypatch.setattr("dronedream_agent_core.training.gazebo_witness.time.monotonic",
-                        lambda: clock[0])
+    isolate_monotonic(monkeypatch, witness_module, lambda: clock[0])
     observer.receive(model_entities(), clock[0], 1000, simulation_time_ns=1_000_000_000)
     clock[0] += wall_dt
     observer.receive(model_entities(x=.12), clock[0], 1000 + int(wall_dt * 1000),
@@ -536,8 +535,7 @@ def test_repeated_simulation_frame_cannot_renew_motion_witness(endpoints, monkey
     receiver, publisher = endpoints
     observer = witness(publisher)
     clock = [20.]
-    monkeypatch.setattr("dronedream_agent_core.training.gazebo_witness.time.monotonic",
-                        lambda: clock[0])
+    isolate_monotonic(monkeypatch, witness_module, lambda: clock[0])
     observer.receive(model_entities(), clock[0], 1000, simulation_time_ns=100)
     clock[0] += .03
     observer.receive(model_entities(x=5.), clock[0], 1030, simulation_time_ns=100)

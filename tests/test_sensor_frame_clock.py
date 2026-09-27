@@ -12,6 +12,41 @@ from dronedream_agent_core.sensor_frame_clock import (
 EPOCH = "a" * 64
 
 
+# 功能：原生预更新时钟必须显式选择身份，并保留实际原始帧龄穿过模型边界。
+# 输入：临时图像目录。输出：验证后的元数据仍在原 250 毫秒截止内，而不是接收后续期。
+def test_native_preupdate_clock_is_pinned_and_reaches_model_deadline(tmp_path):
+    from dronedream_agent_core.model_image_cache import PreparedModelImage
+    from dronedream_agent_core.observation_validity import image_control_deadline
+    message = frame(basis="native-preupdate")
+    value = admit(SensorFrameClock(expected_native_epoch=EPOCH), message)
+    assert value.clock_kind == "native-simulation"
+    assert value.age_at_receipt_ns == 100_000_000
+    require_model_frame_time(message, value, value.sample_monotonic_seconds, 1000)
+    prepared = PreparedModelImage(value.sample_monotonic_seconds, 1000, (1, 1),
+                                  b"png", b"rgb", "c"*64, "d"*64, value)
+    payload = prepared.multimodal(tmp_path)
+    assert payload["timestamp_basis"] == "native-simulation-preupdate"
+    assert image_control_deadline(payload, now_unix_ms=1100) == 1250
+    assert image_control_deadline(payload, now_unix_ms=1250) == 0
+    for clock in (SensorFrameClock(), SensorFrameClock(expected_scene_epoch=EPOCH)):
+        with pytest.raises(ValueError):
+            admit(clock, message)
+    with pytest.raises(ValueError):
+        admit(SensorFrameClock(expected_native_epoch=EPOCH), frame())
+    with pytest.raises(ValueError):
+        SensorFrameClock(expected_native_epoch=EPOCH, expected_scene_epoch=EPOCH)
+
+
+# 功能：验证原生预更新时钟不可被删掉依据、改身份或以后来的到达重新计时。
+# 输入：元数据破坏方式。输出：拒绝数据，不授予图像控制权限。
+@pytest.mark.parametrize("changes", [{"basis":"host-receipt"}, {"epoch":"c"*64},
+                                    {"source_unix_ns":"1"}, {"basis":"scene-snapshot"}])
+def test_native_clock_rejects_wrong_source_and_expiry(changes):
+    fields = {"basis":"native-preupdate", **changes}
+    with pytest.raises(ValueError):
+        admit(SensorFrameClock(expected_native_epoch=EPOCH), frame(**fields))
+
+
 # 功能：
 #   生成保留原始采集时间和场景摘要的图像报头，允许单独覆盖字段构造非法输入。
 # 输入：
@@ -280,7 +315,9 @@ def test_encoding_and_async_worker_preserve_original_scene_time(tmp_path):
     worker = LatestModelImageWorker(size=(1, 1), decoder=decode)
     try:
         assert worker.submit(message, **arguments)
-        sample = wait_sample(worker, 9.9)
+        sample = wait_sample(worker, 9.9, now=10.)
+        # 场景采集在 9.9，但消息直到 10.0 才收到；9.99 的控制快照不能借用未来消息。
+        assert worker.latest(now_monotonic_seconds=9.99, maximum_age_seconds=.2) is None
         assert sample.image.frame_time == clock
         assert worker.latest(now_monotonic_seconds=10.11, maximum_age_seconds=.2) is None
         assert sample.image.multimodal(tmp_path)["scene_source_unix_ns"] == 1_000_000_000

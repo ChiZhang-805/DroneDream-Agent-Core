@@ -131,3 +131,50 @@ def test_missing_timestamp_is_not_published_as_fresh():
         assert "RECEIVE_TIME_MISSING" in summary["last_issue"]
 
     asyncio.run(scenario())
+
+
+# 功能：验证定位发布器能先于连接启动，缺失期间不伪造状态，连接后自动使用真实缓存。
+# 输入：无；异步夹具控制连接何时可用。
+# 输出：启动失败不泄漏任务、不续期时间，恢复后只有真实来源被发布。
+def test_preflight_publisher_waits_for_connection_without_fake_state():
+    # 功能：运行一次先启动发布、后到达连接的有界生命周期。
+    # 输入：无。
+    # 输出：完整回收及原始来源时间保持断言。
+    async def scenario():
+        connected = False
+        published = []
+
+        class Client:
+            # 功能：连接前报告缺失，连接后返回原始缓存时间而不是当前时刻。
+            # 输入：timeout：采样等待预算。
+            # 输出：真实缓存的替身或明确缺失异常。
+            async def sample_position_velocity_ned(self, timeout):
+                if not connected:
+                    raise RuntimeError('not connected')
+                return SimpleNamespace(received_at_unix_ms=1234)
+
+            # 功能：提供固定来源标识，不创建新的订阅。
+            # 输入：max_age：消费者期限。
+            # 输出：隔离测试来源。
+            def latest_dynamics_telemetry(self, max_age):
+                return {'sources': {'imu': {'timestamp_us': 99}}}
+
+        publisher = NativeTelemetryPublisher(Client(), lambda sample, _: published.append(
+            sample.received_at_unix_ms))
+        publisher.start()
+        try:
+            await asyncio.sleep(.04)
+            assert not published
+            assert publisher.summary['error_count'] > 0
+            connected = True
+            for _ in range(50):
+                if publisher.summary['published_count']:
+                    break
+                await asyncio.sleep(.01)
+            assert published and set(published) == {1234}
+            assert publisher.summary['last_issue'] is None
+        finally:
+            summary = await publisher.close()
+        assert summary['drained']
+
+    asyncio.run(scenario())

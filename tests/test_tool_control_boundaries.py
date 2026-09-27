@@ -67,6 +67,30 @@ def test_rejected_output_is_never_cached():
 
 
 # 功能：
+#   确认进度跨越工具线程池仍属于当前请求，结束后不会遗留上下文。
+# 输入：
+#   无。
+# 输出：
+#   无返回值。
+def test_progress_context_survives_tool_worker_thread():
+    from dronedream_agent_core.model_harness.progress import progress_sink, report_progress
+    events = []
+    def handler(value):
+        report_progress("clearance", "实际工具进度", "Actual tool progress")
+        return value
+    registry = registry_for(handler)
+    token = progress_sink.set(lambda *args: events.append(args))
+    try:
+        registry.call("test.boundary", {"request": "first"})
+        registry.call_batch([("test.boundary", {"request": "second"}), ("test.boundary", {"request": "third"})])
+    finally:
+        progress_sink.reset(token)
+    assert len(events) == 3
+    assert all(event[0] == "clearance" for event in events)
+    assert progress_sink.get() is None
+
+
+# 功能：
 #   验证调用方修改正常返回、回执或命中缓存的返回值，都不能改写内部缓存。
 # 输入：
 #   无。

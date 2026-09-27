@@ -19,6 +19,8 @@ from .dagger import ProposedActionRisk
 from .evidence_files import decode_evidence_rows, read_evidence_dataset, read_evidence_object
 from .flight_environment import FlightObservation, PilotAction
 from .mission_groups import MissionGroupEvidence, MissionGroupManifest
+from .risk_clearance_contract import OBSERVED_CLEARANCE_LABELS, observation_clearance_label
+from .risk_latency_contract import validate_decision_latency_prediction
 
 FILES = {
     name: name + ".jsonl"
@@ -35,6 +37,7 @@ AXES = ("forward_axis", "right_axis", "up_axis", "yaw_axis")
 @dataclass(frozen=True)
 class ActionRiskDataset:
     """Risk-only samples and their source evidence; never a behavior-cloning corpus."""
+
     samples: tuple[LocalPolicyTrainingSample, ...]
     records: tuple[dict, ...]
     observations: tuple[FlightObservation, ...]
@@ -42,6 +45,7 @@ class ActionRiskDataset:
     receipt_sha256: str
     teacher_config_sha256: str
     receipt: dict
+    training_observation_selection: dict | None = None
 
 
 # 功能：
@@ -85,9 +89,11 @@ def _sources(receipt):
             raise ValueError("ACTION_RISK_SOURCE_EPISODE_DUPLICATE")
         assets = source["asset_sha256"]
         split = MissionGroupEvidence.model_validate(source.get("mission_split"))
-        if (split.group_sha256 != source["mission_group_sha256"]
-                or split.route_sha256 != _hash(assets["route"])
-                or split.semantic_sha256 != _hash(assets["semantic"])):
+        if (
+            split.group_sha256 != source["mission_group_sha256"]
+            or split.route_sha256 != _hash(assets["route"])
+            or split.semantic_sha256 != _hash(assets["semantic"])
+        ):
             raise ValueError("ACTION_RISK_ROUTE_GROUP_MISMATCH")
         files = source["source_files_sha256"]
         for name in ("reset.json", "flight/simulation/native-terminal-lifecycle.json"):
@@ -160,8 +166,9 @@ def load_action_risk_dataset(root: Path) -> ActionRiskDataset:
     ):
         raise ValueError("ACTION_RISK_OFFLINE_RISK_ONLY_DATA_REQUIRED")
     config = CounterfactualConfig.model_validate(receipt["teacher_config"])
-    contents = read_evidence_dataset(root, FILES, receipt.get("file_sha256"),
-                                     error_prefix="ACTION_RISK_DATASET_CONTENT_CHANGED")
+    contents = read_evidence_dataset(
+        root, FILES, receipt.get("file_sha256"), error_prefix="ACTION_RISK_DATASET_CONTENT_CHANGED"
+    )
     samples = tuple(
         LocalPolicyTrainingSample.model_validate(row) for row in _rows(contents["action-risk"])
     )
@@ -275,6 +282,18 @@ def load_action_risk_dataset(root: Path) -> ActionRiskDataset:
             or context["source_ms"] != observation.sample.temporal_evidence.observed_at_unix_ms
         ):
             raise ValueError("ACTION_RISK_PREDICTION_CONTEXT_MISMATCH")
+        validate_decision_latency_prediction(prediction, config)
+        if config.risk_label_semantics == OBSERVED_CLEARANCE_LABELS:
+            expected_risk, label_contract = observation_clearance_label(
+                observation.sample.state_features, prediction.get("clearance_lower_bound_m")
+            )
+            if (
+                prediction.get("risk_label_contract") != label_contract
+                or risk.risk != expected_risk
+            ):
+                raise ValueError("ACTION_RISK_CLEARANCE_LABEL_MISMATCH")
+        elif "risk_label_contract" in prediction:
+            raise ValueError("ACTION_RISK_LABEL_SEMANTICS_MIXED")
         used_predictions.add(risk.verifier_receipt_sha256)
         used_contexts.add(prediction["context_sha256"])
     if used_predictions != set(predictions) or used_contexts != set(contexts):

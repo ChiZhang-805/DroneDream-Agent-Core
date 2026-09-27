@@ -565,6 +565,28 @@ def test_control_deadline_is_unavailable_at_exact_expiry() -> None:
     assert snapshot.control_deadline_unix_ms(now_unix_ms=1250) == 0
 
 
+@pytest.mark.parametrize("now", [999, 1000, 1249, 1250, 1251])
+def test_single_parse_control_admission_matches_independent_checks(now: int) -> None:
+    from dronedream_agent_core.realtime_feature_encoders import parse_realtime_control_input
+    snapshot = complete_feature_snapshot(1000)
+    detached, fresh, deadline = parse_realtime_control_input(snapshot, now_unix_ms=now)
+    assert fresh == snapshot.fresh_at(now)
+    assert deadline == snapshot.control_deadline_unix_ms(now_unix_ms=now)
+    snapshot.encodings[0].features[0] = 999.0
+    assert detached.encodings[0].features[0] != 999.0
+    with pytest.raises(ValueError):
+        parse_realtime_control_input(snapshot, now_unix_ms=now)
+
+
+def test_snapshot_constructor_revalidates_borrowed_encoding_instances() -> None:
+    snapshot = complete_feature_snapshot(1000)
+    payload = snapshot.model_dump(mode="python")
+    payload["encodings"] = snapshot.encodings
+    snapshot.encodings[0].valid_mask[0] = .5
+    with pytest.raises(ValueError):
+        RealtimeFeatureSnapshot.model_validate(payload)
+
+
 def test_large_finite_direction_is_normalized_without_squaring_overflow() -> None:
     scan = _scan()
     for sample in scan.samples:

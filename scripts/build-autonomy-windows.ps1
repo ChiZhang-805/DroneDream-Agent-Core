@@ -2,20 +2,31 @@
     [switch]$SkipDependencyInstall,
     [switch]$StageOnly,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$LocalPolicyPackage,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$LocalPolicySimulationAdmission,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$LocalPolicyDistributionLicenses,
 
     [Parameter(Mandatory = $true)]
-    [string]$NativeSensorRuntime
+    [string]$NativeSensorRuntime,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PayloadPlacementRuntime,
+
+    [Parameter(Mandatory = $true)]
+    [string]$CameraClockRuntime
 )
 
 $ErrorActionPreference = "Stop"
+$policyInputs = @($LocalPolicyPackage, $LocalPolicySimulationAdmission, $LocalPolicyDistributionLicenses)
+$policyInputCount = @($policyInputs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($policyInputCount -ne 0 -and $policyInputCount -ne 3) {
+    throw "Optional local policy needs package, admission and distribution licenses together"
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 # Import narrowly owned build operations; these must never target runtime source
@@ -85,14 +96,22 @@ if (-not $SkipDependencyInstall) {
     if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed" }
 }
 
-# 模型/原生资源不兼容时在删除已有输出前停止；正式构建必须实际打开全部 ONNX。
-& $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
-    --package $LocalPolicyPackage --simulation-admission $LocalPolicySimulationAdmission `
-    --distribution-licenses $LocalPolicyDistributionLicenses --check-only --verify-onnx
-if ($LASTEXITCODE -ne 0) { throw "Current local expert package preflight failed; existing output preserved" }
+# 提供可选模型时验证全部 ONNX；独立路线控制不要求模型包。
+if ($policyInputCount -eq 3) {
+    & $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
+        --package $LocalPolicyPackage --simulation-admission $LocalPolicySimulationAdmission `
+        --distribution-licenses $LocalPolicyDistributionLicenses --check-only --verify-onnx
+    if ($LASTEXITCODE -ne 0) { throw "Current local expert package preflight failed; existing output preserved" }
+}
 & $python (Join-Path $repoRoot "scripts\stage_native_sensor_runtime.py") `
     --source $NativeSensorRuntime --check-only
 if ($LASTEXITCODE -ne 0) { throw "Current native sensor preflight failed; existing output preserved" }
+& $python (Join-Path $repoRoot "scripts\build_payload_placement_runtime.py") `
+    --stage-from $PayloadPlacementRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current payload placement preflight failed; existing output preserved" }
+& $python (Join-Path $repoRoot "scripts\stage_native_camera_clock.py") `
+    --source $CameraClockRuntime --check-only
+if ($LASTEXITCODE -ne 0) { throw "Current camera clock preflight failed; existing output preserved" }
 
 $officialPluginResources = Join-Path $repoRoot "app\desktop\src-tauri\resources\official-plugins"
 # 索引存在不代表插件来自当前提交；每次组件构建都重新编译，不提供旧包复用入口。
@@ -115,6 +134,10 @@ Copy-Item -LiteralPath (Join-Path $runtimeSource "default-assets-licenses.json")
     -Destination (Join-Path $runtimeLicenses "default-assets-licenses.json")
 Copy-Item -LiteralPath (Join-Path $runtimeSource "requirements-linux.txt") `
     -Destination (Join-Path $runtimeResources "requirements-linux.txt")
+Copy-Item -LiteralPath (Join-Path $runtimeSource "control-profile.json") `
+    -Destination (Join-Path $runtimeResources "control-profile.json")
+Copy-Item -LiteralPath (Join-Path $runtimeSource "px4_map_fusion_experiment_executor.py") `
+    -Destination (Join-Path $runtimeResources "px4_map_fusion_experiment_executor.py")
 Copy-Item -LiteralPath (Join-Path $runtimeSource "px4_offboard_track_executor.py") `
     -Destination (Join-Path $runtimeResources "px4_offboard_track_executor.py")
 Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\px4_checkpoint_executor.py") `
@@ -124,6 +147,13 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\runtime_depth_safety_worker
 & $python (Join-Path $repoRoot "scripts\stage_native_sensor_runtime.py") `
     --source $NativeSensorRuntime --output (Join-Path $runtimeResources "native-sensors")
 if ($LASTEXITCODE -ne 0) { throw "Current native sensor Runtime staging failed" }
+& $python (Join-Path $repoRoot "scripts\build_payload_placement_runtime.py") `
+    --stage-from $PayloadPlacementRuntime --output (Join-Path $runtimeResources "payload-placement")
+if ($LASTEXITCODE -ne 0) { throw "Current payload placement Runtime staging failed" }
+& $python (Join-Path $repoRoot "scripts\stage_native_camera_clock.py") `
+    --source $CameraClockRuntime --output (Join-Path $runtimeResources "camera-clock")
+if ($LASTEXITCODE -ne 0) { throw "Current camera clock Runtime staging failed" }
+if ($policyInputCount -eq 3) {
 & $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
     --package $LocalPolicyPackage `
     --simulation-admission $LocalPolicySimulationAdmission `
@@ -131,6 +161,7 @@ if ($LASTEXITCODE -ne 0) { throw "Current native sensor Runtime staging failed" 
     --verify-onnx `
     --output (Join-Path $runtimeResources "local-policy")
 if ($LASTEXITCODE -ne 0) { throw "Admitted local expert Runtime staging failed" }
+}
 & $python (Join-Path $repoRoot "scripts\write_runtime_provenance.py") `
     --repository $repoRoot `
     --runtime-root $runtimeResources
@@ -219,6 +250,7 @@ New-Item -ItemType Directory -Force -Path $sidecarDist,$sidecarWork,$sidecarSpec
     --onefile `
     --name dronedream-autonomy-core `
     --collect-submodules dronedream_agent_plugins `
+    --collect-data dronedream_agent_app `
     --distpath $sidecarDist `
     --workpath $sidecarWork `
     --specpath $sidecarSpec `
@@ -296,6 +328,11 @@ $runtimeSourceCommit = (& git -C (Join-Path $repoRoot "shared\dronedream-runtime
 if ($LASTEXITCODE -ne 0) { throw "Unable to resolve shared Runtime Base source commit" }
 $runtimeBytes = (Get-ChildItem -LiteralPath $runtimeResources -Recurse -File |
     Measure-Object -Property Length -Sum).Sum
+$localPolicyCatalogHash = $null
+if ($policyInputCount -eq 3) {
+    $localPolicyCatalogHash = (Get-FileHash -LiteralPath (
+        Join-Path $runtimeResources "local-policy\catalog.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 $sourceInventory = [ordered]@{
     schema_version = "dronedream.autonomy.windows-build.v1"
     product = "DroneDream AGENT"
@@ -308,10 +345,7 @@ $sourceInventory = [ordered]@{
     installer_sha256 = $hash
     runtime_files = $runtimeFiles.Count
     runtime_bytes = $runtimeBytes
-    local_policy_catalog_sha256 = (
-        Get-FileHash -LiteralPath (Join-Path $runtimeResources "local-policy\catalog.json") `
-            -Algorithm SHA256
-    ).Hash.ToLowerInvariant()
+    local_policy_catalog_sha256 = $localPolicyCatalogHash
 }
 $inventoryPath = Join-Path $releaseRoot "DroneDream-AGENT_1.0.0_x64-source-inventory.json"
 [System.IO.File]::WriteAllText(

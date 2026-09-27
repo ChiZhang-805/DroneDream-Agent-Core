@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import threading
 import time
@@ -31,6 +32,7 @@ NAVIGATION_EVIDENCE_FILENAMES = (
 )
 CONTROL_EVIDENCE_FILENAMES = (
     "control-applications.jsonl", "local-safety-executor-history.jsonl",
+    "executor-brake-applications.jsonl",
 )
 
 
@@ -67,7 +69,7 @@ def navigation_evidence_inventory(run_dir: Path) -> dict[str, int]:
 # 输入：
 #   run_dir：当前运行目录。
 # 输出：
-#   counts：两个固定控制证据路径的实际记录数量。
+#   counts：固定控制、诊断和独立制动证据路径的实际记录数量。
 def control_evidence_inventory(run_dir: Path) -> dict[str, int]:
     counts = _evidence_inventory(tuple(
         run_dir / "runtime-state" / name for name in CONTROL_EVIDENCE_FILENAMES))
@@ -124,14 +126,22 @@ def _evidence_inventory(paths: tuple[Path, ...]) -> dict[str, int]:
     return counts
 
 
-# 功能：
-#   将独立计数逐文件对照关闭回执；线程、队列、拒绝数或任一文件不一致均不可通过。
-# 输入：
-#   summary：后台 FIFO 的最终回执。
-#   artifact_counts：按固定清单独立重数的记录数映射。
-#   record_count：预期总记录数。
-# 输出：
-#   complete：队列与独立清单全部一致时为 True，不替代控制语义验证。
+# 功能：统一同一盘符路径的 Windows/WSL 表达，不按文件名或任意后缀猜测归属。
+# 输入：仅用于比对的路径字符串；输出：稳定标识，不访问回执声明的任何文件。
+# 保留目录大小写，拒绝折叠点段；非标准挂载位置必须保持原路径精确匹配。
+def evidence_path_identity(value: str) -> str:
+    path = value.replace("\\", "/")
+    if any(part in {".", "..", ""} for part in path.split("/")[1:]):
+        return value
+    windows = re.fullmatch(r"([A-Za-z]):/(.+)", path)
+    mounted = re.fullmatch(r"/mnt/([a-z])/(.+)", path)
+    if match := windows or mounted:
+        return "drive:" + match[1].lower() + ":/" + match[2]
+    return value
+
+
+# 功能：逐文件对照关闭回执与固定清单独立计数，拒绝线程、队列、路径或数量不一致。
+# 输入：后台关闭回执、独立计数及总记录数；输出：完整性是否通过，不替代控制语义验证。
 def runtime_evidence_inventory_complete(summary, *, artifact_counts, record_count) -> bool:
     if not isinstance(summary, dict) or not isinstance(artifact_counts, dict):
         return False
@@ -152,18 +162,25 @@ def runtime_evidence_inventory_complete(summary, *, artifact_counts, record_coun
     artifacts = summary.get("artifacts")
     if not isinstance(artifacts, list):
         return False
+    # 只统一已由调用方固定清单读取的路径；不增加可访问路径，也不能合并别名重复项。
+    normalized = {evidence_path_identity(path): count for path, count in artifact_counts.items()}
+    if len(normalized) != len(artifact_counts):
+        return False
     seen = set()
     for row in artifacts:
         if not isinstance(row, dict):
             return False
         path = row.get("path")
-        if not isinstance(path, str) or path not in artifact_counts or path in seen:
+        if not isinstance(path, str):
+            return False
+        path = evidence_path_identity(path)
+        if path not in normalized or path in seen:
             return False
         seen.add(path)
         for field in ("submitted_count", "completed_count"):
-            if type(row.get(field)) is not int or row[field] != artifact_counts[path]:
+            if type(row.get(field)) is not int or row[field] != normalized[path]:
                 return False
-    complete = all(count == 0 or path in seen for path, count in artifact_counts.items())
+    complete = all(count == 0 or path in seen for path, count in normalized.items())
     return complete
 
 

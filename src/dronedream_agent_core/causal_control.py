@@ -65,7 +65,7 @@ class CausalControlHistory:
         self.history = ObservationHistory(length)
 
     # 功能：
-    #   先检查来源，再把真实来源间隔加入控制行；重复轮询不能增加历史样本数。
+    #   加入真实来源间隔；同槽修订保留原间隔，重复轮询不能增加历史样本数。
     # 输入：
     #   self：当前因果窗口。
     #   evidence：独立传感器观测的来源身份、毫秒时刻及重置标志。
@@ -73,7 +73,7 @@ class CausalControlHistory:
     #   realtime：固定宽度实时特征。
     #   mask：实时特征的逐项有效位。
     # 输出：
-    #   accepted：新观测被接收时为 True，精确重复来源时为 False。
+    #   accepted：独立新观测被接收时为 True，重放或末槽修订时为 False。
     def append(self, evidence: TemporalEvidence, state, realtime, mask) -> bool:
         if not isinstance(evidence, TemporalEvidence):
             raise ValueError("TEMPORAL_EVIDENCE_INVALID")
@@ -85,6 +85,11 @@ class CausalControlHistory:
                       if previous is not None and previous.stream_id == evidence.stream_id
                       and not evidence.reset_history else 0)
         elapsed = elapsed_ms / 250. if 0 < elapsed_ms <= 250 else 0.
+        if (previous is not None and evidence.stream_id == previous.stream_id
+                and evidence.observed_at_unix_ms == previous.observed_at_unix_ms
+                and self.history.rows):
+            # 修订没有重新采样；末槽与前槽之间的真实时间间隔不能被改成零。
+            elapsed = self.history.rows[-1][0][-1]
         row = (*control_history_row(state, realtime, mask), elapsed)
         accepted = self.history.append(evidence, row, ())
         return accepted

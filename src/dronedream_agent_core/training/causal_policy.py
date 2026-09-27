@@ -39,6 +39,13 @@ from ..local_policy_training import (
     require_behavior_supervision,
 )
 from ..pilot_control_mapping import PilotControlLimits
+from .causal_device import causal_device_evidence, causal_training_device
+from .causal_regularization import (
+    CausalRegularization,
+    drop_visual_block,
+    effective_sample_weights,
+    validate_regularization,
+)
 from .flight_environment import MODES
 
 
@@ -185,6 +192,36 @@ class CausalExample:
 
 
 # 功能：
+#   1. 只复制同契约的传感器编码器与历史循环层，不复制任何控制、模式或风险输出头。
+#   2. 全部校验通过后独立复制参数，保留原模型与新模型之间的内存隔离。
+# 输入：
+#   target：已按本次随机种子初始化的新策略。
+#   source：已在训练入口绑定来源、视觉身份和留出隔离的编码器基座。
+# 输出：
+#   copied_keys：实际复制的状态键列表。
+def initialize_sensor_encoder(target: CausalPilotPolicy, source: CausalPilotPolicy) -> list[str]:
+    if not isinstance(target, CausalPilotPolicy) or not isinstance(source, CausalPilotPolicy) or target is source:
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_MODEL_INVALID")
+    target_config, source_config = _validated_config(target.config), _validated_config(source.config)
+    fields = ("history_length", "encoder_width", "recurrent_width", "visual_feature_count")
+    if any(getattr(target_config, field) != getattr(source_config, field) for field in fields):
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_ARCHITECTURE_MISMATCH")
+    prefixes = ("observation_encoder.", "recurrent.")
+    source_state, target_state = source.state_dict(), target.state_dict()
+    copied_keys = sorted(key for key in target_state if key.startswith(prefixes))
+    if not copied_keys or set(copied_keys) != {key for key in source_state if key.startswith(prefixes)}:
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_STATE_MISMATCH")
+    for key in copied_keys:
+        value, wanted = source_state[key], target_state[key]
+        if value.shape != wanted.shape or value.dtype != torch.float32 or not torch.isfinite(value).all():
+            raise ValueError("CAUSAL_ENCODER_TRANSFER_WEIGHTS_INVALID")
+    # 保留全部新输出头；load_state_dict 将数据复制到目标，不让后续训练修改基座。
+    target_state.update({key: source_state[key].detach().clone() for key in copied_keys})
+    target.load_state_dict(target_state, strict=True)
+    return copied_keys
+
+
+# 功能：
 #   1. 从独立来源构建只含过去及当前观测的完整窗口，保持任务分组与专家标签绑定。
 #   2. 无标签观测只能填充历史，不能伪造动作；坐标候选及旧输入语义不可用于训练。
 # 输入：
@@ -255,17 +292,23 @@ def causal_examples(
             raise ValueError("CAUSAL_TRAINING_LABEL_OBSERVATION_MISMATCH")
         # Historical rows use numerical state only. Current visual features
         # remain attached to the actual labelled frame, not to another row.
-        history.append(evidence, sample.state_features, sample.realtime_features,
-                       sample.realtime_valid_mask)
-        if len(history.history.rows) == 1:
-            sources.clear()
-        sources.append(evidence.sample_sha256)
-        values, mask = history.values()
+        independent = history.append(evidence, sample.state_features, sample.realtime_features,
+                                     sample.realtime_valid_mask)
+        if independent:
+            if len(history.history.rows) == 1:
+                sources.clear()
+            sources.append(evidence.sample_sha256)
+        else:
+            # 源摘要随末槽修订替换，不能让来源列表比实际因果历史多出一行。
+            sources[-1] = evidence.sample_sha256
         # Training warms history just like inference. Startup partial windows
         # cannot authorize flight and are not taught as ordinary motion.
         selected = label is not None and (
             navigation_role is None or label.navigation_expert_role == navigation_role)
         if history.ready and selected:
+            # 所有观测仍先经过完整校验和历史推进；仅在确实输出训练窗口时
+            # 复制二维数组，避免为暖机、断档及其他专家反复创建后立即丢弃的大列表。
+            values, mask = history.values()
             results.append(CausalExample(label, values, mask, group, tuple(sources)))
     if set(labelled) - seen:
         raise ValueError("CAUSAL_TRAINING_LABEL_WITHOUT_SOURCE_OBSERVATION")
@@ -458,12 +501,21 @@ class FrozenCausalEvaluation:
 #   validation：任务及物理来源均独立的留出窗口。
 #   config：离线学习配置。
 #   initial_policy：可选同架构已训练基座，不原位修改。
+#   initial_encoder：与完整热启动互斥，仅迁移已验证的编码器和历史层，其余头从零学习。
+#   regularization：可选离线路线均衡与视觉屏蔽配置，不改变部署输入或已有网络结构。
+#   device：显式 cpu 或 cuda；只将当前训练批次移至设备，冻结评价与导出返回 CPU。
 # 输出：
 #   model：完成优化并处于评价模式的独立策略。
 #   metrics：训练损失、留出评价和来源统计，不授予飞行资格。
 def train_causal_policy(train, validation, config: CausalPolicyConfig, *,
-                       initial_policy: CausalPilotPolicy | None = None):
+                       initial_policy: CausalPilotPolicy | None = None,
+                       initial_encoder: CausalPilotPolicy | None = None,
+                       regularization: CausalRegularization | None = None, device: str = 'cpu'):
     config = _validated_config(config)
+    training_device = causal_training_device(device)
+    regularization = validate_regularization(regularization, config.visual_feature_count)
+    if initial_policy is not None and initial_encoder is not None:
+        raise ValueError("CAUSAL_INITIALIZATION_MODES_CONFLICT")
     if not train or not validation:
         raise ValueError("CAUSAL_TRAINING_AND_VALIDATION_REQUIRED")
     if {e.group_id for e in train} & {e.group_id for e in validation}:
@@ -479,6 +531,8 @@ def train_causal_policy(train, validation, config: CausalPolicyConfig, *,
     # 留出输入先验证和冻结，避免优化完才发现评价数据损坏；绝不用于反向传播。
     evaluation = FrozenCausalEvaluation.compile(validation, config)
     inputs = example_tensors(train, config.visual_feature_count)
+    sample_weights = effective_sample_weights(
+        train, balance_groups=regularization.balance_mission_groups)
     torch.manual_seed(config.seed)
     model = CausalPilotPolicy(config)
     if initial_policy is not None:
@@ -493,47 +547,73 @@ def train_causal_policy(train, validation, config: CausalPolicyConfig, *,
         # load_state_dict copies into distinct tensors. Refinement must never
         # modify the checkpoint/model retained for baseline comparison.
         model.load_state_dict(state, strict=True)
+    copied_encoder_keys = (initialize_sensor_encoder(model, initial_encoder)
+                           if initial_encoder is not None else [])
+    # 先复制独立基座，再移动目标模型；不移动或修改调用方保留的原基座。
+    model.to(training_device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=1e-5)
     modes = torch.tensor([e.sample.target_action_index - 8 for e in train], dtype=torch.long)
     axes = torch.tensor([e.sample.target_pilot_control for e in train], dtype=torch.float32)
     risks = torch.tensor([[e.sample.risk_target] for e in train], dtype=torch.float32)
-    sample_weights = torch.tensor([e.sample.sample_weight for e in train], dtype=torch.float32)
     counts = torch.bincount(modes, minlength=4).clamp_min(1)
-    class_weights = (len(train) / (4 * counts)).clamp(.25, 16)
+    class_weights = (len(train) / (4 * counts)).clamp(.25, 16).to(training_device)
     generator = torch.Generator().manual_seed(config.seed)
+    dropout_generator = torch.Generator().manual_seed(config.seed ^ 0x5A17)
     losses = []
     for _ in range(config.epochs):
         order = torch.randperm(len(train), generator=generator)
         for batch in order.split(config.batch_size):
-            _, logits, risk, control = model(*(value[batch] for value in inputs))
-            mode_loss = nn.functional.cross_entropy(logits, modes[batch], weight=class_weights,
+            batch_inputs = tuple(value[batch] for value in inputs)
+            batch_inputs = drop_visual_block(
+                batch_inputs, regularization.visual_block_dropout, dropout_generator)
+            # 顺序和视觉屏蔽始终使用 CPU 的固定随机流；仅本批数据上卡，
+            # 不让整个历史语料随样本增长永久占满显存。
+            batch_inputs = tuple(value.to(training_device) for value in batch_inputs)
+            batch_modes = modes[batch].to(training_device)
+            batch_axes = axes[batch].to(training_device)
+            batch_risks = risks[batch].to(training_device)
+            batch_weights = sample_weights[batch].to(training_device)
+            _, logits, risk, control = model(*batch_inputs)
+            mode_loss = nn.functional.cross_entropy(logits, batch_modes, weight=class_weights,
                                                     reduction="none")
-            moving = modes[batch] == 3
-            axis_loss = (control - axes[batch]).square().mean(dim=1)
+            moving = batch_modes == 3
+            axis_loss = (control - batch_axes).square().mean(dim=1)
             # Explicit neutral labels also teach stop magnitudes, but cannot
             # drown the active-axis control objective in long hold records.
             axis_weight = torch.where(moving, 1., .1)
             risk_loss = nn.functional.binary_cross_entropy(
-                risk, risks[batch], reduction="none"
+                risk, batch_risks, reduction="none"
             )[:, 0]
             loss = ((mode_loss + axis_weight * axis_loss + .5 * risk_loss)
-                    * sample_weights[batch]).sum() / sample_weights[batch].sum()
+                    * batch_weights).sum() / batch_weights.sum()
+            # 在反向传播前拒绝数值异常，不能把非有限控制损失交给优化器。
+            if not torch.isfinite(loss):
+                raise ValueError("CAUSAL_TRAINING_NONFINITE_LOSS")
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(
                 model.parameters(), config.gradient_norm, error_if_nonfinite=True,
             )
             optimizer.step()
+            if any(not torch.isfinite(value).all() for value in model.parameters()):
+                raise ValueError("CAUSAL_TRAINING_NONFINITE_PARAMETER")
             losses.append(float(loss.detach()))
+    # CPU 评价/导出使用相同的已训练权重；检查点无需 CUDA 才能读取。
+    device_evidence = causal_device_evidence(training_device)
+    model.cpu()
     model.eval()
     metrics = {
+        **device_evidence,
         **evaluation.evaluate(model),
         "training_window_count": len(train),
         "parameter_count": sum(p.numel() for p in model.parameters()),
         "last_training_loss": losses[-1], "qualified_for_flight": False,
-        "initialization": "existing-causal-policy" if initial_policy is not None else "random",
+        "initialization": ("existing-causal-policy" if initial_policy is not None else
+                           "transferred-sensor-encoder" if initial_encoder is not None else "random"),
+        "transferred_encoder_state_keys": copied_encoder_keys,
         "training_groups": sorted({e.group_id for e in train}),
         "validation_groups": sorted({e.group_id for e in validation}),
+        "regularization": regularization.model_dump(),
     }
     return model, metrics
 

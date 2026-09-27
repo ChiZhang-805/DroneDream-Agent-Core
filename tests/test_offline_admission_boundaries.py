@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from clock_fixtures import isolate_time
 from test_advisor_numeric_boundaries import model as advisor_model
 from test_local_advisor_training import _sample
 from test_local_policy_admission_dataset import _training_receipt
@@ -98,7 +99,7 @@ def test_runtime_latency_includes_temporal_preparation(runtime_case, monkeypatch
         clock[0] += 0.005
 
     case.backend.prepare_temporal_context.side_effect = prepare
-    monkeypatch.setattr(evaluation.time, "perf_counter", lambda: clock[0])
+    isolate_time(monkeypatch, evaluation, perf_counter=lambda: clock[0])
     _, latencies = evaluation._evaluate_runtime_samples(case.package, [case.sample], case.backend)
     assert latencies == pytest.approx([5.0])
 

@@ -465,6 +465,39 @@ def _write_verified_fault_recovery(run_root: Path) -> Path:
     return simulation
 
 
+# 功能：
+#   在解析恢复证明后替换原文件，复核输出摘要仍对应实际审查的原字节。
+# 输入：
+#   tmp_path、monkeypatch：隔离任务目录和模拟并发替换的读取钩子。
+# 输出：
+#   None：不能把替换后的新证明摘要绑定到先前的验证结果。
+def test_recovery_proof_digest_uses_the_consumed_snapshot(tmp_path, monkeypatch):
+    from scripts import build_local_advisor_dataset as builder
+
+    run = _write_verified_fault_recovery(tmp_path / "run")
+    path = run.parent / "depth-fault-recovery-verification.json"
+    expected = _sha256(path)
+    original = builder._json
+
+    # 功能：
+    #   在真实解析之后替换路径内容，模拟另一个采集进程更新同名回执。
+    # 输入：
+    #   source：真实读取来源。
+    # 输出：
+    #   value：仍为本次实际解析的对象。
+    def replace_after_parse(source):
+        value = original(source)
+        if str(source) == str(path.absolute()):
+            path.write_text('{"status":"replaced"}', encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(builder, "_json", replace_after_parse)
+    receipt = builder._verified_fault_recovery_source(
+        run, depth_history_path=run / "depth-local-safety-history.jsonl")
+    assert receipt["fault_recovery_receipt_sha256"] == expected
+    assert _sha256(path) != expected
+
+
 def _command(
     repository: Path,
     training_run: Path,

@@ -30,6 +30,31 @@ from dronedream_agent_core.plugin_contracts import PluginGovernancePolicy, Plugi
 
 
 # 功能：
+#   模拟升级后遗留内置插件记录，确保新快照不引用已退役实现且历史安装数据仍保留。
+# 输入：
+#   tmp_path：隔离数据库目录。
+# 输出：
+#   None：断言新快照可被执行端重建，未删除旧记录。
+def test_upgrade_omits_retired_builtin_from_new_snapshot(tmp_path):
+    store = AppStore(tmp_path)
+    manager = PluginManager(store)
+    plugin = next(item for item in manager._definitions.values()
+                  if item.manifest.plugin_id == "input.channel-text")
+    original = plugin.manifest
+    old = original.model_copy(update={"plugin_id": "legacy.retired-importer"}, deep=True)
+    old.capabilities[0].capability_id = "legacy.retired-importer.read"
+    old.placement.slot_id = "legacy.retired-importer"
+    store.upsert_plugin(manifest=old, package_sha256=manager._manifest_hash(old),
+                        bundle_root=None, builtin=True, enabled=True, status="healthy",
+                        health="healthy", trust_status="verified",
+                        trust_decision={"status": "verified", "source": "builtin"})
+    snapshot = manager.snapshot()
+    assert "legacy.retired-importer" not in {entry.plugin_id for entry in snapshot.plugins}
+    assert store.get_plugin("legacy.retired-importer")["enabled"]
+    build_discovered_extension_registry(snapshot)
+
+
+# 功能：
 #   跟踪本文件每例创建的管理器和存储，测试结束先关闭所有会话，再关闭数据库。
 # 输入：
 #   monkeypatch：在本例期间包装构造函数，保留原类的静态方法和行为。

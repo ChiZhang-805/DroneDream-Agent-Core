@@ -87,7 +87,8 @@ def test_listener_bind_failure_closes_socket(tmp_path, monkeypatch):
 def test_reply_revalidates_proposal_before_sending(monkeypatch):
     request = {"valid_until_unix_ms": int(time.time() * 1000) + 200}
     server = object.__new__(exchange.TrainingPolicyExchange)
-    server._closed, server._request = False, request
+    server._closed, server._request = False, exchange._PendingIdentity(
+        exchange.sha256_json(request), request["valid_until_unix_ms"])
     server._stream, server._secret = Mock(), bytes(32)
     server._deadline = time.monotonic() + .2
     stream = server._stream
@@ -162,3 +163,31 @@ def test_descriptor_wrapper_failure_releases_owned_resources(tmp_path, monkeypat
             exchange.TrainingPolicyExchange(path)
     closed.assert_called_once()
     assert not path.exists()
+
+
+# 功能：
+#   验证墙钟前跳和单调时钟过期均拒绝回复；截止值包含在不可变绑定中，不能续期。
+# 输入：
+#   monkeypatch：控制双时钟和发送观察点的夹具。
+#   clock_jump：墙钟相对原始截止值的偏移毫秒数。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize("clock_jump", [0, 1, 10000])
+def test_reply_rejects_original_wall_deadline_even_with_monotonic_time_left(monkeypatch, clock_jump):
+    from types import SimpleNamespace
+
+    request = {"valid_until_unix_ms": 1200}
+    server = object.__new__(exchange.TrainingPolicyExchange)
+    server._closed = False
+    server._request = exchange._PendingIdentity(exchange.sha256_json(request), 1200)
+    server._stream, server._secret = Mock(), bytes(32)
+    server._deadline = 10.2
+    stream, sender = server._stream, Mock()
+    monkeypatch.setattr(exchange, "time", SimpleNamespace(
+        time=lambda: (1200 + clock_jump) / 1000, monotonic=lambda: 10.))
+    monkeypatch.setattr(exchange, "_send", sender)
+    with pytest.raises(TimeoutError, match="EXPIRED"):
+        server.reply(proposal(request))
+    sender.assert_not_called()
+    stream.close.assert_called_once()
+    assert server._stream is None and server._request is None

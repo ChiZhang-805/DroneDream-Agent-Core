@@ -135,7 +135,10 @@ def verify_ensemble_io(manifest: LocalPolicyPackageManifest, sessions: dict) -> 
         "sensor_features": (1, LOCAL_POLICY_SENSOR_FEATURE_COUNT),
     }
     checked = {
-        role: _probe_session(role, sessions[role], shapes, names)
+        role: _probe_session(role, sessions[role],
+            {**shapes, 'heading_context': (1, 23)}
+            if manifest.heading_context_for_role(role) is not None
+            else shapes, names)
         for role, names in outputs.items()
     }
     report = {"experts": checked, "expert_count": len(checked), "qualification_granted": False}

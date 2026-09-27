@@ -665,6 +665,90 @@ class HarnessDesignService:
             check_plain_plugin_path(self.index_path)
             if not self.index_path.exists():
                 self._initialize()
+            else:
+                self._upgrade_known_templates()
+
+    # 功能：
+    #   识别缺少验证计划阶段的官方旧模板，生成当前模板；不覆盖自定义执行语义。
+    # 输入：
+    #   record：待核对的旧历史记录。
+    # 输出：
+    #   candidate：可验证的升级候选；不符合已知迁移条件时为 None。
+    def _upgrade_candidate(self, record: HarnessRevision) -> HarnessTopologyCandidate | None:
+        template = official_topology_templates().get(record.candidate.topology_id)
+        if template is None:
+            return None
+        legacy_nodes = [
+            node.model_copy(update={"depends_on": ["mission.runtime-checkpoints"],
+                                    "required_inputs": ["checkpoints"]})
+            if node.node_id == "mission.evidence-finalize" else node
+            for node in template.nodes if node.node_id != "mission.verification-plan"
+        ]
+        legacy = _candidate_from_topology(template.model_copy(update={"nodes": legacy_nodes}),
+            profile_id=record.candidate.profile_id, base_revision=record.candidate.base_revision)
+        # 仅忽略画布与历史编号；节点、端口、连线、策略等执行语义必须完全匹配。
+        excluded = {"layout", "base_revision"}
+        if legacy.model_dump(exclude=excluded) != record.candidate.model_dump(exclude=excluded):
+            return None
+        checked = validate_and_compile_harness(record.candidate)
+        if (not record.validation.valid
+                or checked.semantic_sha256 != record.validation.semantic_sha256
+                or checked.layout_sha256 != record.validation.layout_sha256):
+            return None
+        candidate = _candidate_from_topology(template, profile_id=record.candidate.profile_id,
+                                             base_revision=record.revision)
+        positions = dict(candidate.layout.positions)
+        positions.update(record.candidate.layout.positions)
+        candidate.layout = record.candidate.layout.model_copy(update={"positions": positions})
+        return candidate
+
+    # 功能：
+    #   将已知旧模板发布为新历史版本，全部写入成功后原子切换索引；原文件永久保留。
+    #   重启重入不会重复迁移，未识别的配置仍按原有严格校验处理。
+    # 输入：
+    #   self：持有设计器锁的服务。
+    # 输出：
+    #   None：不返回业务数据。
+    def _upgrade_known_templates(self) -> None:
+        if self._transition_pending():
+            return
+        index = self._read_index()
+        replacements = {}
+        for number in dict.fromkeys((index["active_revision"], index["current_revision"])):
+            try:
+                self.get_revision(number)
+                continue
+            except HarnessDesignServiceError:
+                pass
+            try:
+                record = HarnessRevision.model_validate(self._read_json(self._revision_path(number)), strict=True)
+            except (OSError, ValueError):
+                continue
+            if record.revision != number or (record.parent_revision is not None
+                    and not 1 <= record.parent_revision < number):
+                continue
+            candidate = self._upgrade_candidate(record)
+            if candidate is None:
+                continue
+            validation = validate_and_compile_harness(candidate)
+            if not validation.valid:
+                raise HarnessDesignServiceError("HARNESS_MIGRATION_COMPILATION_FAILED")
+            replacement = HarnessRevision(revision=self._next_revision(), parent_revision=number,
+                state=record.state, candidate=candidate, validation=validation,
+                created_at=_now(), activated_at=_now() if number == index["active_revision"] else None,
+                applies_next_run=True)
+            self._save_revision(replacement)
+            replacements[number] = replacement.revision
+        if not replacements:
+            return
+        # 回执先于索引发布；断电留下的孤立历史不会替代仍在使用的配置。
+        self._record("harness.schema-upgraded", {"migration": "verification-plan-v1",
+            "revisions": {str(old): new for old, new in replacements.items()}})
+        updated = dict(index)
+        for key in ("active_revision", "current_revision"):
+            updated[key] = replacements.get(index[key], index[key])
+        updated["redo_stack"] = []
+        self._save_index(updated)
 
     # 功能：
     #   将有界严格 JSON 写入独占暂存后发布，历史文件只能新建，索引可原子替换。

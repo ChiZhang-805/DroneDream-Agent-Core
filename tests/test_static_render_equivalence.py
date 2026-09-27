@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -72,3 +73,13 @@ def test_render_interval_summary_exposes_stalls_not_only_mean_latency():
     assert result["camera"]["above_150_ms"] == 2
     assert result["camera"]["above_250_ms"] == 1
     assert "empty" not in result
+
+
+@pytest.mark.parametrize("registered", ["", "/ros/vendor", "/usr/share/gz", "/ros/vendor" + os.pathsep + "/usr/share/gz"])
+def test_render_environment_keeps_ros_paths_without_losing_system_commands(registered):
+    original = {"GZ_CONFIG_PATH": registered, "GZ_PARTITION": "isolated-probe"}
+    result = script().render_environment(original)
+    assert result["GZ_CONFIG_PATH"].split(os.pathsep)[0] == "/usr/share/gz"
+    assert result["GZ_CONFIG_PATH"].split(os.pathsep).count("/usr/share/gz") == 1
+    assert result["GZ_PARTITION"] == "isolated-probe"
+    assert original["GZ_CONFIG_PATH"] == registered

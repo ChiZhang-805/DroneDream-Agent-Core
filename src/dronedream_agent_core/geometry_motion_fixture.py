@@ -34,12 +34,14 @@ DEPTH_TOPIC = "/dronedream/geometry_fixture/depth"
 #   phase：仿真已过时间与扫描时长之比，限制到零至一。
 # 输出：
 #   result：包含 position_m 与 orientation_wxyz 的夹具目标姿态。
-def fixture_pose(origin, direction, phase: float) -> dict:
+def fixture_pose(origin, direction, phase: float, *, base_yaw_deg: float = 0.) -> dict:
     origin, direction = np.asarray(origin, float), np.asarray(direction, float)
     if (origin.shape != (3,) or direction.shape != (3,)
             or not np.isfinite([origin, direction]).all()
             or max(abs(origin)) > 1e5
-            or type(phase) not in (int, float) or not math.isfinite(phase)):
+            or type(phase) not in (int, float) or not math.isfinite(phase)
+            or type(base_yaw_deg) not in (int, float) or not math.isfinite(base_yaw_deg)
+            or not -180 <= base_yaw_deg <= 180):
         raise ValueError("MOTION_FIXTURE_TRAJECTORY_INVALID")
     # hypot 避免先平方溢出；无法表示的真实模长仍拒绝，而不是静默归一化为零。
     length = math.hypot(*direction[:2])
@@ -51,6 +53,7 @@ def fixture_pose(origin, direction, phase: float) -> dict:
     position = (origin + .4*(1-math.cos(theta))*forward + .12*math.sin(theta)*side
                 + np.array([0., 0., .12*math.sin(2*theta)]))
     angles = np.radians([8*math.sin(2*theta), 6*math.sin(theta), 30*math.sin(theta)])
+    angles[2] += math.radians(base_yaw_deg)
     result = {"position_m": position.tolist(), "orientation_wxyz": euler_quaternion(angles)}
     return result
 
@@ -158,9 +161,11 @@ def fixture_sensor_mount(calibration: DepthProjectionCalibration) -> CalibratedR
 #   world_content：静态地图 SDF 字节，最多 32 MiB。
 #   camera_content：真实相机 SDF 字节，最多 1 MiB。
 #   origin：相机夹具起始世界位置，单位米。
+#   base_yaw_deg：生成首帧前应用的机体世界偏航角，单位度，与运动轨迹一致。
 # 输出：
 #   content：派生 SDF 字节，不修改原始地图与相机文件。
-def build_fixture_world(world_content: bytes, camera_content: bytes, origin) -> bytes:
+def build_fixture_world(world_content: bytes, camera_content: bytes, origin,
+                        *, base_yaw_deg: float = 0.) -> bytes:
     if len(world_content) > 32*1024*1024 or len(camera_content) > 1024*1024:
         raise ValueError("MOTION_FIXTURE_SOURCE_TOO_LARGE")
     mount = fixture_sensor_mount(camera_calibration(camera_content))
@@ -180,7 +185,7 @@ def build_fixture_world(world_content: bytes, camera_content: bytes, origin) -> 
     # 地图与复制的相机都不能夹带额外执行代码，防止校准流程启动控制插件。
     if world.findall(".//plugin") or world.findall(".//sensor"):
         raise ValueError("MOTION_FIXTURE_WORLD_HAS_EXECUTABLE_SYSTEMS")
-    position = fixture_pose(origin, [1, 0, 0], 0)["position_m"]
+    position = fixture_pose(origin, [1, 0, 0], 0, base_yaw_deg=base_yaw_deg)["position_m"]
     for name, library in (("Physics", "physics"), ("UserCommands", "user-commands"),
                           ("SceneBroadcaster", "scene-broadcaster"), ("Sensors", "sensors")):
         plugin = ET.SubElement(world, "plugin", name=f"gz::sim::systems::{name}",
@@ -189,7 +194,10 @@ def build_fixture_world(world_content: bytes, camera_content: bytes, origin) -> 
             ET.SubElement(plugin, "render_engine").text = "ogre2"
     rig = ET.SubElement(world, "model", name=RIG_NAME, canonical_link="camera_link")
     ET.SubElement(rig, "static").text = "true"
-    ET.SubElement(rig, "pose").text = " ".join(map(str, [*position, 0, 0, 0]))
+    # The initial rendered frames precede the first set_pose command. They
+    # must already use the requested heading, not silently start at yaw zero.
+    ET.SubElement(rig, "pose").text = " ".join(map(str, [*position, 0, 0,
+                                                       math.radians(base_yaw_deg)]))
     link = ET.SubElement(rig, "link", name="camera_link")
     ET.SubElement(link, "pose").text = " ".join(map(str, [
         mount.translation_body_m.x, mount.translation_body_m.y, mount.translation_body_m.z,

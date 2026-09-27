@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 
 from .contracts import RawRangeSample, Vector3
+from .depth_projection_native import NATIVE_DEPTH_AVAILABLE, project_native_depth
 from .hashing import sha256_json
 
 DEPTH_REDUCTION_SEMANTICS = (
@@ -217,7 +218,19 @@ def project_metric_depth_frame(
     if len(data) != required_bytes:
         raise ValueError("depth image buffer changed while freezing")
 
-    # One vectorized implementation, not an accelerated/legacy dual path.
+    if NATIVE_DEPTH_AVAILABLE:
+        pixels, valid_pixels = project_native_depth(data, row_step_bytes, calibration)
+        fx, fy, center_x, center_y = calibration.intrinsics
+        samples = tuple(RawRangeSample(
+            direction_sensor=Vector3(x=1., y=(center_x-col)/fx, z=(center_y-row)/fy),
+            range_m=distance, hit=hit, confidence=calibration.confidence,
+        ) for row, col, distance, hit in pixels)
+        if not samples:
+            raise ValueError("depth image contains no calibrated metric samples")
+        return ProjectedDepthFrame(samples, calibration.width * calibration.height,
+                                   valid_pixels, calibration.sha256)
+
+    # Portable reference for hosts without the exact native depth extension.
     # The input view respects byte strides and excludes row padding. Float64
     # geometry prevents overflow when squaring corrupted finite float32 data.
     import numpy as np
@@ -240,32 +253,44 @@ def project_metric_depth_frame(
     radial_squared = measured_depth**2 * (1. + horizontal[None, :]**2 + vertical[:, None]**2)
     hit = valid & finite & (radial_squared < far * far) & (depth < far - 1e-5)
     hit_cost = np.where(hit, radial_squared, np.inf)
-    samples = []
     stride = calibration.sample_stride_pixels
     # Distance to a real tile-center pixel is only a tie-break for no-hit rays.
     col_cost = np.abs(np.arange(calibration.width) % stride - stride // 2)
     row_cost = np.abs(np.arange(calibration.height) % stride - stride // 2)
-    for top in range(0, calibration.height, stride):
-        for left in range(0, calibration.width, stride):
-            bottom, right = min(top+stride, calibration.height), min(left+stride, calibration.width)
-            costs = hit_cost[top:bottom, left:right]
-            flat = int(costs.argmin())
-            y, x = divmod(flat, right-left)
-            value = float(costs[y, x])
-            is_hit = math.isfinite(value)
-            if not is_hit:
-                tile_valid = valid[top:bottom, left:right]
-                if not tile_valid.any():
-                    continue
-                free_cost = np.where(tile_valid,
-                    row_cost[top:bottom, None] + col_cost[None, left:right], np.inf)
-                y, x = divmod(int(free_cost.argmin()), right-left)
-            row, col = top+y, left+x
-            samples.append(RawRangeSample(
-                direction_sensor=Vector3(x=1.0, y=float(horizontal[col]), z=float(vertical[row])),
-                range_m=math.sqrt(value) if is_hit else far,
-                hit=is_hit, confidence=calibration.confidence,
-            ))
+    row_starts = np.arange(0, calibration.height, stride)
+    col_starts = np.arange(0, calibration.width, stride)
+    tile_rows = np.arange(calibration.height) // stride
+    tile_cols = np.arange(calibration.width) // stride
+
+    # 功能：一次归约全部完整及边缘区块，避免逐块 NumPy 调用反复释放/争抢 GIL。
+    # 输入：与原图同形状的数值矩阵；输出：按原行列顺序的每块最小值，不填充虚构像素。
+    def tile_minimum(values):
+        return np.minimum.reduceat(np.minimum.reduceat(values, row_starts, axis=0),
+                                   col_starts, axis=1)
+
+    minimum_hit = tile_minimum(hit_cost)
+    has_hit = np.isfinite(minimum_hit)
+    free_cost = np.where(valid, row_cost[:, None] + col_cost[None, :], np.inf)
+    costs = np.where(has_hit[tile_rows[:, None], tile_cols[None, :]], hit_cost, free_cost)
+    minimum_cost = tile_minimum(costs)
+    # 全局行优先索引与旧 argmin 的块内行优先并列规则一致；无效块使用严格超界哨兵。
+    pixel_count = calibration.width * calibration.height
+    indices = np.arange(pixel_count).reshape(calibration.height, calibration.width)
+    candidates = np.where(np.isfinite(costs)
+        & (costs == minimum_cost[tile_rows[:, None], tile_cols[None, :]]), indices, pixel_count)
+    selected = tile_minimum(candidates).ravel().tolist()
+    hit_values = minimum_hit.ravel().tolist()
+    samples = []
+    for index, value in zip(selected, hit_values, strict=True):
+        if index == pixel_count:
+            continue
+        row, col = divmod(index, calibration.width)
+        is_hit = math.isfinite(value)
+        samples.append(RawRangeSample(
+            direction_sensor=Vector3(x=1.0, y=float(horizontal[col]), z=float(vertical[row])),
+            range_m=math.sqrt(value) if is_hit else far,
+            hit=is_hit, confidence=calibration.confidence,
+        ))
     valid_pixels = int(np.count_nonzero(valid))
     if not samples:
         raise ValueError("depth image contains no calibrated metric samples")

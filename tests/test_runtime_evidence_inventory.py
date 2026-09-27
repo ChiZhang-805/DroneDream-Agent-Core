@@ -51,7 +51,7 @@ def test_control_inventory_recounts_both_fixed_executor_streams(tmp_path):
     assert counts == {str(runtime / name): count for count, name in enumerate(
         CONTROL_EVIDENCE_FILENAMES, start=1)}
     assert runtime_evidence_inventory_complete(receipt(counts), artifact_counts=counts,
-                                               record_count=3)
+                                               record_count=sum(counts.values()))
     (runtime / CONTROL_EVIDENCE_FILENAMES[1]).write_text("{}", encoding="utf-8")
     counts = control_evidence_inventory(tmp_path)
     assert counts[str(runtime / CONTROL_EVIDENCE_FILENAMES[1])] == -1
@@ -202,4 +202,36 @@ def test_totals_alone_cannot_admit_malformed_or_incomplete_inventory(change):
 def test_independent_counts_are_also_strict(counts, total):
     assert not runtime_evidence_inventory_complete(
         receipt(counts), artifact_counts=counts, record_count=total
+    )
+
+
+# 功能：同一盘符完整路径可跨平台复核；输入：任意盘符与含空格/中文目录；输出：匹配。
+@pytest.mark.parametrize("drive", ["C", "Q", "Z"])
+def test_wsl_windows_receipts_are_portable_without_basename_matching(drive):
+    local = {drive + ":\\User Data\\飞行\\run-1\\control.jsonl": 3}
+    foreign = {"/mnt/" + drive.lower() + "/User Data/飞行/run-1/control.jsonl": 3}
+    assert runtime_evidence_inventory_complete(receipt(foreign), artifact_counts=local, record_count=3)
+    assert runtime_evidence_inventory_complete(receipt(local), artifact_counts=foreign, record_count=3)
+
+
+# 功能：跨平台兼容不接受别回合、别盘符、点段、同名文件及重复别名；输出：严格拒绝。
+@pytest.mark.parametrize("foreign", [
+    "/mnt/q/runs/run-2/control.jsonl", "/mnt/c/runs/run-1/control.jsonl",
+    "/mnt/q/runs/run-2/../run-1/control.jsonl", "control.jsonl",
+    "/other/runs/run-1/control.jsonl", "/mnt/q//runs/run-1/control.jsonl",
+])
+def test_cross_platform_path_does_not_erase_ownership(foreign):
+    assert not runtime_evidence_inventory_complete(
+        receipt({foreign: 3}), artifact_counts={"Q:/runs/run-1/control.jsonl": 3}, record_count=3
+    )
+
+
+# 功能：同一文件两种写法不能计作两份独立证据；输出：回执/清单中的重复均拒绝。
+def test_cross_platform_duplicate_alias_rejected():
+    windows, linux = "Q:/runs/control.jsonl", "/mnt/q/runs/control.jsonl"
+    summary = receipt({windows: 3})
+    summary["artifacts"].append(dict(path=linux, submitted_count=3, completed_count=3))
+    assert not runtime_evidence_inventory_complete(summary, artifact_counts={windows: 3}, record_count=3)
+    assert not runtime_evidence_inventory_complete(
+        receipt({windows: 3, linux: 3}), artifact_counts={windows: 3, linux: 3}, record_count=6
     )

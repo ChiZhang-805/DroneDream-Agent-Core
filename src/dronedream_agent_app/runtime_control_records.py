@@ -6,6 +6,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from dronedream_agent_core.contract_json import decode_contract_json
 from dronedream_agent_core.contracts import (
     RuntimeControlSession,
     RuntimeHoldAcknowledgement,
@@ -14,7 +15,6 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.plugin_files import read_plugin_file
-from dronedream_plugin_sdk.protocol import decode_json
 
 Record = TypeVar("Record", bound=BaseModel)
 
@@ -33,7 +33,7 @@ class RuntimeControlRecordError(ValueError):
 def read_control_record(path: Path, contract: type[Record]) -> Record:
     try:
         raw = read_plugin_file(path, limit=1024 * 1024)
-        record = contract.model_validate(decode_json(raw, limit=1024 * 1024, node_limit=100_000))
+        record = decode_contract_json(raw, contract, limit=1024 * 1024, node_limit=100_000)
     except (OSError, ValueError) as error:
         raise RuntimeControlRecordError("RUNTIME_CONTROL_RECORD_INVALID") from error
     return record

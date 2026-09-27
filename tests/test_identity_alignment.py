@@ -130,7 +130,15 @@ def test_identity_offset_innovation_distinguishes_drift_from_entity_jump() -> No
     assert identity_offset_innovation_m(
         estimator_offset_m=slowly_drifted,
         reference_offset_m=None,
-    ) == pytest.approx(0.25028, abs=0.0001)
+    ) == 0.0
+
+
+def test_first_identity_binding_still_rejects_non_finite_offset() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        identity_offset_innovation_m(
+            estimator_offset_m=Vector3(x=float("nan"), y=0.0, z=0.0),
+            reference_offset_m=None,
+        )
 
 
 def test_identity_evidence_accepts_bounded_signed_alignment() -> None:

@@ -9,6 +9,7 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 import pytest
+from clock_fixtures import isolate_time
 from PIL import Image
 from test_local_policy_composition import _write_base_package
 from test_local_policy_packages import _write_brightness_perception_encoder
@@ -199,7 +200,10 @@ def test_deployed_prefetch_cannot_bypass_shape_validation_on_cache_hit(frozen_en
 #   primed：本场景是否应触发预取。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize("remaining,primed", [(120, True), (119, False), (1, False)])
+@pytest.mark.parametrize("remaining,primed", [
+    (native.LOCAL_DISPATCH_RESERVE_MS + native.TRAINING_REPLY_PREPARATION_RESERVE_MS, True),
+    (native.LOCAL_DISPATCH_RESERVE_MS + native.TRAINING_REPLY_PREPARATION_RESERVE_MS - 1, False),
+    (1, False)])
 def test_live_visual_prefetch_precedes_numeric_validation_without_admitting_input(
     tmp_path, monkeypatch, remaining, primed
 ):
@@ -224,7 +228,7 @@ def test_live_visual_prefetch_precedes_numeric_validation_without_admitting_inpu
 
     monkeypatch.setattr(
         native, "PreparedTrainingInput", SimpleNamespace(from_request=compile_source))
-    monkeypatch.setattr(native.time, "time", lambda: 1.)
+    isolate_time(monkeypatch, native, time=lambda: 1.)
     assert env._receive_source_request(timeout_seconds=.1) is request
     env._exchange.reply.assert_not_called()
 
@@ -275,7 +279,8 @@ def test_frozen_encoder_constructor_warms_actual_cpu_graph_without_starting_work
     manifest = SimpleNamespace(
         visual_width=32, visual_height=32, visual_feature_count=1,
         visual_normalization="zero-to-one",
-        artifacts=[SimpleNamespace(role="perception-encoder", sha256=digest)])
+        artifacts=[SimpleNamespace(role="perception-encoder", sha256=digest,
+                                   input_names=["forward_rgb"], output_names=["visual_features"])])
     package = SimpleNamespace(manifest=manifest, artifact_paths={"perception-encoder": path})
     monkeypatch.setattr(visual_observation, "load_local_policy_package", lambda _root: package)
     encoder = FrozenVisualEncoder(tmp_path)

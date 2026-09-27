@@ -1,0 +1,98 @@
+{
+  "schema_version": "dronedream.bundled-interpretation.v1",
+  "asset_id": "dronedream.my-drone.v1",
+  "content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd",
+  "source_sha256": "418cc59b894f7009f0fa937592f5b26f26eeeb45e0deb52b9fc6367d77b331cb",
+  "prompt_sha256": "069a4baca39347fd083bf6de7eb294013937e91e701740288de79be5879dfc94",
+  "locale": "zh-CN",
+  "understanding": {
+    "summary": "无人机资产dronedream.my-drone.v1：小型四旋翼平台，干质量2.125kg，最大起飞质量2.165kg，净载荷余量40g。机身高度0.43m、半径0.38m，碰撞中心的模型坐标偏移由几何适配器处理。采用前右下(FRD)坐标系。最大速度1.2m/s，最大加速度0.8m/s²。认证航程413.2m已含30%电池储备。传感器套件含IMU、磁力计、气压计、GPS、里程计及OAK-D Lite深度相机。适用于轻量取货任务，但需外部规划系统实时校验电池状态、障碍物与载荷质量。",
+    "items": [
+      {
+        "source_id": "body_height_m",
+        "explanation": "机身高度0.43m，用于几何引擎计算机体垂直占位与高度带适配。"
+      },
+      {
+        "source_id": "body_radius_m",
+        "explanation": "机身半径0.38m，用于水平方向碰撞包络与走廊净空孔计算。"
+      },
+      {
+        "source_id": "collision_center_offset_model_m",
+        "explanation": "碰撞中心偏移由模型几何坐标约定下的collision_center_offset_model_m定义，必须由几何适配器解析；不可把模型几何坐标与飞控FRD轴混为一谈。"
+      },
+      {
+        "source_id": "coordinate_frame",
+        "explanation": "坐标系约定为base_link_frd（机体原点、前右下轴向），下游运动指令与传感器外参转换须遵循此约定。"
+      },
+      {
+        "source_id": "dry_mass_kg",
+        "explanation": "配置空载干质量2.125kg，产品级参数，用于动力学模型与起飞质量核算。"
+      },
+      {
+        "source_id": "max_acceleration_mps2",
+        "explanation": "最大加速度0.8m/s²，规划器须以此为上限生成可行轨迹。"
+      },
+      {
+        "source_id": "max_pickup_payload_kg",
+        "explanation": "最大取货载荷40g，极轻量包裹专用，任何任务载荷不得超过此限。"
+      },
+      {
+        "source_id": "max_speed_mps",
+        "explanation": "最大平飞速度1.2m/s，全局速度约束，高速走廊规划不可突破。"
+      },
+      {
+        "source_id": "max_takeoff_mass_kg",
+        "explanation": "最大起飞质量2.165kg；相对配置空载质量的总质量余量约40g，货物还须满足独立载荷限制。不得自行推断电池组成。"
+      },
+      {
+        "source_id": "qualified_range_m",
+        "explanation": "认证合格航程413.2m，该数值已内置30%电池储备，任务规划不得重复扣减储备。"
+      },
+      {
+        "source_id": "reserve_battery_percent",
+        "explanation": "电池储备率30%，已计入qualified_range_m，仅作透明度说明，不用于额外缩减航程。"
+      },
+      {
+        "source_id": "sensors",
+        "explanation": "传感器套件：imu、magnetometer、barometer、gps、odometry提供状态估计；oakd-lite-depth提供深度感知与视觉避障能力。各传感器外参需独立标定。"
+      }
+    ],
+    "limitations": [
+      "载荷余量仅40g，任务规划须核验包裹质量，超重任务不可执行。",
+      "认证航程413m为静态标称值，实际可用距离受风速、温度、悬停时间、爬升能耗等运行时因素影响，需在线监测。",
+      "深度相机oakd-lite-depth的有效量程、视场角及光照要求未在资产中给出，任务规划须查阅其独立规格或运行时校验。",
+      "坐标系为base_link_frd，若地图或指令使用其他坐标约定，须由外部系统完成转换，不可假设默认对齐。",
+      "碰撞中心偏移导致机体上下不对称，垂直方向净空计算须以碰撞中心而非几何中心为基准。",
+      "max_takeoff_mass_kg与dry_mass_kg的微小差额表明几乎无额外载荷能力，电池是否包含在干质量内由产品定义决定，不可自行假设更换更大电池。"
+    ]
+  },
+  "output_sha256": "6d8f3232e1b518992e24cd779a914c173e68b8237732657bc80b0102ce0b8482",
+  "model_call": {
+    "schema_version": "dronedream.model-call.v1",
+    "call_id": "model-04b96c226fda487289218be7",
+    "role": "context_summarizer",
+    "attempt": 1,
+    "input_sha256": "900e4cc1de64ffcd1699f46a5346312d07d3a9178f56d167077f630bd432d7c6",
+    "output_sha256": "8f09a2d40b3e9091e91e7d1ea8bc525f8866e2ba965319c86d3c23a7046e0eb1",
+    "output_schema": "AssetUnderstanding",
+    "provider": "kimi",
+    "model": "kimi-k2.6",
+    "response_id": "chatcmpl-6ab0fb143b0aa951483ddc86",
+    "previous_response_id": null,
+    "input_tokens": 1076,
+    "output_tokens": 799,
+    "latency_ms": 25078,
+    "created_at": "2026-09-21T09:38:26.654785Z",
+    "local_expert_trace": null
+  },
+  "authority": "advisory-only",
+  "review": {
+    "method": "source-grounded-editor-review",
+    "changes": [
+      "Separated model geometry from FRD control frame",
+      "Removed unsupported battery composition inference"
+    ],
+    "model_draft_output_sha256": "8f09a2d40b3e9091e91e7d1ea8bc525f8866e2ba965319c86d3c23a7046e0eb1",
+    "model_draft_preserved": true
+  }
+}

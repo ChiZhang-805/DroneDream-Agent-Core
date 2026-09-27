@@ -2,8 +2,9 @@
 
 The sampler requests no actuators and fabricates no samples. Its 50 Hz poll
 target is not a claim that the producer delivers 50 independent observations.
-Frames are aligned by original receive times, never by fitting simulator truth
-or extrapolating physical velocities through a sub-real-time host interval.
+Frames use original receive times by default, or bounded source timestamps
+when the caller explicitly establishes a shared clock domain. Neither mode
+fits simulator truth or extrapolates velocities through a host-time interval.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 from dronedream_plugin_sdk.protocol import copy_json, decode_json
 
 from .native_flight_state import native_flight_state_sample
+from .native_image_pose import NativeImagePoseBuffer
 from .native_pose import NativeMapPose, native_map_pose
 from .native_state_channel import NativeStateReceiver
 from .plugin_files import read_plugin_file
@@ -70,6 +72,7 @@ class AlignedNativePose:
     pose: NativeMapPose
     receive_skew_ms: int
     conservative_variance_m2: float
+    native_odometry_snapshot: dict | None = None
 
 
 # 功能：
@@ -116,7 +119,24 @@ def _alignment_measurement(
 def _pose_alignment(item, *, image_time, maximum_range_m, maximum_acceleration_mps2):
     offset, variance = _alignment_measurement(item, image_time=image_time,
         maximum_range_m=maximum_range_m, maximum_acceleration_mps2=maximum_acceleration_mps2)
-    aligned = AlignedNativePose(copy.deepcopy(item.pose), offset, variance)
+    dynamics = item.payload.get("dynamics", {})
+    odometry = dynamics.get("sources", {}).get("odometry")
+    snapshot = None
+    if isinstance(odometry, dict):
+        # Preserve the packet's own clock and frame. Matching a pose to an image
+        # does NOT synchronize this separate odometry covariance stream.
+        snapshot = copy_json({
+            "dynamics_collected_at_unix_ms": dynamics.get("collected_at_unix_ms"),
+            "observation_available_at_unix_ms": item.available_at_unix_ms,
+            "image_synchronized": False,
+            "odometry": {key: odometry[key] for key in (
+                "timestamp_us", "received_at_unix_ms", "sample_age_seconds",
+                "frame_id", "child_frame_id", "pose_covariance_upper_m2",
+                "twist_covariance_upper", "velocity_child_frame_m_s",
+                "reset_counter", "estimator_type", "quality", "mavlink_source",
+            ) if key in odometry},
+        }, limit=8192)
+    aligned = AlignedNativePose(copy.deepcopy(item.pose), offset, variance, snapshot)
     return aligned
 
 
@@ -130,7 +150,7 @@ class NativeStateBuffer:
     #   capacity：保留的历史观测数，范围为 16 至 256。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, *, capacity: int = 64) -> None:
+    def __init__(self, *, capacity: int = 64, source_clock_domain: str | None = None) -> None:
         if type(capacity) is not int or not 16 <= capacity <= 256:
             raise ValueError("NATIVE_HISTORY_CAPACITY_INVALID")
         self._history: deque[NativeStateObservation] = deque(maxlen=capacity)
@@ -139,6 +159,14 @@ class NativeStateBuffer:
         self._latest: NativeStateObservation | None = None
         self._issue: str | None = None
         self._lock = threading.Lock()
+        self._slot_transitions: deque[dict] = deque(maxlen=32)
+        self._maximum_history_length = 0
+        self._odometry_epoch = None
+        self._odometry_reset_count = 0
+        self._image_epoch_started_at_unix_ms = 0
+        self._pending_odometry_reset_receive_ms = 0
+        self._source_image = (NativeImagePoseBuffer(clock_domain=source_clock_domain)
+                              if source_clock_domain is not None else None)
 
     # 功能：
     #   标记当前来源不可用，后续消费不得借用此前好历史绕过故障。
@@ -155,7 +183,7 @@ class NativeStateBuffer:
 
     # 功能：
     #   1. 隔离并校验原生遥测，拒绝运行中坐标绑定变化和来源时间回退。
-    #   2. 只有真实来源推进才增加历史，异步重发保留最旧来源期限。
+    #   2. 只有真实来源推进才增加编码历史，局部姿态更新刷新瞬时特征但保留最旧期限。
     # 输入：
     #   self：由单一生产者驱动的缓冲对象。
     #   payload：标准 JSON 遥测对象。
@@ -168,10 +196,24 @@ class NativeStateBuffer:
         sample = native_flight_state_sample(payload, now_unix_ms=now_unix_ms)
         if sample.localization_covariance_m2 is None:
             raise ValueError("NATIVE_LOCALIZATION_COVARIANCE_UNAVAILABLE")
+        odometry = payload.get("dynamics", {}).get("sources", {}).get("odometry", {})
+        odometry_epoch = None
+        if "reset_counter" in odometry:
+            counter = odometry["reset_counter"]
+            if type(counter) is not int or not 0 <= counter <= 255:
+                raise ValueError("NATIVE_ODOMETRY_RESET_COUNTER_INVALID")
+            odometry_epoch = (counter, odometry.get("frame_id"), odometry.get("child_frame_id"),
+                              odometry.get("estimator_type"))
         with self._lock:
             if self._binding is not None and pose.binding_sha256 != self._binding:
                 raise ValueError("NATIVE_MAP_BINDING_CHANGED_DURING_EXECUTION")
+            if self._source_image is not None:
+                self._source_image.ingest(payload, available_at_monotonic=time.monotonic())
             previous = self._latest
+            if self._odometry_epoch is not None and odometry_epoch is None:
+                raise ValueError("NATIVE_ODOMETRY_RESET_EVIDENCE_LOST")
+            odometry_reset = (self._odometry_epoch is not None
+                              and odometry_epoch != self._odometry_epoch)
             if previous is not None and (
                 pose.position_received_at_unix_ms < previous.pose.position_received_at_unix_ms
                 or pose.attitude_received_at_unix_ms < previous.pose.attitude_received_at_unix_ms
@@ -181,20 +223,70 @@ class NativeStateBuffer:
                 sample.observed_at_unix_ms < previous.sample.observed_at_unix_ms
             ):
                 raise ValueError("NATIVE_FLIGHT_STATE_TIMESTAMP_REGRESSED")
-            if previous is None or sample.observed_at_unix_ms > previous.sample.observed_at_unix_ms:
+            if odometry_reset:
+                # An estimator reset can jump position, velocity or attitude
+                # without resetting the IMU clock. Neither image matching nor
+                # temporal control features may retain the preceding segment.
+                self._history.clear()
+                self._encoder = FlightStateEncoder()
+                self._odometry_reset_count += 1
+                self._image_epoch_started_at_unix_ms = now_unix_ms
+                self._pending_odometry_reset_receive_ms = odometry.get(
+                    "received_at_unix_ms", now_unix_ms)
+                _validate_consumer_time(self._pending_odometry_reset_receive_ms)
+                # Mark the new epoch even while the other telemetry streams
+                # catch up. Otherwise each retry counts the same reset again,
+                # or a pre-reset attitude can enter a freshly emptied encoder.
+                self._odometry_epoch = odometry_epoch
+                self._latest = None
+                previous = None
+            if sample.observed_at_unix_ms < self._pending_odometry_reset_receive_ms:
+                self._issue = "NATIVE_ODOMETRY_RESET_WAITING_FOR_COHERENT_STATE"
+                raise ValueError(self._issue)
+            same_slot = previous is not None and not odometry_reset and (
+                # 局部更新的原始包可比编码槽更新；IMU 随后推进时必须比较编码槽，
+                # 否则会把独立新样本送入 refresh_current 而被正确的槽校验拒绝。
+                sample.observed_at_unix_ms == previous.encoding.observed_at_unix_ms
+                or (sample.imu_timestamp_us is not None
+                    and sample.imu_timestamp_us == previous.sample.imu_timestamp_us))
+            if not same_slot:
                 encoding = self._encoder.encode(sample, encoded_at_unix_ms=now_unix_ms)
                 if "FLIGHT_STATE_IMU_CLOCK_RESET" in encoding.issue_codes:
                     self._history.clear()
+            elif sample.source_sample_sha256 != previous.sample.source_sample_sha256:
+                # 复合包的最旧来源不变，不代表姿态也没变；更新瞬时特征但不增加历史或期限。
+                encoding = self._encoder.refresh_current(sample, encoded_at_unix_ms=now_unix_ms)
             else:
-                # 部分来源可能已变化，但最旧来源尚未推进，不能把轮询次数当成新历史。
+                # 所有物理来源完全相同的重发才复用原编码。
                 encoding = previous.encoding
             observation = NativeStateObservation(pose, sample, encoding, payload, now_unix_ms)
-            if previous is None or (
+            if previous is None or odometry_reset or (
                 pose.position_received_at_unix_ms != previous.pose.position_received_at_unix_ms
                 or pose.attitude_received_at_unix_ms != previous.pose.attitude_received_at_unix_ms
             ):
                 self._history.append(observation)
             self._latest, self._binding, self._issue = observation, pose.binding_sha256, None
+            self._odometry_epoch = odometry_epoch
+            self._maximum_history_length = max(
+                self._maximum_history_length, len(self._encoder._samples))
+            if (previous is None
+                    or encoding.observed_at_unix_ms != previous.encoding.observed_at_unix_ms):
+                self._slot_transitions.append({"source_unix_ms": sample.observed_at_unix_ms,
+                    "imu_timestamp_us": sample.imu_timestamp_us,
+                    "history_length": len(self._encoder._samples),
+                    "issue_codes": list(encoding.issue_codes)})
+
+    # 功能：
+    #   返回有限的历史槽推进诊断，保留原始时钟与预热原因，不记录画面或授权飞行。
+    # 输入：
+    #   无。
+    # 输出：
+    #   summary：最大历史长度和最多三十二条独立槽的只读副本。
+    def history_summary(self) -> dict:
+        with self._lock:
+            return {"maximum_history_length": self._maximum_history_length,
+                    "odometry_reset_count": self._odometry_reset_count,
+                    "recent_slot_transitions": copy.deepcopy(list(self._slot_transitions))}
 
     # 功能：
     #   选取消费时刻已存在且仍有效的状态，锁外复制返回，避免阻塞生产者。
@@ -222,6 +314,24 @@ class NativeStateBuffer:
         # 锁外复制不会阻塞生产者；历史内容发布后只读，调用者获得独立对象。
         detached = copy.deepcopy(observation)
         return detached
+
+    # 功能：
+    #   只读检查是否实际收到更新且未过期的原生状态，不复制张量、不更新来源或授权动作。
+    # 输入：
+    #   previous_source_unix_ms：上一控制周期已经使用的最旧状态来源时间。
+    #   now_unix_ms：检查时刻；未来、故障或尚未编码完成的状态不能触发交接。
+    # 输出：
+    #   available：存在可供下游重新读取和校验的独立新样本时为 True。
+    def newer_sample_available(self, previous_source_unix_ms: int, *, now_unix_ms: int) -> bool:
+        _validate_consumer_time(now_unix_ms)
+        _validate_consumer_time(previous_source_unix_ms)
+        with self._lock:
+            item = self._latest
+            available = bool(self._issue is None and item is not None
+                and item.available_at_unix_ms <= now_unix_ms
+                and previous_source_unix_ms < item.sample.observed_at_unix_ms <= now_unix_ms
+                and item.encoding.fresh_at(now_unix_ms))
+        return available
 
     # 功能：
     #   1. 在感知计算后读取已经实际到达的同源状态，不把循环入口旧状态继续用于控制。
@@ -277,14 +387,18 @@ class NativeStateBuffer:
             if self._issue is not None or not self._history:
                 return selected
             history = tuple(self._history)
+            image_epoch_start = self._image_epoch_started_at_unix_ms
         for image_time in sorted(set(received_times), reverse=True):
-            if not 0 <= now_unix_ms - image_time <= 250:
+            if (not 0 <= now_unix_ms - image_time <= 250
+                    or image_time < image_epoch_start):
                 continue
+            # 先排除时间上绝不可能匹配的历史，再完整重验剩余编码；
+            # 不为每幅图重复复制全部 64 项历史，也不略过任何候选的完整性和年龄校验。
             candidates = [item for item in history if (
                 item.available_at_unix_ms <= now_unix_ms
-                and item.encoding.fresh_at(now_unix_ms)
                 and abs(image_time - item.pose.position_received_at_unix_ms) <= 50
                 and abs(image_time - item.pose.attitude_received_at_unix_ms) <= 50
+                and item.encoding.fresh_at(now_unix_ms)
             )]
             # 对齐还依赖 IMU 和协方差，位置较新不能覆盖其他来源已经过期的事实。
             # 这里只判断是否有可用配对，避免为每个候选复制整份状态。
@@ -324,14 +438,16 @@ class NativeStateBuffer:
         with self._lock:
             if self._issue is not None or not self._history:
                 raise ValueError("IMAGE_NATIVE_STATE_UNAVAILABLE")
+            if image_received_at_unix_ms < self._image_epoch_started_at_unix_ms:
+                raise ValueError("IMAGE_NATIVE_ESTIMATOR_RESET_BOUNDARY")
             history = tuple(self._history)
         candidates = [item for item in history if (
                 item.available_at_unix_ms <= now_unix_ms
-                and item.encoding.fresh_at(now_unix_ms)
                 and abs(image_received_at_unix_ms - item.pose.position_received_at_unix_ms)
                 <= maximum_skew_ms
                 and abs(image_received_at_unix_ms - item.pose.attitude_received_at_unix_ms)
                 <= maximum_skew_ms
+                and item.encoding.fresh_at(now_unix_ms)
         )]
         if not candidates:
             raise ValueError("IMAGE_NATIVE_POSE_NOT_SYNCHRONIZED")
@@ -346,6 +462,75 @@ class NativeStateBuffer:
             maximum_range_m=maximum_range_m, maximum_acceleration_mps2=maximum_acceleration_mps2)
         return aligned
 
+    # 功能：在既有状态锁下读取源时钟配对；显式配置该模式后绝不回退到主机接收时刻配对。
+    # 输入：图像源时刻及同域身份、接收/消费时刻、几何运动预算。
+    # 输出：完整单包位姿及可追溯时间证据；保留原生协方差，不赋予地图定位资格。
+    def align_source_image(self, *, image_timestamp_ns, clock_domain,
+                           image_received_at_unix_ms, now_unix_ms, now_monotonic,
+                           maximum_range_m, maximum_acceleration_mps2):
+        with self._lock:
+            if self._issue is not None or self._source_image is None:
+                raise ValueError("IMAGE_NATIVE_SOURCE_CLOCK_UNAVAILABLE")
+            result = self._source_image.align(image_timestamp_ns=image_timestamp_ns,
+                clock_domain=clock_domain, image_received_unix_ms=image_received_at_unix_ms,
+                now_unix_ms=now_unix_ms, now_monotonic=now_monotonic,
+                maximum_range_m=maximum_range_m,
+                maximum_acceleration_mps2=maximum_acceleration_mps2)
+        return AlignedNativePose(result.pose,
+            abs(result.pose.observed_at_unix_ms - image_received_at_unix_ms),
+            result.conservative_variance_m2,
+            {"image_synchronized": False, "pairing_mode": "bounded-source-clock-nearest",
+             "source_alignment": result.source_evidence})
+
+    # 功能：只选择同域源时间可配对的最新图像，不用接收时刻相近替代曝光时刻相近。
+    # 输入：candidates：最多 32 对图像接收毫秒、源纳秒；其余参数为时间和不确定性预算。
+    # 输出：符合现有方差预算的图像接收时刻；没有有效候选时为 None。
+    def select_source_image_time(self, candidates, *, clock_domain, now_unix_ms,
+                                 now_monotonic, maximum_range_m, maximum_acceleration_mps2,
+                                 maximum_alignment_variance_m2):
+        selected = self.select_source_image_pose(candidates, clock_domain=clock_domain,
+            now_unix_ms=now_unix_ms, now_monotonic=now_monotonic,
+            maximum_range_m=maximum_range_m, maximum_acceleration_mps2=maximum_acceleration_mps2,
+            maximum_alignment_variance_m2=maximum_alignment_variance_m2)
+        return selected[0] if selected is not None else None
+
+    # 功能：一次配对即返回该图像和独立位姿快照，避免选帧后重读跨越估计器重置。
+    # 输入：有界图像候选及原有时钟、运动和不确定性限制。
+    # 输出：(接收毫秒、曝光纳秒、完整对齐位姿)，暂缺为 None；身份或结构损坏不能吞掉。
+    def select_source_image_pose(self, candidates, *, clock_domain, now_unix_ms,
+                                 now_monotonic, maximum_range_m, maximum_acceleration_mps2,
+                                 maximum_alignment_variance_m2):
+        _validate_consumer_time(now_unix_ms)
+        _validate_alignment_limits((maximum_range_m, maximum_acceleration_mps2,
+                                    maximum_alignment_variance_m2))
+        if (type(candidates) is not tuple or len(candidates) > 32
+                or any(type(row) is not tuple or len(row) != 2 for row in candidates)):
+            raise ValueError("IMAGE_NATIVE_CANDIDATE_TIMES_INVALID")
+        for received, stamp in candidates:
+            _validate_consumer_time(received)
+            if stamp is not None:
+                _validate_consumer_time(stamp)
+        for received, stamp in sorted(candidates, key=lambda row: row[0], reverse=True):
+            if stamp is None:
+                continue
+            try:
+                aligned = self.align_source_image(image_timestamp_ns=stamp,
+                    clock_domain=clock_domain, image_received_at_unix_ms=received,
+                    now_unix_ms=now_unix_ms, now_monotonic=now_monotonic,
+                    maximum_range_m=maximum_range_m,
+                    maximum_acceleration_mps2=maximum_acceleration_mps2)
+            except ValueError as error:
+                if str(error) not in {
+                    "IMAGE_NATIVE_SOURCE_CLOCK_UNAVAILABLE", "IMAGE_SOURCE_HISTORY_UNAVAILABLE",
+                    "IMAGE_SOURCE_RECEIPT_EXPIRED", "IMAGE_SOURCE_ODOMETRY_EXPIRED",
+                    "NATIVE_ODOMETRY_SOURCE_TIME_NOT_PAIRED",
+                }:
+                    raise
+                continue
+            if aligned.conservative_variance_m2 <= maximum_alignment_variance_m2:
+                return received, stamp, aligned
+        return None
+
 
 class NativeStateSampler:
     # 功能：
@@ -358,11 +543,11 @@ class NativeStateSampler:
     # 输出：
     #   None：不返回业务数据。
     def __init__(self, path: Path, *, rate_hz: float = 50.0,
-                 channel_path: Path | None = None) -> None:
+                 channel_path: Path | None = None, source_clock_domain: str | None = None) -> None:
         if type(rate_hz) not in (int, float) or not 20 <= rate_hz <= 100:
             raise ValueError("NATIVE_SAMPLER_RATE_INVALID")
         self.path, self.rate_hz = path, rate_hz
-        self.buffer = NativeStateBuffer()
+        self.buffer = NativeStateBuffer(source_clock_domain=source_clock_domain)
         self._receiver = NativeStateReceiver(channel_path) if channel_path is not None else None
         self._stop = threading.Event()
         self._diagnostic_lock = threading.Lock()
@@ -423,6 +608,7 @@ class NativeStateSampler:
         with self._diagnostic_lock:
             summary = {"accepted_packets": self._accepted, "failures": dict(self._failures),
                        "thread_alive": self._thread.is_alive()}
+        summary["history"] = self.buffer.history_summary()
         return summary
 
     # 功能：

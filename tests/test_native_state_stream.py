@@ -29,6 +29,186 @@ def packet(timestamp=1000):
     return value
 
 
+# 功能：验证对齐图像时保留的是匹配历史包的协方差及原时钟，而非最新包或图像时间。
+# 输入：无。
+# 输出：无；检查快照隔离、坐标系和不同来源期限。
+def test_alignment_retains_separate_odometry_source_without_retimestamping():
+    buffer = NativeStateBuffer()
+    first = packet(1000)
+    first["dynamics"]["sources"]["odometry"].update(
+        child_frame_id="BODY_FRD", twist_covariance_upper=covariance(),
+        velocity_child_frame_m_s=[1., 2., 3.])
+    buffer.ingest(first, now_unix_ms=1000)
+    buffer.ingest(packet(1080), now_unix_ms=1080)
+    aligned = buffer.align_image(image_received_at_unix_ms=1010, now_unix_ms=1090,
+        maximum_range_m=10., maximum_acceleration_mps2=1.)
+    snapshot = aligned.native_odometry_snapshot
+    assert snapshot["image_synchronized"] is False
+    assert snapshot["observation_available_at_unix_ms"] == 1000
+    assert snapshot["odometry"]["received_at_unix_ms"] == 1000
+    assert snapshot["odometry"]["child_frame_id"] == "BODY_FRD"
+    assert snapshot["odometry"]["velocity_child_frame_m_s"] == [1., 2., 3.]
+    snapshot["odometry"]["twist_covariance_upper"][0] = 999
+    again = buffer.align_image(image_received_at_unix_ms=1010, now_unix_ms=1090,
+        maximum_range_m=10., maximum_acceleration_mps2=1.)
+    assert again.native_odometry_snapshot["odometry"]["twist_covariance_upper"][0] != 999
+
+
+# 功能：估计器重置不一定重置 IMU 钟；必须丢弃旧图像匹配和控制历史，并重新预热。
+# 输入：无。
+# 输出：无；检查历史长度、重置次数及重置前图像拒绝。
+def test_odometry_reset_rewarms_control_and_rejects_pre_reset_images():
+    buffer = NativeStateBuffer()
+    for timestamp, reset in ((1000, 255), (1040, 255), (1080, 0)):
+        current = packet(timestamp)
+        current["dynamics"]["sources"]["odometry"].update(
+            reset_counter=reset, estimator_type=8, child_frame_id="LOCAL_NED")
+        buffer.ingest(current, now_unix_ms=timestamp)
+    assert buffer.history_summary()["odometry_reset_count"] == 1
+    assert len(buffer._encoder._samples) == 1
+    assert len(buffer._history) == 1
+    assert buffer.select_image_time((1060,), now_unix_ms=1090) is None
+    with pytest.raises(ValueError, match="RESET_BOUNDARY"):
+        buffer.align_image(image_received_at_unix_ms=1060, now_unix_ms=1090,
+                           maximum_range_m=10., maximum_acceleration_mps2=1.)
+    with pytest.raises(ValueError, match="RESET_EVIDENCE_LOST"):
+        buffer.ingest(packet(1120), now_unix_ms=1120)
+
+
+# 功能：不允许布尔或越界重置次数被解释为新的定位段。
+# 输入：counter：畸形重置计数。
+# 输出：无；不接入该状态。
+@pytest.mark.parametrize("counter", [True, -1, 256, 1.5])
+def test_odometry_reset_counter_requires_wire_integer(counter):
+    value = packet()
+    value["dynamics"]["sources"]["odometry"]["reset_counter"] = counter
+    with pytest.raises(ValueError, match="RESET_COUNTER_INVALID"):
+        NativeStateBuffer().ingest(value, now_unix_ms=1000)
+
+
+# 功能：重置消息先到而位置/姿态仍旧时不能生成混合状态；恢复不会重复计算一次重置。
+# 输入：无；各遥测来源的独立接收时刻按实际异步形态设置。
+# 输出：无；等待所有原生来源越过边界后重新预热。
+def test_reset_waits_for_coherent_post_reset_state():
+    state = NativeStateBuffer()
+    first = packet(1000)
+    first["dynamics"]["sources"]["odometry"]["reset_counter"] = 1
+    state.ingest(first, now_unix_ms=1000)
+    mixed = packet(1080)
+    mixed["dynamics"]["sources"]["odometry"]["reset_counter"] = 2
+    mixed["position_received_at_unix_ms"] = 1060
+    mixed["dynamics"]["sources"]["attitude"]["received_at_unix_ms"] = 1060
+    with pytest.raises(ValueError, match="WAITING_FOR_COHERENT_STATE"):
+        state.ingest(mixed, now_unix_ms=1080)
+    with pytest.raises(ValueError, match="UNAVAILABLE"):
+        state.latest(now_unix_ms=1080)
+    assert state.history_summary()["odometry_reset_count"] == 1
+    assert not state._history
+    current = packet(1100)
+    current["dynamics"]["sources"]["odometry"]["reset_counter"] = 2
+    state.ingest(current, now_unix_ms=1100)
+    assert state.history_summary()["odometry_reset_count"] == 1
+    assert len(state._encoder._samples) == 1
+
+
+# 功能：等待异步来源追上重置时若再次重置，必须推进边界，不允许混入中间段状态。
+# 输入：无；连续两个重置发生在旧来源尚未追上的时间段。
+# 输出：无；中间段仍拒绝，最终新段仅生成一条编码历史。
+def test_second_reset_while_waiting_advances_coherence_boundary():
+    state = NativeStateBuffer()
+    first = packet(1000)
+    first["dynamics"]["sources"]["odometry"]["reset_counter"] = 1
+    state.ingest(first, now_unix_ms=1000)
+    for timestamp, counter, position_time in ((1080, 2, 1060), (1120, 3, 1100)):
+        mixed = packet(timestamp)
+        mixed["dynamics"]["sources"]["odometry"]["reset_counter"] = counter
+        mixed["position_received_at_unix_ms"] = position_time
+        with pytest.raises(ValueError, match="WAITING_FOR_COHERENT_STATE"):
+            state.ingest(mixed, now_unix_ms=timestamp)
+    assert state.history_summary()["odometry_reset_count"] == 2
+    assert state._pending_odometry_reset_receive_ms == 1120
+    current = packet(1140)
+    current["dynamics"]["sources"]["odometry"]["reset_counter"] = 3
+    state.ingest(current, now_unix_ms=1140)
+    assert len(state._encoder._samples) == 1
+
+
+# 功能：验证实际缓冲入口保留源时钟配对，不把原生控制编码或独立协方差改成理想值。
+# 输入：monkeypatch：仅固定诊断消费单调时刻，不替换原生测量或任何校验。
+# 输出：无；同段可选图像成功，错误时钟域不可回退。
+def test_source_clock_buffer_integration_and_selection(monkeypatch):
+    from test_native_image_pose import payload as source_payload
+
+    state = NativeStateBuffer(source_clock_domain="same-run")
+    for timestamp in (1000, 1020):
+        current = packet(timestamp)
+        wire = source_payload(timestamp * 1000, timestamp / 100., timestamp)
+        current["dynamics"]["sources"]["odometry"].update(
+            wire["dynamics"]["sources"]["odometry"])
+        monkeypatch.setattr(time, "monotonic", lambda stamp=timestamp: stamp / 100. + .01)
+        state.ingest(current, now_unix_ms=timestamp)
+    limits = dict(clock_domain="same-run", now_unix_ms=1160, now_monotonic=10.23,
+                  maximum_range_m=10., maximum_acceleration_mps2=1.)
+    assert state.select_source_image_time(((1150, 1_001_000_000),),
+        maximum_alignment_variance_m2=10., **limits) == 1150
+    result = state.align_source_image(image_timestamp_ns=1_001_000_000,
+        image_received_at_unix_ms=1150, **limits)
+    assert result.pose.observed_at_unix_ms == 1000
+    assert result.native_odometry_snapshot["source_alignment"]["source_skew_us"] == -1000
+    assert result.native_odometry_snapshot["image_synchronized"] is False
+    selected = state.select_source_image_pose(((1150, 1_001_000_000),),
+        maximum_alignment_variance_m2=10., **limits)
+    assert selected[:2] == (1150, 1_001_000_000)
+    assert selected[2].native_odometry_snapshot == result.native_odometry_snapshot
+    with pytest.raises(ValueError, match="CONTRACT"):
+        state.select_source_image_pose(((1150, 1_001_000_000),),
+            maximum_alignment_variance_m2=10., **{**limits, "clock_domain": "wrong"})
+    assert state.select_source_image_time(((1150, 1_001_000_000),),
+        maximum_alignment_variance_m2=1e-9, **limits) is None
+    with pytest.raises(ValueError, match="CONTRACT"):
+        state.align_source_image(image_timestamp_ns=1_001_000_000,
+            image_received_at_unix_ms=1150, **{**limits, "clock_domain": "wrong"})
+
+
+# 功能：
+#   时间上无关的历史不重复解析编码，仍对每个可能匹配的候选执行原完整性校验。
+# 输入：
+#   monkeypatch：只记录真实编码校验入口的调用，不替换校验结果。
+# 输出：
+#   无。
+def test_alignment_filters_unrelated_history_before_encoding_validation(monkeypatch):
+    from dronedream_agent_core.realtime_feature_encoders import RealtimeFeatureEncoding
+
+    buffer = NativeStateBuffer()
+    for stamp in range(1000, 1640, 10):
+        buffer.ingest(packet(stamp), now_unix_ms=stamp)
+    original = RealtimeFeatureEncoding.fresh_at
+    seen = []
+
+    # 功能：
+    #   记录被验证编码的真实来源，继续调用原时效及结构检查。
+    # 输入：
+    #   self：编码；now：消费时刻。
+    # 输出：
+    #   fresh：原校验结果。
+    def recorded(self, now):
+        seen.append(self.observed_at_unix_ms)
+        fresh = original(self, now)
+        return fresh
+
+    monkeypatch.setattr(RealtimeFeatureEncoding, "fresh_at", recorded)
+    assert buffer.select_image_time((1630,), now_unix_ms=1640) == 1630
+    assert seen == list(range(1580, 1640, 10))
+    seen.clear()
+    buffer.align_image(image_received_at_unix_ms=1630, now_unix_ms=1640,
+                       maximum_range_m=10., maximum_acceleration_mps2=1.)
+    assert seen == list(range(1580, 1640, 10))
+    # 即便时间匹配，篡改的特征仍不能被快速路径接受。
+    for observation in buffer._history:
+        observation.encoding.features[0] = float("nan")
+    assert buffer.select_image_time((1630,), now_unix_ms=1640) is None
+
+
 # 功能：
 #   控制参考只可使用真实新状态；重复获取不续龄，未来状态不能进入过去参考时刻。
 # 输入：

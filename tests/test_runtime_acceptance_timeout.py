@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -58,8 +59,18 @@ def test_development_runtime_requires_explicit_current_ros_workspace(
         module._resolve_ros_workspace(tmp_path / "resources", None)
 
 
-def test_ros_workspace_override_is_a_validated_workspace_root(tmp_path: Path) -> None:
+# 功能：
+#   验证显式工作区先通过来源与安装校验，只隔离宿主 Git 元数据和 Windows 盘符映射。
+# 输入：
+#   tmp_path、monkeypatch、isolated_source_repository：测试目录、替换工具和当前源码副本。
+# 输出：
+#   None：无返回值。
+def test_ros_workspace_override_validates_root(tmp_path, monkeypatch, isolated_source_repository):
     module = _load_runtime_acceptance_module()
+    monkeypatch.setattr(module, "__file__", str(
+        isolated_source_repository / "scripts/run_pluginized_runtime_acceptance.py"))
+    if os.name != "nt":
+        monkeypatch.setattr(module, "_wsl_path", Path.as_posix)
     resources = tmp_path / "resources"
     runtime = resources / "runtime"
     runtime.mkdir(parents=True)
@@ -71,7 +82,7 @@ def test_ros_workspace_override_is_a_validated_workspace_root(tmp_path: Path) ->
     install = workspace / "install"
     install.mkdir(parents=True)
     (install / "setup.bash").write_text("# current workspace\n", encoding="utf-8")
-    write_ros_workspace_provenance(Path(__file__).parents[1], workspace)
+    write_ros_workspace_provenance(isolated_source_repository, workspace)
 
     assert module._resolve_ros_workspace(resources, workspace) == module._wsl_path(
         workspace

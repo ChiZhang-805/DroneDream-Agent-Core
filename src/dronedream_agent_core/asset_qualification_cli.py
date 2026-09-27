@@ -72,7 +72,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--px4-root", type=Path, default=Path("/opt/PX4-Autopilot"))
     parser.add_argument("--executor", type=Path, required=True)
+    parser.add_argument("--base-executor", type=Path, required=True)
     parser.add_argument("--ros-workspace", type=Path, required=True)
+    parser.add_argument(
+        "--simulation-ground-truth-control",
+        action="store_true",
+        help=(
+            "Use simulator truth only for bounded map/aircraft geometry qualification; "
+            "this does not qualify onboard localization or model control"
+        ),
+    )
     return parser
 
 
@@ -93,7 +102,9 @@ def run_prepared_asset_qualification(
     run_dir: Path,
     px4_root: Path,
     executor: Path,
+    base_executor: Path | None = None,
     ros_workspace: Path,
+    simulation_ground_truth_control: bool = False,
 ) -> dict[str, Any]:
     plan_path = _bound_path(work_root, "qualification-plan.json")
     work_root = work_root.resolve()
@@ -134,11 +145,15 @@ def run_prepared_asset_qualification(
         controller_params_path=_bound_path(work_root, plan.inputs.controller_params),
         px4_root=px4_root.resolve(),
         executor_path=executor.resolve(),
+        executor_extra_args=(
+            ["--base-executor", str(base_executor.resolve())] if base_executor is not None else None
+        ),
         ros_workspace=ros_workspace.resolve(),
         contract_id=plan.qualification_id,
         world_name=plan.inputs.world_name,
         vehicle_name=plan.inputs.vehicle_name,
         px4_sitl_model=plan.inputs.px4_sitl_model,
+        simulation_ground_truth_control=simulation_ground_truth_control,
     )
     return evidence
 
@@ -156,7 +171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_dir=args.run_dir,
         px4_root=args.px4_root,
         executor=args.executor,
+        base_executor=args.base_executor,
         ros_workspace=args.ros_workspace,
+        simulation_ground_truth_control=args.simulation_ground_truth_control,
     )
     print(json.dumps(evidence, ensure_ascii=False, allow_nan=False, sort_keys=True))
     exit_code = 0 if evidence.get("status") == "verified" else 2

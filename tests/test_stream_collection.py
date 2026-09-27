@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 from test_native_action_risk_artifacts import native_episode
 from test_offline_flight_learning import UnitEnvironment
 from test_px4_training_lifecycle import environment
@@ -22,6 +23,7 @@ from dronedream_agent_core.runtime_evidence import (
     control_evidence_inventory,
     navigation_evidence_inventory,
 )
+from dronedream_agent_core.training import px4_environment
 from dronedream_agent_core.training.dagger_artifacts import (
     load_dagger_training_artifacts,
     write_rows,
@@ -397,7 +399,7 @@ def test_stream_submission_never_waits_for_previous_application(tmp_path, monkey
     env._exchange = SimpleNamespace(reply=Mock(), discard_pending=Mock())
     env._monitor = SimpleNamespace(initial_witness=Mock(return_value=capture.initial_witness))
     env._application = Mock(side_effect=AssertionError("must not wait for application"))
-    monkeypatch.setattr("dronedream_agent_core.training.px4_environment.time.time", lambda: 1.05)
+    isolate_time(monkeypatch, px4_environment, time=lambda: 1.05)
     env.submit_stream_action(capture.proposal.action)
     assert env._sequence == 1 and len(env._stream_captures) == 1
     env._exchange.reply.assert_called_once()
@@ -573,7 +575,7 @@ def test_offline_visual_encoder_is_closed_on_success_and_failure(monkeypatch, fa
     # 输出：
     #   None：不返回业务数据。
     def validate():
-        with module._bound_visual_encoder(SimpleNamespace(visual_package="fixture"), reset):
+        with module._bound_visual_encoder(SimpleNamespace(visual_package="fixture", visual_encoder=None), reset):
             if failure == "body":
                 raise ValueError("fixture read failure")
 
@@ -619,7 +621,8 @@ def test_stream_cli_annotation_and_action_conditioned_risk_share_grounded_source
     episode, config, _, packed = stream_fixture(tmp_path)
     finalize_stream_captures(episode, [packed], write_new=_write_new)
     teacher = tmp_path / "teacher.json"
-    teacher.write_text(config.model_dump_json())
+    teacher.write_text(config.model_copy(update={
+        'risk_label_semantics': 'observation-clearance-v2'}).model_dump_json())
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     for filename, output in (
         ("annotate_local_policy_dagger.py", "behavior"),

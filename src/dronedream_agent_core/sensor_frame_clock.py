@@ -71,7 +71,7 @@ def _source_metadata(message) -> dict[str, str]:
                 continue
             name = key[len(_PREFIX):]
             parts = getattr(item, "value", None)
-            if (name not in _FIELDS or name in values or isinstance(parts, (str, bytes))
+            if (name not in _FIELDS | {"basis"} or name in values or isinstance(parts, (str, bytes))
                     or len(parts) != 1 or type(parts[0]) is not str or len(parts[0]) > 64):
                 raise ValueError("SENSOR_SOURCE_HEADER_AMBIGUOUS")
             values[name] = parts[0]
@@ -164,7 +164,10 @@ def require_model_frame_time(
         frame_time.epoch, frame_time.scene_sha256, frame_time.sequence
     )):
         raise ValueError("MODEL_RGB_FRAME_CLOCK_INVALID")
-    checked = SensorFrameClock(expected_scene_epoch=frame_time.epoch).admit(message,
+    checked = SensorFrameClock(
+        expected_scene_epoch=frame_time.epoch if frame_time.clock_kind != "native-simulation" else None,
+        expected_native_epoch=frame_time.epoch if frame_time.clock_kind == "native-simulation" else None,
+    ).admit(message,
         received_unix_ns=frame_time.received_unix_ns,
         received_monotonic_seconds=frame_time.received_monotonic_seconds)
     if checked != frame_time:
@@ -181,12 +184,19 @@ class SensorFrameClock:
     #   expected_scene_epoch：订阅前选定的场景摘要；None 表示较弱的主机接收钟。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, *, expected_scene_epoch: str | None = None):
+    def __init__(self, *, expected_scene_epoch: str | None = None,
+                 expected_native_epoch: str | None = None):
+        if expected_native_epoch is not None:
+            if (expected_scene_epoch is not None or type(expected_native_epoch) is not str
+                    or not _DIGEST.fullmatch(expected_native_epoch)):
+                raise ValueError("SENSOR_EXPECTED_NATIVE_EPOCH_INVALID")
+        self.expected_native_epoch = expected_native_epoch
+        selected_epoch = expected_native_epoch or expected_scene_epoch
         if expected_scene_epoch is not None and (
             type(expected_scene_epoch) is not str or not _DIGEST.fullmatch(expected_scene_epoch)
         ):
             raise ValueError("SENSOR_EXPECTED_SCENE_EPOCH_INVALID")
-        self.expected_scene_epoch = expected_scene_epoch
+        self.expected_scene_epoch = selected_epoch
         self._previous: SensorFrameTime | None = None
         self._direct_simulation_ns: int | None = None
 
@@ -235,7 +245,10 @@ class SensorFrameClock:
             self._direct_simulation_ns = sim
             self._previous = result
             return result
-        if (set(values) != _FIELDS or values["epoch"] != self.expected_scene_epoch
+        basis = values.get("basis", "scene-snapshot")
+        required_basis = "native-preupdate" if self.expected_native_epoch else "scene-snapshot"
+        if (set(values) - {"basis"} != _FIELDS or basis != required_basis
+                or values["epoch"] != self.expected_scene_epoch
                 or not _DIGEST.fullmatch(values["sha256"])):
             raise ValueError("SENSOR_SCENE_IDENTITY_MISMATCH")
         source, sequence, sim = (_integer(values[key])
@@ -251,7 +264,8 @@ class SensorFrameClock:
         if sample_monotonic < 0:
             raise ValueError("SENSOR_SCENE_MONOTONIC_ORIGIN_INVALID")
         result = SensorFrameTime(source, received_unix_ns, sample_monotonic,
-            received_monotonic_seconds, "scene-source", values["epoch"],
+            received_monotonic_seconds,
+            "native-simulation" if self.expected_native_epoch else "scene-source", values["epoch"],
             values["sha256"], sequence, sim)
         previous = self._previous
         if previous is not None and (
@@ -277,14 +291,17 @@ class SensorImageIngress:
     #   expected_scene_epoch：订阅前选定的场景身份，直连流为 None。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, *, expected_scene_epoch: str | None = None):
-        self._clocks = {kind: SensorFrameClock(expected_scene_epoch=expected_scene_epoch)
+    def __init__(self, *, expected_scene_epoch: str | None = None,
+                 expected_native_epoch: str | None = None):
+        self._clocks = {kind: SensorFrameClock(expected_scene_epoch=expected_scene_epoch,
+                                             expected_native_epoch=expected_native_epoch)
                         for kind in ("rgb", "depth")}
         self._lock = threading.Lock()
         self._history: OrderedDict[tuple[str, float], SensorFrameTime] = OrderedDict()
         self._accepted = Counter()
         self._rejected = Counter()
         self._epoch = expected_scene_epoch
+        self._native_epoch = expected_native_epoch
         self._cadence_previous: dict[str, SensorFrameTime] = {}
         self._cadence = {kind: dict(interval_count=0, source_span_ns=0,
             receive_span_seconds=0., simulation_interval_count=0, simulation_span_ns=0)
@@ -359,7 +376,8 @@ class SensorImageIngress:
     #   result：包含有限历史数量及频率统计的独立字典。
     def summary(self) -> dict:
         with self._lock:
-            result = {"scene_epoch": self._epoch, "accepted": dict(self._accepted),
+            result = {"scene_epoch": self._epoch, "native_epoch": self._native_epoch,
+                    "accepted": dict(self._accepted),
                     "rejected": dict(self._rejected), "history_entries": len(self._history),
                     "accepted_frame_cadence": {kind: dict(values)
                                                for kind, values in self._cadence.items()},

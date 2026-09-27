@@ -20,10 +20,11 @@ from dronedream_agent_core.training.runtime_evidence import (
 # 功能：
 #   执行实际原生观测分支，核对只发布见证后返回，不落入真值导航指令生成。
 # 输入：
-#   tmp_path：临时观测输出路径。
+#   tmp_path：临时观测输出路径；record_recovery：是否记录仅用于离线验收的恢复见证。
 # 输出：
 #   None：不返回业务数据。
-def test_native_pose_worker_publishes_observation_without_truth_navigation_commands(tmp_path):
+@pytest.mark.parametrize("record_recovery", [False, True])
+def test_native_pose_worker_publishes_observation_without_truth_navigation_commands(tmp_path, record_recovery):
     tree = ast.parse(Path(gazebo_adapter.__file__).read_text(encoding="utf-8"))
     process = next(
         node
@@ -43,8 +44,10 @@ def test_native_pose_worker_publishes_observation_without_truth_navigation_comma
     function.body.insert(0, branch)
     module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
     writes = []
+    witnesses = []
     scope = {
         "depth_safety_supported": True,
+        "recovery_witness": SimpleNamespace(record=witnesses.append) if record_recovery else None,
         "observation": pose(1, 0),
         "elapsed": 1.0,
         "local_safety_observation_path": tmp_path / "observation.json",
@@ -55,6 +58,7 @@ def test_native_pose_worker_publishes_observation_without_truth_navigation_comma
     assert len(writes) == 1
     assert json.loads(writes[0][1]) == scope["observation"].model_dump(mode="json")
     assert "command_position_m" not in json.loads(writes[0][1])
+    assert witnesses == ([scope["observation"]] if record_recovery else [])
     scope["depth_safety_supported"] = False
     with pytest.raises(RuntimeError, match="truth planner reached"):
         scope["witness"]()

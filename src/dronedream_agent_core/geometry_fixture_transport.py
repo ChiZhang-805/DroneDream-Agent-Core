@@ -92,14 +92,20 @@ class FixturePoseRequests:
     #   self：当前通信客户端。
     #   partition：固定前缀加随机标识的分区名。
     #   world：仅含字母、数字与下划线的世界名。
+    #   startup_timeout_seconds：仅限启动握手的有界预算，不改变命令或观测期限。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, partition, world):
+    def __init__(self, partition, world, *, startup_timeout_seconds=15.0):
         if (sys.platform != "linux" or not isinstance(partition, str)
                 or re.fullmatch(r"dronedream-geometry-fixture-[a-f0-9]{32}", partition) is None
                 or not isinstance(world, str)
                 or re.fullmatch(r"[A-Za-z0-9_]{1,128}", world) is None):
             raise ValueError("FIXTURE_COMMAND_ISOLATION_INVALID")
+        if (type(startup_timeout_seconds) not in (int, float)
+                or not math.isfinite(startup_timeout_seconds)
+                or not 1.0 <= startup_timeout_seconds <= 60.0):
+            raise ValueError("FIXTURE_COMMAND_STARTUP_BUDGET_INVALID")
+        started = time.monotonic()
         context = multiprocessing.get_context("spawn")
         self._lock = threading.RLock()
         self._closed = False
@@ -116,7 +122,7 @@ class FixturePoseRequests:
             child.close()
         try:
             reply = (decode_json(self.connection.recv_bytes(2048), limit=2048)
-                     if self.connection.poll(15) else None)
+                     if self.connection.poll(startup_timeout_seconds) else None)
             ready = (isinstance(reply, dict) and set(reply) == {"ready"}
                      and reply["ready"] is True)
         except (EOFError, OSError, ValueError):
@@ -127,6 +133,7 @@ class FixturePoseRequests:
         if not ready:
             self.close()
             raise RuntimeError("FIXTURE_COMMAND_WORKER_NOT_READY")
+        self.startup_elapsed_seconds = max(0.0, time.monotonic() - started)
 
     # 功能：
     #   1. 串行完成一条请求与其唯一回执，严格校验应答字段、类型和耗时。

@@ -16,36 +16,76 @@ class FrozenVisualEncoder:
     """Training-side RGB embeddings using the deployable encoder and preprocessing."""
 
     # 功能：
-    #   校验冻结视觉编码器的权重与图接口，建立单线程 CPU 会话并用合成像素预热。
+    #   1. 校验冻结视觉编码器权重及清单声明的完整图接口，不误拒绝携带额外监督头的当前网络。
+    #   2. 建立单线程 CPU 会话，只消费 visual_features，并在采集前用合成像素预热。
     # 输入：
     #   self：待初始化的编码器。
     #   package_root：提供编码器与预处理契约的模型包目录。
     # 输出：
     #   None：不返回业务数据。
     def __init__(self, package_root: Path):
-        import onnxruntime as ort
-
-        from .artifact_assembly import validate_embedded_graph
-
         package = load_local_policy_package(package_root)
         self.manifest = package.manifest
         path = package.artifact_paths.get("perception-encoder")
         if path is None or not self.manifest.visual_feature_count:
             raise ValueError("TRAINING_VISUAL_ENCODER_MISSING")
+        content = read_plugin_file(path, limit=256 * 1024 * 1024)
+        self.sha256 = hashlib.sha256(content).hexdigest()
+        artifact = next(
+            a for a in package.manifest.artifacts if a.role == "perception-encoder"
+        )
+        if self.sha256 != artifact.sha256:
+            raise ValueError("TRAINING_VISUAL_ENCODER_CHANGED_DURING_LOAD")
+        self._initialize(content, artifact.input_names, artifact.output_names)
+
+    # 功能：
+    #   从明确绑定摘要的独立视觉权重创建训练编码器，不加载旧控制网络或授予飞行资格。
+    # 输入：
+    #   cls：编码器类。
+    #   path：冻结的五输出视觉 ONNX。
+    #   contract：包含权重摘要、尺寸、特征数和归一化的明确契约。
+    # 输出：
+    #   encoder：完成接口验证和预热的训练用编码器。
+    @classmethod
+    def from_artifact(cls, path: Path, contract: VisualInputContract):
+        from .vision_export import OUTPUT_NAMES
+
+        contract = VisualInputContract.model_validate(contract.model_dump())
+        content = read_plugin_file(path, limit=256 * 1024 * 1024)
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != contract.perception_encoder_sha256:
+            raise ValueError("TRAINING_VISUAL_ENCODER_CHANGED_DURING_LOAD")
+        encoder = cls.__new__(cls)
+        encoder.manifest = contract
+        encoder.sha256 = digest
+        encoder._initialize(content, ["forward_rgb"], list(OUTPUT_NAMES))
+        return encoder
+
+    # 功能：
+    #   验证完整图接口，建立有界 CPU 会话并预热；预热不构成传感器观测。
+    # 输入：
+    #   self：已绑定视觉契约和摘要的编码器。
+    #   content、input_names、output_names：冻结模型及声明接口。
+    # 输出：
+    #   None：不返回业务数据。
+    def _initialize(self, content, input_names, output_names):
+        import onnxruntime as ort
+        from .artifact_assembly import validate_embedded_graph
+
+        validate_embedded_graph(content, input_names=input_names, output_names=output_names)
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1
-        content = read_plugin_file(path, limit=256 * 1024 * 1024)
-        self.sha256 = hashlib.sha256(content).hexdigest()
-        expected = next(
-            a.sha256 for a in package.manifest.artifacts if a.role == "perception-encoder"
-        )
-        if self.sha256 != expected:
-            raise ValueError("TRAINING_VISUAL_ENCODER_CHANGED_DURING_LOAD")
-        validate_embedded_graph(
-            content, input_names=["forward_rgb"], output_names=["visual_features"]
-        )
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         self.session = ort.InferenceSession(content, options, providers=["CPUExecutionProvider"])
+        inputs = self.session.get_inputs()
+        expected = [1, 3, self.manifest.visual_height, self.manifest.visual_width]
+        # 原有图允许动态批次，实际始终送入单张图；静态维度不相容仍须拒绝。
+        if (len(inputs) != 1 or inputs[0].type != "tensor(float)"
+                or len(inputs[0].shape) != 4
+                or any(isinstance(actual, int) and actual != wanted
+                       for actual, wanted in zip(inputs[0].shape, expected))):
+            raise ValueError("TRAINING_VISUAL_ENCODER_INPUT_INVALID")
         self.input_contract = VisualInputContract.from_manifest(
             self.manifest, self.sha256
         ).model_dump()

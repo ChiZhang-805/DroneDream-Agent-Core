@@ -589,3 +589,25 @@ def test_actual_runtime_publisher_accepts_camera_readback(tmp_path, profile):
     # 调用方修改内层数组也不能改写后续回读，不能只测试字典的浅层复制。
     proof["verified_dimensions"]["depth"][0] = 0
     assert reader.require_ready()["verified_dimensions"]["depth"][0] > 0
+
+
+# 功能：深度定位不等待尚未到达的 RGB；完整视觉控制仍要求双流，不伪造缺失相机。
+# 输入：独立配置和真实尺寸回读。输出：单流通过、双流待定、坏配置仍拒绝。
+def test_depth_readback_does_not_depend_on_rgb_arrival(tmp_path):
+    reader = CameraProfileReadback(readback_fixture(tmp_path, profile="responsive-control"))
+    assert reader.observe("depth", *reader.expected["depth"])
+    result = reader.require_ready(required_streams=("depth",))
+    assert set(result["verified_dimensions"]) == {"depth"}
+    with pytest.raises(ValueError, match="READBACK_PENDING"):
+        reader.require_ready()
+    assert not reader.observe("rgb", 1, 1)
+    with pytest.raises(ValueError, match="ACTUAL_STREAM_PROFILE_MISMATCH"):
+        reader.require_ready(required_streams=("depth",))
+
+
+# 功能：空集合、重复或未知流不能绕过就绪判定。输入：非法依赖。输出：明确拒绝。
+@pytest.mark.parametrize("required", [(), ("depth", "depth"), ("unknown",), ["depth"], (1,)])
+def test_required_camera_streams_are_explicit_and_valid(tmp_path, required):
+    reader = CameraProfileReadback(readback_fixture(tmp_path, profile="responsive-control"))
+    with pytest.raises(ValueError, match="REQUIRED_STREAMS_INVALID"):
+        reader.require_ready(required_streams=required)

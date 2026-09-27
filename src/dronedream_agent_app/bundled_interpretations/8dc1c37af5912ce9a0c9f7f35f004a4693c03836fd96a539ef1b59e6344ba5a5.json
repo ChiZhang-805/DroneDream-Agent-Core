@@ -1,0 +1,80 @@
+{
+  "schema_version": "dronedream.bundled-interpretation.v1",
+  "asset_id": "dronedream.school-map.v1",
+  "content_sha256": "bc88b79228ec7ae4c974957b6b692d7941607885c5489fc1d9f5f925dba10f2d",
+  "source_sha256": "c38a96e4bcdf2d335842c5d674b0f1e1cbdec5a21e716688df95ce6df11b48bf",
+  "prompt_sha256": "069a4baca39347fd083bf6de7eb294013937e91e701740288de79be5879dfc94",
+  "locale": "en-US",
+  "understanding": {
+    "summary": "School map with indoor verified corridor network and outdoor geometry-derived road network in ENU frame. Office launch pad (verified-000) at z=8.15 m connects via corridor to a three-storey switchback stair (verified-007 through verified-025) descending to ground floor. Ground corridor links tree corridor (verified-032), teaching building, cafeteria, and takeout pickup pad (verified-036). Outdoor roads connect campus gate, east-west spine, bicycle shelter, and facility entrances. Facility landmarks are distinct from usable pickup/launch waypoints. All flight-verified edges have zero documented clearance; geometry-derived road edges carry positive clearance values. Dynamic obstacles require runtime spawning.",
+    "items": [
+      {
+        "source_id": "verified-000",
+        "explanation": "Office launch pad at z=8.15 m; semantic launch node. Entry point to indoor verified corridor network at the top-floor office level."
+      },
+      {
+        "source_id": "verified-032",
+        "explanation": "Tree corridor node at z≈1.8 m; indoor/outdoor transition point where verified corridor meets outdoor road network. Named entity anchor for 'tree corridor' landmark."
+      },
+      {
+        "source_id": "verified-036",
+        "explanation": "Takeout pickup pad at z≈1.35 m; semantic pickup node. Usable mission pickup waypoint, distinct from the nearby 'takeout pickup' facility landmark."
+      },
+      {
+        "source_id": "road-campus-gate-spine-00",
+        "explanation": "Campus gate outdoor road node at z=1.8 m; named entity anchor for 'campus gate' landmark. Entry point from off-campus via gate spine road."
+      },
+      {
+        "source_id": "road-teaching-entrance-road-02",
+        "explanation": "Teaching building outdoor road node at z=1.8 m; named entity anchor for 'teaching building' landmark. Facility entrance, not a pickup waypoint."
+      },
+      {
+        "source_id": "road-cafeteria-entrance-road-03",
+        "explanation": "Cafeteria outdoor road node at z=1.8 m; named entity anchor for 'cafeteria' landmark. Facility entrance, not a pickup waypoint."
+      },
+      {
+        "source_id": "road-takeout-pickup-road-03",
+        "explanation": "Takeout pickup outdoor road node at z=1.8 m; named entity anchor for 'takeout pickup' landmark. Road endpoint near but distinct from verified-036 pickup pad."
+      },
+      {
+        "source_id": "road-west-bicycle-service-road-04",
+        "explanation": "Bicycle shelter outdoor road node at z=1.8 m; named entity anchor for 'bicycle shelter' landmark. Western service road terminus."
+      }
+    ],
+    "limitations": [
+      "All flight-verified edges document minimum_clearance_m=0.0; runtime must verify actual clearance before use.",
+      "Geometry-derived road edges lack flight evidence; clearance values are geometric estimates, not validated.",
+      "Dynamic obstacles are runtime-required and not present in static collision; occupancy/ESDF must be runtime-generated.",
+      "Indoor stair nodes (verified-007–verified-025) connect three floor levels; body-aware height bands and stair clearance must be geometry-engine derived, not inferred from node positions alone.",
+      "Map metadata is not authority for the selected aircraft or actual cargo mass. Use the selected vehicle contract, confirmed payload and live battery state, even if the map records reference vehicle dimensions."
+    ]
+  },
+  "output_sha256": "59e9bd3bdd886082f54dcd0dbb1133a40e9c666446cb50027027315bff918881",
+  "model_call": {
+    "schema_version": "dronedream.model-call.v1",
+    "call_id": "model-c849c61f06eb4cfd8dc58b99",
+    "role": "context_summarizer",
+    "attempt": 1,
+    "input_sha256": "754fc78594197511205d7f7c48d62fdd211a0c0a69f5422b36a38d6194c6a19c",
+    "output_sha256": "b286bf57bdef474c8fd306cc2e1d29999c2ba1a914669b867e9e3a308befe094",
+    "output_schema": "AssetUnderstanding",
+    "provider": "kimi",
+    "model": "kimi-k2.6",
+    "response_id": "chatcmpl-6ab0fafb66b3944e3b6e6594",
+    "previous_response_id": null,
+    "input_tokens": 11003,
+    "output_tokens": 661,
+    "latency_ms": 22375,
+    "created_at": "2026-09-21T09:38:00.239345Z",
+    "local_expert_trace": null
+  },
+  "authority": "advisory-only",
+  "review": {
+    "method": "source-grounded-editor-review",
+    "changes": [
+      "Separated map reference metadata from selected aircraft authority"
+    ],
+    "model_draft_output_sha256": "b286bf57bdef474c8fd306cc2e1d29999c2ba1a914669b867e9e3a308befe094",
+    "model_draft_preserved": true
+  }
+}

@@ -17,7 +17,7 @@ from functools import lru_cache
 from itertools import islice
 from typing import Literal, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_serializer, model_validator
 
 from .contracts import (
     BodyFrameControlIntent,
@@ -192,6 +192,9 @@ class RealtimeFeatureEncoding(StrictModel):
     code, ONNX Runtime and replay qualification.
     """
 
+    # 融合边界直接接收编码实例时也重验其字段和嵌套列表，随后内部检查无需再次序列化。
+    model_config = ConfigDict(revalidate_instances="always")
+
     schema_version: Literal["dronedream.realtime-feature-encoding.v1"] = (
         "dronedream.realtime-feature-encoding.v1"
     )
@@ -209,6 +212,20 @@ class RealtimeFeatureEncoding(StrictModel):
     valid_mask: list[float] = Field(min_length=1, max_length=512)
     inference_latency_ms: float = Field(ge=0.0, le=30_000.0)
     issue_codes: list[str] = Field(default_factory=list, max_length=24)
+    history_slot_revision: int = Field(default=0, ge=0, le=2**31 - 1, strict=True)
+
+    # 功能：
+    #   独立样本保持原始散列载荷，同一飞行状态槽的修订显式携带递增身份。
+    # 输入：
+    #   handler：模型字段序列化器。
+    # 输出：
+    #   result：兼容未修订历史记录的编码字典。
+    @model_serializer(mode="wrap")
+    def serialize_revision(self, handler):
+        result = handler(self)
+        if type(self.history_slot_revision) is int and self.history_slot_revision == 0:
+            result.pop("history_slot_revision", None)
+        return result
 
     # 功能：
     #   校验角色固定宽度、掩码与采集时序；张量形状不能替代模型包的特征语义契约。
@@ -218,6 +235,8 @@ class RealtimeFeatureEncoding(StrictModel):
     #   self：结构一致的编码，不授予运动权限。
     @model_validator(mode="after")
     def validate_encoding(self) -> RealtimeFeatureEncoding:
+        if self.history_slot_revision and self.encoder_role != "flight-state-encoder":
+            raise ValueError("only flight state encodings support history slot revisions")
         if len(self.features) != len(self.valid_mask):
             raise ValueError("feature values and validity mask must have equal width")
         if len(self.features) != _ENCODER_WIDTHS[self.encoder_role]:
@@ -313,16 +332,7 @@ class RealtimeFeatureSnapshot(StrictModel):
             snapshot = _strict_copy(self, RealtimeFeatureSnapshot)
         except (ValueError, TypeError, OverflowError):
             return False
-        by_role = {encoding.encoder_role: encoding for encoding in snapshot.encodings}
-        fresh = (
-            snapshot.ready_for_control
-            and unix_ms >= snapshot.captured_at_unix_ms
-            and all(
-                role in by_role and by_role[role].fresh_at(unix_ms)
-                for role in snapshot.required_roles
-            )
-        )
-        return fresh
+        return _validated_snapshot_fresh_at(snapshot, unix_ms)
 
     # 功能：
     #   组合三个显式特征契约，不根据向量宽度猜测模型输入含义。
@@ -350,41 +360,82 @@ class RealtimeFeatureSnapshot(StrictModel):
     def control_deadline_unix_ms(self, *, now_unix_ms: int) -> int:
         if type(now_unix_ms) is not int or now_unix_ms < 0:
             raise ValueError("CONTROL_DEADLINE_CLOCK_INVALID")
-        if not self.fresh_at(now_unix_ms):
+        try:
+            snapshot = _strict_copy(self, RealtimeFeatureSnapshot)
+        except (ValueError, TypeError, OverflowError):
             return 0
-        maximum_age_ms = round(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
-        deadline = min(
-            encoding.observed_at_unix_ms
-            + min(
-                maximum_age_ms,
-                encoding.maximum_age_milliseconds,
+        return _validated_control_deadline(snapshot, now_unix_ms)
+
+
+# 功能：在单次严格校验后计算原始观测截止时间，不跨调用缓存可变对象或运动许可。
+# 输入：snapshot：本调用独立验证的快照；now_unix_ms：非负整数时钟。
+# 输出：deadline：真实观测和角速度允许的最后时刻，过期或不足时为零。
+def _validated_control_deadline(snapshot: RealtimeFeatureSnapshot, now_unix_ms: int) -> int:
+    if not _validated_snapshot_fresh_at(snapshot, now_unix_ms):
+        return 0
+    maximum_age_ms = round(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
+    deadline = min(
+        encoding.observed_at_unix_ms
+        + min(maximum_age_ms, encoding.maximum_age_milliseconds)
+        for encoding in snapshot.encodings
+        if encoding.encoder_role in snapshot.required_roles
+    )
+    state = next(
+        (e for e in snapshot.encodings if e.encoder_role == "flight-state-encoder"), None
+    )
+    if state is not None:
+        # Canonical gyro channels are 11:14, divided by 5 rad/s. A saturated
+        # or masked channel cannot bound rotational aging. This is a
+        # freshness veto only; it is not reconstructed attitude/optical flow.
+        gyro = state.features[11:14]
+        if (
+            len(gyro) != 3
+            or any(m != 1 for m in state.valid_mask[11:14])
+            or any(abs(v) >= 4 for v in gyro)
+        ):
+            return 0
+        rate = 5 * math.hypot(*gyro)
+        if rate:
+            oldest = min(
+                e.observed_at_unix_ms
+                for e in snapshot.encodings
+                if e.encoder_role in snapshot.required_roles
             )
-            for encoding in self.encodings
-            if encoding.encoder_role in self.required_roles
+            deadline = min(deadline, oldest + math.floor(math.radians(10) / rate * 1000))
+    # Retained features can remain useful at this instant, but an action
+    # needs positive remaining time. Equality cannot authorize dispatch.
+    return deadline if deadline > now_unix_ms else 0
+
+
+# 功能：一次解析并冻结实时模型输入，同时计算新鲜度与动作期限；避免同一入口三次全量序列化。
+# 输入：value：调用方原始字典或模型；now_unix_ms：当前非负整数毫秒时间。
+# 输出：快照、新鲜标志、原始截止时间；非法结构或散列仍明确拒绝。
+def parse_realtime_control_input(value, *, now_unix_ms: int) -> tuple[RealtimeFeatureSnapshot, bool, int]:
+    if type(now_unix_ms) is not int or now_unix_ms < 0:
+        raise ValueError("CONTROL_DEADLINE_CLOCK_INVALID")
+    if isinstance(value, RealtimeFeatureSnapshot):
+        value = value.model_dump(mode="python")
+    snapshot = RealtimeFeatureSnapshot.model_validate(value, strict=True)
+    return (snapshot, _validated_snapshot_fresh_at(snapshot, now_unix_ms),
+            _validated_control_deadline(snapshot, now_unix_ms))
+
+
+# 功能：对本次调用已严格验证并独立持有的快照判断原时钟，不重复序列化嵌套张量。
+# 输入：snapshot：仅限 _strict_copy 的局部副本；unix_ms：已验证的非负整数时刻。
+# 输出：bool：所有必需来源仍在原有效期内；不能缓存为后续控制授权。
+def _validated_snapshot_fresh_at(snapshot: RealtimeFeatureSnapshot, unix_ms: int) -> bool:
+    by_role = {encoding.encoder_role: encoding for encoding in snapshot.encodings}
+    return (
+        snapshot.ready_for_control
+        and unix_ms >= snapshot.captured_at_unix_ms
+        and all(
+            role in by_role
+            and by_role[role].encoded_at_unix_ms <= unix_ms
+            and unix_ms - by_role[role].observed_at_unix_ms
+            <= by_role[role].maximum_age_milliseconds
+            for role in snapshot.required_roles
         )
-        state = next((e for e in self.encodings if e.encoder_role == "flight-state-encoder"), None)
-        if state is not None:
-            # Canonical gyro channels are 11:14, divided by 5 rad/s. A saturated
-            # or masked channel cannot bound rotational aging. This is a
-            # freshness veto only; it is not reconstructed attitude/optical flow.
-            gyro = state.features[11:14]
-            if (
-                len(gyro) != 3
-                or any(m != 1 for m in state.valid_mask[11:14])
-                or any(abs(v) >= 4 for v in gyro)
-            ):
-                return 0
-            rate = 5 * math.hypot(*gyro)
-            if rate:
-                oldest = min(
-                    e.observed_at_unix_ms
-                    for e in self.encodings
-                    if e.encoder_role in self.required_roles
-                )
-                deadline = min(deadline, oldest + math.floor(math.radians(10) / rate * 1000))
-        # Retained features can remain useful at this instant, but an action
-        # needs positive remaining time. Equality cannot authorize dispatch.
-        return deadline if deadline > now_unix_ms else 0
+    )
 
 
 class FlightStateSample(StrictModel):
@@ -945,17 +996,50 @@ class FlightStateEncoder:
         *,
         encoded_at_unix_ms: int | None = None,
     ) -> RealtimeFeatureEncoding:
+        encoding = self._encode(sample, encoded_at_unix_ms=encoded_at_unix_ms, refresh_current=False)
+        return encoding
+
+    # 功能：
+    #   更新同一历史槽内已到达的姿态和速度，保留最旧来源期限，不伪造新 IMU 或增加历史长度。
+    # 输入：
+    #   sample：至少一个来源尚未推进的当前实测复合样本。
+    #   encoded_at_unix_ms：当前编码时间。
+    # 输出：
+    #   encoding：与当前实测姿态一致、但没有延长寿命的状态编码。
+    def refresh_current(self, sample: FlightStateSample, *, encoded_at_unix_ms: int) -> RealtimeFeatureEncoding:
+        encoding = self._encode(sample, encoded_at_unix_ms=encoded_at_unix_ms, refresh_current=True)
+        return encoding
+
+    # 功能：
+    #   共用瞬时特征计算；独立新样本追加历史，异步局部更新只替换末槽并保留其原期限。
+    # 输入：
+    #   sample：待严格验证的原生样本；encoded_at_unix_ms：编码时刻。
+    #   refresh_current：是否为同一历史槽的真实局部更新。
+    # 输出：
+    #   encoding：成功验证后一次性提交的完整状态编码。
+    def _encode(self, sample: FlightStateSample, *, encoded_at_unix_ms: int | None, refresh_current: bool) -> RealtimeFeatureEncoding:
         started_ns = time.perf_counter_ns()
-        now_ms = _encoding_clock(sample.observed_at_unix_ms, encoded_at_unix_ms)
         # Revalidate the entire incoming graph, including model_copy updates.
         # Build a candidate history; a failed encoding must not consume a tick.
         sample = _strict_copy(sample, FlightStateSample)
+        now_ms = _encoding_clock(sample.observed_at_unix_ms, encoded_at_unix_ms)
         if type(self.maximum_gap_ms) is not int or not 10 <= self.maximum_gap_ms <= 5_000:
             raise ValueError("flight state maximum gap must be in [10, 5000] ms")
-        if self._samples and sample.observed_at_unix_ms <= self._samples[-1].observed_at_unix_ms:
+        if refresh_current:
+            previous = self._samples[-1] if self._samples else None
+            if (previous is None or previous.source_id != sample.source_id
+                    or sample.observed_at_unix_ms < previous.observed_at_unix_ms
+                    or (sample.observed_at_unix_ms != previous.observed_at_unix_ms
+                        and (sample.imu_timestamp_us is None or sample.imu_timestamp_us != previous.imu_timestamp_us))
+                    or (sample.imu_timestamp_us is not None and previous.imu_timestamp_us is not None
+                        and sample.imu_timestamp_us < previous.imu_timestamp_us)):
+                raise ValueError("FLIGHT_STATE_REFRESH_NOT_SAME_HISTORY_SLOT")
+            # 新姿态不能给尚未推进的其他传感器续命。过期槽仍保持过期，由上游阻断。
+            sample = sample.model_copy(update={'observed_at_unix_ms': previous.observed_at_unix_ms})
+        elif self._samples and sample.observed_at_unix_ms <= self._samples[-1].observed_at_unix_ms:
             raise ValueError("flight state timestamps must increase strictly")
         reset_issue = None
-        if self._samples:
+        if self._samples and not refresh_current:
             previous = self._samples[-1]
             if previous.source_id != sample.source_id:
                 reset_issue = "FLIGHT_STATE_SOURCE_CHANGED"
@@ -975,6 +1059,11 @@ class FlightStateEncoder:
         pending = deque(
             () if reset_issue is not None else self._samples, maxlen=self._samples.maxlen
         )
+        if refresh_current:
+            pending.pop()
+            # 换源/重置的当前槽不能因局部更新而提前清除阻断诊断。
+            reset_issue = next((issue for issue in self._last_encoding.issue_codes if issue in {
+                'FLIGHT_STATE_SOURCE_CHANGED', 'FLIGHT_STATE_IMU_CLOCK_RESET', 'FLIGHT_STATE_SAMPLE_GAP'}), None)
         pending.append(sample)
         samples = list(pending)
         gaps = [
@@ -1044,6 +1133,12 @@ class FlightStateEncoder:
         if len(samples) < self._samples.maxlen:
             issues.append("FLIGHT_STATE_HISTORY_WARMING")
         source_sha256 = sha256_json([item.model_dump(mode="json") for item in samples])
+        revision = 0
+        if refresh_current:
+            assert self._last_encoding is not None
+            if source_sha256 == self._last_encoding.source_sha256:
+                return self._last_encoding.model_copy(deep=True)
+            revision = self._last_encoding.history_slot_revision + 1
         coverage = len(samples) / int(self._samples.maxlen or 1)
         encoding = RealtimeFeatureEncoding(
             encoder_role="flight-state-encoder",
@@ -1058,6 +1153,7 @@ class FlightStateEncoder:
             ),
             source_ids=[sample.source_id],
             source_sha256=source_sha256,
+            history_slot_revision=revision,
             observed_at_unix_ms=sample.observed_at_unix_ms,
             encoded_at_unix_ms=now_ms,
             maximum_age_milliseconds=self.maximum_gap_ms,
@@ -1101,7 +1197,9 @@ def _snapshot_readiness_issues(
         encoding = by_role.get(role)
         if encoding is None:
             issues.append(f"REQUIRED_ENCODER_MISSING:{role}")
-        elif not encoding.fresh_at(captured_at_unix_ms):
+        elif not (encoding.encoded_at_unix_ms <= captured_at_unix_ms
+                  and captured_at_unix_ms - encoding.observed_at_unix_ms
+                  <= encoding.maximum_age_milliseconds):
             issues.append(f"REQUIRED_ENCODER_STALE:{role}")
         elif encoding.quality < 0.35:
             issues.append(f"REQUIRED_ENCODER_LOW_QUALITY:{role}")
@@ -1169,6 +1267,13 @@ def fuse_realtime_features(
     ]
     if not supplied:
         raise ValueError("at least one realtime feature encoding is required")
+    return _fuse_validated_features(supplied, captured_at_unix_ms, required)
+
+
+# 功能：融合本次调用已严格复制的编码，避免刷新飞行状态时重复复制整组张量。
+# 输入：supplied：独立且已验证的编码；captured_at_unix_ms：合法融合时钟；required：必需角色。
+# 输出：重新计算散列并经过完整模型校验的融合快照，不延长任何来源寿命。
+def _fuse_validated_features(supplied, captured_at_unix_ms, required) -> RealtimeFeatureSnapshot:
     by_role = {encoding.encoder_role: encoding for encoding in supplied}
     if len(by_role) != len(supplied):
         raise ValueError("feature snapshot cannot contain duplicate encoder roles")
@@ -1231,15 +1336,15 @@ def refresh_flight_state_features(
         or flight_state.encoded_at_unix_ms > captured_at_unix_ms
     ):
         raise ValueError("CONTROL_REFRESH_NATIVE_CLOCK_INVALID")
-    refreshed = fuse_realtime_features(
+    refreshed = _fuse_validated_features(
         [
-            flight_state.model_copy(deep=True)
+            flight_state
             if row.encoder_role == "flight-state-encoder"
-            else row.model_copy(deep=True)
+            else row
             for row in snapshot.encodings
         ],
         captured_at_unix_ms=captured_at_unix_ms,
-        required_roles=snapshot.required_roles,
+        required=snapshot.required_roles,
     )
     return refreshed
 

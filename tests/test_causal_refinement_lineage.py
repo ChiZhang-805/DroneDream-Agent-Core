@@ -17,6 +17,7 @@ from dronedream_agent_core.training.causal_policy import (
     causal_examples,
 )
 from dronedream_agent_core.training.causal_replay import (
+    CAUSAL_SPLIT_CONTRACT,
     REPLAY_FILES,
     bind_source_group_metrics,
     protected_validation_groups,
@@ -140,6 +141,25 @@ def test_collectors_must_preserve_existing_held_out_groups(tmp_path):
         receipt["metrics"]["validation_groups"] = groups
         with pytest.raises(ValueError, match="CURRENT_HELD_OUT_GROUPS"):
             protected_validation_groups(receipt)
+
+
+# 功能：
+#   多轮迁移继续保护祖先调参路线；已迁移却没有历史记录的旧回执不能当成完整来源。
+# 输入：
+#   无：使用明确合成的路线摘要及父模型身份。
+# 输出：
+#   None：当前与祖先组共同保留，历史缺失或格式错误明确拒绝。
+def test_ancestral_tuning_groups_remain_protected():
+    receipt = dict(split_contract=CAUSAL_SPLIT_CONTRACT, initial_policy_sha256='a' * 64,
+        metrics=dict(validation_groups=['b' * 64], historical_validation_groups=['c' * 64]))
+    assert protected_validation_groups(receipt) == {'b' * 64, 'c' * 64}
+    for value in (None, ['not-a-digest'], [False]):
+        receipt['metrics']['historical_validation_groups'] = value
+        with pytest.raises(ValueError, match='ANCESTRAL_HELD_OUT_GROUPS'):
+            protected_validation_groups(receipt)
+    del receipt['metrics']['historical_validation_groups']
+    with pytest.raises(ValueError, match='ANCESTRAL_HELD_OUT_GROUPS'):
+        protected_validation_groups(receipt)
 
 
 # 功能：

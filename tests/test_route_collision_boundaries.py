@@ -79,6 +79,32 @@ def test_thin_wall_between_samples_cannot_pass_route_clearance(tmp_path):
 
 
 # 功能：
+#   验证进度仅反映已检查样本，观察器不改变净空结论。
+# 输入：
+#   tmp_path：隔离地图；monkeypatch：可控时钟。
+# 输出：
+#   无返回值。
+def test_clearance_progress_preserves_result_and_reports_actual_work(tmp_path, monkeypatch):
+    from dronedream_agent_core.model_harness.progress import progress_sink
+    import time
+    path = semantic(tmp_path / "progress-map.json")
+    expected = collision.validate_route_clearance(route(), path, vehicle_diameter_m=.01, vehicle_height_m=.01, sample_interval_m=.01)
+    ticks = iter(range(0, 1000, 5))
+    monkeypatch.setattr(time, "monotonic", lambda: float(next(ticks)))
+    events = []
+    token = progress_sink.set(lambda *args: events.append(args))
+    try:
+        actual = collision.validate_route_clearance(route(), path, vehicle_diameter_m=.01, vehicle_height_m=.01, sample_interval_m=.01)
+    finally:
+        progress_sink.reset(token)
+    assert actual == expected
+    assert len(events[0][1]) > 250
+    assert any("32 个采样位置" in event[1] for event in events)
+    assert "未通过" in events[-1][1]
+    assert {event[0] for event in events} == {"clearance"}
+
+
+# 功能：
 #   几何文件在计算期间被替换后，回执仍绑定实际消费的原字节，不能指向未参与计算的新地图。
 # 输入：
 #   tmp_path：测试地图目录。

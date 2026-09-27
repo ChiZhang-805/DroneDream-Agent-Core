@@ -57,6 +57,35 @@ def test_model_invocation_reason_code_is_machine_safe() -> None:
         )
 
 
+# 功能：
+#   验证额度与授权拒绝只调用一次，不把永久失败当作模型输出错误反复重试。
+# 输入：
+#   status：云端返回的额度或授权 HTTP 状态码。
+#   monkeypatch：替换真实供应商请求的测试装置。
+# 输出：
+#   无；调用次数或异常因果链不正确时测试失败。
+@pytest.mark.parametrize("status", [402, 409])
+def test_grant_or_quota_rejection_is_not_retried(status, monkeypatch) -> None:
+    import httpx
+    from openai import APIStatusError
+
+    port = _port()
+    calls = []
+    response = httpx.Response(status, request=httpx.Request("POST", "https://example.invalid/v1"))
+    error = APIStatusError("authorization rejected", response=response, body=None)
+
+    def reject(**kwargs):
+        calls.append(kwargs)
+        raise error
+
+    monkeypatch.setattr(port, "_responses_call", reject)
+    with pytest.raises(ModelInvocationError) as caught:
+        port.call(role="intent_parser", output_type=IntentArtifact, instructions="Return intent", input_artifact={"message": "takeout"})
+    assert caught.value.attempts_used == 1
+    assert caught.value.__cause__ is error
+    assert len(calls) == 1
+
+
 def test_openai_empty_optional_environment_values_use_safe_defaults(monkeypatch) -> None:
     """Blank optional settings retain the supported default rather than an empty model ID."""
     monkeypatch.setenv("OPENAI_API_STYLE", "")
@@ -368,6 +397,21 @@ def test_custom_validator_message_cannot_echo_secret_into_retry_diagnostics() ->
     diagnostic = _safe_attempt_diagnostic(failure.value)
     assert "must-not-be-retained" not in diagnostic
     assert "value_error" in diagnostic
+
+
+def test_length_repair_diagnostic_includes_bound_without_rejected_values() -> None:
+    """Schema length repair needs the limit, never the provider's rejected content."""
+    from pydantic import Field
+
+    class Output(BaseModel):
+        issue_codes: list[str] = Field(max_length=32)
+
+    with pytest.raises(ValidationError) as failure:
+        Output(issue_codes=["must-not-be-retained"] * 33)
+    diagnostic = _safe_attempt_diagnostic(failure.value)
+    assert '"max_length":32' in diagnostic
+    assert "too_long" in diagnostic
+    assert "must-not-be-retained" not in diagnostic
 
 
 @pytest.mark.parametrize("timeout", [True, 0.0, -1.0, float("nan"), float("inf"), 10**400])

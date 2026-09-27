@@ -28,6 +28,11 @@ from ..local_policy_packages import (
     Sha256,
     load_local_policy_package,
 )
+from ..local_vision_training import (
+    LOCAL_VISION_ARCHITECTURE,
+    LOCAL_VISION_EMBEDDING_SUPERVISION,
+    LOCAL_VISION_SPLIT_METHOD,
+)
 from ..plugin_files import check_plain_plugin_path, read_plugin_file
 from .causal_replay import REPLAY_FILES
 from .mission_groups import SPATIAL_SPLIT_CONTRACT
@@ -73,6 +78,11 @@ class CompleteEnsembleRecipe(StrictModel):
         # aliasing, Windows case collisions and links into an existing package.
         if any(a.relative_path != f"{a.role}.onnx" for a in manifest.artifacts):
             raise ValueError("ENSEMBLE_ARTIFACT_OUTPUT_NAMES_MUST_BE_CANONICAL")
+        # 旧包仍可由诊断读取器识别，但新完整飞行包必须显式输入运动状态，不能沿用缺输入的负载图。
+        payload = next(a for a in manifest.artifacts if a.role == "payload-dynamics-adapter")
+        if set(payload.input_names) != {"payload_features", "maneuver_features", "payload_history",
+                                        "state_history", "history_mask"}:
+            raise ValueError("ENSEMBLE_PAYLOAD_REQUIRES_CURRENT_MOTION_INPUT")
         return self
 
 
@@ -187,13 +197,19 @@ def _object_field(receipt: dict, field: str) -> dict:
 
 
 # 功能：
-#   验证当前空间划分契约，提取不重叠的训练与留出分组供跨专家检查。
+#   验证当前空间划分契约，提取训练与已用于验证或失败诊断的分组供跨专家隔离检查。
 # 输入：
 #   role：当前控制或顾问专家角色。
 #   receipt：该专家的训练回执。
 # 输出：
 #   groups：按训练、验证顺序排列的两个分组摘要集合。
 def expert_spatial_groups(role, receipt):
+    if receipt.get('purpose') in ('frozen-precision-heading-composition', 'frozen-navigation-heading-composition'):
+        from .precision_heading_lineage import composition_role, composition_spatial_groups
+
+        if composition_role(receipt) != role:
+            raise ValueError('HEADING_LINEAGE_ROLE_MISMATCH')
+        return composition_spatial_groups(receipt)
     field = "dataset_split_method" if "advisors" in receipt else "split_contract"
     if receipt.get(field) != SPATIAL_SPLIT_CONTRACT:
         raise ValueError("ENSEMBLE_REQUIRES_CURRENT_SPATIAL_SPLIT_CONTRACT")
@@ -204,8 +220,34 @@ def expert_spatial_groups(role, receipt):
         if not isinstance(values, list) or not values or not all(_hash(v) for v in values):
             raise ValueError("ENSEMBLE_SPATIAL_GROUP_IDENTITIES_MISSING")
         groups.append(set(values))
+    if role in NAVIGATION_EXPERT_ROLES:
+        historical = metrics.get('historical_validation_groups', [])
+        has_ancestor = bool(receipt.get('initial_policy_sha256')
+                            or receipt.get('encoder_initialization'))
+        if (has_ancestor and 'historical_validation_groups' not in metrics
+                or type(historical) is not list or len(historical) > 10000
+                or not all(_hash(value) for value in historical)
+                or len(set(historical)) != len(historical)):
+            raise ValueError('ENSEMBLE_ANCESTRAL_VALIDATION_SOURCES_INVALID')
+        groups[1].update(historical)
     if groups[0] & groups[1]:
         raise ValueError("ENSEMBLE_SPATIAL_GROUPS_OVERLAP")
+    if role == 'risk-critic':
+        diagnostics = receipt.get('selection_diagnostic_sources', [])
+        if type(diagnostics) is not list or len(diagnostics) > 16:
+            raise ValueError('ENSEMBLE_SELECTION_DIAGNOSTICS_INVALID')
+        seen = set()
+        for source in diagnostics:
+            if (type(source) is not dict or not _hash(source.get('dataset_receipt_sha256'))
+                    or source['dataset_receipt_sha256'] in seen
+                    or type(source.get('groups')) is not list or not source['groups']
+                    or len(source['groups']) > 10000
+                    or not all(_hash(value) for value in source['groups'])
+                    or len(set(source['groups'])) != len(source['groups'])):
+                raise ValueError('ENSEMBLE_SELECTION_DIAGNOSTICS_INVALID')
+            seen.add(source['dataset_receipt_sha256'])
+            # 已知训练来源仍只属于训练集合；其余诊断来源均不得用于未来独立准入。
+            groups[1].update(set(source['groups']) - groups[0])
     return groups
 
 
@@ -232,6 +274,11 @@ def validate_expert_training_receipt(role: str, digest: str, receipt: dict, mani
         raise ValueError("ENSEMBLE_TRAINING_ISSUES_NOT_LIST")
     if receipt.get("issue_codes"):
         raise ValueError("ENSEMBLE_TRAINING_RECEIPT_HAS_FAILURES")
+    if manifest.heading_context_for_role(role) is not None:
+        from .precision_heading_lineage import validate_precision_composition_receipt
+
+        validate_precision_composition_receipt(digest, receipt, manifest, role=role)
+        return
     if role != "perception-encoder":
         expert_spatial_groups(role, receipt)
     if role in NAVIGATION_EXPERT_ROLES:
@@ -272,6 +319,21 @@ def validate_expert_training_receipt(role: str, digest: str, receipt: dict, mani
                 or not all(_hash(v) for v in replay.values())):
             raise ValueError("ENSEMBLE_NAVIGATION_BOUND_REPLAY_MISSING")
     elif role == "risk-critic":
+        if receipt.get('embedded_input_transform') is not None:
+            from .risk_nearfield import nearfield_descriptor
+
+            transform = receipt['embedded_input_transform']
+            if (type(transform) is not dict
+                    or transform != nearfield_descriptor(transform.get('distance_m'),
+                                                         transform.get('position_uncertainty_floor_m'))
+                    or transform['sensor_contract_sha256'] != manifest.sensor_contract_sha256
+                    or not _hash(receipt.get('unwrapped_model_sha256'))):
+                raise ValueError('ENSEMBLE_ACTION_RISK_TRANSFORM_IDENTITY_MISMATCH')
+            if 'position_uncertainty_floor_m' in transform:
+                teacher = _object_field(receipt, 'teacher_config')
+                if (teacher.get('position_uncertainty_m') != transform['position_uncertainty_floor_m']
+                        or receipt.get('monotonic_localization_uncertainty', False) is not False):
+                    raise ValueError('ENSEMBLE_ACTION_RISK_POSITION_RESERVE_MISMATCH')
         if (
             receipt.get("purpose") != "native-action-risk-offline-training"
             or receipt.get("model_sha256") != digest
@@ -294,12 +356,23 @@ def validate_expert_training_receipt(role: str, digest: str, receipt: dict, mani
     elif role == "perception-encoder":
         _split_hashes(receipt)
         config = _object_field(receipt, "config")
+        initialization = _object_field(receipt, "initialization")
+        expected_initialization = {
+            "coco-voc-segmentation": "lraspp-mobilenet-v3-large-coco-voc-v1",
+            "imagenet-backbone": "mobilenet-v3-large-imagenet1k-v2",
+        }.get(config.get("pretrained_source"))
         if (
             receipt.get("artifact_sha256") != digest
             or receipt.get("training_accepted") is not True
             or receipt.get("flight_qualification_granted") is not False
-            or receipt.get("split_method") != "held-out-complete-flight"
-            or receipt.get("backbone_initialization") != "mobilenet-v3-large-imagenet1k-v2"
+            or receipt.get("architecture") != LOCAL_VISION_ARCHITECTURE
+            or receipt.get("embedding_supervision") != LOCAL_VISION_EMBEDDING_SUPERVISION
+            or receipt.get("split_method") != LOCAL_VISION_SPLIT_METHOD
+            or receipt.get("spatial_group_disjoint") is not True
+            or expected_initialization is None
+            or receipt.get("backbone_initialization") != expected_initialization
+            or initialization.get("source") != expected_initialization
+            or not _hash(initialization.get("tensor_sha256"))
             or type(receipt.get("visual_feature_count")) is not int
             or type(config.get("width")) is not int
             or type(config.get("height")) is not int
@@ -372,6 +445,14 @@ def assemble_complete_ensemble(
             validate_embedded_graph(
                 data, input_names=artifact.input_names, output_names=artifact.output_names
             )
+            if source.role == 'risk-critic':
+                from .risk_nearfield import validate_nearfield_graph
+
+                validate_nearfield_graph(data, receipt.get('embedded_input_transform'),
+                                         recipe.manifest.sensor_contract_sha256)
+                from .risk_uncertainty_monotonicity import validate_uncertainty_graph
+
+                validate_uncertainty_graph(data, receipt.get('monotonic_localization_uncertainty', False))
             (staging / artifact.relative_path).write_bytes(data)
             receipt_name = f"training-evidence/{source.role}.json"
             (staging / receipt_name).write_bytes(receipt_bytes)

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 
 def _base_module():
@@ -322,13 +323,19 @@ def test_unscaled_raw_actuator_output_blocks_payload_inference() -> None:
     assert "actuator_output:NORMALIZATION_UNAVAILABLE" in telemetry["issue_codes"]
 
 
+# 功能：
+#   验证重复传感器包不续期，且同一来源时间戳的数据冲突被拒绝。
+# 输入：
+#   monkeypatch：隔离被测执行器时钟的测试工具。
+# 输出：
+#   None：无返回值。
 def test_repeated_native_sensor_packet_does_not_renew_receipt_time(monkeypatch) -> None:
     base = _base_module()
     client = object.__new__(base.MavsdkOffboardClient)
     client._dynamics_samples = {}
     client._dynamics_errors = {}
     clock = [100.0]
-    monkeypatch.setattr(base.time, "monotonic", lambda: clock[0])
+    isolate_monotonic(monkeypatch, base, lambda: clock[0])
     packet = {"timestamp_us": 100, "roll_deg": 0.0}
     client._store_dynamics_sample("attitude", packet)
     clock[0] = 101.0
@@ -338,9 +345,105 @@ def test_repeated_native_sensor_packet_does_not_renew_receipt_time(monkeypatch) 
         client._store_dynamics_sample("attitude", packet | {"roll_deg": 1.0})
 
 
+# 功能：构造原始定位协议与规范字段一致的遥测包，便于验证重传边界。
+# 输入：received：接收时刻；wire_changes：原始协议字段变更。
+# 输出：独立的完整遥测字典，不伪造原生来源时刻。
+def _wire_telemetry(received, **wire_changes):
+    import json
+
+    from test_native_odometry_source import fields
+
+    from dronedream_agent_core.native_odometry_source import (
+        canonical_odometry_fields,
+        decode_source_odometry,
+    )
+
+    wire = json.dumps(fields(**wire_changes))
+    raw = decode_source_odometry(
+        wire, system_id=1, component_id=1, received_monotonic=received)
+    return canonical_odometry_fields(raw) | {"mavlink_source": {
+        "system_id": 1, "component_id": 1, "fields_json": wire,
+        "received_monotonic_seconds": received}}
+
+
+# 功能：验证原始定位重传只忽略接收时刻差异，三个新鲜度记录均保持首次值。
+# 输入：monkeypatch：隔离被测时钟。
+# 输出：无；重复包不清除既有流错误，也不将旧观测续期。
+def test_raw_odometry_retransmission_preserves_first_receipt(monkeypatch):
+    base = _base_module()
+    client = object.__new__(base.MavsdkOffboardClient)
+    client._dynamics_samples = {}
+    client._dynamics_errors = {}
+    clock = [100.0]
+    isolate_monotonic(monkeypatch, base, lambda: clock[0])
+    first = _wire_telemetry(100.0)
+    client._store_dynamics_sample("odometry", first)
+    unix_ms = client._dynamics_received_at_unix_ms["odometry"]
+    client._dynamics_errors["odometry"] = "prior-error"
+    clock[0] = 101.0
+    repeated = _wire_telemetry(101.0)
+    client._store_dynamics_sample("odometry", repeated)
+    assert client._dynamics_samples["odometry"] == (first, 100.0)
+    assert client._dynamics_received_at_unix_ms["odometry"] == unix_ms
+    assert client._dynamics_errors["odometry"] == "prior-error"
+    assert repeated["mavlink_source"]["received_monotonic_seconds"] == 101.0
+
+
+# 功能：同刻重传不得隐藏原始位姿、速度、协方差、来源身份或规范字段变化。
+# 输入：kind：被篡改字段类别。
+# 输出：无；拒绝冲突并保留原始缓存。
+@pytest.mark.parametrize("kind", [
+    "x", "q", "vx", "pose_covariance", "reset_counter", "quality",
+    "system_id", "component_id", "canonical_bool", "missing_wire", "extra_wire",
+])
+def test_raw_odometry_retransmission_rejects_changed_content(kind):
+    base = _base_module()
+    client = object.__new__(base.MavsdkOffboardClient)
+    client._dynamics_samples = {}
+    client._dynamics_errors = {}
+    first = _wire_telemetry(100.0)
+    client._store_dynamics_sample("odometry", first)
+    before = client._dynamics_samples["odometry"]
+    changes = {"x": 2.0, "q": [0.0, 0.0, 0.0, 1.0], "vx": 0.5,
+               "pose_covariance": [0.02] * 21, "reset_counter": 3, "quality": 1}
+    changed = _wire_telemetry(101.0, **({kind: changes[kind]} if kind in changes else {}))
+    if kind in ("system_id", "component_id"):
+        changed["mavlink_source"][kind] = 2
+    elif kind == "canonical_bool":
+        changed["quality"] = False
+    elif kind == "missing_wire":
+        del changed["mavlink_source"]
+    elif kind == "extra_wire":
+        changed["mavlink_source"]["unexpected"] = "different"
+    with pytest.raises(RuntimeError, match="conflicting"):
+        client._store_dynamics_sample("odometry", changed)
+    assert client._dynamics_samples["odometry"] == before
+
+
+# 功能：拒绝非法或倒退的重传接收时间，避免忽略时间字段成为协议检查漏洞。
+# 输入：receipt：畸形时间。
+# 输出：无；缓存不被覆盖。
+@pytest.mark.parametrize("receipt", [True, None, "101", -1.0, 99.0])
+def test_raw_odometry_retransmission_rejects_invalid_receipt(receipt):
+    base = _base_module()
+    client = object.__new__(base.MavsdkOffboardClient)
+    client._dynamics_samples = {}
+    client._dynamics_errors = {}
+    client._store_dynamics_sample("odometry", _wire_telemetry(100.0))
+    before = client._dynamics_samples["odometry"]
+    changed = _wire_telemetry(101.0)
+    changed["mavlink_source"]["received_monotonic_seconds"] = receipt
+    with pytest.raises((ValueError, RuntimeError), match="receipt time"):
+        client._store_dynamics_sample("odometry", changed)
+    assert client._dynamics_samples["odometry"] == before
+
+
 @pytest.mark.parametrize("unknown", [False, True])
 @pytest.mark.parametrize("partial", [False, True])
-def test_odometry_collector_preserves_covariance_and_explicit_unknown(unknown, partial) -> None:
+@pytest.mark.parametrize("with_twist", [False, True])
+def test_odometry_collector_preserves_covariance_and_explicit_unknown(
+    unknown, partial, with_twist
+) -> None:
     from test_localization_evidence import covariance
 
     base = _base_module()
@@ -361,6 +464,10 @@ def test_odometry_collector_preserves_covariance_and_explicit_unknown(unknown, p
                 yield SimpleNamespace(
                     time_usec=1000, frame_id=SimpleNamespace(name="ESTIM_NED"),
                     pose_covariance=SimpleNamespace(covariance_matrix=packed),
+                    **({"child_frame_id": SimpleNamespace(name="BODY_FRD"),
+                        "velocity_body": SimpleNamespace(x_m_s=1., y_m_s=2., z_m_s=3.),
+                        "velocity_covariance": SimpleNamespace(covariance_matrix=packed)}
+                       if with_twist else {}),
                 )
                 await release.wait()
 
@@ -378,6 +485,62 @@ def test_odometry_collector_preserves_covariance_and_explicit_unknown(unknown, p
             packet = client._dynamics_samples["odometry"][0]
             assert packet["frame_id"] == "ESTIM_NED"
             assert packet["pose_covariance_upper_m2"] == (None if unknown else expected)
+            assert packet["child_frame_id"] == ("BODY_FRD" if with_twist else "UNSUPPORTED")
+            assert packet["twist_covariance_upper"] == (
+                expected if with_twist and not unknown else None)
+            assert packet["velocity_child_frame_m_s"] == ([1., 2., 3.] if with_twist else None)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(scenario())
+
+
+# 功能：真实协议接口可用时保留 LOCAL_NED 和重置计数，不再消费有损的旧枚举接口。
+# 输入：无；使用 SDK 形状的有界异步消息夹具。
+# 输出：无；检查实际选择的订阅和发布字段。
+def test_odometry_collector_prefers_original_wire_frame_and_reset_counter():
+    import json
+
+    from test_native_odometry_source import fields
+
+    base = _base_module()
+
+    async def scenario():
+        release = asyncio.Event()
+        duplicate_consumed = asyncio.Event()
+
+        class Direct:
+            async def message(self, name):
+                assert name == "ODOMETRY"
+                yield SimpleNamespace(fields_json=json.dumps(fields()), system_id=1, component_id=1)
+                await asyncio.sleep(.002)
+                yield SimpleNamespace(fields_json=json.dumps(fields()), system_id=1, component_id=1)
+                duplicate_consumed.set()
+                await release.wait()
+
+        class Legacy:
+            def odometry(self):
+                raise AssertionError("lossy legacy odometry must not be subscribed")
+
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(telemetry=Legacy(), mavlink_direct=Direct())
+        client._dynamics_samples = {}
+        client._dynamics_errors = {}
+        client._dynamics_restart_counts = {}
+        task = asyncio.create_task(client._collect_odometry())
+        try:
+            await asyncio.wait_for(duplicate_consumed.wait(), timeout=.5)
+            assert client._dynamics_errors == {}
+            assert client._dynamics_restart_counts == {}
+            actual = client._dynamics_samples["odometry"][0]
+            assert actual["frame_id"] == "LOCAL_NED"
+            assert actual["child_frame_id"] == "LOCAL_NED"
+            assert actual["reset_counter"] == 2
+            assert actual["quality"] == 0
+            assert actual["pose_covariance_upper_m2"][1] is None
+            assert json.loads(actual["mavlink_source"]["fields_json"])["time_usec"] == 1_000_000
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1010,7 +1173,7 @@ def test_payload_attach_rejects_persistent_rigid_mount_when_state_event_is_lost(
     client._align_payload_to_mount = align
     client._sample_named_gazebo_poses = sample
 
-    with pytest.raises(RuntimeError, match="native joint event required"):
+    with pytest.raises(RuntimeError, match="native joint readback required"):
         asyncio.run(
             client.execute_payload_command(
                 {

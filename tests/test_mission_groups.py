@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -7,6 +8,7 @@ from dronedream_agent_core.training.mission_groups import (
     MissionGroupManifest,
     merge_mission_group_manifests,
     mission_group_evidence,
+    recorded_mission_group,
     spatial_mission_group,
 )
 
@@ -170,3 +172,30 @@ def test_original_route_bytes_keep_whitespace_and_unicode_through_receipt_roundt
 def test_invalid_or_empty_motion_is_not_a_route(points):
     with pytest.raises(ValueError, match="MISSION_GROUP"):
         spatial_mission_group(route(points), "a" * 64)
+
+
+# 功能：
+#   缺失路线只能读取显式保留且摘要完全一致的原文，不能覆盖已存在或损坏的运行证据。
+# 输入：
+#   tmp_path：隔离目录；damage：故意破坏原文或建立冲突的现存文件。
+# 输出：
+#   None：合法原文保持字节和分组，错误来源明确拒绝且原运行目录不被补写。
+@pytest.mark.parametrize("damage", [None, "different_bytes", "existing", "existing_bad"])
+def test_explicit_retained_route_is_hash_bound_and_never_replaces(tmp_path, damage):
+    root = tmp_path / "run" / "simulation"
+    root.mkdir(parents=True)
+    content = json.dumps(route([(0, 0, 1), (1, 0, 1)])).encode()
+    retained = tmp_path / "original.json"
+    retained.write_bytes(content + b"\n" if damage == "different_bytes" else content)
+    artifacts = {"route_sha256": hashlib.sha256(content).hexdigest(),
+                 "semantic_sha256": "a" * 64}
+    if damage in {"existing", "existing_bad"}:
+        (root / "mission-route.json").write_bytes(content if damage == "existing" else b"{}")
+    if damage:
+        with pytest.raises(ValueError, match="MISSION_GROUP_"):
+            recorded_mission_group(root, artifacts, retained_route=retained)
+    else:
+        result = recorded_mission_group(root, artifacts, retained_route=retained)
+        assert result.route_source_utf8.encode() == content
+        assert result.route_sha256 == artifacts["route_sha256"]
+        assert not (root / "mission-route.json").exists()

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_time
 
 import dronedream_agent_core.gazebo_adapter as gazebo_adapter
 from dronedream_agent_core.contracts import Px4GazeboRunEvidence, Px4Track
@@ -31,6 +32,7 @@ from dronedream_agent_core.gazebo_adapter import (
     _gazebo_semantic_label_png,
     _heading_executor_arguments,
     _identity_correction_limit_m,
+    _identity_estimator_reset_counter,
     _is_tolerated_landing_contact,
     _landing_confirmed,
     _live_camera_sdf,
@@ -787,6 +789,18 @@ def test_live_camera_is_positioned_from_the_real_route() -> None:
     assert float(pose.group(1)) > 0.0
 
 
+# 功能：控制优先只降低旁观画面负载，保留相同路线视角和真实图像主题。
+def test_control_priority_live_camera_keeps_view_without_sensor_changes():
+    points = [(0., 0., 2.), (12., 8., 5.)]
+    original, old_pose = _live_camera_sdf(points)
+    compact, pose = _live_camera_sdf(points, control_priority=True)
+    assert pose == old_pose
+    assert compact == original.replace('<update_rate>12</update_rate>', '<update_rate>6</update_rate>').replace(
+        '<width>1280</width><height>720</height>', '<width>640</width><height>360</height>')
+    with pytest.raises(ValueError, match='LIVE_CAMERA_PROFILE_INVALID'):
+        _live_camera_sdf(points, control_priority=1)
+
+
 def test_tracking_corridor_is_tighter_than_measured_route_clearance() -> None:
     policy = _tracking_corridor_policy(0.2921883192031175)
 
@@ -842,6 +856,27 @@ def test_identity_correction_budget_is_not_consumed_by_narrow_tracking_corridor(
     assert _identity_correction_limit_m(0.50) == pytest.approx(0.25)
     with pytest.raises(SimulationRuntimeError, match="positive route clearance"):
         _identity_correction_limit_m(0.0)
+
+
+def test_identity_estimator_reset_counter_reads_native_odometry_epoch() -> None:
+    payload = {
+        "dynamics": {
+            "sources": {
+                "odometry": {"reset_counter": 14},
+            }
+        }
+    }
+
+    assert _identity_estimator_reset_counter(payload) == 14
+    assert _identity_estimator_reset_counter({}) is None
+
+
+@pytest.mark.parametrize("value", [True, -1, 256, "14"])
+def test_identity_estimator_reset_counter_rejects_invalid_epochs(value: object) -> None:
+    with pytest.raises(ValueError, match="reset counter"):
+        _identity_estimator_reset_counter(
+            {"dynamics": {"sources": {"odometry": {"reset_counter": value}}}}
+        )
 
 
 def test_controlled_vehicle_pose_prefers_moving_canonical_link() -> None:
@@ -1140,7 +1175,7 @@ def test_payload_preflight_detach_requires_positive_state_readback(
     monkeypatch.setattr(gazebo_adapter, "_run", fake_run)
     monkeypatch.setattr(gazebo_adapter.subprocess, "Popen", lambda *args, **kwargs: Listener())
     monkeypatch.setattr(gazebo_adapter.os, "kill", lambda pid, signal: None)
-    monkeypatch.setattr(gazebo_adapter.time, "sleep", lambda _: None)
+    isolate_time(monkeypatch, gazebo_adapter, sleep=lambda _: None)
 
     if accepted:
         evidence = _detach_payload_before_flight(
@@ -1308,6 +1343,33 @@ def test_plain_qualification_does_not_require_optional_scenario_backend(monkeypa
     )
 
     assert executor._load_runtime_effect_request() == (None, None, None)
+
+
+# 功能：
+#   验证发出挂接指令前不能耗尽最终容差，持续一厘米误差也须停止而不是勉强挂接。
+# 输入：
+#   monkeypatch：隔离真实设备与世界环境。
+# 输出：
+#   None：六次有界预对齐均不满足五毫米要求时拒绝。
+def test_payload_alignment_reserves_final_mount_tolerance(monkeypatch):
+    executor = _load_px4_executor_module()
+    client = object.__new__(executor.MavsdkOffboardClient)
+    vehicle = executor.GazeboModelPose(x=0, y=0, z=2, qx=0, qy=0, qz=0, qw=1)
+    payload = executor.GazeboModelPose(x=0, y=0, z=2.11, qx=0, qy=0, qz=0, qw=1)
+    moves = []
+    async def sample(**kwargs):
+        return {'drone': vehicle, 'payload': payload}
+    async def set_pose(**kwargs):
+        moves.append(kwargs)
+        return {'accepted': True}
+    monkeypatch.setenv('PX4_GAZEBO_WORLD_NAME', 'school')
+    client._sample_named_gazebo_poses = sample
+    client._set_named_gazebo_pose = set_pose
+    with pytest.raises(RuntimeError, match='limit=0.005000m'):
+        asyncio.run(client._align_payload_to_mount({'vehicle_model_name': 'drone',
+            'payload_model_name': 'payload', 'payload_mount_offset_model_m': [0, 0, .12],
+            'payload_mount_max_alignment_error_m': .02, 'payload_mount_binding_sha256': 'a' * 64}))
+    assert len(moves) == 6
 
 
 def test_setpoint_schedule_rebases_every_axis_to_measured_px4_origin() -> None:
@@ -1771,6 +1833,21 @@ def test_landing_ground_contact_has_narrow_phase_surface_and_depth_boundary() ->
         phase="LANDING",
         primitive_name="school-map-ground",
         clearance_m=-0.0201,
+    )
+    assert _is_tolerated_landing_contact(
+        phase="PREFLIGHT",
+        primitive_name="floor-0-0",
+        clearance_m=-0.0022,
+    )
+    assert _is_tolerated_landing_contact(
+        phase="TAKEOFF",
+        primitive_name="terrain-0",
+        clearance_m=-0.0022,
+    )
+    assert not _is_tolerated_landing_contact(
+        phase="PREFLIGHT",
+        primitive_name="wall-0-0",
+        clearance_m=-0.0022,
     )
 
 

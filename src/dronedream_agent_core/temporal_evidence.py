@@ -6,7 +6,7 @@ import math
 from collections import deque
 from numbers import Real
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from .contracts import StrictModel
 
@@ -16,6 +16,20 @@ class TemporalEvidence(StrictModel):
     sample_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     observed_at_unix_ms: int = Field(ge=0, strict=True)
     reset_history: bool = False
+    history_slot_revision: int = Field(default=0, ge=0, le=2**31 - 1, strict=True)
+
+    # 功能：
+    #   保留旧的独立样本序列化身份；只有真实的同槽修订才附加修订号。
+    # 输入：
+    #   handler：模型字段序列化器。
+    # 输出：
+    #   result：包含非零修订号的来源字典。
+    @model_serializer(mode="wrap")
+    def serialize_revision(self, handler):
+        result = handler(self)
+        if type(self.history_slot_revision) is int and self.history_slot_revision == 0:
+            result.pop("history_slot_revision", None)
+        return result
 
 
 # 功能：
@@ -59,17 +73,16 @@ class ObservationHistory:
 
     # 功能：
     #   1. 验证并冻结来源与特征，同一观测重放不增加行数，也不续期。
-    #   2. 来源切换、间隔过大或显式重启重建窗口；未授权时钟回退清空窗口并拒绝。
+    #   2. 同一时刻的显式递增修订只替换末槽，不增加独立样本数量或改变有效期。
+    #   3. 来源切换、间隔过大或显式重启重建窗口；未授权时钟回退清空窗口并拒绝。
     # 输入：
     #   self：当前历史窗口。
     #   evidence：带摘要、来源时刻及真实布尔重置标志的身份。
     #   state：已经按模型契约编码的状态特征行。
     #   payload：已经按模型契约编码的附加特征行，可为空。
     # 输出：
-    #   accepted：成功加入一份新来源样本时为 True，精确来源重放时为 False。
-    def append(
-        self, evidence: TemporalEvidence, state: tuple[float, ...], payload: tuple[float, ...]
-    ) -> bool:
+    #   accepted：成功加入独立新样本时为 True，重放或末槽修订时为 False。
+    def append(self, evidence: TemporalEvidence, state: tuple, payload: tuple) -> bool:
         if not isinstance(evidence, TemporalEvidence):
             raise ValueError("TEMPORAL_EVIDENCE_INVALID")
         evidence = TemporalEvidence.model_validate(evidence.model_dump(mode="python"), strict=True)
@@ -85,6 +98,11 @@ class ObservationHistory:
                 raise ValueError("TEMPORAL_SAMPLE_REDATED")
             delta = evidence.observed_at_unix_ms - previous.observed_at_unix_ms
             if delta == 0:
+                if (evidence.history_slot_revision > previous.history_slot_revision
+                        and evidence.reset_history == previous.reset_history):
+                    self.rows[-1] = (state, payload)
+                    self.latest = evidence
+                    return False
                 raise ValueError("TEMPORAL_SAME_TIME_CONFLICT")
             if delta < 0 and not evidence.reset_history:
                 self.rows.clear()

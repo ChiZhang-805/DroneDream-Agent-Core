@@ -17,6 +17,7 @@ from dronedream_agent_core.training.policy_exchange import (
     TrainingPolicyClient,
     TrainingPolicyExchange,
     TrainingProposal,
+    TrainingProposalDeferred,
     _read_exact,
     read_descriptor,
 )
@@ -32,6 +33,17 @@ def request():
     value = {"valid_until_unix_ms": int(time.time() * 1000) + 245,
             "observation": "s" * 60000}  # Larger than a UDP datagram.
     return value
+
+
+# 功能：区分已过期与非法加长的租约；输入：相对毫秒；输出：原250毫秒边界不变。
+@pytest.mark.parametrize(('delta','error'), [(0,'INPUT_EXPIRED'),(-1,'INPUT_EXPIRED'),
+                                           (251,'LEASE_EXCEEDS_BOUND')])
+def test_lease_expiry_and_future_bound_are_distinct(monkeypatch, delta, error):
+    from dronedream_agent_core.training import policy_exchange as module
+    monkeypatch.setattr(module,'time',SimpleNamespace(time=lambda:1.))
+    with pytest.raises(ValueError, match=error):
+        module._remaining_lease({'valid_until_unix_ms':1000+delta})
+    assert module._remaining_lease({'valid_until_unix_ms':1250}) == .25
 
 
 # 功能：
@@ -69,6 +81,60 @@ def test_real_exchange_large_frame_action_identity_and_descriptor_cleanup(tmp_pa
         server.close()
     server.close()
     assert not path.exists()
+
+
+# 功能：实测已鉴权拒绝可区别于异常断线；输入：固定原因；输出：无动作的明确延迟码。
+@pytest.mark.parametrize("reason", ["insufficient-input-budget", "proposal-budget-exhausted",
+                                  "stream-native-state-not-new",
+                                  "stream-input-expired-at-adoption"])
+def test_explicit_deferred_reply_is_not_a_model_fault(tmp_path, reason):
+    server = TrainingPolicyExchange(tmp_path / "learner.json")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(TrainingPolicyClient(server.path).propose, request())
+            server.wait_request(timeout_seconds=1)
+            server.discard_pending(reason=reason)
+            with pytest.raises(TrainingProposalDeferred) as failure:
+                pending.result(timeout=1)
+            assert failure.value.reason_code == "TRAINING_POLICY_PROPOSAL_DEFERRED"
+            assert str(failure.value) == reason
+            assert server._stream is None and server._request is None
+    finally:
+        server.close()
+
+
+# 功能：拒绝跨观测、未知原因和额外字段的否定回执；输入：篡改响应；输出：硬错误。
+@pytest.mark.parametrize("changes", [{"request_sha256": "b" * 64},
+    {"reason": "sensor-broken"}, {"action": {"mode": "hold"}}])
+def test_deferred_response_still_requires_exact_contract(tmp_path, changes):
+    from dronedream_agent_core.training.policy_exchange import _send
+    server = TrainingPolicyExchange(tmp_path / "learner.json")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(TrainingPolicyClient(server.path).propose, request())
+            received = server.wait_request(timeout_seconds=1)
+            _send(server._stream, {"status": "deferred", "request_sha256": sha256_json(received),
+                "reason": "insufficient-input-budget", **changes}, server._secret,
+                deadline=server._deadline)
+            server.discard_pending()
+            with pytest.raises(ValueError, match="DEFERRED_RESPONSE_INVALID"):
+                pending.result(timeout=1)
+    finally:
+        server.close()
+
+
+# 功能：未说明原因的断开不能假冒正常延迟；输入：直接断连；输出：仍为连接故障。
+def test_unexplained_peer_close_is_not_deferred(tmp_path):
+    server = TrainingPolicyExchange(tmp_path / "learner.json")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(TrainingPolicyClient(server.path).propose, request())
+            server.wait_request(timeout_seconds=1)
+            server.discard_pending()
+            with pytest.raises(ConnectionError):
+                pending.result(timeout=1)
+    finally:
+        server.close()
 
 
 # 功能：
@@ -195,7 +261,7 @@ def test_fragmented_read_obeys_total_deadline():
 
 
 # 功能：
-#   验证请求散列和复制耗时不会加回有效期，且学习器拿到的副本不能修改服务端留存请求。
+#   验证请求散列耗时不会加回有效期，且学习器改写请求不能修改服务端留存的不可变绑定。
 # 输入：
 #   monkeypatch：提供受控时钟和消息入口的夹具。
 # 输出：
@@ -230,8 +296,10 @@ def test_request_hashing_cannot_add_processing_time_back_to_lease(monkeypatch):
     received = server.wait_request(timeout_seconds=1)
     assert received == packet
     assert server._deadline == pytest.approx(10.2)
+    original_digest = sha256_json(received)
     received["observation"] = "caller modification"
-    assert server._request["observation"] == "original"
+    assert server._request.request_sha256 == original_digest
+    assert server._request.valid_until_unix_ms == 1200
 
 
 # 功能：
@@ -309,3 +377,76 @@ def test_processing_expiry_cannot_deliver_an_observation_to_learner(monkeypatch)
     with pytest.raises(ValueError, match="EXPIRED_OR_REPLAYED"):
         server.wait_request(timeout_seconds=1)
     assert closed and server._request is None and not server._seen
+
+
+# 功能：
+#   验证嵌套观测或有效期被学习器改写后不能冒充原始请求，回复失败仍释放连接。
+# 输入：
+#   tmp_path：独立描述文件目录。
+#   mutation：需要验证的改写类型。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize("mutation", ["nested", "deadline"])
+def test_transferred_request_mutation_cannot_change_pending_identity(tmp_path, mutation):
+    server = TrainingPolicyExchange(tmp_path / "learner.json")
+    try:
+        client = TrainingPolicyClient(server.path)
+        value = request()
+        value["state"] = {"axes": [0., 1.]}
+        original_digest = sha256_json(value)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(client.propose, value)
+            received = server.wait_request(timeout_seconds=1)
+            if mutation == "nested":
+                received["state"]["axes"][0] = 99.
+            else:
+                received["valid_until_unix_ms"] += 10000
+            assert server._request.request_sha256 == original_digest
+            with pytest.raises(ValueError, match="PROPOSAL_OBSERVATION_MISMATCH"):
+                server.reply(proposal(received))
+            with pytest.raises(ConnectionError):
+                pending.result(timeout=1)
+            assert server._stream is None and server._request is None
+    finally:
+        server.close()
+
+
+# 功能：
+#   验证待回复绑定不可原地修改，且回复只使用原始摘要、不再次遍历大型观测树。
+# 输入：
+#   tmp_path：独立描述文件目录。
+#   monkeypatch：监测服务器回复阶段的散列调用。
+# 输出：
+#   None：不返回业务数据。
+def test_reply_uses_frozen_identity_without_rehashing_observation(tmp_path, monkeypatch):
+    from dataclasses import FrozenInstanceError
+    from dronedream_agent_core.training import policy_exchange as module
+
+    server = TrainingPolicyExchange(tmp_path / "learner.json")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(TrainingPolicyClient(server.path).propose, request())
+            received = server.wait_request(timeout_seconds=1)
+            response = proposal(received)
+            with pytest.raises(FrozenInstanceError):
+                server._request.valid_until_unix_ms += 1000
+            # 只拦截当前服务线程，客户端仍须独立验证请求摘要。
+            server_thread = threading.get_ident()
+            original_hash = module.sha256_json
+
+            # 功能：
+            #   禁止回复线程重新遍历已绑定观测，保留客户端的独立散列检查。
+            # 输入：
+            #   value：其他线程需要验证的请求。
+            # 输出：
+            #   digest：原始算法生成的摘要。
+            def client_only_hash(value):
+                assert threading.get_ident() != server_thread
+                digest = original_hash(value)
+                return digest
+
+            monkeypatch.setattr(module, "sha256_json", client_only_hash)
+            server.reply(response)
+            assert pending.result(timeout=1) == response
+    finally:
+        server.close()

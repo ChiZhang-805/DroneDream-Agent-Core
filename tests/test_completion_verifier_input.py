@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from dronedream_agent_core.contracts import (
     MissionContract,
     Px4GazeboArtifactBindings,
@@ -15,6 +17,7 @@ from dronedream_agent_core.execution import (
     _canonical_json_bytes,
     _completion_verifier_input,
 )
+from dronedream_agent_core.hashing import sha256_json
 
 
 class _PreparedView:
@@ -31,7 +34,8 @@ class _PreparedView:
         }
 
 
-def test_completion_input_hash_summarizes_unbounded_visual_inventory() -> None:
+@pytest.mark.parametrize("nonvisual_unchanged", [True, False])
+def test_completion_input_hash_summarizes_unbounded_visual_inventory(nonvisual_unchanged) -> None:
     contract = MissionContract(
         contract_id=f"mission-{'a' * 24}",
         conversation_id="completion-input-test",
@@ -69,6 +73,15 @@ def test_completion_input_hash_summarizes_unbounded_visual_inventory() -> None:
         px4_ulogs=[Px4UlogArtifact(path="flight.ulg", size_bytes=42, sha256="b" * 64)],
         ros_workspace="/opt/ros/jazzy",
         model_navigation_visual_frames=frames,
+        static_render_batching={
+            "nonvisual_world_unchanged": nonvisual_unchanged,
+            "flight_qualification_granted": False,
+            "failure": "render equivalence failed" if not nonvisual_unchanged else None,
+            "batches": [
+                {"mesh_sha256": f"{index:064x}", "source_visuals": ["z" * 8000]}
+                for index in range(200)
+            ],
+        },
     )
     gates = Px4GazeboGates.model_construct(
         executor_completed=False,
@@ -96,6 +109,7 @@ def test_completion_input_hash_summarizes_unbounded_visual_inventory() -> None:
         artifacts=artifacts,
     )
 
+    before = runtime.model_dump(mode="json")
     artifact = _completion_verifier_input(
         prepared=_PreparedView(contract),  # type: ignore[arg-type]
         route={"route": "bound"},  # type: ignore[arg-type]
@@ -124,3 +138,15 @@ def test_completion_input_hash_summarizes_unbounded_visual_inventory() -> None:
     assert visual_summary["preview_truncated"] is True
     assert huge_path_fragment not in encoded.decode("utf-8")
     assert artifact["plugin_runtime_evaluations"]["items_omitted_for_input_bound"] is True
+    assert runtime.model_dump(mode="json") == before
+    rendered = artifact["runtime_evidence"]["artifact_bindings"]["static_render_batching"]
+    original = before["artifacts"]["static_render_batching"]
+    assert rendered["nonvisual_world_unchanged"] is nonvisual_unchanged
+    assert rendered["flight_qualification_granted"] is False
+    assert rendered["failure"] == original["failure"]
+    assert rendered["batches"]["count"] == 200
+    assert rendered["batches"]["collection_sha256"] == sha256_json(original["batches"])
+    assert artifact["runtime_evidence"]["runtime_evidence_sha256"] == sha256_json(runtime)
+    assert artifact["runtime_evidence"]["gates"]["executor_completed"] is False
+    assert artifact["runtime_evidence"]["measurements"]["abort_reason"] == "waypoint stability timeout"
+    assert artifact["deterministic_success"] is False

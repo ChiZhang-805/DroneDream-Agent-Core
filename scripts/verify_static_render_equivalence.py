@@ -27,6 +27,13 @@ from dronedream_agent_core.static_render_batching import (
 )
 
 
+# 功能：
+#   向静态世界添加同配置 RGB/深度相机，不添加飞机或飞控。
+# 输入：
+#   content：原始 SDF 世界字节。
+#   poses：一至八组有限 XYZ 米制坐标与 RPY 弧度姿态。
+# 输出：
+#   camera_world：包含静态相机的 SDF 字节。
 def add_camera_rigs(content: bytes, poses: list[list[float]]) -> bytes:
     import math
 
@@ -62,9 +69,30 @@ def add_camera_rigs(content: bytes, poses: list[list[float]]) -> bytes:
         clip = ET.SubElement(camera, "clip")
         ET.SubElement(clip, "near").text = "0.2"
         ET.SubElement(clip, "far").text = "27"
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    camera_world = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return camera_world
 
 
+# 功能：
+#   为无飞控渲染诊断补齐系统 Gazebo 命令注册目录，避免 ROS 环境遮蔽 sim 子命令。
+# 输入：
+#   environment：调用者环境，不在原对象上修改。
+# 输出：
+#   environment_copy：保留调用者配置且优先使用系统 Gazebo 注册目录的环境。
+def render_environment(environment: dict[str, str]) -> dict[str, str]:
+    environment_copy = dict(environment)
+    paths = ["/usr/share/gz", *environment.get("GZ_CONFIG_PATH", "").split(os.pathsep)]
+    environment_copy["GZ_CONFIG_PATH"] = os.pathsep.join(dict.fromkeys(p for p in paths if p))
+    return environment_copy
+
+
+# 功能：
+#   1. 运行独占无飞控场景，采集真实 RGB/深度及接收间隔。
+#   2. 失败时保存诊断并关闭订阅及本次场景，不授予飞行资格。
+# 输入：
+#   args：世界、输出目录、相机数量及有界采样时间参数。
+# 输出：
+#   exit_code：完成采集时为零，异常通过异常链传给调用者。
 def capture(args) -> int:
     import numpy as np
     from gz.msgs10.image_pb2 import Image
@@ -146,9 +174,11 @@ def capture(args) -> int:
                 topic = f"/dronedream/render-probe/{i}/{suffix}"
                 subscriptions[i].subscribe(Image, topic, callback(f"{i}-{kind}"))
         with (root / "gazebo.log").open("xb") as log:
-            process = subprocess.Popen(["gz", "sim", "-s", "-r", "--headless-rendering",
+            # 与产品运行器使用同一系统入口；ROS 自带的 gz 可能仅注册消息和传输命令。
+            process = subprocess.Popen(["/usr/bin/gz", "sim", "-s", "-r", "--headless-rendering",
                                         "-v", "3", str(render_world)],
-                                       stdout=log, stderr=subprocess.STDOUT)
+                                       stdout=log, stderr=subprocess.STDOUT,
+                                       env=render_environment(os.environ))
             if source_probe is not None:
                 source_probe.register("gazebo", process.pid)
             deadline = time.monotonic() + 90 + args.warmup_seconds + args.sample_seconds
@@ -248,9 +278,18 @@ def capture(args) -> int:
     (root / "capture.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     if not receipt["capture_complete"]:
         raise RuntimeError("render probe subscriptions did not close completely")
-    return 0
+    exit_code = 0
+    return exit_code
 
 
+# 功能：
+#   在启动前拒绝非有限、布尔或超出预算的采集参数。
+# 输入：
+#   count：相机数量。
+#   warmup：预热秒数。
+#   sample：正式测量秒数。
+# 输出：
+#   None：无返回数据，非法参数抛出异常。
 def validate_capture_options(count: int, warmup: float, sample: float) -> None:
     import math
 
@@ -261,16 +300,31 @@ def validate_capture_options(count: int, warmup: float, sample: float) -> None:
         raise ValueError("render probe requires 1–8 cameras, 0–120 s warmup and 5–120 s sample")
 
 
+# 功能：
+#   汇总各流接收间隔的中位、尾部、最大值和超时数量。
+# 输入：
+#   timings：流名称到毫秒间隔序列的映射。
+# 输出：
+#   summaries：非空流的统计字典。
 def gap_summaries(timings: dict) -> dict:
     import numpy as np
 
-    return {key: {"interval_count": len(values), "p50": float(np.percentile(values, 50)),
+    summaries = {key: {"interval_count": len(values), "p50": float(np.percentile(values, 50)),
                   "p99": float(np.percentile(values, 99)), "maximum": max(values),
                   "above_150_ms": sum(value > 150 for value in values),
                   "above_250_ms": sum(value > 250 for value in values)}
             for key, values in timings.items() if values}
+    return summaries
 
 
+# 功能：
+#   对比相同静态相机位置的颜色、深度与可见性，拒绝两边均空白的虚假通过。
+# 输入：
+#   original：未合批画面目录。
+#   batched：合批画面目录。
+#   count：相机数量。
+# 输出：
+#   comparison：逐视角误差与总判定，不包含飞行授权。
 def compare(original: Path, batched: Path, count: int) -> dict:
     import numpy as np
     from PIL import Image
@@ -301,10 +355,17 @@ def compare(original: Path, batched: Path, count: int) -> dict:
             and metrics["depth_common_fraction"] >= .1
             and metrics["depth_absolute_p99_m"] <= .0001)
         result.append(metrics)
-    return {"views": result, "passed": all(row["passed"] for row in result),
+    comparison = {"views": result, "passed": all(row["passed"] for row in result),
             "flight_qualification_granted": False}
+    return comparison
 
 
+# 功能：
+#   顺序运行原始及合批世界，并保存同视角对比与资源来源回执。
+# 输入：
+#   命令行参数：源地图、独占输出目录、相机姿态及采集配置。
+# 输出：
+#   exit_code：通过为零，画面对比未通过为一。
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("world", type=Path)
@@ -330,7 +391,7 @@ def main() -> int:
     original = args.output / "probe-world.sdf"
     source = args.world.read_bytes()
     original.write_bytes(add_camera_rigs(source, poses))
-    copy_relative_render_resources(source, args.world.parent, args.output)
+    source_resources = copy_relative_render_resources(source, args.world.parent, args.output)
     batched, receipt = prepare_static_render_world(original, args.output / "batched-world")
     for label, world in (("original", original), ("batched", batched)):
         env = os.environ.copy()
@@ -344,11 +405,12 @@ def main() -> int:
             env=env, check=True)
     result = {**compare(args.output / "original", args.output / "batched", len(poses)),
         "source_world_sha256": hashlib.sha256(args.world.read_bytes()).hexdigest(),
-        "poses": poses, "batching": receipt}
+        "poses": poses, "source_resources": source_resources, "batching": receipt}
     (args.output / "comparison.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    brief = {key: value for key, value in result.items() if key != "batching"}
+    brief = {key: value for key, value in result.items() if key not in {"batching", "source_resources"}}
     print(json.dumps(brief), flush=True)
-    return 0 if result["passed"] else 1
+    exit_code = 0 if result["passed"] else 1
+    return exit_code
 
 
 if __name__ == "__main__":

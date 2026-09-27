@@ -273,6 +273,50 @@ def test_ready_is_strict_and_unique(monkeypatch, ready):
 
 
 # 功能：
+#   更长的启动等待只作用于握手，不能偷偷延长每条姿态命令的一秒回执期限。
+# 输入：
+#   monkeypatch：受控进程、管道及等待时长记录。
+# 输出：
+#   None：初始化使用明确预算，后续请求仍按原有短期限检查。
+def test_startup_budget_is_separate_from_command_deadline(monkeypatch):
+    parent, _, _ = install_worker(monkeypatch, replies=(
+        b'{"acknowledged":true,"service_latency_ms":2}',))
+    waits = []
+    original = parent.poll
+
+    # 功能：
+    #   记录本次请求的等待预算后委托真实夹具应答顺序，不执行睡眠。
+    # 输入：
+    #   timeout：当前阶段允许等待的秒数。
+    # 输出：
+    #   ready：原夹具管道的就绪结果。
+    def recording_poll(timeout):
+        waits.append(timeout)
+        return original(timeout)
+
+    monkeypatch.setattr(parent, "poll", recording_poll)
+    client = transport.FixturePoseRequests(PARTITION, "fixture", startup_timeout_seconds=60.0)
+    assert client.startup_elapsed_seconds >= 0.0
+    assert client.request(POSE)["acknowledged"]
+    assert waits == [60.0, 1]
+    client.close()
+
+
+# 功能：
+#   拒绝无限或畸形启动等待，并保证检查失败前没有启动进程或打开管道。
+# 输入：
+#   monkeypatch、budget：隔离上下文和非法预算样本。
+# 输出：
+#   None：无限等待不能进入原生采集链。
+@pytest.mark.parametrize("budget", [True, 0, 61, float("inf"), float("nan"), "60"])
+def test_invalid_startup_budget_cannot_launch_worker(monkeypatch, budget):
+    parent, child, process = install_worker(monkeypatch)
+    with pytest.raises(ValueError, match="STARTUP_BUDGET_INVALID"):
+        transport.FixturePoseRequests(PARTITION, "fixture", startup_timeout_seconds=budget)
+    assert not process.started and not parent.sent and not child.sent
+
+
+# 功能：
 #   强制终止属于清理失败而非正常退出，重复关闭保留同一失败结论。
 # 输入：
 #   monkeypatch：pytest 替换工具。

@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from bisect import bisect_left
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -168,6 +170,7 @@ def compare_geometry_truth(capture_path: Path, report: dict, truth_path: Path,
     witness_motion = _witness_motion(centers, orientations,
         np.array([(r["publisher_simulation_time_ns"]-origin_ns) / 1e9 for r in truth]))
     time_limit = .02 if has_scene else .05
+    truth_source_ns = [row["publisher_simulation_time_ns"] for row in truth]
     results, before, after, angular_before, angular_after = [], [], [], [], []
     for source, candidate, source_time in zip(scans, report["frames"], scan_times, strict=True):
         if (not isinstance(candidate, dict) or type(candidate.get("sequence")) is not int
@@ -175,15 +178,38 @@ def compare_geometry_truth(capture_path: Path, report: dict, truth_path: Path,
             raise ValueError("TRUTH_AUDIT_CANDIDATE_SEQUENCE_MISMATCH")
         nearest = int(np.argmin(np.abs(truth_times - source_time)))
         gap = abs(truth_times[nearest] - source_time)
+        if has_scene:
+            # Compare source nanoseconds as integers, including exact ties.
+            # Floating seconds can choose a different witness on either side
+            # of the same midpoint and consequently change its receive gap.
+            stamp = source["source_clock"]["publisher_simulation_time_ns"]
+            right = bisect_left(truth_source_ns, stamp)
+            choices = [i for i in (right-1, right) if 0 <= i < len(truth_source_ns)]
+            nearest = min(choices, key=lambda i: (abs(truth_source_ns[i]-stamp), i))
+            gap = abs(truth_source_ns[nearest]-stamp)/1e9
         joint = report.get("solver") == "joint-position-attitude"
         fit = candidate.get("pose_fit" if joint else "translation_fit") or {}
         host_gap = abs(truth[nearest]["received_monotonic_seconds"]
                        - source["scan"]["observed_at_monotonic_seconds"])
         item = {"sequence": source["scan"]["sequence"], "nearest_witness_time_gap_ms": gap * 1000,
+                "nearest_witness_receive_gap_ms": host_gap * 1000,
                 "fit_usable": fit.get("usable_candidate") is True, "compared": False,
                 "witness_motion_state": "unclassified"}
-        time_matched = (truth_times[0] <= source_time <= truth_times[-1]
-                        and gap <= time_limit and host_gap <= .1)
+        # 功能：逐项报告源时间与接收时间的失败原因；不能用较小的源时间差
+        # 掩盖排队延迟，也不能把未比较的样本混作零误差。
+        # 输入：本帧原始来源钟、独立见证钟及固定匹配预算。
+        # 输出：有界原因列表；仅增强离线诊断，不放宽原有准入条件。
+        rejection_reasons = []
+        if not truth_times[0] <= source_time <= truth_times[-1]:
+            rejection_reasons.append("outside_witness_time_span")
+        if gap > time_limit:
+            rejection_reasons.append("source_time_gap_exceeded")
+        if host_gap > .1:
+            rejection_reasons.append("receive_time_gap_exceeded")
+        time_matched = not rejection_reasons
+        if not item["fit_usable"]:
+            rejection_reasons.append("fit_unusable")
+        item["comparison_rejection_reasons"] = rejection_reasons
         if time_matched:
             motion = witness_motion[nearest]
             item.update(witness_motion_state=motion["state"],
@@ -249,6 +275,10 @@ def compare_geometry_truth(capture_path: Path, report: dict, truth_path: Path,
     return {"frames_sha256": digest, "truth_capture_sha256": truth_hash,
             "capture_sha256": capture_hash, "source_frame_count": len(scans),
             "truth_frame_count": len(truth), "compared_count": len(after),
+            "comparison_rejection_counts": dict(Counter(
+                reason for item in results for reason in item["comparison_rejection_reasons"])),
+            "nearest_witness_receive_gap_ms": quantiles([
+                item["nearest_witness_receive_gap_ms"] for item in results]),
             "clock_comparison": "publisher-simulation-time" if has_scene else "host-receipt-time",
             "maximum_allowed_match_gap_ms": time_limit * 1000,
             "baseline_absolute_error_xyz_m": quantiles(before),

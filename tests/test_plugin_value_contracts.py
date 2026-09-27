@@ -8,7 +8,7 @@ from xml.etree.ElementTree import ParseError
 import pytest
 from pydantic import BaseModel
 
-from dronedream_agent_core.plugin_values import plugin_json_value
+from dronedream_agent_core.plugin_values import plugin_json_text, plugin_json_value
 from dronedream_agent_core.plugin_versions import version_matches, version_precedence
 from dronedream_agent_core.xml_values import parse_xml
 from dronedream_plugin_sdk.protocol import MAX_JSON_BYTES, decode_json, encode_json
@@ -75,6 +75,7 @@ def test_plugin_supported_values_have_explicit_conversion():
         "nested": [[1]],
     }
     detached = plugin_json_value(original)
+    assert plugin_json_text(original) == encode_json(detached)
     assert detached == {
         "path": "asset.ddpkg",
         "mode": "hold",

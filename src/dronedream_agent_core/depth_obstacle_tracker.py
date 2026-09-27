@@ -223,6 +223,20 @@ class PreparedDepthTracks:
     observations: tuple[DynamicObstacleObservation, ...]
 
 
+# 功能：拒绝把近乎平面/线段上的切向质心漂移当作已确认运动（局部可见范围变化会产生同样信号）。
+# 输入：前后深度簇、相对初始锚点的位移和定位噪声界，单位米；输出：是否有可观测的法向运动。
+# 此规则只限制新动态速度假设；原始占据射线不删除，已确认目标不会因此被清除。
+def _surface_motion_observable(previous: _Cluster, current: _Cluster,
+                               displacement: Point, noise_bound_m: float) -> bool:
+    thin_axes = [axis for axis in range(3) if max(
+        previous.maximum[axis] - previous.minimum[axis],
+        current.maximum[axis] - current.minimum[axis],
+    ) <= 0.01]
+    if not thin_axes:
+        return True
+    return math.hypot(*(displacement[axis] for axis in thin_axes)) > noise_bound_m
+
+
 class DepthMotionTracker:
     """Track compact non-map depth clusters without granting actuator authority.
 
@@ -470,16 +484,43 @@ class DepthMotionTracker:
             raise ValueError("DEPTH_TRACK_CAPACITY_EXCEEDED")
         for cluster in clusters:
             match_id: int | None = None
-            match_distance = math.inf
+            match_rank = (2, math.inf)
+            match_velocity: Point | None = None
+            nearby_track = False
             for track_id in sorted(available):
                 track = previous[track_id]
                 elapsed = observed_at_monotonic_seconds - track.observed_at_seconds
                 predicted = tuple(track.center[i] + track.velocity[i] * elapsed for i in range(3))
                 distance = math.dist(cluster.center, predicted)
-                if distance <= self.association_distance_m and distance < match_distance:
+                if distance > self.association_distance_m:
+                    continue
+                nearby_track = True
+                raw_velocity = tuple(
+                    (cluster.center[i] - track.center[i]) / elapsed for i in range(3))
+                velocity = tuple(
+                    0.65 * track.velocity[i] + 0.35 * raw_velocity[i] for i in range(3))
+                # 输出契约使用整数毫秒，融合端据此校验加速度。两种时间分辨率均须
+                # 通过同一个物理上限，不能因单调钟更精细而发布融合端必定拒绝的轨迹。
+                published_elapsed = (frame.observed_at_unix_ms - track.observed_at_unix_ms) / 1000
+                acceleration_elapsed = min(elapsed, published_elapsed)
+                if (math.dist(raw_velocity, (0.0, 0.0, 0.0)) > self.maximum_dynamic_speed_mps
+                        or math.dist(velocity, track.velocity) / acceleration_elapsed
+                        > self.maximum_dynamic_acceleration_mps2):
+                    # 先筛除物理上不可能的关联，再比较候选；最近的坏候选不能遮蔽可行候选。
+                    continue
+                # 稀疏表面分成上下两簇再合并时，尚未确认的新碎片可能略靠近总质心。
+                # 仅当实测簇包围既有轨迹的预测中心时保留已确认身份；不凭身份跨越空隙。
+                contained = all(cluster.minimum[i] <= predicted[i] <= cluster.maximum[i]
+                                for i in range(3))
+                rank = (0 if track.motion_confirmed and contained else 1, distance)
+                if rank < match_rank:
                     match_id = track_id
-                    match_distance = distance
+                    match_rank = rank
+                    match_velocity = velocity
             if match_id is None:
+                if nearby_track:
+                    # 拒绝的跳变不能借新身份重置速度和时间，原轨迹继续按真实年龄保留。
+                    continue
                 track_id = next_track_id
                 next_track_id += 1
                 updated[track_id] = _Track(
@@ -495,25 +536,8 @@ class DepthMotionTracker:
                 )
                 continue
             prior = previous[match_id]
-            elapsed = observed_at_monotonic_seconds - prior.observed_at_seconds
-            raw_velocity = tuple(
-                (cluster.center[index] - prior.center[index]) / elapsed for index in range(3)
-            )
-            raw_speed = math.dist((0.0, 0.0, 0.0), raw_velocity)
-            if raw_speed > self.maximum_dynamic_speed_mps:
-                continue
-            velocity = tuple(
-                0.65 * prior.velocity[index] + 0.35 * raw_velocity[index] for index in range(3)
-            )
-            if (
-                math.dist(velocity, prior.velocity) / elapsed
-                > self.maximum_dynamic_acceleration_mps2
-            ):
-                # A centroid/association jump is not a measured acceleration.
-                # Retain the original detection and its age instead of feeding
-                # an impossible estimate into fusion, or clamping it to a
-                # fabricated new measurement. All depth hits remain occupied.
-                continue
+            assert match_velocity is not None
+            velocity = match_velocity
             available.remove(match_id)
             # Absolute localization uncertainty must not be differentiated into
             # a confident moving object. Accumulate displacement relative to
@@ -524,7 +548,13 @@ class DepthMotionTracker:
                 math.sqrt(prior.motion_anchor_variance_m2)
                 + math.sqrt(frame.localization_covariance_m2)
             )
-            measurable_motion = math.dist(cluster.center, prior.motion_anchor) > motion_noise_bound
+            displacement = tuple(cluster.center[i] - prior.motion_anchor[i] for i in range(3))
+            measurable_motion = (
+                math.hypot(*displacement) > motion_noise_bound
+                and _surface_motion_observable(
+                    prior.cluster, cluster, displacement, motion_noise_bound
+                )
+            )
             updated[match_id] = _Track(
                 track_id=match_id,
                 center=cluster.center,

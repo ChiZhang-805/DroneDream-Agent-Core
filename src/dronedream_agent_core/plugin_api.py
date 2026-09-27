@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 import jsonschema
@@ -52,6 +52,10 @@ class ToolEnvironment:
     plugin_configuration: dict[str, object] | None = None
     capability_broker: ScopedCapabilityBroker | None = None
     broker_factory: CoreCapabilityBroker | None = None
+    # 起飞前允许充分求解；默认仍是飞行中短预算，缺少声明不能自动扩大等待时间。
+    planning_phase: Literal["initial", "runtime"] = "runtime"
+    # 已在宿主验证来源/时效的定位方差；None 仅表示尚无测量的条件规划。
+    planning_localization_variance_m2: float | None = None
 
 
 ToolFactory = Callable[[ToolEnvironment], list[ToolPlugin]]
@@ -94,13 +98,32 @@ def _jsonable_mcp_value(value: Any) -> Any:
 # 输出：
 #   path：尚未完成归属、存在性和负载校验的本机路径。
 def _snapshot_bundle_path(value: str) -> Path:
-    if os.name != "nt" and re.match(r"^[A-Za-z]:[\\/]", value):
-        windows_path = PureWindowsPath(value)
-        drive = windows_path.drive[0].lower()
-        path = Path("/mnt") / drive / Path(*windows_path.parts[1:])
-        return path
+    if os.name != "nt" and (PureWindowsPath(value).drive or value.startswith("\\\\")):
+        from .windows_paths import windows_drive_path_to_wsl
+
+        return Path(windows_drive_path_to_wsl(value))
     path = Path(value)
     return path
+
+
+# 功能：
+#   识别仅用于已完成资产导入的只读历史条目，执行阶段不加载其代码，也不修改冻结快照。
+# 输入：
+#   entry：已经通过完整快照摘要及清单校验的条目。
+# 输出：
+#   preparation_only：是否仅包含无运行钩子的只读地图或机型导入能力。
+def _preparation_only_asset_entry(entry: PluginSnapshotEntry) -> bool:
+    manifest = entry.manifest
+    return bool(
+        manifest is not None
+        and manifest.runtime.kind == "builtin-python"
+        and entry.bundle_root is None
+        and set(manifest.permissions) <= {"asset.read"}
+        and manifest.capabilities
+        and all(cap.kind in {"map-importer", "vehicle-importer"}
+                and cap.authority == "read" and "extension_hook" not in cap.metadata
+                for cap in manifest.capabilities)
+    )
 
 
 # 功能：
@@ -298,6 +321,8 @@ def build_snapshot_tool_registry(
     for entry in snapshot.plugins:
         definition = definitions.get(entry.plugin_id)
         if definition is None:
+            if _preparation_only_asset_entry(entry):
+                continue
             manifest, root = _verified_external_manifest(entry)
             for capability in manifest.capabilities:
                 if (
@@ -511,6 +536,8 @@ def build_discovered_extension_registry(
     if snapshot is not None:
         for entry in snapshot.plugins:
             if entry.plugin_id in definitions:
+                continue
+            if _preparation_only_asset_entry(entry):
                 continue
             manifest, root = _verified_external_manifest(entry)
             capabilities = [

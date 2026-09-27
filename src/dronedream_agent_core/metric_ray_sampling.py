@@ -8,6 +8,7 @@ Point = tuple[float, float, float]
 VoxelKey = tuple[int, int, int]
 MAX_BATCH_RAYS = 64
 MAX_BATCH_POINTS = 65_536
+_VOXEL_RECORD_DTYPE = np.dtype([("x", np.int64), ("y", np.int64), ("z", np.int64)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,14 +57,18 @@ def sample_metric_rays(rays: list[MetricRaySample], minimum: Point, resolution_m
         coordinates -= minimum
         coordinates *= inverse_resolution
         keys = np.floor(coordinates).astype(np.int64)
+        # 在同一个有界矩形批次中检测相邻变化，避免每条射线启动一次 NumPy 归约。
+        # 填充列仍在下方按真实长度裁掉，不能凭填充位置增加自由空间。
+        keep = np.empty(keys.shape[:2], dtype=np.bool_)
+        keep[:, 0] = True
+        keep[:, 1:] = np.any(keys[:, 1:] != keys[:, :-1], axis=2)
         for row, ray in enumerate(rays):
             count = min(len(indices), max(0, ray.steps + 1 - start))
             if not count:
                 continue
             current = keys[row, :count]
-            keep = np.empty(count, dtype=np.bool_)
             previous = traversed[row]
-            keep[0] = not previous or tuple(current[0]) != previous[-1]
-            keep[1:] = np.any(current[1:] != current[:-1], axis=1)
-            previous.extend(map(tuple, current[keep].tolist()))
+            keep[row, 0] = not previous or tuple(current[0]) != previous[-1]
+            selected = current[keep[row, :count]]
+            previous.extend(selected.view(_VOXEL_RECORD_DTYPE).reshape(-1).tolist())
     return traversed

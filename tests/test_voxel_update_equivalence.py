@@ -10,6 +10,12 @@ from dronedream_agent_core.contracts import RangeRayObservation, Vector3
 from dronedream_agent_core.local_world_model import MetricVoxelMap, _VoxelEvidence
 
 
+# 功能：
+#   用逐次标量更新和原概率公式作独立基准，不复用生产分类近似或缓存实现。
+# 输入：
+#   self、key：独立测试地图和体素键；measurement、observed_at：证据增量与原始时刻。
+# 输出：
+#   无。
 def reference_update(self, key, *, measurement, observed_at):
     evidence = self._evidence.get(key)
     if evidence is None:
@@ -25,10 +31,12 @@ def reference_update(self, key, *, measurement, observed_at):
     evidence.log_odds = max(-6.0, min(6.0, evidence.log_odds + measurement))
     evidence.observations += 1
     evidence.latest_monotonic_seconds = max(evidence.latest_monotonic_seconds, observed_at)
-    if evidence.log_odds >= math.log(.65 / .35):
+    # 阈值必须按用户可见概率定义。对数阈值的浮点近似不是独立概率基准。
+    probability = 1. / (1. + math.exp(-evidence.log_odds))
+    if probability >= .65:
         self._occupied_keys.add(key)
         self._observed_free_keys.discard(key)
-    elif evidence.log_odds <= math.log(.35 / .65):
+    elif probability <= .35:
         self._observed_free_keys.add(key)
         self._occupied_keys.discard(key)
     else:
@@ -36,6 +44,12 @@ def reference_update(self, key, *, measurement, observed_at):
         self._observed_free_keys.discard(key)
 
 
+# 功能：
+#   创建独立地图，可显式改用仅供测试的逐标量更新器。
+# 输入：
+#   reference：是否注入基准更新器。
+# 输出：
+#   result：不与生产地图共享证据的测试对象。
 def world(*, reference=False):
     result = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=-4, y=-4, z=-4),
                             maximum_bound_m=Vector3(x=4, y=4, z=4))
@@ -44,10 +58,23 @@ def world(*, reference=False):
     return result
 
 
+# 功能：
+#   对比原始浮点位、索引、计数及时间，避免只看最终分类而漏掉证据变化。
+# 输入：
+#   first、second：生产实现与独立基准地图。
+# 输出：
+#   无。
 def assert_equivalent(first, second):
+    # 功能：
+    #   把内部证据转换为可逐位对照的表示。
+    # 输入：
+    #   item：待比较的地图。
+    # 输出：
+    #   evidence_values：体素键到证据值的独立字典。
     def values(item):
-        return {key: (e.log_odds.hex(), e.observations, e.latest_monotonic_seconds.hex())
-                for key, e in item._evidence.items()}
+        evidence_values = {key: (e.log_odds.hex(), e.observations, e.latest_monotonic_seconds.hex())
+                           for key, e in item._evidence.items()}
+        return evidence_values
     assert values(first) == values(second)
     assert first._occupied_keys == second._occupied_keys
     assert first._observed_free_keys == second._observed_free_keys
@@ -58,6 +85,12 @@ def assert_equivalent(first, second):
             == second.latest_observation_monotonic_seconds)
 
 
+# 功能：
+#   覆盖阈值相邻浮点数、饱和、反转及时间倒退，逐次核对而不只比较最终结果。
+# 输入：
+#   measurement：本次反复施加的证据增量。
+# 输出：
+#   无。
 @pytest.mark.parametrize("measurement", [
     -12., -6., -.7, math.log(.35/.65), math.nextafter(math.log(.35/.65), 0),
     -0., 0., math.nextafter(math.log(.65/.35), 0), math.log(.65/.35), .7, 6., 12.,
@@ -73,6 +106,12 @@ def test_every_transition_matches_sequential_reference(measurement):
         assert_equivalent(actual, expected)
 
 
+# 功能：
+#   检查随机更新及克隆后写入保持逐位一致，不修改原地图或另一份克隆。
+# 输入：
+#   无：使用固定种子生成合成证据。
+# 输出：
+#   无。
 def test_random_updates_and_snapshot_detachment_are_bitwise_equivalent():
     rng = random.Random(805)
     actual, expected = world(), world(reference=True)
@@ -97,6 +136,12 @@ def test_random_updates_and_snapshot_detachment_are_bitwise_equivalent():
         assert_equivalent(actual, expected)
 
 
+# 功能：
+#   从实际射线集成入口对照自由空间、命中证据及来源时间。
+# 输入：
+#   无：使用固定种子的合成射线。
+# 输出：
+#   无。
 def test_ray_hits_and_free_space_keep_exact_indexes_and_observation_times():
     actual, expected = world(), world(reference=True)
     rng = random.Random(902)

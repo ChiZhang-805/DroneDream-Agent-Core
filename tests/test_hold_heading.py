@@ -8,9 +8,17 @@ from test_runtime_commands import _load_executor
 from dronedream_agent_core.contracts import Px4CoordinateContract
 
 
-def test_hold_discards_old_integrated_target_and_zero_rate_resumes_at_measured_yaw():
+# 功能：
+#   验证模型和示范在保护悬停后均从实测航向恢复，不追赶旧积分或路线航向。
+# 输入：
+#   teacher：是否使用明确的仿真示范权限。
+# 输出：
+#   None：恢复零角速度时保留实测航向。
+@pytest.mark.parametrize('teacher', [False, True])
+def test_hold_discards_old_integrated_target_and_zero_rate_resumes_at_measured_yaw(teacher):
     executor = _load_executor()
-    args = SimpleNamespace(require_model_control_authority=True, setpoint_rate_hz=20.,
+    args = SimpleNamespace(require_model_control_authority=not teacher,
+                           simulation_teacher_control=teacher, setpoint_rate_hz=20.,
                            _model_body_control_yaw_deg=155.)
     client = SimpleNamespace(latest_dynamics_telemetry=lambda _: {
         "sources": {"attitude": {"yaw_deg": 114., "sample_age_seconds": .03}}})
@@ -28,10 +36,18 @@ def test_hold_discards_old_integrated_target_and_zero_rate_resumes_at_measured_y
     assert result.yaw_deg == 114.
 
 
+# 功能：
+#   对启动、丢失、不可读和过期四种真实执行分支验证悬停不发生未授权转头。
+# 输入：
+#   tmp_path：隔离文件目录；kind：指令缺口类型；teacher：模型或示范权限。
+# 输出：
+#   None：实际发送设定值必须绑定实测位置与航向，速度为零。
+@pytest.mark.parametrize('teacher', [False, True])
 @pytest.mark.parametrize("kind", ["startup", "missing", "unreadable", "stale"])
-def test_every_required_command_gap_brakes_at_native_heading(tmp_path, kind):
+def test_every_required_command_gap_brakes_at_native_heading(tmp_path, kind, teacher):
     executor = _load_executor()
-    args = SimpleNamespace(require_model_control_authority=True, local_safety_required=True,
+    args = SimpleNamespace(require_model_control_authority=not teacher,
+        simulation_teacher_control=teacher, local_safety_required=True,
         local_safety_target=None, local_safety_command=tmp_path / "command.json",
         local_safety_repair_timeout_seconds=1., setpoint_rate_hz=20.,
         _local_safety_command_established=kind == "missing")
@@ -74,11 +90,19 @@ def test_every_required_command_gap_brakes_at_native_heading(tmp_path, kind):
     assert (velocity.north_m_s, velocity.east_m_s, velocity.down_m_s) == (0., 0., 0.)
 
 
+# 功能：
+#   验证实测航向缺失或过期时，两种控制模式均拒绝采用路线航向伪装新观测。
+# 输入：
+#   telemetry：无效姿态样本；teacher：模型或示范权限。
+# 输出：
+#   None：明确拒绝且不修改原积分状态。
+@pytest.mark.parametrize('teacher', [False, True])
 @pytest.mark.parametrize("telemetry", [None, {}, {"sources": {"attitude": {
     "yaw_deg": 114., "sample_age_seconds": .251}}}])
-def test_missing_heading_never_substitutes_route_heading(telemetry):
+def test_missing_heading_never_substitutes_route_heading(telemetry, teacher):
     executor = _load_executor()
-    args = SimpleNamespace(require_model_control_authority=True, _model_body_control_yaw_deg=155.)
+    args = SimpleNamespace(require_model_control_authority=not teacher,
+                           simulation_teacher_control=teacher, _model_body_control_yaw_deg=155.)
     with pytest.raises(executor.UserDirectedLanding, match="FRESH_NATIVE_HEADING"):
         executor._local_hold_yaw(args=args, fallback_heading_deg=90.,
             client=SimpleNamespace(latest_dynamics_telemetry=lambda _: telemetry))

@@ -35,6 +35,7 @@ class PacketContract:
     prefix: str
     payload_schema: str
     validate: Callable[[dict], None] | None = None
+    validate_outbound: Callable[[dict], None] | None = None
 
     # 功能：
     #   在创建套接字前验证协议身份和地址前缀，避免非法配置进入运行通信链路。
@@ -46,7 +47,8 @@ class PacketContract:
         if (any(type(value) is not str or not 1 <= len(value) <= 64
                 or any(not (char.isascii() and (char.isalnum() or char in ".-_")) for char in value)
                 for value in (self.protocol, self.prefix, self.payload_schema))
-                or self.validate is not None and not callable(self.validate)):
+                or self.validate is not None and not callable(self.validate)
+                or self.validate_outbound is not None and not callable(self.validate_outbound)):
             raise ValueError("LOCAL_PACKET_CONTRACT_INVALID")
 
 
@@ -98,14 +100,17 @@ def read_descriptor(path: Path, contract: PacketContract) -> dict:
 #   contract：业务域验证契约。
 # 输出：
 #   None：不返回业务数据。
-def _validate_payload(payload, contract):
+def _validate_payload(payload, contract, *, outbound=False):
     if (not isinstance(payload, dict)
             or payload.get("schema_version") != contract.payload_schema
             or type(payload.get("updated_at_unix_ms")) is not int
             or not 0 <= payload["updated_at_unix_ms"] <= 2**63 - 1):
         raise ValueError("LOCAL_PACKET_PAYLOAD_INVALID")
-    if contract.validate is not None:
-        contract.validate(payload)
+    # 出站可检查已编码信封，接收端始终执行完整业务验证；发送成功不等于观测接入。
+    validator = (contract.validate_outbound if outbound and contract.validate_outbound is not None
+                 else contract.validate)
+    if validator is not None:
+        validator(payload)
 
 
 # 功能：
@@ -313,7 +318,7 @@ class LatestPacketPublisher:
             raise ValueError("LOCAL_PACKET_SEQUENCE_EXHAUSTED")
         try:
             frozen = copy_json(payload, limit=MAX_PACKET_BYTES - 32)
-            _validate_payload(frozen, self._contract)
+            _validate_payload(frozen, self._contract, outbound=True)
             body = encode_json({"sequence": sequence, "payload": frozen},
                                limit=MAX_PACKET_BYTES - 32).encode("utf-8")
         except ValueError as error:

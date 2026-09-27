@@ -1,4 +1,5 @@
 {
+  "default_qualification_id": "asset-qualification-9968cd42eaf394ff55ce5792",
   "qualified_pair": {
     "packages": [
       {
@@ -20,9 +21,204 @@
     ],
     "qualification_id": "asset-qualification-9968cd42eaf394ff55ce5792",
     "receipt_sha256": "1b63265a27d66d4d3dae0d918349d2b08816383e241f1f9a35df4992029713fa",
+    "resource_id": "dronedream-school-map",
     "schema_version": "dronedream.bundled-qualified-pair.v1"
   },
-  "schema_version": "dronedream.bundled-assets.v2",
+  "qualified_pairs": [
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.school-map.v1",
+          "content_sha256": "bc88b79228ec7ae4c974957b6b692d7941607885c5489fc1d9f5f925dba10f2d",
+          "file": "school-map.ddpkg",
+          "kind": "map",
+          "sha256": "441364e913d588984851120322080131f87b93565b8880205105817aa25c64a8",
+          "source_content_sha256": "f5e6e1e2d7997c2bac1fd12274774ccccf412903eb0e4a4d58a85792341cacde"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd",
+          "file": "my-drone.ddpkg",
+          "kind": "vehicle",
+          "sha256": "695cb08542bfec997a58b14d8beaa11bcc5c6927216c2dd2d4244731dc6434d0",
+          "source_content_sha256": "cc576b3000346dfeb7b8cf91a6e8353db57c3b9c9460d19a790d07513ad8c4e9"
+        }
+      ],
+      "qualification_id": "asset-qualification-9968cd42eaf394ff55ce5792",
+      "receipt_sha256": "1b63265a27d66d4d3dae0d918349d2b08816383e241f1f9a35df4992029713fa",
+      "resource_id": "dronedream-school-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "airport-terminal",
+          "content_sha256": "c6a2eee5cc82ba5b0d72dd8acad828ccd8935a436a99fadb37187566c101de50",
+          "file": "pairs/open-rmf-airport-terminal/map.ddpkg",
+          "kind": "map",
+          "sha256": "9364caa3e3cb6f05e64c18ea0249e0b7a5e418cef80886ef09bb6ac95b2ae52f",
+          "source_content_sha256": "3bf15f6f150879825c88d625a8f5c63b224e951e8f1d6b6c588f81d2a22e0419"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "7f0ee014eb7c62a1fd1b4b72e46a7812bc5ec5246d7db4ca1bf348fdf665cda2",
+          "file": "pairs/open-rmf-airport-terminal/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "c0dcf59ce171f23e26a01b007eef0c7d7da33e38473dd4702216ef3a244d27f6",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-36d838de8568c92fb3708504",
+      "receipt_sha256": "1deda4f2d07c2258817b29adf3ee9b868f2210c3dccb6f4e3a162fa51271ee3e",
+      "resource_id": "open-rmf-airport-terminal",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "battle-royale",
+          "content_sha256": "6deded618f9e5b8b38e6aa057d2c518f319d2e1cc372d9b4052949e7c1e9b329",
+          "file": "pairs/open-rmf-battle-royale/map.ddpkg",
+          "kind": "map",
+          "sha256": "aba8e6a3ca8a09d02f80356569dc22d198cd06a255e671b8b0852276eaeb9a84",
+          "source_content_sha256": "2fdb70a215faaf862e81a04366e7832de36881abcc3816f1ab18dbb1388de2e5"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "20b86922f90972a82de31afa8c9c48b47ad24d83def6f10e426b7717148dc8d6",
+          "file": "pairs/open-rmf-battle-royale/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "f183bd84e1baa96fb90284f95e962c5b7de7d13414c63a04c93f46a8cf37fe20",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-e2cab08140791a54cfe24b44",
+      "receipt_sha256": "475341ee49261f5310063c23eeb9a02505c1b9667a20eca7e18d6436ea85512f",
+      "resource_id": "open-rmf-battle-royale",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "campus",
+          "content_sha256": "d9242069a221b8b1455f6bf297eb2c11375f377156ba2134eb775169659f0407",
+          "file": "pairs/open-rmf-campus/map.ddpkg",
+          "kind": "map",
+          "sha256": "a433b130ad3b7d32a44a47e486a43d98c172249b6b1009db2ebdf6ac5d498be0",
+          "source_content_sha256": "e30d10dec8c0fd99aa1e33f40aee4e66a2f92e1ec3cef4e2dc3cac75a13fa679"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "f94e642f68c4a26275282d4809e971313e28d871d7890a90d2e9445365d425ee",
+          "file": "pairs/open-rmf-campus/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "3ef0201bac474844ed05461217f0677b928be4fc60565053de658981a52c47f7",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-c1e60d7740e8e5f64448db27",
+      "receipt_sha256": "dfc1c07851a47e597e48bac60d274f0299856a9c7c697c713f11c74d8a323769",
+      "resource_id": "open-rmf-campus",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "clinic",
+          "content_sha256": "b0ac25301a467c9286a8e8dab2d0fe64cf2cca488cd9e68c1bde43af70bda72b",
+          "file": "pairs/open-rmf-clinic/map.ddpkg",
+          "kind": "map",
+          "sha256": "8a4669c33f25e1824c186f148bd44f63611bedb27b3619fda91d87c07d213edc",
+          "source_content_sha256": "31336930544b78d5dc6d54bdfa77659cb33627187b0fc93abfc6db25fd6dcbfb"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "4d880e32f37452244a1ee371a7a6e06466329f5997288308790c8bcf2c3994fa",
+          "file": "pairs/open-rmf-clinic/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "538652c43592020582240857b07559160e91b1c79a0645573773b02ed62e1ef6",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-106f0c4bf24b22858c9e7927",
+      "receipt_sha256": "cb330c7dbd4092fb9dddccca619bce272b29154bab23b941f46036e74303b7d9",
+      "resource_id": "open-rmf-clinic",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "hotel",
+          "content_sha256": "ad9940e78001b2b106f3c282c5ee83e943360884aef65a73a9da6a1ce31ede9e",
+          "file": "pairs/open-rmf-hotel/map.ddpkg",
+          "kind": "map",
+          "sha256": "b4ac1906ab4eb27cdbd27453e861fce582d76e09a6de9db8fb7f114a5fd2a13e",
+          "source_content_sha256": "6f6d5e41eef9949d96b13a110a998cfae8b4641854fb6729e939dd3ceab6f074"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "e801d0bdb7b9a886e2664d2fbb047b450a72d216047dcdd303ef9eb7dcf085d3",
+          "file": "pairs/open-rmf-hotel/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "70252bedffe38819519b030366320f60e453236d0bf49edd42a59b68a13c4251",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-ad8c28b4c381af95b681b0cb",
+      "receipt_sha256": "16e134720519a506a94101778e0f07b1eb805341c6f4163acfda5c7ea80cce42",
+      "resource_id": "open-rmf-hotel",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "office",
+          "content_sha256": "87356c4e0189815fe546f4dbfe1167c296e0e0a9167590b0c83986efa09a442b",
+          "file": "pairs/open-rmf-office/map.ddpkg",
+          "kind": "map",
+          "sha256": "ab9357d37673de5e1bc4d532ae75cbd6451b0a6c70278377d8b1c6b7d5ef6eed",
+          "source_content_sha256": "10ce638ff645cef85884796cd716522b8ff549be9b5274159312984b91c51e93"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "7773bf9f0a3bb8cee8c8fa11accde6856734169c129facaad50df14f541db210",
+          "file": "pairs/open-rmf-office/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "222461745cb15e904a7d6f768d00cc22e1014a239708241f90fbd29e4d4cc972",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-c4ec6a2c0137760b8f175db2",
+      "receipt_sha256": "64a2962de1ec0228e89104d18e3752a9514f5bba89f7d017eb2d59b7d1d69864",
+      "resource_id": "open-rmf-office",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "triple-h",
+          "content_sha256": "8a5dfe3c3befb262af3658becfb46282b208fc77fd483bfced6b80aa70198982",
+          "file": "pairs/open-rmf-triple-h/map.ddpkg",
+          "kind": "map",
+          "sha256": "139f781af2e0d5d6dcded5e586181ec063f5c4b00f714cf69b8c3f52a6ef8135",
+          "source_content_sha256": "96db22e92d10e56e5c3938d9d925a47ef60135a1b3aac0a558f80bacd319c4f8"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "ffe4e828689f99b7b3a3c969921fcd9becf688593a6ae11ed11c87c0cd47eda1",
+          "file": "pairs/open-rmf-triple-h/vehicle.ddpkg",
+          "kind": "vehicle",
+          "sha256": "ecc7b56c8395cb01612f7ee24c1b86dd43f88296b1a7bd9fb9f97424cd850bd8",
+          "source_content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd"
+        }
+      ],
+      "qualification_id": "asset-qualification-babfc35b4cb44740d7c89c1a",
+      "receipt_sha256": "19cd4250a468173014054d0520efe968967ad818d947ab72c5dd272ded88e7d7",
+      "resource_id": "open-rmf-triple-h",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    }
+  ],
+  "schema_version": "dronedream.bundled-assets.v3",
   "superseded_qualified_pairs": [
     {
       "map_content_sha256": "b588d38a28c1fb9dd7bd0ddd678bdcf199d1d156b4a7b24972c463e36d4c98c2",

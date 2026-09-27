@@ -210,6 +210,36 @@ def test_bounded_navigation_clone_requires_center_and_radius_together() -> None:
         _map().navigation_clone(center_m=Vector3(x=1.5, y=1.5, z=0.5))
 
 
+# 功能：
+#   用逐体素原始计算核对整桶快捷路径，覆盖负世界坐标、边界桶和球面附近半径。
+# 输入：
+#   radius：查询半径，包含小于桶边长和跨多个桶的情况。
+# 输出：
+#   None：断言键集合完全相同且克隆索引不共享可变集合。
+@pytest.mark.parametrize("radius", [.001, .25, 1., 4., 12., 100.])
+def test_chunk_selection_matches_scalar_distance_and_owns_indexes(radius):
+    import math
+    import random
+
+    rng = random.Random(25)
+    world = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=-50, y=-50, z=-25),
+        maximum_bound_m=Vector3(x=50, y=50, z=25))
+    center = Vector3(x=-3.5, y=-2.25, z=4.25)
+    center_key = world.key_for(center)
+    for _ in range(4000):
+        key = tuple(value + rng.randint(-56, 56) for value in center_key)
+        world._update_log_odds(key, measurement=.8, observed_at=1.)
+    expected = {key for key in world._evidence if math.dist(
+        (center.x, center.y, center.z), world._center_point_for_key(key)) <= radius + math.sqrt(3.) * .25 / 2}
+    clone = world.navigation_clone(center_m=center, radius_m=radius)
+    assert set(clone._evidence) == expected
+    assert set().union(set(), *clone._evidence_keys_by_chunk.values()) == expected
+    for chunk, members in clone._evidence_keys_by_chunk.items():
+        assert members is not world._evidence_keys_by_chunk[chunk]
+        assert members == world._evidence_keys_by_chunk[chunk] & expected
+    assert clone._non_static_evidence_count == len(expected)
+
+
 def test_navigation_snapshots_share_values_but_detach_writes_on_either_side():
     world = MetricVoxelMap(resolution_m=1., minimum_bound_m=Vector3(x=0, y=0, z=0),
                            maximum_bound_m=Vector3(x=4, y=4, z=4))

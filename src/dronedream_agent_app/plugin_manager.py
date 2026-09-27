@@ -3124,6 +3124,9 @@ class PluginManager:
         for plugin in self.store.list_plugins():
             if not plugin["enabled"] or plugin["status"] != "healthy":
                 continue
+            # 升级后保留旧安装记录供历史查询，但已不随产品提供的内置代码不能进入新计划。
+            if plugin["builtin"] and plugin["plugin_id"] not in self._definitions:
+                continue
             manifest = self._manifest(plugin)
             slot_id = manifest.placement.slot_id
             if manifest.placement.activation_mode == "single":

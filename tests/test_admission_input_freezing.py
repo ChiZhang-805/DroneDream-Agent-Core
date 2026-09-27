@@ -98,6 +98,35 @@ def test_freezing_rejects_model_changed_after_load(arguments, tmp_path, monkeypa
 
 
 # 功能：
+#   冻结完整风险专用数据集，原文件变化不会改变后续准入读取的样本和来源身份。
+# 输入：
+#   arguments：基础输入夹具；tmp_path：独占输出；monkeypatch：只设置数据构建命令行。
+# 输出：
+#   None：冻结遗漏文件、引用原路径或身份变化时失败。
+def test_freezing_copies_all_risk_sources(arguments, tmp_path, monkeypatch):
+    from test_native_action_risk_artifacts import dataset
+
+    from dronedream_agent_core.training.action_risk_artifacts import FILES, load_action_risk_dataset
+
+    native = tmp_path / 'native'
+    native.mkdir()
+    source = dataset(native, monkeypatch)
+    original = load_action_risk_dataset(source)
+    arguments.risk_validation_data = [source]
+    private = tmp_path / 'private'
+    private.mkdir()
+    frozen = admission_inputs.freeze_admission_inputs(arguments, private)
+    copied = frozen.risk_validation_data[0]
+    assert copied.is_relative_to(private) and copied != source
+    for name in ('dataset-receipt.jsonl', *FILES.values()):
+        assert (copied / name).read_bytes() == (source / name).read_bytes()
+    (source / 'dataset-receipt.jsonl').write_bytes(b'{}')
+    loaded = load_action_risk_dataset(copied)
+    assert loaded.receipt_sha256 == original.receipt_sha256
+    assert loaded.samples == original.samples
+
+
+# 功能：
 #   构造由当前数据生产者输出的空间分区结构，路线分组由实际几何重新计算。
 # 输入：
 #   validation_y：验证路线偏移，可模拟独立路线或与训练重叠。

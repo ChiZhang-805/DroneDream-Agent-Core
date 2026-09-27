@@ -1,6 +1,7 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+from clock_fixtures import isolate_time
 from test_native_flight_state import _identity
 from test_runtime_commands import _load_executor
 
@@ -27,13 +28,18 @@ def test_spawn_rebase_does_not_discard_source_timestamp():
     assert (observed.north_m, observed.east_m, observed.down_m) == (5., 10., -2.)
 
 
-def test_identity_publication_keeps_original_receive_time_and_fixed_map_binding(
-    tmp_path, monkeypatch
-):
+# 功能：
+#   检查遥测发布保留原始采样时间及固定地图绑定，不把写入时刻当作新采样。
+# 输入：
+#   tmp_path：隔离的发布目录。
+#   monkeypatch：只替换当前执行器墙钟的测试工具。
+# 输出：
+#   None：无返回值。
+def test_identity_publication_retains_receive_time_and_fixed_map_binding(tmp_path, monkeypatch):
     import json
 
     module = _load_executor()
-    monkeypatch.setattr(module.time, "time", lambda: 1.05)
+    isolate_time(monkeypatch, module, time=lambda: 1.05)
     measured = SimpleNamespace(
         north_m=2.0,
         east_m=3.0,

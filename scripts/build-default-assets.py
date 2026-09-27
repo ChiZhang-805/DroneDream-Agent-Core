@@ -86,7 +86,6 @@ CURRENT_RUNTIME_GATES = (
 )
 CURRENT_RUNTIME_ACTIONS = (
     "delivery.precontact-hold",
-    "delivery.scan-code",
     "pickup",
     "delivery.confirm-custody",
     "delivery.verify-loaded-stability",

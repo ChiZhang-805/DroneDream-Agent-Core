@@ -15,18 +15,21 @@ import json
 import math
 import sys
 import time
+from bisect import bisect_left
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from dronedream_plugin_sdk.protocol import decode_json
 
 from .assets import MAX_SEMANTIC_BYTES
-from .collision import vehicle_clearance
+from .collision import _clearance, planning_collision_primitives, primitive_bounds
 from .contracts import GraphRoute, MapAsset, RouteQuery, Vector3
 from .navigation import shortest_route
 from .plugin_files import read_plugin_file
+from .preferred_airspace import PreferredAirspace, checked_point
 
 GridKey = tuple[int, int, int]
 Point = tuple[float, float, float]
@@ -43,6 +46,7 @@ class MetricPlannerPolicy:
     corridor_penalty_radius_cells: int = 2
     maximum_expansions: int = 450_000
     maximum_search_seconds: float | None = None
+    preferred_airspace_weight: float = 1.5
 
     # 功能：
     #   校验规划精度、非负代价和计算预算，禁止 NaN、布尔或负惩罚破坏有界 A* 搜索。
@@ -53,7 +57,7 @@ class MetricPlannerPolicy:
     def __post_init__(self) -> None:
         for name in ("resolution_m", "required_clearance_m", "search_padding_m",
                      "vertical_cost_multiplier", "clearance_cost_weight", "corridor_penalty_weight",
-                     "maximum_search_seconds"):
+                     "maximum_search_seconds", "preferred_airspace_weight"):
             value = getattr(self, name)
             if name == "maximum_search_seconds" and value is None:
                 continue
@@ -79,49 +83,15 @@ class MetricPlannerPolicy:
 
 
 # 功能：
-#   按机体及操作余量扩张图元包围盒，空间索引只筛候选，精确净空由碰撞几何计算。
+#   复用碰撞模块的完整旋转包围盒并膨胀操作余量，避免路径索引漏掉倾斜楼板。
 # 输入：
 #   primitive：已加载的米制碰撞图元。
 #   expansion_m：需要在各轴保守扩张的距离。
 # 输出：
 #   bounds：扩张后的三维最小和最大坐标。
 def _primitive_bounds(primitive: dict[str, Any], expansion_m: float) -> tuple[Point, Point]:
-    dimensions = ("size_x", "size_y", "size_z") if "size_x" in primitive else ("radius_m",)
-    for name in ("center_x", "center_y", "center_z", *dimensions):
-        value = primitive.get(name)
-        if (type(value) not in (int, float)
-                or not -sys.float_info.max <= value <= sys.float_info.max):
-            raise ValueError("metric planner primitive coordinate or dimension invalid")
-        if name in dimensions and value <= 0:
-            raise ValueError("metric planner primitive dimension must be positive")
-    for name in ("length_m", "height_m", "roll_rad", "pitch_rad", "yaw_rad"):
-        value = primitive.get(name, 0.)
-        if (type(value) not in (int, float)
-                or not -sys.float_info.max <= value <= sys.float_info.max
-                or (name in {"length_m", "height_m"} and value < 0.)):
-            raise ValueError("metric planner primitive extent or rotation invalid")
-    center = (
-        float(primitive["center_x"]),
-        float(primitive["center_y"]),
-        float(primitive["center_z"]),
-    )
-    if "size_x" in primitive:
-        half_x = float(primitive["size_x"]) / 2
-        half_y = float(primitive["size_y"]) / 2
-        yaw = float(primitive.get("yaw_rad", 0.0))
-        extent_x = abs(math.cos(yaw)) * half_x + abs(math.sin(yaw)) * half_y
-        extent_y = abs(math.sin(yaw)) * half_x + abs(math.cos(yaw)) * half_y
-        extent_z = float(primitive["size_z"]) / 2
-    else:
-        radius = float(primitive["radius_m"])
-        axial = float(primitive.get("length_m", primitive.get("height_m", 0.0))) / 2
-        # A conservative sphere bounds arbitrarily oriented capsules/cylinders.
-        extent_x = extent_y = extent_z = radius + axial
-    extents = (extent_x + expansion_m, extent_y + expansion_m, extent_z + expansion_m)
-    return (
-        tuple(center[index] - extents[index] for index in range(3)),
-        tuple(center[index] + extents[index] for index in range(3)),
-    )
+    bounds = primitive_bounds(primitive, expansion_m)
+    return bounds
 
 
 class KnownMapMetricPlanner:
@@ -159,25 +129,29 @@ class KnownMapMetricPlanner:
         if expected_semantic_sha256 is not None and semantic_sha256 != expected_semantic_sha256:
             raise ValueError("qualified static map semantic hash mismatch")
         semantic = decode_json(raw, limit=MAX_SEMANTIC_BYTES, node_limit=1_000_000)
-        primitives = semantic.get("collision_primitives") if isinstance(semantic, dict) else None
-        if not isinstance(primitives, list) or not primitives:
+        if not isinstance(semantic, dict):
             raise ValueError("semantic artifact has no collision primitives")
-        if any(not isinstance(item, dict) for item in primitives):
-            raise ValueError("collision primitive is not an object")
+        primitives = planning_collision_primitives(semantic)
         self.graph = graph
         self.semantic_path = semantic_path
         self.semantic_sha256 = semantic_sha256
         self.vehicle_radius_m = vehicle_diameter_m / 2
         self.vehicle_half_height_m = vehicle_height_m / 2
         self.policy = policy or MetricPlannerPolicy()
-        self.primitives: list[dict[str, Any]] = primitives
+        # 数值已经由统一入口验证；冻结独立副本，避免每个采样点重复解析数千个图元。
+        self.primitives = tuple(MappingProxyType(primitive) for primitive in primitives)
+        self.preferred_airspace = PreferredAirspace(
+            semantic, {"semantic_file_sha256": semantic_sha256},
+            self.vehicle_radius_m, vehicle_height_m)
         self.nodes = {node.node_id: node for node in graph.nodes} if graph is not None else {}
         self._route_cache: dict[tuple[str, str, Point, Point], GraphRoute] = {}
         self._spatial: dict[GridKey, list[int]] = defaultdict(list)
-        expansion = max(self.vehicle_radius_m, self.vehicle_half_height_m)
-        expansion += self.policy.required_clearance_m + self.policy.resolution_m
+        self._clearance_cap_m = self.policy.required_clearance_m + self.policy.resolution_m
+        # 圆形障碍检查采用机体外包球，索引必须使用同样的外包半径，不能只取最大半轴。
+        expansion = math.hypot(self.vehicle_radius_m, self.vehicle_half_height_m)
+        expansion += self._clearance_cap_m
         indexed_cells = 0
-        for index, primitive in enumerate(self.primitives):
+        for index, primitive in enumerate(primitives):
             low, high = _primitive_bounds(primitive, expansion)
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[axis] > high[axis] for axis in range(3)
@@ -220,46 +194,58 @@ class KnownMapMetricPlanner:
         ]
 
     # 功能：
-    #   对覆盖当前位置的粗筛图元计算完整机体净空；此静态模型不代表实时障碍感知。
+    #   对冻结几何计算饱和净空下界；索引外图元距机体必大于饱和值，不能把漏选当作无限净空。
     # 输入：
     #   self：当前规划器。
     #   point：机体碰撞包络中心坐标。
     # 输出：
-    #   clearance_m：最小净空；局部没有静态候选时为正无穷。
+    #   clearance_m：不超过真实保守净空及饱和值的有限距离，不代表实时障碍感知。
     def clearance(self, point: Point) -> float:
+        point = checked_point(point)
         candidates = self._spatial.get(self._bin_key(point), ())
-        if not candidates:
-            return math.inf
-        return min(
-            vehicle_clearance(
+        clearance_m = self._clearance_cap_m
+        for index in candidates:
+            value = _clearance(
                 point,
                 self.primitives[index],
                 radius_m=self.vehicle_radius_m,
                 half_height_m=self.vehicle_half_height_m,
             )
-            for index in candidates
-        )
+            if not math.isfinite(value):
+                raise ValueError("metric planner clearance overflow")
+            clearance_m = min(clearance_m, value)
+        return clearance_m
 
     # 功能：
-    #   以比导出验收更细的间隔检查整条连接线段，包含两端点且使用同一操作净空。
+    #   以净空的 1-Lipschitz 下界证明整段安全；近障段自适应细分，无法证明时保守拒绝。
     # 输入：
     #   self：当前规划器。
     #   start、end：线段端点。
     # 输出：
-    #   free：全部采样均满足净空时为真。
+    #   free：包括采样点之间的整条线段均满足操作净空时为真。
     def _segment_is_free(self, start: Point, end: Point) -> bool:
-        distance = math.dist(start, end)
-        # The exported route is independently revalidated at a 0.1 m interval.
-        # Search and line-of-sight simplification must sample more densely than
-        # that final gate; otherwise a narrow clearance minimum can fall between
-        # planner samples and produce a route that the authoritative validator
-        # immediately rejects.
-        count = max(1, math.ceil(distance / min(0.05, self.policy.resolution_m / 4)))
-        for index in range(count + 1):
-            ratio = index / count
-            point = tuple(start[axis] + (end[axis] - start[axis]) * ratio for axis in range(3))
-            if self.clearance(point) < self.policy.required_clearance_m:
+        start, end = checked_point(start), checked_point(end)
+        pending = [(start, end, self.clearance(start), self.clearance(end))]
+        checks = 0
+        while pending:
+            first, last, first_clearance, last_clearance = pending.pop()
+            distance = math.dist(first, last)
+            minimum = min(first_clearance, last_clearance)
+            if minimum < self.policy.required_clearance_m:
                 return False
+            # 到最近端点至多半段长；这是真正的连续净空证明，不是跳过中间障碍。
+            if minimum - distance / 2 >= self.policy.required_clearance_m:
+                continue
+            # 端点余量可能只有几毫米，不能在厘米级停止并误判整条窄通道不可达。
+            if distance <= 0.0001:
+                return False
+            checks += 1
+            if checks > 250_000:
+                raise ValueError("metric segment proof budget exceeded")
+            middle = tuple((first[axis] + last[axis]) / 2 for axis in range(3))
+            middle_clearance = self.clearance(middle)
+            pending.append((middle, last, middle_clearance, last_clearance))
+            pending.append((first, middle, first_clearance, middle_clearance))
         return True
 
     # 功能：
@@ -289,16 +275,20 @@ class KnownMapMetricPlanner:
         # old route node.
         points.extend((exact_start, exact_goal))
         padding = self.policy.search_padding_m
+        preferred_upper = max(
+            (band.preferred_upper_z_m for point in points
+             if (band := self.preferred_airspace.band_at(point)) is not None),
+            default=max(point[2] for point in points))
         return (
             (
                 min(point[0] for point in points) - padding,
                 min(point[1] for point in points) - padding,
-                max(self.vehicle_half_height_m + 0.05, min(point[2] for point in points) - padding),
+                min(point[2] for point in points) - padding,
             ),
             (
                 max(point[0] for point in points) + padding,
                 max(point[1] for point in points) + padding,
-                max(point[2] for point in points) + padding,
+                max(max(point[2] for point in points) + padding, preferred_upper),
             ),
         )
 
@@ -372,15 +362,25 @@ class KnownMapMetricPlanner:
             exact_goal=exact_goal,
         )
         resolution = self.policy.resolution_m
+        axis_counts = [math.floor((high[axis] - low[axis]) / resolution) + 1
+                       for axis in range(3)]
+        if any(count < 1 or count > 100_000 for count in axis_counts):
+            raise ValueError("metric planner axis budget exceeded")
+        # 保留起终点每个真实坐标分量，使窄门/楼梯内仍可先竖直调整，而不是强迫斜着接上网格。
+        axes = [sorted({*(low[axis] + index * resolution for index in range(axis_counts[axis])),
+                        exact_start[axis], exact_goal[axis]}) for axis in range(3)]
+        if math.prod(len(axis) for axis in axes) > 20_000_000:
+            raise ValueError("metric planner grid budget exceeded")
 
         # 功能：
-        #   将本次局部网格键还原为世界米制坐标。
+        #   将包含精确端点坐标的非均匀网格键还原为世界米制坐标。
         # 输入：
         #   key：以本次搜索下界为原点的网格键。
         # 输出：
         #   position：世界三维位置。
         def key_to_point(key: GridKey) -> Point:
-            return tuple(low[axis] + key[axis] * resolution for axis in range(3))  # type: ignore[return-value]
+            position = tuple(axes[axis][key[axis]] for axis in range(3))
+            return position
 
         # 功能：
         #   将世界位置量化到本次搜索网格；原始精确端点另行保留。
@@ -389,9 +389,16 @@ class KnownMapMetricPlanner:
         # 输出：
         #   key：最近网格键。
         def point_to_key(point: Point) -> GridKey:
-            return tuple(round((point[axis] - low[axis]) / resolution) for axis in range(3))  # type: ignore[return-value]
+            indices = []
+            for axis in range(3):
+                right = min(bisect_left(axes[axis], point[axis]), len(axes[axis]) - 1)
+                left = max(0, right - 1)
+                indices.append(min((left, right),
+                                   key=lambda item: abs(axes[axis][item] - point[axis])))
+            key = tuple(indices)
+            return key
 
-        maximum_key = tuple(math.floor((high[axis] - low[axis]) / resolution) for axis in range(3))
+        maximum_key = tuple(len(axis) - 1 for axis in axes)
         start_key = point_to_key(exact_start)
         goal_key = point_to_key(exact_goal)
         point_cache: dict[GridKey, Point] = {}
@@ -472,10 +479,10 @@ class KnownMapMetricPlanner:
         # 输出：
         #   estimate：到目标的基础运动代价下界。
         def heuristic(key: GridKey) -> float:
-            dx = (key[0] - goal_key[0]) * resolution
-            dy = (key[1] - goal_key[1]) * resolution
-            dz = (key[2] - goal_key[2]) * resolution
-            return math.sqrt(dx * dx + dy * dy) + abs(dz) * self.policy.vertical_cost_multiplier
+            position = point(key)
+            dx, dy, dz = (position[i] - exact_goal[i] for i in range(3))
+            estimate = math.hypot(dx, dy) + abs(dz) * self.policy.vertical_cost_multiplier
+            return estimate
 
         queue: list[tuple[float, float, GridKey]] = [(heuristic(start_key), 0.0, start_key)]
         costs = {start_key: 0.0}
@@ -507,11 +514,15 @@ class KnownMapMetricPlanner:
                 if clearance < self.policy.required_clearance_m:
                     continue
                 neighbor_point = point(neighbor)
-                if not self._segment_is_free(current_point, neighbor_point):
-                    continue
-                horizontal = resolution * math.hypot(dx, dy)
-                vertical = resolution * abs(dz) * self.policy.vertical_cost_multiplier
+                horizontal = math.hypot(neighbor_point[0] - current_point[0],
+                                        neighbor_point[1] - current_point[1])
+                vertical = (abs(neighbor_point[2] - current_point[2])
+                            * self.policy.vertical_cost_multiplier)
                 step_cost = horizontal + vertical
+                if self.preferred_airspace.domain is not None:
+                    step_cost += (math.hypot(horizontal, vertical)
+                                  * self.policy.preferred_airspace_weight
+                                  * self.preferred_airspace.cost(neighbor_point))
                 if math.isfinite(clearance):
                     step_cost += self.policy.clearance_cost_weight / max(
                         clearance - self.policy.required_clearance_m + 0.05,
@@ -521,6 +532,9 @@ class KnownMapMetricPlanner:
                     step_cost += self.policy.corridor_penalty_weight
                 candidate = cost + step_cost
                 if candidate < costs.get(neighbor, math.inf):
+                    # 没有更低代价的边不会进入路线，先剪枝再做昂贵的连续碰撞证明。
+                    if not self._segment_is_free(current_point, neighbor_point):
+                        continue
                     costs[neighbor] = candidate
                     previous[neighbor] = current
                     heapq.heappush(queue, (candidate + heuristic(neighbor), candidate, neighbor))
@@ -582,11 +596,17 @@ class KnownMapMetricPlanner:
                 raise ValueError("metric route endpoint connection violates operational clearance")
             return points
         output = [points[0]]
+        preference_prefix = [0.0]
+        for first, second in zip(points, points[1:], strict=False):
+            preference_prefix.append(
+                preference_prefix[-1] + self._preference_integral(first, second))
         anchor = 0
         while anchor < len(points) - 1:
             candidate = len(points) - 1
             while candidate > anchor + 1:
-                if self._segment_is_free(points[anchor], points[candidate]):
+                if (self._segment_is_free(points[anchor], points[candidate])
+                        and self._preference_integral(points[anchor], points[candidate])
+                        <= preference_prefix[candidate] - preference_prefix[anchor] + 0.05):
                     break
                 candidate -= 1
             if not self._segment_is_free(points[anchor], points[candidate]):
@@ -594,6 +614,22 @@ class KnownMapMetricPlanner:
             output.append(points[candidate])
             anchor = candidate
         return output
+
+    # 功能：
+    #   对捷径积分软偏离代价，防止几何简化把已规划的爬升抹平成低空直线。
+    # 输入：
+    #   start、end：待检查线段。
+    # 输出：
+    #   cost：按米累积的软偏离代价。
+    def _preference_integral(self, start: Point, end: Point) -> float:
+        if self.preferred_airspace.domain is None or self.policy.preferred_airspace_weight == 0:
+            return 0.0
+        distance = math.dist(start, end)
+        count = max(1, math.ceil(distance / 0.25))
+        cost = distance / count * sum(self.preferred_airspace.cost(tuple(
+            start[axis] + (end[axis] - start[axis]) * (index + 0.5) / count
+            for axis in range(3))) for index in range(count))
+        return cost
 
 
 # 功能：

@@ -41,6 +41,15 @@ def normalize_native_pose_covariance(values: Sequence[object]) -> list[float | N
     return normalized
 
 
+# 功能：仅规范化 MAVLink 六维速度协方差的传输值，保留未知项，不推断坐标系或定位资格。
+# 输入：values：21 项上三角，轴顺序 vx、vy、vz、rollspeed、pitchspeed、yawspeed。
+# 输出：规范化列表或整体未知 None；线速度块单位 (m/s)²，角速度块 (rad/s)²，交叉项为混合单位。
+def normalize_native_twist_covariance(values: Sequence[object]) -> list[float | None] | None:
+    # Both MAVLink arrays use the same packing and NaN convention. This reuse
+    # validates only transport values, not a pose interpretation of twist.
+    return normalize_native_pose_covariance(values)
+
+
 # 功能：
 #   1. 校验位置协方差块的非负性及半正定约束，返回方向无关的保守方差上界。
 #   2. 完整相关项使用绝对行和，缺失相关项使用迹，不假设位置误差相互独立。

@@ -18,12 +18,44 @@ from .plugin_values import plugin_json_value
 
 
 @dataclass(frozen=True)
+class NavigationFrameState:
+    """Owned navigation state, not a sensor frame or new ranging evidence."""
+
+    localization_position_m: Vector3
+    localization_velocity_mps: Vector3
+    dynamic_obstacles: tuple[DynamicObstacleObservation, ...]
+
+
+# 功能：
+#   冻结导航编译实际使用的位姿、速度和动态目标，不重复复制已融合到独占地图的原始射线。
+#   该对象不能作为新传感器帧重新融合，不修改任何来源时钟或健康判定。
+# 输入：
+#   frame：已融合感知帧或已裁剪的导航状态。
+# 输出：
+#   frozen：不共享可变向量或动态目标的导航专用状态。
+def freeze_navigation_frame(frame: OnboardPerceptionFrame | NavigationFrameState) -> NavigationFrameState:
+    if not isinstance(frame, (OnboardPerceptionFrame, NavigationFrameState)):
+        raise ValueError("navigation snapshot requires typed frame and health")
+    if type(frame.dynamic_obstacles) not in (list, tuple) or len(frame.dynamic_obstacles) > 512:
+        raise ValueError("navigation snapshot dynamic obstacle budget is invalid")
+    values = plugin_json_value({"position": frame.localization_position_m,
+        "velocity": frame.localization_velocity_mps, "obstacles": frame.dynamic_obstacles})
+    frozen = NavigationFrameState(
+        Vector3.model_validate(values["position"], strict=True),
+        Vector3.model_validate(values["velocity"], strict=True),
+        tuple(DynamicObstacleObservation.model_validate(item, strict=True)
+              for item in values["obstacles"]),
+    )
+    return frozen
+
+
+@dataclass(frozen=True)
 class NavigationSnapshotRequest:
     """Owned compilation inputs with metric ENU geometry and original source time."""
-    # The caller must give this request a frozen local world clone and copies
-    # of mutable messages. Compilation never reads a live changing world.
+    # 后台编译必须持有独占地图克隆；地图所有者线程可同步读取当前地图，
+    # 但编译完成前不能发生并发写入。可变消息始终需要独立冻结。
     world: MetricVoxelMap
-    frame: OnboardPerceptionFrame
+    frame: OnboardPerceptionFrame | NavigationFrameState
     health: PerceptionFusionHealth
     goal_position_m: Vector3
     required_clearance_m: float
@@ -111,7 +143,7 @@ def compile_navigation_snapshot(request: NavigationSnapshotRequest) -> dict[str,
     if authority and request.include_candidate_paths:
         raise ValueError("continuous navigation cannot include coordinate candidates")
     frame = request.frame
-    if not isinstance(frame, OnboardPerceptionFrame) or not isinstance(
+    if not isinstance(frame, (OnboardPerceptionFrame, NavigationFrameState)) or not isinstance(
         request.health, PerceptionFusionHealth
     ):
         raise ValueError("navigation snapshot requires typed frame and health")

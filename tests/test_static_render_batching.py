@@ -321,3 +321,42 @@ def test_materialization_reads_sources_with_explicit_bounds(tmp_path, monkeypatc
     monkeypatch.setattr(Path, "read_bytes", reject_unbounded)
     _, receipt = prepare_static_render_world(path, tmp_path / "derived")
     assert receipt["source_world_sha256"] == hashlib.sha256(content).hexdigest()
+
+
+# 功能：
+#   核对 OBJ 的相邻材质及材质纹理递归复制、去重和绑定，避免派生世界静默丢失颜色。
+# 输入：
+#   tmp_path：pytest 隔离目录。
+# 输出：
+#   None：不返回业务数据。
+def test_obj_material_and_texture_dependencies_are_preserved(tmp_path):
+    source, output = tmp_path / "source", tmp_path / "output"
+    (source / "meshes").mkdir(parents=True)
+    (source / "textures").mkdir()
+    (source / "meshes/a.obj").write_bytes(b'mtllib "gate material.mtl"\nv 0 0 0\n')
+    (source / "meshes/b.obj").write_bytes(b'mtllib "gate material.mtl"\nv 1 0 0\n')
+    (source / "meshes/gate material.mtl").write_bytes(b'newmtl gate\nmap_Kd ../textures/color.png\n')
+    (source / "textures/color.png").write_bytes(b"texture-content")
+    content = b"<sdf><uri>meshes/a.obj</uri><uri>meshes/b.obj</uri></sdf>"
+    resources = copy_relative_render_resources(content, source, output)
+    assert len(resources) == 4
+    for relative, receipt in resources.items():
+        assert (source / relative).read_bytes() == (output / relative).read_bytes()
+        assert receipt["sha256"] == hashlib.sha256((output / relative).read_bytes()).hexdigest()
+
+
+# 功能：
+#   嵌套材质引用也必须遵守资源边界，缺失或逃逸时不能继续输出成功回执。
+# 输入：
+#   tmp_path：pytest 隔离目录。
+#   reference：错误材质引用。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize("reference", ["missing.mtl", "../../secret.mtl", "https://example.test/material.mtl"])
+def test_obj_dependencies_reject_missing_external_or_escaping_resources(tmp_path, reference):
+    source = tmp_path / "source"
+    (source / "meshes").mkdir(parents=True)
+    (tmp_path / "secret.mtl").write_bytes(b"newmtl private")
+    (source / "meshes/a.obj").write_text(f"mtllib {reference}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="RESOURCE_UNSUPPORTED"):
+        copy_relative_render_resources(b"<sdf><uri>meshes/a.obj</uri></sdf>", source, tmp_path / "output")

@@ -179,9 +179,11 @@ def test_boolean_receipt_counts_cannot_impersonate_one_sample(field):
 #   2. 篡改视觉编码器身份后验证继续训练被拒绝，不生成错误候选包。
 # 输入：
 #   tmp_path：保存合成样本、训练配置和输出的测试目录。
+#   regularized：是否通过真实命令行启用并核验独立正则化配置。
 # 输出：
 #   None：不返回业务数据。
-def test_actual_role_training_writes_embedding_lineage_and_validates_warmstart(tmp_path):
+@pytest.mark.parametrize("regularized", [False, True])
+def test_actual_role_training_binds_lineage_and_checks_warmstart(tmp_path, regularized):
     repository = Path(__file__).resolve().parents[1]
     for split, start, stream in (("train", 0, "train"), ("validation", 100, "val")):
         labels = [s.model_copy(update={"visual_features": [0.1]}) for s in samples(start, stream)]
@@ -233,6 +235,12 @@ def test_actual_role_training_writes_embedding_lineage_and_validates_warmstart(t
         ("validation-visual-receipt", "validation-visual.json"),
     ):
         command += ["--" + arg, str(tmp_path / name)]
+    settings = {"balance_mission_groups": regularized,
+                "visual_block_dropout": 0.35 if regularized else 0.0}
+    if regularized:
+        regularization_path = tmp_path / "regularization.json"
+        regularization_path.write_text(json.dumps(settings), encoding="utf-8")
+        command += ["--regularization-config", str(regularization_path)]
     trained = subprocess.run(
         command + ["--output", str(tmp_path / "trained")],
         cwd=repository,
@@ -243,6 +251,12 @@ def test_actual_role_training_writes_embedding_lineage_and_validates_warmstart(t
     assert trained.returncode == 0, trained.stderr
     receipt_path = tmp_path / "trained/training-receipt.json"
     receipt = json.loads(receipt_path.read_text())
+    assert receipt["metrics"]["regularization"] == settings
+    if regularized:
+        assert receipt["input_sha256"]["regularization_config"] == hashlib.sha256(
+            regularization_path.read_bytes()).hexdigest()
+    else:
+        assert "regularization_config" not in receipt["input_sha256"]
     assert receipt["visual_input_contract"]["perception_encoder_sha256"] == "a" * 64
     assert len(receipt["visual_encoding_receipts_sha256"]) == 2
     from dronedream_agent_core.training.causal_replay import REPLAY_FILES, read_bound_replay

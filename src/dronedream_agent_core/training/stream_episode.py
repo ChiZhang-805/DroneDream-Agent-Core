@@ -138,10 +138,11 @@ class GroundedStreamCorrections:
     #   每次重查落地、初始化及动作文件，按当前教师配置缓存独立上下文并返回副本。
     # 输入：
     #   self：来源约束和上下文缓存。
+    #   record_context：是否提交上下文回执；前置准入检查不写入训练证据。
     #   observation：原始学生观测。
     # 输出：
     #   state：仅用于监督标签的独立教师状态。
-    def _context(self, observation):
+    def _context(self, observation, *, record_context=True):
         if not isinstance(observation, FlightObservation):
             raise ValueError("STREAM_ANNOTATION_OBSERVATION_INVALID")
         observation = FlightObservation.model_validate(observation.model_dump())
@@ -158,7 +159,7 @@ class GroundedStreamCorrections:
                 raise ValueError("STREAM_ANNOTATION_COLLECTION_CHANGED")
         key = (sha256_json(observation), self.sources[name], sha256_json(self.teacher.config),
                self.teacher.geometry_sha256)
-        if key == self._key:
+        if record_context and key == self._key:
             state = copy_grounded_state(self._state)
             return state
         visit, capture, _, application = _validated_visit(
@@ -178,10 +179,67 @@ class GroundedStreamCorrections:
                 "reset_sha256": sha256_json(reset),
             },
         )
-        self.receipts.append({"context": context, "context_sha256": state.context_sha256})
-        self._key, self._state = key, state
+        if record_context:
+            self.receipts.append({"context": context, "context_sha256": state.context_sha256})
+            self._key, self._state = key, state
         state = copy_grounded_state(state)
         return state
+
+    # 功能：
+    #   标注前完整核验上下文；仅把超出既定延迟模型的记录作为显式不可标注原因返回。
+    # 输入：
+    #   observation：尚未生成任何风险标签的原始观测。
+    # 输出：
+    #   issue：延迟越界原因或 None；其他来源错误直接抛出，不能跳过。
+    def risk_context_issue(self, observation):
+        try:
+            self._context(observation, record_context=False)
+        except ValueError as error:
+            if str(error) == "DAGGER_NATIVE_ACTION_LATENCY_OUTSIDE_MODEL":
+                return str(error)
+            raise
+        return None
+
+    # 功能：
+    #   对单一观测固定教师上下文，批量探针复用原始证据；批次退出前重新核验来源，避免反复跨盘读取。
+    # 输入：
+    #   observation：本批次唯一原观测；每次探针仍必须携带相同观测。
+    # 输出：
+    #   assess：只在上下文内部可用的风险标注函数，不授予实际动作权限。
+    @contextmanager
+    def fixed_risk_context(self, observation):
+        original = FlightObservation.model_validate(observation.model_dump())
+        receipt_start = len(self.receipts)
+        state = self._context(original)
+        identity = self._key
+        active = True
+
+        # 功能：
+        #   为同观测探针计算名义风险并保存回执，拒绝过期回调和串入其他观测。
+        # 输入：
+        #   source：探针绑定的原始观测；action：待评价的候选动作。
+        # 输出：
+        #   risk：教师的风险监督值，不是实际飞行结果。
+        def assess(source, action):
+            if not active or source != original:
+                raise ValueError("STREAM_RISK_BATCH_OBSERVATION_MISMATCH")
+            risk, receipt = self.teacher.risk(
+                source, copy_grounded_state(state), action)
+            if receipt is not None:
+                self.receipts.append({"receipt": receipt, "receipt_sha256": sha256_json(receipt)})
+            return risk
+
+        try:
+            yield assess
+            self._context(original)
+            if self._key != identity:
+                raise ValueError("STREAM_RISK_BATCH_CONTEXT_CHANGED")
+        except BaseException:
+            del self.receipts[receipt_start:]
+            self._key = self._state = None
+            raise
+        finally:
+            active = False
 
     # 功能：
     #   基于原始观测及独立上下文生成纠正，并保留可追溯教师回执。
@@ -278,7 +336,9 @@ class GroundedStreamEpisode:
 #   visual：上下文内可用的冻结编码器或 None。
 @contextmanager
 def _bound_visual_encoder(config, reset):
-    visual = FrozenVisualEncoder(config.visual_package) if config.visual_package else None
+    visual = (FrozenVisualEncoder.from_artifact(config.visual_encoder, config.visual_input_contract)
+              if config.visual_encoder else
+              FrozenVisualEncoder(config.visual_package) if config.visual_package else None)
     try:
         if (reset.get("visual_encoder_sha256") != (visual.sha256 if visual else None)
                 or reset.get("visual_input_contract")

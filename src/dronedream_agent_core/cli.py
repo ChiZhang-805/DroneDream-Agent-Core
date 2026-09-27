@@ -420,6 +420,7 @@ def _run_px4_track(args: argparse.Namespace) -> int:
         local_navigation_control_authority_required=(
             args.require_local_navigation_control_authority
         ),
+        bounded_hybrid_control=args.bounded_hybrid_control,
         heading_policy=args.heading_policy,
         maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
         multimodal_dataset_root=args.multimodal_dataset_root,
@@ -429,6 +430,7 @@ def _run_px4_track(args: argparse.Namespace) -> int:
         local_policy_package_paths=tuple(args.local_policy_package),
         local_policy_qualification_paths=tuple(args.local_policy_qualification),
         local_policy_simulation_admission_paths=tuple(args.local_policy_simulation_admission),
+        local_policy_trial_path=args.local_policy_trial,
         development_payload_collection=args.development_payload_collection,
     )
     print(
@@ -470,6 +472,7 @@ def _prepare_mission(args: argparse.Namespace) -> int:
             vehicle_height_m=vehicle.body_height_m,
             waypoint_hold_seconds=config.waypoint_hold_seconds,
             vehicle=vehicle,
+            planning_phase="initial",
         )
     )
     request = _bind_development_harness_request(
@@ -554,6 +557,8 @@ def _execute_prepared_mission(args: argparse.Namespace) -> int:
             local_navigation_control_authority_required=(
                 args.require_local_navigation_control_authority
             ),
+            bounded_hybrid_control=args.bounded_hybrid_control,
+            independent_route_control=args.independent_route_control,
             heading_policy=args.heading_policy,
             maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
             multimodal_dataset_root=args.multimodal_dataset_root,
@@ -563,9 +568,11 @@ def _execute_prepared_mission(args: argparse.Namespace) -> int:
             local_policy_package_paths=tuple(args.local_policy_package),
             local_policy_qualification_paths=tuple(args.local_policy_qualification),
             local_policy_simulation_admission_paths=tuple(args.local_policy_simulation_admission),
+            local_policy_trial_path=args.local_policy_trial,
             development_payload_collection=args.development_payload_collection,
             map_graph_path=args.map_graph,
             vehicle_metadata_path=args.vehicle_metadata,
+            simulation_map_fusion=args.simulation_map_fusion,
         )
     finally:
         context.close()
@@ -722,6 +729,7 @@ def _parser() -> argparse.ArgumentParser:
     runtime.add_argument("--local-navigation-provider")
     runtime.add_argument("--local-navigation-fallback-provider")
     runtime.add_argument("--local-policy-package", type=Path, action="append", default=[])
+    runtime.add_argument("--local-policy-trial", type=Path)
     runtime.add_argument("--local-policy-qualification", type=Path, action="append", default=[])
     runtime.add_argument(
         "--local-policy-simulation-admission",
@@ -747,6 +755,7 @@ def _parser() -> argparse.ArgumentParser:
     runtime.add_argument("--multimodal-dataset-maximum-mib", type=int, default=5_120)
     runtime.add_argument("--multimodal-record-period-seconds", type=float, default=0.1)
     runtime.add_argument("--require-local-navigation-control-authority", action="store_true")
+    runtime.add_argument("--bounded-hybrid-control", action="store_true")
     runtime.add_argument("--development-payload-collection", action="store_true")
     runtime.set_defaults(handler=_run_px4_track)
     prepare = subparsers.add_parser(
@@ -809,6 +818,9 @@ def _parser() -> argparse.ArgumentParser:
     execute.add_argument("--local-navigation-provider")
     execute.add_argument("--local-navigation-fallback-provider")
     execute.add_argument("--local-policy-package", type=Path, action="append", default=[])
+    execute.add_argument("--local-policy-trial", type=Path)
+    execute.add_argument("--simulation-map-fusion", action="store_true")
+    execute.add_argument("--independent-route-control", action="store_true")
     execute.add_argument("--local-policy-qualification", type=Path, action="append", default=[])
     execute.add_argument(
         "--local-policy-simulation-admission",
@@ -836,6 +848,7 @@ def _parser() -> argparse.ArgumentParser:
     execute.add_argument("--multimodal-dataset-maximum-mib", type=int, default=5_120)
     execute.add_argument("--multimodal-record-period-seconds", type=float, default=0.1)
     execute.add_argument("--require-local-navigation-control-authority", action="store_true")
+    execute.add_argument("--bounded-hybrid-control", action="store_true")
     execute.add_argument("--development-payload-collection", action="store_true")
     execute.set_defaults(handler=_execute_prepared_mission)
     interrupt = subparsers.add_parser(

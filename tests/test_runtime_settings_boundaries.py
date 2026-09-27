@@ -11,6 +11,8 @@ from test_runtime_qualification_boundaries import _RecordingInput
 
 import dronedream_agent_app.runtime_manager as bridge
 
+pytestmark = pytest.mark.usefixtures("isolated_wsl_host_paths")
+
 
 # 功能：
 #   验证实时来源列表形状错误时返回空目录，而不是让界面查询抛出异常。

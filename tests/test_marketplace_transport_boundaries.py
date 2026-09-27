@@ -6,6 +6,7 @@ import urllib.request
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 from dronedream_agent_app import plugin_marketplace as marketplace
 
@@ -191,7 +192,7 @@ def test_late_final_chunk_cannot_return_a_successful_download(monkeypatch):
     response = Response()
     install_response(monkeypatch, response)
     times = iter([0.0, 0.1, 1.1])
-    monkeypatch.setattr(marketplace.time, "monotonic", lambda: next(times))
+    isolate_monotonic(monkeypatch, marketplace, lambda: next(times))
     with pytest.raises(marketplace.PluginMarketplaceError, match="TIMEOUT"):
         marketplace.PluginMarketplaceService._download(
             response.geturl(), limit=100, timeout_seconds=1

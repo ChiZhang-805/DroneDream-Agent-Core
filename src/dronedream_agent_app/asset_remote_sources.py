@@ -275,6 +275,15 @@ def _copy_git_member(candidate: Path, bundle: zipfile.ZipFile, member: str, budg
     return copied
 
 
+def _remove_readonly_git_entry(function, path: str, exc_info) -> None:
+    """Retry removal of Git's read-only pack/object files on Windows."""
+    error = exc_info[1]
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    function(path)
+
+
 class RemoteAssetSourceService:
     """Acquire remote sources without widening the trusted runtime boundary."""
 
@@ -361,8 +370,13 @@ class RemoteAssetSourceService:
         expected_sha256: str | None,
     ) -> Iterator[tuple[Path, str]]:
         parsed = _validated_https_url(location)
-        suffix = Path(parsed.path).suffix.casefold()
-        if re.fullmatch(r"\.[a-z0-9]{1,12}", suffix) is None:
+        lowered_path = parsed.path.casefold()
+        suffix = (
+            ".building.yaml"
+            if lowered_path.endswith(".building.yaml")
+            else Path(parsed.path).suffix.casefold()
+        )
+        if suffix != ".building.yaml" and re.fullmatch(r"\.[a-z0-9]{1,12}", suffix) is None:
             suffix = ".download"
         # 请求参数构造失败时还没有创建文件，不留下未纳入清理的描述符或暂存材料。
         request = urllib.request.Request(
@@ -471,6 +485,11 @@ class RemoteAssetSourceService:
             except ValueError as error:
                 raise AssetImportError("ASSET_REMOTE_GIT_SUBPATH_INVALID") from error
         parsed, addresses = _validated_https_target(location)
+        commit_ref = (
+            git_ref
+            if git_ref is not None and re.fullmatch(r"[0-9a-fA-F]{40}", git_ref) is not None
+            else None
+        )
         git = shutil.which("git")
         if git is None:
             raise AssetImportError("ASSET_REMOTE_GIT_UNAVAILABLE")
@@ -521,7 +540,7 @@ class RemoteAssetSourceService:
             "--no-tags",
             f"--template={workspace / 'empty-template'}",
         ]
-        if git_ref is not None:
+        if git_ref is not None and commit_ref is None:
             command.extend(["--branch", git_ref, "--single-branch"])
         command.extend([location, str(checkout)])
         environment = {
@@ -560,6 +579,73 @@ class RemoteAssetSourceService:
                 raise AssetImportError("ASSET_REMOTE_GIT_PROCESS_FAILED") from error
             if completed.returncode != 0:
                 raise AssetImportError("ASSET_REMOTE_GIT_CLONE_FAILED")
+            if commit_ref is not None:
+                # ``git clone --branch`` only accepts advertised branch or tag names.  A reviewed
+                # catalog pins the immutable commit instead, so fetch that exact object under the
+                # same isolated network configuration and detach before reading any source files.
+                repository_command = [
+                    git,
+                    "-C",
+                    str(checkout),
+                    "-c",
+                    "protocol.allow=never",
+                    "-c",
+                    "protocol.https.allow=always",
+                    "-c",
+                    "http.followRedirects=false",
+                    "-c",
+                    "http.proxy=",
+                    "-c",
+                    "http.sslVerify=true",
+                    *network_options,
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    f"core.hooksPath={workspace / 'empty-hooks'}",
+                    "-c",
+                    "protocol.file.allow=never",
+                    "-c",
+                    "submodule.recurse=false",
+                ]
+                try:
+                    fetched = capture_process(
+                        [
+                            *repository_command,
+                            "fetch",
+                            "--depth",
+                            "1",
+                            "--no-tags",
+                            location,
+                            commit_ref,
+                        ],
+                        stdin=b"",
+                        maximum_bytes=1024 * 1024,
+                        environment=environment,
+                        timeout=300,
+                        resource_policy=PluginResourcePolicy(
+                            memory_limit_mb=1024,
+                            cpu_time_limit_seconds=300,
+                            process_limit=16,
+                        ),
+                    )
+                    checked_out = capture_process(
+                        [*repository_command, "checkout", "--detach", commit_ref],
+                        stdin=b"",
+                        maximum_bytes=1024 * 1024,
+                        environment=environment,
+                        timeout=120,
+                        resource_policy=PluginResourcePolicy(
+                            memory_limit_mb=1024,
+                            cpu_time_limit_seconds=120,
+                            process_limit=16,
+                        ),
+                    )
+                except subprocess.TimeoutExpired as error:
+                    raise AssetImportError("ASSET_REMOTE_GIT_TIMEOUT") from error
+                except (OSError, ValueError, PluginProcessError) as error:
+                    raise AssetImportError("ASSET_REMOTE_GIT_PROCESS_FAILED") from error
+                if fetched.returncode != 0 or checked_out.returncode != 0:
+                    raise AssetImportError("ASSET_REMOTE_GIT_COMMIT_UNAVAILABLE")
             root = (
                 checkout
                 if normalized_subpath is None
@@ -620,4 +706,4 @@ class RemoteAssetSourceService:
             with suppress(OSError, ValueError):
                 check_plain_plugin_path(workspace)
                 if os.path.samestat(owned, workspace.stat()):
-                    shutil.rmtree(workspace)
+                    shutil.rmtree(workspace, onerror=_remove_readonly_git_entry)

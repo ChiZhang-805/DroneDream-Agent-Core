@@ -33,6 +33,7 @@ from dronedream_agent_core.training.evidence_files import read_evidence_object
 from dronedream_agent_core.training.px4_environment import (
     Px4GazeboTrainingEnvironment,
     Px4TrainingConfig,
+    require_visual_control_source,
 )
 from dronedream_agent_core.training.stream_collection import (
     collect_native_control_stream,
@@ -92,6 +93,7 @@ def collect_and_annotate(args) -> int:
     )
     teacher_payload, teacher_sha = read_evidence_object(args.teacher_config, limit=4 * 1024 * 1024)
     config = Px4TrainingConfig.model_validate(environment_payload)
+    require_visual_control_source(config)
     teacher_config = CounterfactualConfig.model_validate(teacher_payload)
     policy_bytes = read_plugin_file(args.base_policy, limit=256 * 1024 * 1024)
     training_receipt = read_plugin_file(args.base_training_receipt, limit=4 * 1024 * 1024)

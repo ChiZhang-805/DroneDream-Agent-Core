@@ -24,7 +24,7 @@ from dronedream_plugin_sdk.protocol import decode_json
 
 from .asset_package_storage import publish_asset_directory
 from .contracts import StrictModel
-from .control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
+from .control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256, GEOMETRY_FEATURE_COUNT
 from .local_expert_harness import NavigationExpertRole
 from .local_policy_packages import (
     LOCAL_POLICY_CANDIDATE_FEATURE_COUNT,
@@ -1108,12 +1108,39 @@ def train_local_policy(
 
 
 # 功能：
+#   仅从优化器计算中裁掉输入列与对应权重同时严格为零的维度，保持前向、梯度与正则语义。
+# 输入：
+#   inputs：已验证的训练矩阵，不访问验证集或风险标签。
+#   input_weight：当前首层权重，非零旧权重即使本批没有输入也保留其正则更新。
+# 输出：
+#   projected_inputs：保留有效列的训练矩阵，未裁剪时返回原矩阵。
+#   projected_weight：有效列的可更新权重，未裁剪时返回原权重。
+#   columns：恢复原宽度所需的列号，未裁剪时为 None。
+def _risk_optimizer_projection(inputs, input_weight):
+    import numpy as np
+
+    keep = np.any(inputs != 0., axis=0) | np.any(input_weight != 0., axis=1)
+    if keep.all():
+        return inputs, input_weight, None
+    columns = np.flatnonzero(keep)
+    projected_inputs = np.ascontiguousarray(inputs[:, columns])
+    projected_weight = np.ascontiguousarray(input_weight[columns])
+    return projected_inputs, projected_weight, columns
+
+
+# 功能：
 #   离线训练不共享行为参数的风险网络，动作风险必须同时提供安全与危险提案。
 # 输入：
 #   samples：风险训练样本及独立风险标签。
 #   config：网络初始化与优化超参数。
 #   initial_model：可选风险基座，复制后再优化。
 #   classification_margin：将标签推离 0.5 分界的最小间隔，范围零至小于 0.5。
+#   normalize_inputs：仅使用训练集估计量纲并折叠回首层，不改变部署输入格式。
+#   monotonic_geometry：固定其余输入时，约束几何距离增加不能提高名义风险，不代表真实安全证明。
+#   monotonic_uncertainty：固定其他输入时，定位方差增加不能降低风险，不改观测或标签。
+#   unsafe_sample_cost：危险训练样本的额外损失成本，标签与验证阈值保持不变。
+#   contrast_group_ids：逐样本原始观测摘要，仅训练分区内使用。
+#   contrast_loss_weight：同观测动作排序的附加损失权重，零表示保持原优化流程。
 # 输出：
 #   model：训练后的独立风险网络。
 #   metrics：本训练集风险指标，不授予飞行资格。
@@ -1123,10 +1150,25 @@ def train_local_risk_critic(
     *,
     initial_model: NumpyLocalPolicyModel | None = None,
     classification_margin: float = 0.0,
+    normalize_inputs: bool = False,
+    monotonic_geometry: bool = False,
+    monotonic_uncertainty: bool = False,
+    unsafe_sample_cost: float = 1.0,
+    contrast_group_ids: list[str] | None = None,
+    contrast_loss_weight: float = 0.0,
 ) -> tuple[NumpyLocalPolicyModel, LocalRiskCriticMetrics]:
     import numpy as np
 
     config = LocalPolicyTrainingConfig.model_validate(config.model_dump())
+    if type(normalize_inputs) is not bool:
+        raise ValueError("risk input normalization requires an explicit boolean")
+    if type(monotonic_geometry) is not bool:
+        raise ValueError("risk geometry constraint requires an explicit boolean")
+    if type(monotonic_uncertainty) is not bool:
+        raise ValueError("risk uncertainty constraint requires an explicit boolean")
+    if (type(unsafe_sample_cost) not in (int, float) or not math.isfinite(unsafe_sample_cost)
+            or not 1. <= unsafe_sample_cost <= 4.):
+        raise ValueError("risk unsafe sample cost must be finite and in [1, 4]")
     if not 0.0 <= classification_margin < 0.5:
         raise ValueError("risk critic classification margin must be in [0, 0.5)")
     action_conditioned = any(
@@ -1148,12 +1190,24 @@ def train_local_risk_critic(
         raise ValueError("legacy and action-conditioned risk critics cannot be mixed")
     if model.realtime_feature_count != realtime_feature_count:
         raise ValueError("initial critic realtime feature contract differs from dataset")
+    if (monotonic_geometry or monotonic_uncertainty) and (not action_conditioned or model.visual_feature_count != 0
+                               or realtime_feature_count != POLICY_REALTIME_FEATURE_COUNT):
+        raise ValueError("monotonic geometry requires current action-conditioned inputs")
     arrays = _arrays(
         samples,
         include_visual=model.visual_feature_count > 0,
         include_realtime=model.realtime_feature_count > 0,
         include_proposed_control=action_conditioned,
     )
+    from .training.risk_action_contrast import (
+        action_contrast_loss,
+        action_group_batches,
+        prepare_action_groups,
+    )
+
+    if contrast_loss_weight and not action_conditioned:
+        raise ValueError('ACTION_CONTRAST_REQUIRES_ACTION_INPUT')
+    contrast_groups = prepare_action_groups(arrays.inputs, contrast_group_ids, contrast_loss_weight)
     if action_conditioned and not (
         any(sample.risk_target < 0.5 for sample in samples)
         and any(sample.risk_target >= 0.5 for sample in samples)
@@ -1164,21 +1218,63 @@ def train_local_risk_critic(
         arrays.weights,
         config,
     )
-    parameters = [
-        model.input_weight,
-        model.input_bias,
-        model.risk_weight,
-        model.risk_bias,
-    ]
+    if unsafe_sample_cost != 1.:
+        balanced_risk_weights = balanced_risk_weights * np.where(
+            arrays.risks >= .5, unsafe_sample_cost, 1.).astype(np.float32)
+        if not np.isfinite(balanced_risk_weights).all():
+            raise ValueError('risk unsafe sample cost weights overflow')
+    input_mean = input_scale = None
+    if normalize_inputs:
+        # 统计量只读取训练集。小幅物理动作与大量几何/掩码特征的量纲不同；
+        # 在优化时平衡量纲，完成后折叠回首层，部署接口和真实物理单位不改变。
+        input_mean = arrays.inputs.mean(axis=0, dtype=np.float64).astype(np.float32)
+        input_deviation = arrays.inputs.std(axis=0, dtype=np.float64)
+        input_scale = np.maximum(input_deviation, .05).astype(np.float32)
+        if initial_model is not None:
+            model.input_bias[:] += input_mean @ model.input_weight
+            model.input_weight[:] *= input_scale[:, None]
+        else:
+            # 常量列在本次训练没有梯度证据，不能把随机初值放大后带到新地图。
+            model.input_weight[input_deviation < 1e-7] = 0.
+        arrays = replace(arrays, inputs=(arrays.inputs - input_mean) / input_scale)
+    # 只裁掉输入与权重同时严格为零的列；这些列的前向贡献、梯度和 L2 项均为零。
+    # 这不是近似降维，不按标签或验证集筛选特征，训练完成仍恢复原部署张量宽度。
+    optimizer_inputs, optimizer_weight, optimizer_columns = _risk_optimizer_projection(
+        arrays.inputs, model.input_weight
+    )
+    constrained = np.empty(0, dtype=np.int64)
+    from .training.risk_uncertainty_monotonicity import project_uncertainty_paths
+
+    full_columns = (np.arange(arrays.inputs.shape[1]) if optimizer_columns is None
+                    else optimizer_columns)
+    if monotonic_geometry:
+        # 固定掩码、姿态和动作的偏导约束，不将“距离更大”误解为整个环境更安全。
+        # 距离负权重 + 单调 ReLU + 非负读出确保这一局部性质；此浅层限制了表达能力，
+        # 因而仍必须过原始数据和独立验证，不能以单调性替代准确性或飞行验收。
+        full_columns = (np.arange(arrays.inputs.shape[1]) if optimizer_columns is None
+                        else optimizer_columns)
+        relative = full_columns - LOCAL_POLICY_STATE_FEATURE_COUNT
+        constrained = np.flatnonzero((relative >= 0) & (relative < GEOMETRY_FEATURE_COUNT)
+                                     & (relative % 5 < 2))
+        optimizer_weight[constrained] = -np.abs(optimizer_weight[constrained])
+        model.risk_weight[:] = np.abs(model.risk_weight)
+    if monotonic_uncertainty:
+        project_uncertainty_paths(optimizer_weight, model.risk_weight, full_columns)
+    parameters = [optimizer_weight, model.input_bias, model.risk_weight, model.risk_bias]
+    risk_weight_mean = float(balanced_risk_weights.mean(dtype=np.float64))
     first_moment = [np.zeros_like(parameter) for parameter in parameters]
     second_moment = [np.zeros_like(parameter) for parameter in parameters]
     generator = np.random.default_rng(config.random_seed)
     step = 0
     for _epoch in range(config.epoch_count):
-        order = generator.permutation(len(samples))
-        for start in range(0, len(samples), config.batch_size):
-            indices = order[start : start + config.batch_size]
-            inputs = arrays.inputs[indices]
+        if contrast_groups is None:
+            order = generator.permutation(len(samples))
+            batches = ((order[start:start + config.batch_size], None)
+                       for start in range(0, len(samples), config.batch_size))
+        else:
+            batches = action_group_batches(contrast_groups, config.batch_size, generator)
+        for indices, contrast_bounds in batches:
+            inputs = optimizer_inputs[indices]
             targets = arrays.risks[indices]
             if classification_margin > 0.0:
                 targets = np.where(
@@ -1187,17 +1283,24 @@ def train_local_risk_critic(
                     np.minimum(targets, 0.5 - classification_margin),
                 )
             weights = balanced_risk_weights[indices]
-            hidden_pre = inputs @ model.input_weight + model.input_bias
+            hidden_pre = inputs @ optimizer_weight + model.input_bias
             hidden = np.maximum(hidden_pre, 0.0)
             logits = hidden @ model.risk_weight + model.risk_bias
             risk = 1.0 / (1.0 + np.exp(-np.clip(logits, -40.0, 40.0)))
-            normalizer = max(1e-9, float(weights.sum()))
+            # 完整观测组经常全安全或全危险。若每组按自己的权重和归一化，
+            # 类别成本会被抵消；用训练集固定均值维持原全局加权目标。
+            normalizer = max(1e-9, len(indices) * risk_weight_mean
+                             if contrast_bounds is not None else float(weights.sum()))
             risk_delta = (risk - targets) * weights / normalizer
+            if contrast_bounds is not None:
+                _, contrast_delta = action_contrast_loss(
+                    risk, arrays.risks[indices], contrast_bounds, contrast_loss_weight)
+                risk_delta += contrast_delta
             risk_weight_gradient = hidden.T @ risk_delta + config.l2_weight * model.risk_weight
             risk_bias_gradient = risk_delta.sum(axis=0)
             hidden_delta = risk_delta @ model.risk_weight.T
             hidden_delta[hidden_pre <= 0.0] = 0.0
-            input_weight_gradient = inputs.T @ hidden_delta + config.l2_weight * model.input_weight
+            input_weight_gradient = inputs.T @ hidden_delta + config.l2_weight * optimizer_weight
             input_bias_gradient = hidden_delta.sum(axis=0)
             gradients = [
                 input_weight_gradient,
@@ -1209,6 +1312,17 @@ def train_local_risk_critic(
             _adam_update(
                 parameters, gradients, first_moment, second_moment, step, config.learning_rate
             )
+            if monotonic_geometry:
+                # 每次优化后投影回允许的符号集合；归一化使用正尺度，不破坏导出后的约束。
+                optimizer_weight[constrained] = np.minimum(optimizer_weight[constrained], 0.)
+                np.maximum(model.risk_weight, 0., out=model.risk_weight)
+            if monotonic_uncertainty:
+                project_uncertainty_paths(optimizer_weight, model.risk_weight, full_columns)
+    if optimizer_columns is not None:
+        model.input_weight[optimizer_columns] = optimizer_weight
+    if normalize_inputs:
+        model.input_weight[:] /= input_scale[:, None]
+        model.input_bias[:] -= input_mean @ model.input_weight
     metrics = evaluate_local_risk_critic(model, samples)
     return model, metrics
 
@@ -1925,6 +2039,9 @@ def load_local_risk_critic_onnx(path: Path) -> NumpyLocalPolicyModel:
     import numpy as np
 
     document, values = _read_numpy_graph(path)
+    # 仅恢复矩阵的训练器不能忽略图内非线性输入处理；生产必须执行完整 ONNX 图。
+    if any(item.key == "dronedream.risk_input_transform" for item in document.metadata_props):
+        raise ValueError("risk input transform requires complete ONNX graph execution")
     required = {"input_weight", "input_bias", "risk_weight", "risk_bias"}
     if not required.issubset(values):
         raise ValueError("local risk critic ONNX model is missing trainer weights")
@@ -2277,6 +2394,8 @@ def write_local_policy_package(
                 (
                     {"payload_features", "state_history", "history_mask"},
                     {"payload_features", "payload_history", "history_mask"},
+                    {"payload_features", "maneuver_features", "payload_history",
+                     "state_history", "history_mask"},
                 ),
                 {"risk_score", "controller_step_scale"},
             ),

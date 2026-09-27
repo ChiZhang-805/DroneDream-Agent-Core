@@ -260,7 +260,7 @@ def publication_deadline(
 def image_control_deadline(image: Mapping[str, object], *, now_unix_ms: int) -> int:
     if not isinstance(image, Mapping) or type(now_unix_ms) is not int or now_unix_ms < 0:
         return 0
-    if image.get("timestamp_basis") != "simulation-scene-capture":
+    if image.get("timestamp_basis") not in {"simulation-scene-capture", "native-simulation-preupdate"}:
         return 0
     source_ns, received_ns = image.get("scene_source_unix_ns"), image.get("host_received_unix_ns")
     if (

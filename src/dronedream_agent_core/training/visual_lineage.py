@@ -45,6 +45,84 @@ class VisualInputContract(StrictModel):
 
 
 # 功能：
+#   核对一段实际编码字节与原编码回执，不把合并动作冒充重新执行视觉推理。
+# 输入：
+#   content：一份原样视觉数据；receipt：严格解码后的原编码回执。
+#   feature_count：所需视觉维数。
+# 输出：
+#   contract：匹配实际字节、行数及预处理参数的视觉契约。
+def _verify_encoded_segment(content: bytes, receipt: dict, feature_count: int):
+    sample_count = 0
+    for row in io.BytesIO(content):
+        if not row.strip():
+            raise ValueError("VISUAL_ENCODING_RECEIPT_BLANK_SAMPLE")
+        sample_count += 1
+    if not isinstance(receipt, dict) or (
+        receipt.get("schema_version") != "dronedream.local-policy-visual-encoding-receipt.v1"
+        or receipt.get("qualification_granted") is not False
+        or receipt.get("output_sha256") != hashlib.sha256(content).hexdigest()
+        or type(receipt.get("visual_feature_count")) is not int
+        or receipt.get("visual_feature_count") != feature_count
+        or type(receipt.get("sample_count")) is not int
+        or receipt.get("sample_count") != sample_count or sample_count == 0
+    ):
+        raise ValueError("VISUAL_ENCODING_RECEIPT_DOES_NOT_BIND_TRAINING_INPUT")
+    contract = VisualInputContract.model_validate(
+        {key: receipt.get(key) for key in VisualInputContract.model_fields})
+    return contract
+
+
+# 功能：
+#   1. 核对单分片或最多 64 段原字节串接，逐段验证其原编码回执与完整总摘要。
+#   2. 拒绝嵌套合并、重复内容、截断和不同编码器；不会读取回执中的任意文件路径。
+# 输入：
+#   content：完整视觉样本文件；receipt_content：单分片或组合回执字节。
+#   feature_count：训练配置要求的视觉维数。
+# 输出：
+#   contract：所有分片共同的已验证视觉输入契约。
+def verify_visual_split(content: bytes, receipt_content: bytes, *, feature_count: int):
+    if type(feature_count) is not int or not 1 <= feature_count <= 65536:
+        raise ValueError("VISUAL_FEATURE_COUNT_INVALID")
+    if not isinstance(content, bytes) or len(content) > 256 * 1024 * 1024:
+        raise ValueError("VISUAL_TRAINING_CONTENT_INVALID_OR_TOO_LARGE")
+    receipt = decode_json(receipt_content, limit=4 * 1024 * 1024)
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != "dronedream.visual-shard-composition.v1":
+        return _verify_encoded_segment(content, receipt, feature_count)
+    segments = receipt.get("segments")
+    if (receipt.get("qualification_granted") is not False
+            or receipt.get("output_sha256") != hashlib.sha256(content).hexdigest()
+            or not isinstance(segments, list) or not 1 <= len(segments) <= 64):
+        raise ValueError("VISUAL_COMPOSITION_INVALID")
+    cursor, samples, contracts, seen = 0, 0, [], set()
+    for item in segments:
+        if not isinstance(item, dict) or set(item) != {"byte_length", "encoding_receipt"}:
+            raise ValueError("VISUAL_COMPOSITION_SEGMENT_INVALID")
+        length = item["byte_length"]
+        if type(length) is not int or not 0 < length <= len(content) - cursor:
+            raise ValueError("VISUAL_COMPOSITION_SEGMENT_LENGTH_INVALID")
+        segment = content[cursor:cursor + length]
+        # 接缝必须是原有换行，不补造字节；原始段摘要因此能够逐段复核。
+        if not segment.endswith(b'\n'):
+            raise ValueError("VISUAL_COMPOSITION_REQUIRES_LINE_BOUNDARY")
+        source_receipt = item['encoding_receipt']
+        contract = _verify_encoded_segment(segment, source_receipt, feature_count)
+        digest = source_receipt['output_sha256']
+        if digest in seen:
+            raise ValueError("VISUAL_COMPOSITION_DUPLICATE_SEGMENT")
+        seen.add(digest)
+        contracts.append(contract)
+        samples += source_receipt['sample_count']
+        cursor += length
+    if (cursor != len(content) or type(receipt.get('sample_count')) is not int
+            or receipt['sample_count'] != samples):
+        raise ValueError("VISUAL_COMPOSITION_TOTAL_MISMATCH")
+    if any(contract != contracts[0] for contract in contracts[1:]):
+        raise ValueError("VISUAL_COMPOSITION_CONTRACT_MISMATCH")
+    contract = contracts[0]
+    return contract
+
+
+# 功能：
 #   1. 验证训练与验证数据的视觉编码回执，要求字节身份、样本数和预处理契约一致。
 #   2. 拒绝空白记录和相同划分内容；此处的内容独立检查不能代替后续空间划分校验。
 # 输入：
@@ -81,29 +159,7 @@ def verify_visual_training_inputs(
     for content, encoded in zip(
         (training_content, validation_content), receipt_contents, strict=True
     ):
-        receipt = decode_json(encoded, limit=4 * 1024 * 1024)
-        # 逐行计数避免 splitlines 为整份数据再分配大量对象；不静默忽略空白样本。
-        sample_count = 0
-        for row in io.BytesIO(content):
-            if not row.strip():
-                raise ValueError("VISUAL_ENCODING_RECEIPT_BLANK_SAMPLE")
-            sample_count += 1
-        if not isinstance(receipt, dict) or (
-            receipt.get("schema_version") != "dronedream.local-policy-visual-encoding-receipt.v1"
-            or receipt.get("qualification_granted") is not False
-            or receipt.get("output_sha256") != hashlib.sha256(content).hexdigest()
-            or type(receipt.get("visual_feature_count")) is not int
-            or receipt.get("visual_feature_count") != feature_count
-            or type(receipt.get("sample_count")) is not int
-            or receipt.get("sample_count") != sample_count
-            or sample_count == 0
-        ):
-            raise ValueError("VISUAL_ENCODING_RECEIPT_DOES_NOT_BIND_TRAINING_INPUT")
-        contracts.append(
-            VisualInputContract.model_validate(
-                {key: receipt.get(key) for key in VisualInputContract.model_fields}
-            )
-        )
+        contracts.append(verify_visual_split(content, encoded, feature_count=feature_count))
     if contracts[0] != contracts[1]:
         raise ValueError("VISUAL_TRAINING_SPLITS_USE_DIFFERENT_ENCODERS_OR_PREPROCESSING")
     if training_content == validation_content:

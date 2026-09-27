@@ -64,11 +64,36 @@ class PinnedRuntimeObjectReader:
         if self._directory is None:
             return read_runtime_object(self.path, maximum_bytes=self.maximum_bytes)
         self._check_directory()
-        before = os.stat(self.path.name, dir_fd=self._directory, follow_symlinks=False)
+        value = self._read_pinned_name(self.path.name)
+        self._check_directory()
+        return value
+
+    # 功能：同目录的一批回执共用目录身份检查，每份文件仍重读并核对完整性，不缓存载荷状态。
+    # 输入：有界、唯一的普通文件名列表；输出：本轮实际读取的对象，任何一项失败则整批不返回。
+    def read_siblings(self, names: list[str]) -> list[dict]:
+        if self._closed:
+            raise ValueError("RUNTIME_READER_CLOSED")
+        if (type(names) is not list or len(names) > 256
+                or any(type(name) is not str or not name or name in {".", ".."}
+                       or any(character in name for character in ("/", "\\", ":", "\0"))
+                       for name in names) or len(set(names)) != len(names)):
+            raise ValueError("RUNTIME_READER_SIBLINGS_INVALID")
+        if self._directory is None:
+            return [read_runtime_object(self.path.parent / name, maximum_bytes=self.maximum_bytes)
+                    for name in names]
+        self._check_directory()
+        values = [self._read_pinned_name(name) for name in names]
+        self._check_directory()
+        return values
+
+    # 功能：从已经固定的目录句柄读取单项，禁止链接及读中替换；只供包内批量／单项入口使用。
+    # 输入：已由调用方验证且不含路径分隔符的文件名；输出：真实文件中的有限 JSON 对象。
+    def _read_pinned_name(self, name: str) -> dict:
+        before = os.stat(name, dir_fd=self._directory, follow_symlinks=False)
         if not stat.S_ISREG(before.st_mode) or before.st_size > self.maximum_bytes:
             raise ValueError("RUNTIME_READER_FILE_INVALID")
         # NONBLOCK 避免在 stat 与 open 之间被换成 FIFO 时卡住读取线程。
-        descriptor = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=self._directory)
         with os.fdopen(descriptor, "rb") as stream:
             opened = os.fstat(stream.fileno())
@@ -76,8 +101,7 @@ class PinnedRuntimeObjectReader:
                 raise ValueError("RUNTIME_READER_FILE_CHANGED")
             content = stream.read(min(opened.st_size, self.maximum_bytes) + 1)
             after = os.fstat(stream.fileno())
-        current = os.stat(self.path.name, dir_fd=self._directory, follow_symlinks=False)
-        self._check_directory()
+        current = os.stat(name, dir_fd=self._directory, follow_symlinks=False)
         if (len(content) != opened.st_size or len(content) > self.maximum_bytes
                 or after.st_size != opened.st_size or current.st_size != opened.st_size
                 or after.st_mtime_ns != opened.st_mtime_ns

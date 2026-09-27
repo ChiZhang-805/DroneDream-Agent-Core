@@ -17,6 +17,7 @@ from dronedream_agent_core.plugin_files import (
     hash_plugin_file,
     read_plugin_file,
 )
+from dronedream_agent_core.training.causal_device import causal_training_device
 from dronedream_agent_core.training.causal_policy import (
     causal_examples,
     export_causal_policy,
@@ -24,10 +25,15 @@ from dronedream_agent_core.training.causal_policy import (
     save_causal_checkpoint,
     train_causal_policy,
 )
+from dronedream_agent_core.training.causal_regularization import (
+    CausalRegularization,
+    validate_regularization,
+)
 from dronedream_agent_core.training.causal_replay import (
     CAUSAL_SPLIT_CONTRACT,
     bind_source_group_metrics,
     export_replay_bundle,
+    protected_validation_groups,
     require_unseen_validation,
     validate_split_sources,
 )
@@ -71,9 +77,15 @@ def main() -> int:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--expert-role", choices=NAVIGATION_EXPERT_ROLES, required=True)
     parser.add_argument("--cpu-threads", type=int, default=2)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu",
+                        help="Explicit optimization device; unavailable CUDA fails without CPU fallback")
     parser.add_argument("--training-visual-receipt", type=Path)
     parser.add_argument("--validation-visual-receipt", type=Path)
+    parser.add_argument("--regularization-config", type=Path)
     parser.add_argument("--base-training-receipt", type=Path)
+    parser.add_argument("--encoder-policy", type=Path,
+                        help="Transfer only sensor encoder/history layers; initialize all control heads afresh")
+    parser.add_argument("--encoder-training-receipt", type=Path)
     parser.add_argument(
         "--base-policy",
         type=Path,
@@ -95,6 +107,62 @@ def main() -> int:
 
 
 # 功能：
+#   绑定跨专家编码器的实际权重、原角色、视觉契约及历史训练来源，不把源控制头当成目标专家。
+# 输入：
+#   policy_path、receipt_path：明确的源检查点与其训练回执。
+#   expert_role、config：本次目标专家及编码结构。
+#   visual_input_contract：本次视觉预处理和权重身份。
+#   validation_groups：本次不得被源模型训练接触的留出组。
+# 输出：
+#   encoder、provenance、receipt：经验证的源模型、迁移来源记录与原始回执对象。
+def load_encoder_transfer(policy_path, receipt_path, *, expert_role, config, visual_input_contract, validation_groups):
+    if policy_path is None or receipt_path is None:
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_REQUIRES_POLICY_AND_RECEIPT")
+    content = read_plugin_file(policy_path, limit=256 * 1024 * 1024)
+    raw_receipt = read_plugin_file(receipt_path, limit=4 * 1024 * 1024)
+    receipt = decode_json(raw_receipt, limit=4 * 1024 * 1024)
+    source_role = receipt.get("expert_role") if isinstance(receipt, dict) else None
+    if (expert_role not in NAVIGATION_EXPERT_ROLES or source_role not in NAVIGATION_EXPERT_ROLES
+            or source_role == expert_role):
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_REQUIRES_DISTINCT_EXPERT")
+    visual = verify_causal_checkpoint_receipt(content, raw_receipt, expert_role=source_role)
+    require_matching_visual_input(visual, visual_input_contract)
+    require_unseen_validation(receipt, validation_groups)
+    protected_validation_groups(receipt)
+    encoder = load_causal_checkpoint(content)
+    if receipt.get("config") != encoder.config.model_dump():
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_RECEIPT_CONFIG_MISMATCH")
+    fields = ("history_length", "encoder_width", "recurrent_width", "visual_feature_count")
+    if any(getattr(config, field) != getattr(encoder.config, field) for field in fields):
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_ARCHITECTURE_MISMATCH")
+    provenance = dict(checkpoint_sha256=hashlib.sha256(content).hexdigest(),
+        training_receipt_sha256=hashlib.sha256(raw_receipt).hexdigest(),
+        source_expert_role=source_role, target_expert_role=expert_role,
+        output_heads_copied=False, qualified_for_flight=False)
+    return encoder, provenance, receipt
+
+
+# 功能：
+#   累积热启动或编码器迁移曾接触的训练和调参组，防止把祖先路线误当未见最终测试。
+# 输入：
+#   metrics：本轮已绑定来源的独立指标字典。
+#   previous_receipts：经内容绑定的祖先回执列表。
+#   validation_groups：当前独立留出组。
+# 输出：
+#   metrics：保留当前指标并合并历史训练组、单独保存历史调参组的字典。
+def inherit_training_provenance(metrics, previous_receipts, validation_groups):
+    groups = set(metrics["training_groups"])
+    historical_validation = set()
+    for receipt in previous_receipts:
+        require_unseen_validation(receipt, validation_groups)
+        groups.update(receipt["metrics"]["training_groups"])
+        historical_validation.update(protected_validation_groups(receipt))
+    metrics = {**metrics, "training_groups": sorted(groups),
+               "historical_validation_groups": sorted(historical_validation)}
+    return metrics
+
+
+# 功能：
 #   1. 验证当前因果样本、历史、视觉和热启动来源，禁止留出泄漏或重复监督。
 #   2. 训练单个操纵专家，独占导出权重、回放和完整回执，不授予飞行或整包资格。
 # 输入：
@@ -102,17 +170,34 @@ def main() -> int:
 # 输出：
 #   exit_code：全部产物和回执写入成功时为零。
 def train_role(args) -> int:
+    # 在读取大型回放或建立输出目录前拒绝不可用设备。
+    device = getattr(args, "device", "cpu")
+    causal_training_device(device)
     args.output = args.output.absolute()
     check_plain_plugin_path(args.output)
     if args.output.exists():
         raise FileExistsError(args.output)
     if len(args.dagger_dataset) > 128:
         raise ValueError("DAGGER_DATASET_LIST_TOO_LARGE")
+    encoder_path = getattr(args, "encoder_policy", None)
+    encoder_receipt_path = getattr(args, "encoder_training_receipt", None)
+    if (encoder_path is None) != (encoder_receipt_path is None):
+        raise ValueError("CAUSAL_ENCODER_TRANSFER_REQUIRES_POLICY_AND_RECEIPT")
+    if encoder_path is not None and (args.base_policy is not None or args.base_training_receipt is not None):
+        raise ValueError("CAUSAL_INITIALIZATION_MODES_CONFLICT")
     # Parse, train and export replay from one immutable read of each input.
     # A file edited during training cannot silently change the receipt/replay.
     sources, config, decoded, group_manifest, _ = read_causal_training_inputs(
         {name: getattr(args, name) for name in (*SOURCE_TO_REPLAY, "config")}
     )
+    regularization = None
+    regularization_path = getattr(args, "regularization_config", None)
+    if regularization_path is not None:
+        raw_regularization = read_plugin_file(regularization_path, limit=64 * 1024)
+        regularization = CausalRegularization.model_validate(
+            decode_json(raw_regularization, limit=64 * 1024), strict=True)
+        sources["regularization_config"] = raw_regularization
+    regularization = validate_regularization(regularization, config.visual_feature_count)
     receipt_contents = [
         read_plugin_file(path, limit=4 * 1024 * 1024)
         for path in (args.training_visual_receipt, args.validation_visual_receipt)
@@ -185,8 +270,21 @@ def train_role(args) -> int:
         [*labels_by_split[1], *history_by_split[1]],
         group_manifest,
     )
+    previous_receipts = []
     if base_content is not None:
-        require_unseen_validation(decode_json(raw_receipt, limit=4 * 1024 * 1024), split_groups[1])
+        prior_receipt = decode_json(raw_receipt, limit=4 * 1024 * 1024)
+        require_unseen_validation(prior_receipt, split_groups[1])
+        protected_validation_groups(prior_receipt)
+        previous_receipts.append(prior_receipt)
+    encoder, encoder_provenance = None, None
+    if encoder_path is not None:
+        encoder, encoder_provenance, encoder_receipt = load_encoder_transfer(
+            encoder_path, encoder_receipt_path, expert_role=args.expert_role, config=config,
+            visual_input_contract=visual_input_contract, validation_groups=split_groups[1])
+        previous_receipts.append(encoder_receipt)
+    for previous in previous_receipts:
+        if protected_validation_groups(previous) & split_groups[0]:
+            raise ValueError("CAUSAL_REFINEMENT_TRAINS_ON_PROTECTED_HOLDOUT")
     source_ids = [
         (e.sample.temporal_evidence.stream_id, e.sample.temporal_evidence.sample_sha256)
         for e in examples[0]
@@ -194,8 +292,11 @@ def train_role(args) -> int:
     if len(set(source_ids)) != len(source_ids):
         raise ValueError("CAUSAL_TRAINING_AGGREGATION_DUPLICATE_LABEL")
     args.output.mkdir(parents=True, exist_ok=False)
-    model, metrics = train_causal_policy(*examples, config, initial_policy=initial)
+    model, metrics = train_causal_policy(
+        *examples, config, initial_policy=initial, initial_encoder=encoder,
+        regularization=regularization, device=device)
     metrics = bind_source_group_metrics(metrics, split_groups)
+    metrics = inherit_training_provenance(metrics, previous_receipts, split_groups[1])
     path = args.output / (args.expert_role + ".onnx")
     digest = export_causal_policy(model, path)
     save_causal_checkpoint(model, path.with_suffix(".pt"))
@@ -223,6 +324,7 @@ def train_role(args) -> int:
             hashlib.sha256(c).hexdigest() for c in receipt_contents
         ],
         "initial_policy_sha256": base_sha,
+        "encoder_initialization": encoder_provenance,
         "dagger_receipt_sha256": correction_receipts,
         "feature_contract_sha256": CURRENT_POLICY_FEATURE_CONTRACT_SHA256,
         "input_sha256": {

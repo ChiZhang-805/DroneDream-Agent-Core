@@ -37,6 +37,7 @@ def environment(tmp_path):
     asset = tmp_path / "asset.json"
     asset.write_text("{}", encoding="utf-8")
     env.config = SimpleNamespace(
+        initial_collection_mode=None,
         output_root=tmp_path,
         quiesce_timeout_seconds=30,
         episode_steps=256,
@@ -244,6 +245,43 @@ def test_source_history_retains_unacted_observations_but_never_renews_their_time
     assert list(env._source_history) == [later]
 
 
+# 功能：复现原生同刻状态的合法修订；训练与部署保持同槽替换，不伪造独立时间步。
+# 输入：tmp_path：隔离环境。输出：数量不增加，真实回退、旧修订和重标时间仍拒绝。
+def test_source_history_revisions_match_deployed_history(tmp_path):
+    from test_causal_policy import samples
+    from test_training_observation_boundary import observation
+    from dronedream_agent_core.causal_control import CausalControlHistory
+
+    env = environment(tmp_path)
+    runtime = CausalControlHistory(4)
+    rows = [observation(s) for s in samples()[:4]]
+    revised = rows[-1].model_copy(deep=True)
+    revised.temporal_evidence = revised.temporal_evidence.model_copy(update={
+        'sample_sha256':'e'*64, 'history_slot_revision':1})
+    revised.state_features[0] += .001
+    for row in [*rows, revised, revised]:
+        env._retain_source_observation(row)
+        runtime.append(row.temporal_evidence, row.state_features,
+                       row.realtime_features, row.realtime_valid_mask)
+    assert len(env._source_history) == len(runtime.history.rows) == 4
+    assert env._source_history[-1] == revised
+    assert runtime.history.latest == revised.temporal_evidence
+    assert env._source_history[-1] is not revised
+    with pytest.raises(ValueError, match='SAME_TIME_CONFLICT'):
+        env._retain_source_observation(rows[-1])
+    bad = revised.model_copy(deep=True)
+    bad.temporal_evidence = revised.temporal_evidence.model_copy(update={
+        'observed_at_unix_ms': revised.temporal_evidence.observed_at_unix_ms+1})
+    with pytest.raises(ValueError, match='SAMPLE_REDATED'):
+        env._retain_source_observation(bad)
+    bad.temporal_evidence = revised.temporal_evidence.model_copy(update={
+        'observed_at_unix_ms':revised.temporal_evidence.observed_at_unix_ms-1,
+        'sample_sha256':'f'*64})
+    with pytest.raises(ValueError, match='CLOCK_REGRESSED'):
+        env._retain_source_observation(bad)
+    assert not env._source_history
+
+
 # 功能：
 #   等待执行回执时连续接收新观测，验证只保存历史、不发送替代控制。
 # 输入：
@@ -305,6 +343,28 @@ def test_input_admission_reserves_complete_learner_and_dispatch_budget(tmp_path,
     env._exchange.discard_pending.assert_called_once()
     assert env._input_rejection_counts == {"insufficient-input-budget": 1}
     assert env._interface_timings[-1]["remaining_input_lease_ms"] == budget - 1
+
+
+# 功能：接收阶段丢弃过期输入，不改变新帧的期限；输入：过期异常；输出：下一真实请求。
+@pytest.mark.parametrize('reason', sorted(module.EXPIRED_POLICY_REQUESTS))
+def test_expired_transport_waits_for_new_input(tmp_path, monkeypatch, reason):
+    env = environment(tmp_path)
+    env._process = SimpleNamespace(poll=lambda: None)
+    accepted = {'valid_until_unix_ms':1240}
+    env._receive_source_request = Mock(side_effect=[ValueError(reason),accepted])
+    monkeypatch.setattr(module, 'time', SimpleNamespace(time=lambda:1.,monotonic=lambda:1.))
+    assert env._next_request(deadline=2.) is accepted
+    assert accepted['valid_until_unix_ms'] == 1240
+
+
+# 功能：超长租约不是普通过期，不得静默重试；输入：非法期限；输出：原错误。
+def test_future_lease_is_not_ignored(tmp_path, monkeypatch):
+    env = environment(tmp_path)
+    env._process = SimpleNamespace(poll=lambda: None)
+    env._receive_source_request = Mock(side_effect=ValueError('TRAINING_POLICY_INPUT_LEASE_EXCEEDS_BOUND'))
+    monkeypatch.setattr(module, 'time', SimpleNamespace(time=lambda:1.,monotonic=lambda:1.))
+    with pytest.raises(ValueError, match='LEASE_EXCEEDS_BOUND'):
+        env._next_request(deadline=2.)
 
 
 # 功能：
@@ -497,7 +557,9 @@ def test_true_input_timeout_is_still_failure_with_unchanged_admission_budget(tmp
     with pytest.raises(TimeoutError, match="PX4_TRAINING_NEXT_OBSERVATION_TIMEOUT"):
         env._next_request(deadline=time.monotonic() - 1)
     assert env._rollout_stop_reason["reason"] == "next-observation-timeout"
-    assert env._rollout_stop_reason["required_remaining_input_ms"] == 120
+    assert env._rollout_stop_reason["required_remaining_input_ms"] == (
+        module.LOCAL_DISPATCH_RESERVE_MS
+        + module.TRAINING_REPLY_PREPARATION_RESERVE_MS)
 
 
 # 功能：

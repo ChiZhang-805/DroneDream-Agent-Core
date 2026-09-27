@@ -199,8 +199,9 @@ def test_metric_candidate_matches_vehicle_scaled_operational_gate():
 #   monkeypatch：pytest 属性替换工具。
 # 输出：
 #   None：不返回业务数据。
+@pytest.mark.parametrize("phase,budget", [("initial", 60.), ("runtime", 8.)])
 def test_metric_candidate_searches_with_the_conservative_validation_envelope(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, phase: str, budget: float,
 ):
     captured: dict[str, object] = {}
 
@@ -241,6 +242,7 @@ def test_metric_candidate_searches_with_the_conservative_validation_envelope(
             semantic_path=Path("semantic.json"),
             vehicle_diameter_m=0.76,
             vehicle_height_m=0.43,
+            planning_phase=phase,
         )  # type: ignore[arg-type]
     )
 
@@ -249,6 +251,7 @@ def test_metric_candidate_searches_with_the_conservative_validation_envelope(
     assert captured["vehicle_height_m"] == pytest.approx(0.516)
     policy = captured["policy"]
     assert policy.required_clearance_m == pytest.approx(0.35)  # type: ignore[union-attr]
+    assert policy.maximum_search_seconds == budget
 
 
 # 功能：

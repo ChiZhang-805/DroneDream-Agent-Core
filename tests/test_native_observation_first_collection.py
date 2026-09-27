@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 from test_native_corrections import fixture
 from test_offline_flight_learning import UnitEnvironment
 from test_px4_training_lifecycle import environment
@@ -15,6 +16,7 @@ from test_px4_training_lifecycle import environment
 from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand, RuntimeLocalSafetyObservation
 from dronedream_agent_core.control_execution_evidence import ControlApplicationRecord
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.training import px4_environment
 from dronedream_agent_core.training.capture_archive import pack_native_transition
 from dronedream_agent_core.training.flight_environment import (
     ControlPreparationExpired,
@@ -248,7 +250,7 @@ def test_native_collection_records_only_current_actor_timing():
 #   remaining_ms：模拟的剩余输入租期，单位毫秒。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize("remaining_ms", [69, 5, 0, -100])
+@pytest.mark.parametrize("remaining_ms", [px4_environment.LOCAL_DISPATCH_RESERVE_MS - 1, 5, 0, -100])
 def test_native_actor_losing_dispatch_budget_is_not_sent_or_called_acknowledged(
     tmp_path, monkeypatch, remaining_ms
 ):
@@ -263,7 +265,7 @@ def test_native_actor_losing_dispatch_budget_is_not_sent_or_called_acknowledged(
     env._transition_writer = SimpleNamespace(check=Mock())
     env._exchange = SimpleNamespace(reply=Mock(), discard_pending=Mock())
     env._application = Mock()
-    monkeypatch.setattr("dronedream_agent_core.training.px4_environment.time.time", lambda: 1.)
+    isolate_time(monkeypatch, px4_environment, time=lambda: 1.)
     with pytest.raises(ControlPreparationExpired, match="BUDGET_EXHAUSTED_BEFORE_SEND"):
         env.capture_step(PilotAction(mode="pilot-control", axes=[.2, 0., 0., 0.]))
     env._exchange.reply.assert_not_called()
@@ -430,7 +432,9 @@ def test_immediate_and_grounded_evaluation_share_exact_native_outcome(
 # 输出：
 #   None：不返回业务数据。
 @pytest.mark.parametrize(
-    "observed,remaining,kept", [(1100, 200, True), (1099, 200, False), (1100, 119, False)]
+    "observed,remaining,kept", [(1100, 200, True), (1099, 200, False),
+        (1100, px4_environment.LOCAL_DISPATCH_RESERVE_MS
+         + px4_environment.TRAINING_REPLY_PREPARATION_RESERVE_MS - 1, False)]
 )
 def test_ack_arriving_during_receive_keeps_only_fresh_post_action_request(
     tmp_path,
@@ -449,7 +453,7 @@ def test_ack_arriving_during_receive_keeps_only_fresh_post_action_request(
     env._process = SimpleNamespace(poll=lambda: None)
     env._exchange = SimpleNamespace(discard_pending=Mock())
     env._receive_source_request = Mock(return_value=request)
-    monkeypatch.setattr("dronedream_agent_core.training.px4_environment.time.time", lambda: 1.0)
+    isolate_time(monkeypatch, px4_environment, time=lambda: 1.0)
     assert env._application("call", deadline=time.monotonic() + 1) == receipt
     assert env._exchange.discard_pending.call_count == int(not kept)
     if kept:
@@ -472,6 +476,6 @@ def test_kept_request_is_rechecked_if_actor_admission_later_loses_budget(tmp_pat
     env._process = SimpleNamespace(poll=lambda: None)
     env._exchange = SimpleNamespace(discard_pending=Mock())
     env._receive_source_request = Mock(return_value=replacement)
-    monkeypatch.setattr("dronedream_agent_core.training.px4_environment.time.time", lambda: 1.0)
+    isolate_time(monkeypatch, px4_environment, time=lambda: 1.0)
     assert env._next_request(deadline=time.monotonic() + 1) is replacement
     assert env._exchange.discard_pending.call_count == 1

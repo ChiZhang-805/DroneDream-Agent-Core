@@ -54,6 +54,7 @@ from .contracts import (
 from .control_execution_evidence import verify_control_applications
 from .control_timing import (
     LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
+    LOCAL_SETPOINT_PERIOD_SECONDS,
     continuous_control_cadence_bounded,
     continuous_control_evidence_required,
     continuous_timing_is_bounded,
@@ -68,14 +69,17 @@ from .identity_alignment import (
 )
 from .localization_truth_capture import LocalizationTruthCapture
 from .native_process_diagnostics import NativeSourceStallProbe
+from .payload_collection_contract import payload_collection_mode
 from .perception_lifecycle import verify_control_completion
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
 from .preflight_render_warmup import warmup_receipt_ready
 from .preview_worker import LatestPreviewWorker
+from .recovery_obstacle_evidence import RecoveryObstacleWitness
 from .runtime_bindings import load_map_runtime_bindings, resolve_vehicle_collision_center_offset
 from .runtime_control_io import publish_runtime_json, read_runtime_object
 from .runtime_scheduling import InterpreterPauseMonitor, SimulationSourceIntervals
 from .simulation_camera_profile import prepare_camera_profile, validate_camera_profile_choice
+from .simulation_camera_clock import prepare_native_camera_clock
 from .simulation_dynamic_obstacles import (
     dynamic_observation,
     dynamic_positions,
@@ -99,6 +103,7 @@ from .simulation_sensor_frames import (
     simulation_pose_time_ns,
 )
 from .simulation_sensor_runtime import prepare_sensor_runtime
+from .simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from .static_render_batching import prepare_static_render_world
 from .training.gazebo_witness import GazeboOutcomeWitness
 from .training.outcome_channel import OutcomePublisher
@@ -339,6 +344,91 @@ def _validated_executor_options(arguments):
             raise ValueError("EXECUTOR_HEADING_POLICY_INVALID")
         options[key] = value
     return options
+
+
+# 功能：显式开启本地定位模式准备，不允许通过通用扩展参数偷偷覆盖启动方式。
+# 输入：严格布尔开关、本次认证观测端点及源钟域。
+# 输出：固定执行器选项；没有完整来源链不得启动该握手，不改变任何解锁检查。
+def _local_reference_arguments(enabled, channel, clock_domain):
+    if type(enabled) is not bool:
+        raise ValueError('LOCAL_REFERENCE_PREARM_FLAG_INVALID')
+    if enabled and (channel is None or clock_domain is None):
+        raise ValueError('LOCAL_REFERENCE_PREARM_SOURCE_REQUIRED')
+    return ['--local-reference-prearm'] if enabled else []
+
+
+# 功能：
+#   将已绑定的检查点、动作和改令入口显式传入执行器，不允许扩展参数替换这些身份。
+# 输入：
+#   checkpoint、actions：已冻结合同路径；semantic、vehicle：同次核验的资产路径。
+#   control_dir：当前任务的改令目录；timeouts：四项有限等待时长。
+# 输出：
+#   arguments：执行器参数列表；合同依赖不完整时拒绝。
+def _executor_contract_arguments(checkpoint, actions, semantic, vehicle, control_dir, timeouts):
+    names = ('--checkpoint-timeout-seconds', '--runtime-hold-timeout-seconds',
+             '--runtime-decision-timeout-seconds', '--runtime-replan-hold-seconds')
+    if type(timeouts) is not tuple or len(timeouts) != len(names):
+        raise ValueError('EXECUTOR_CONTRACT_TIMEOUTS_INVALID')
+    for name, value in zip(names, timeouts, strict=True):
+        _runtime_number(value, name, .001, 3600)
+    if (actions is not None or control_dir is not None) and checkpoint is None:
+        raise ValueError('EXECUTOR_CHECKPOINT_BINDING_REQUIRED')
+    arguments = []
+    if checkpoint is not None:
+        arguments.extend(['--checkpoint-contract', str(checkpoint), names[0], str(timeouts[0])])
+    if actions is not None:
+        arguments.extend(['--runtime-action-contract', str(actions)])
+    if control_dir is not None:
+        if semantic is None or vehicle is None:
+            raise ValueError('EXECUTOR_REPLAN_ASSET_BINDING_REQUIRED')
+        check_plain_plugin_path(control_dir)
+        arguments.extend(['--runtime-control-dir', str(control_dir), '--semantic', str(semantic),
+                          '--vehicle-metadata', str(vehicle)])
+        for name, value in zip(names[1:], timeouts[1:], strict=True):
+            arguments.extend([name, str(value)])
+    return arguments
+
+
+# 功能：
+#   起飞前核对检查点属于当前路线和任务，动作只绑定唯一且同地点的检查点。
+# 输入：
+#   checkpoints、actions：本次解析的运行合同；route：本次冻结路线。
+#   contract_id：任务身份；teacher_payload：是否为显式教师负载采集。
+# 输出：
+#   None：绑定不一致或训练专用动作进入产品执行时拒绝启动。
+def _validate_execution_contract_binding(checkpoints, actions, route, contract_id, teacher_payload):
+    if type(teacher_payload) is not bool:
+        raise ValueError('EXECUTOR_TEACHER_MODE_INVALID')
+    if checkpoints is None:
+        if actions is not None:
+            raise ValueError('EXECUTOR_CHECKPOINT_BINDING_REQUIRED')
+        return None
+    checkpoints = RuntimeCheckpointContract.model_validate(checkpoints.model_dump(), strict=True)
+    if checkpoints.contract_id != contract_id:
+        raise ValueError('EXECUTOR_CHECKPOINT_MISSION_MISMATCH')
+    by_id, task_ids, point_indices = {}, set(), set()
+    for checkpoint in checkpoints.checkpoints:
+        index = checkpoint.track_point_index
+        if (checkpoint.checkpoint_id in by_id or checkpoint.task_id in task_ids
+                or index in point_indices or index >= len(route.node_ids)
+                or route.node_ids[index] != checkpoint.target_node):
+            raise ValueError('EXECUTOR_CHECKPOINT_ROUTE_MISMATCH')
+        by_id[checkpoint.checkpoint_id] = checkpoint
+        task_ids.add(checkpoint.task_id)
+        point_indices.add(index)
+    if actions is not None:
+        actions = RuntimeActionExecutionContract.model_validate(actions.model_dump(), strict=True)
+        if actions.contract_id != contract_id:
+            raise ValueError('EXECUTOR_ACTION_MISSION_MISMATCH')
+        if (any(step.action.startswith('training.') for step in actions.steps)
+                and not teacher_payload):
+            raise ValueError('TRAINING_PAYLOAD_ACTION_REQUIRES_EXPLICIT_TEACHER_COLLECTION')
+        for step in actions.steps:
+            if step.trigger == 'checkpoint' and (
+                    step.checkpoint_id not in by_id
+                    or step.target_node != by_id[step.checkpoint_id].target_node):
+                raise ValueError('EXECUTOR_ACTION_CHECKPOINT_MISMATCH')
+    return None
 
 
 # 功能：
@@ -622,7 +712,35 @@ def _identity_correction_limit_m(minimum_route_clearance_m: float) -> float:
 
 
 # 功能：
-#   将着陆阶段、表面类别和微小接触深度联合判断，不能据此认定飞行器已安全着陆。
+#   从执行器的原生 PX4 遥测快照读取估计器重置计数，区分合法坐标原点重置和实体跳变。
+# 输入：
+#   payload：px4-identity-telemetry 或兼容跟踪快照。
+# 输出：
+#   reset_counter：可验证的非负计数；旧快照未提供该证据时为 None。
+def _identity_estimator_reset_counter(payload: dict[str, Any]) -> int | None:
+    dynamics = payload.get("dynamics")
+    if dynamics is None:
+        return None
+    if not isinstance(dynamics, dict):
+        raise ValueError("identity dynamics telemetry must be an object")
+    sources = dynamics.get("sources")
+    if not isinstance(sources, dict):
+        raise ValueError("identity dynamics sources must be an object")
+    odometry = sources.get("odometry")
+    if odometry is None:
+        return None
+    if not isinstance(odometry, dict):
+        raise ValueError("identity odometry telemetry must be an object")
+    reset_counter = odometry.get("reset_counter")
+    if reset_counter is None:
+        return None
+    if type(reset_counter) is not int or not 0 <= reset_counter <= 255:
+        raise ValueError("identity estimator reset counter is invalid")
+    return reset_counter
+
+
+# 功能：
+#   将地面允许阶段、表面类别和微小接触深度联合判断，不能据此认定飞行器已起飞或安全着陆。
 # 输入：
 #   phase：执行阶段；primitive_name：接触体名称；clearance_m：带符号净空。
 # 输出：
@@ -630,12 +748,19 @@ def _identity_correction_limit_m(minimum_route_clearance_m: float) -> float:
 def _is_tolerated_landing_contact(
     *, phase: str | None, primitive_name: str, clearance_m: float
 ) -> bool:
-    if phase not in {"LANDING", "LANDED", "COMPLETE"}:
+    # Gazebo may report a millimetre-scale overlap between the conservative
+    # vehicle envelope and its supporting floor while the real collision
+    # geometry is resting normally.  The TAKEOFF allowance covers only the
+    # controller/telemetry transition before positive vertical clearance is
+    # observed; the independent top-surface geometry check below still rejects
+    # walls, edges, slopes, ceilings and unsupported contact.
+    if phase not in {"PREFLIGHT", "TAKEOFF", "LANDING", "LANDED", "COMPLETE"}:
         return False
     if not -0.02 <= clearance_m < -0.001:
         return False
     tolerated = any(
-        token in primitive_name.casefold() for token in ("floor", "ground", "road", "pad")
+        token in primitive_name.casefold()
+        for token in ("floor", "ground", "terrain", "road", "pad")
     )
     return tolerated
 
@@ -912,6 +1037,7 @@ def _runtime_evidence_writer_complete(
 
 # 功能：
 #   核对每次快照提交均已写入或被新值取代，并确认后台线程退出、没有未处理或拒绝项。
+#   v2 回执同时核验独立模型图像队列；拒绝缺失、嵌套或伪报完整的子回执。
 # 输入：
 #   summary：快照写入器的生命周期和五项计数。
 # 输出：
@@ -929,7 +1055,8 @@ def _runtime_snapshot_writer_complete(summary: dict[str, Any] | None) -> bool:
     complete = bool(
         isinstance(summary, dict)
         and all(type(summary.get(key)) is int and summary[key] >= 0 for key in count_fields)
-        and summary.get("schema_version") == "dronedream.runtime-snapshot-writer.v1"
+        and summary.get("schema_version") in {
+            "dronedream.runtime-snapshot-writer.v1", "dronedream.runtime-snapshot-writer.v2"}
         and summary.get("complete") is True
         and summary.get("issue_code") is None
         and summary.get("rejected_count") == 0
@@ -939,6 +1066,11 @@ def _runtime_snapshot_writer_complete(summary: dict[str, Any] | None) -> bool:
         and summary.get("submitted_count")
         == summary.get("completed_count", 0) + summary.get("superseded_count", 0)
     )
+    if complete and summary.get("schema_version") == "dronedream.runtime-snapshot-writer.v2":
+        images = summary.get("model_image_writer")
+        complete = bool(isinstance(images, dict)
+                        and images.get("schema_version") == "dronedream.runtime-snapshot-writer.v1"
+                        and _runtime_snapshot_writer_complete(images))
     return complete
 
 
@@ -1296,6 +1428,22 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 # 功能：
+#   为新运行原子发布初始阶段，确保观察器和原生看门狗启动前已有合法上下文。
+#   拒绝复用非空运行目录；此记录只说明尚未起飞，不代表传感器就绪或飞行授权。
+# 输入：
+#   run_dir：本轮独占输出目录，允许预先创建的 runtime-control 通道目录。
+# 输出：
+#   无；已有运行证据时抛出异常，不覆盖飞行中或已结束的阶段。
+def _initialize_run_directory(run_dir: Path) -> None:
+    if run_dir.exists():
+        unexpected = [path for path in run_dir.iterdir() if path.name != "runtime-control"]
+        if unexpected:
+            raise FileExistsError(f"run directory is not empty: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(run_dir / "runtime-phase.json", {"phase": "PREFLIGHT", "checkpoint_id": None})
+
+
+# 功能：
 #   用本次调用独占的临时文件原子替换二进制快照，清理只针对仍属于自己的临时文件。
 # 输入：
 #   path：快照目标；payload：不超过 64 MiB 的字节。
@@ -1500,13 +1648,18 @@ def _gazebo_semantic_label_png(
 #   生成俯瞰当前路线的真实场景相机；此观察视角不冒充无人机前视传感器。
 # 输入：
 #   route_points：当前任务的世界坐标路线点。
+#   control_priority：控制任务使用低带宽旁观画面，不更改机载相机或传感器标定。
 # 输出：
 #   model、camera：观察相机 SDF 与实际生成位置。
 def _live_camera_sdf(
     route_points: list[tuple[float, float, float]],
+    *, control_priority: bool = False,
 ) -> tuple[str, tuple[float, float, float]]:
     """Build a real Gazebo camera that frames the selected mission route."""
 
+    if type(control_priority) is not bool:
+        raise ValueError("LIVE_CAMERA_PROFILE_INVALID")
+    width, height, rate = (640, 360, 6) if control_priority else (1280, 720, 12)
     xs = [point[0] for point in route_points]
     ys = [point[1] for point in route_points]
     zs = [point[2] for point in route_points]
@@ -1537,11 +1690,11 @@ def _live_camera_sdf(
       <pose relative_to="__model__">0 0 0 0 {pitch:.12g} {yaw:.12g}</pose>
       <sensor name="live_camera" type="camera">
         <always_on>true</always_on>
-        <update_rate>12</update_rate>
+        <update_rate>{rate}</update_rate>
         <topic>/dronedream/live/camera</topic>
         <camera>
           <horizontal_fov>1.0472</horizontal_fov>
-          <image><width>1280</width><height>720</height><format>R8G8B8</format></image>
+          <image><width>{width}</width><height>{height}</height><format>R8G8B8</format></image>
           <clip><near>0.1</near><far>5000</far></clip>
         </camera>
       </sensor>
@@ -1667,6 +1820,7 @@ def _wait_for_vehicle(
 # 输入：
 #   gz_binary：Gazebo 程序；world_name、entity_name：世界与实体名。
 #   sdf_path：实体资产；pose：世界坐标；env：本轮隔离环境。
+#   yaw_rad：可选显式初始偏航，仅改变生成姿态；None 保留旧生成语义。
 # 输出：
 #   evidence：生成回执、源文件摘要和位置。
 def _spawn_entity(
@@ -1677,16 +1831,23 @@ def _spawn_entity(
     sdf_path: Path,
     pose: tuple[float, float, float],
     env: dict[str, str],
+    yaw_rad: float | None = None,
 ) -> dict[str, object]:
     if len(pose) != 3:
         raise ValueError("spawn pose requires three coordinates")
     for value in pose:
         _runtime_number(value, "spawn coordinate", -1e6, 1e6)
+    orientation = ""
+    if yaw_rad is not None:
+        _runtime_number(yaw_rad, "spawn yaw", -math.pi, math.pi)
+        orientation = (f" orientation {{ w: {math.cos(yaw_rad / 2):.12g} "
+                       f"x: 0 y: 0 z: {math.sin(yaw_rad / 2):.12g} }}")
     source_digest = _sha256(sdf_path)
     request = (
         f"sdf_filename: {json.dumps(str(sdf_path), ensure_ascii=False)} "
         f"name: {json.dumps(entity_name, ensure_ascii=False)} "
-        f"pose {{ position {{ x: {pose[0]:.12g} y: {pose[1]:.12g} z: {pose[2]:.12g} }} }} "
+        f"pose {{ position {{ x: {pose[0]:.12g} y: {pose[1]:.12g} z: {pose[2]:.12g} }}"
+        f"{orientation} }} "
         "allow_renaming: false"
     )
     result = _run(
@@ -1722,6 +1883,8 @@ def _spawn_entity(
     }
     if not accepted:
         raise SimulationRuntimeError(f"Gazebo rejected entity spawn: {evidence}")
+    if yaw_rad is not None:
+        evidence["initial_yaw_rad"] = yaw_rad
     return evidence
 
 
@@ -1761,6 +1924,8 @@ def _detach_payload_before_flight(
     output_topic: str,
     env: dict[str, str],
     timeout: float = 15.0,
+    state_service: str | None = None,
+    readiness_timeout: float = 90.0,
 ) -> dict[str, object]:
     """Fail closed unless Gazebo confirms that the payload starts detached.
 
@@ -1784,6 +1949,55 @@ def _detach_payload_before_flight(
     else:
         missing = sorted(required_topics - observed_topics)
         raise SimulationRuntimeError(f"payload preflight detach topics were not ready: {missing}")
+
+    if state_service is not None:
+        # 服务已经注册不代表物理线程已经完成相机/渲染冷启动。
+        # 连续推进至少一秒后再开始命令期限；单次回读可能发生在渲染冷启动阻塞前。
+        # 此处只确认物理线程活性，不把就绪快照当作餐包已经分离的证据。
+        from .payload_state_query import query_attachment_state
+        _runtime_number(readiness_timeout, "payload physics readiness timeout", 0.001, 300)
+        ready_deadline = time.monotonic() + readiness_timeout
+        ready_attempts = 0
+        last_error = "no snapshot"
+        ready_since: float | None = None
+        previous_iteration: int | None = None
+        advancing_samples = 0
+        while (remaining := ready_deadline - time.monotonic()) > 0:
+            ready_attempts += 1
+            try:
+                initial = query_attachment_state(gz_binary, service=state_service,
+                                                  env=env, timeout=min(2.5, remaining))
+                observed_at = time.monotonic()
+                if observed_at >= ready_deadline:
+                    break
+                if previous_iteration is None or initial["iteration"] <= previous_iteration:
+                    ready_since = observed_at
+                    advancing_samples = 1
+                else:
+                    advancing_samples += 1
+                previous_iteration = initial["iteration"]
+                last_error = "physics progress has not yet remained stable for one second"
+                if advancing_samples >= 3 and observed_at - ready_since >= 1.0:
+                    break
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                last_error = str(error)[-1000:]
+                ready_since = None
+                previous_iteration = None
+                advancing_samples = 0
+            time.sleep(min(0.1, max(0.0, ready_deadline - time.monotonic())))
+        if (ready_since is None or advancing_samples < 3
+                or time.monotonic() >= ready_deadline
+                or time.monotonic() - ready_since < 1.0):
+            raise SimulationRuntimeError(
+                f"PAYLOAD_PHYSICS_NOT_READY: no advancing physics snapshot; {last_error}"
+            )
+        evidence = _detach_payload_with_snapshot(
+            gz_binary, detach_topic=detach_topic, output_topic=output_topic,
+            state_service=state_service, env=env, timeout=timeout,
+        )
+        evidence.update(initialization_snapshot=initial, readiness_attempts=ready_attempts,
+                        readiness_advancing_samples=advancing_samples)
+        return evidence
 
     command_deadline = time.monotonic() + max(9.0, timeout)
     attempts: list[dict[str, object]] = []
@@ -1878,6 +2092,96 @@ def _detach_payload_before_flight(
     raise SimulationRuntimeError(
         f"Gazebo did not confirm a detached payload before PX4 startup: {attempts}"
     )
+
+
+# 功能：重复发送幂等卸载请求，并用两个推进中的物理时步确认真实分离；不依赖一次性事件。
+# 输入：当前运行的主题、只读服务、环境和总时限；输出：逐次命令及原生查询证据。
+def _detach_payload_with_snapshot(
+    gz_binary: str, *, detach_topic: str, output_topic: str, state_service: str,
+    env: dict[str, str], timeout: float,
+) -> dict[str, object]:
+    from .payload_state_query import query_attachment_state
+
+    deadline = time.monotonic() + timeout
+    attempts: list[dict[str, object]] = []
+    previous_iteration: int | None = None
+    while (remaining := deadline - time.monotonic()) > 0:
+        attempt: dict[str, object] = {"attempt": len(attempts) + 1}
+        attempts.append(attempt)
+        try:
+            publisher = _run([gz_binary, "topic", "-t", detach_topic,
+                              "-m", "gz.msgs.Empty", "-p", ""],
+                             env=env, timeout=min(3.0, remaining))
+            attempt["publisher_exit_code"] = publisher.returncode
+            remaining = deadline - time.monotonic()
+            if publisher.returncode != 0 or remaining <= 0:
+                previous_iteration = None
+                continue
+            snapshot = query_attachment_state(gz_binary, service=state_service,
+                                              env=env, timeout=min(2.5, remaining))
+            attempt["snapshot"] = snapshot
+            if snapshot["detached"]:
+                if previous_iteration is not None and snapshot["iteration"] > previous_iteration:
+                    return {"confirmed": True, "detached": True, "detach_topic": detach_topic,
+                            "output_topic": output_topic, "state_service": state_service,
+                            "state_readback_source": snapshot["source"], "attempts": attempts}
+                previous_iteration = snapshot["iteration"]
+            else:
+                previous_iteration = None
+        except (subprocess.TimeoutExpired, RuntimeError) as error:
+            attempt["error"] = str(error)[-1000:]
+            previous_iteration = None
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    raise SimulationRuntimeError(
+        f"Gazebo did not confirm a detached payload before PX4 startup: {attempts}"
+    )
+
+
+# 功能：
+#   起飞前确认本次载荷放置服务已注册且类型唯一匹配，不发送任何位姿或运动指令。
+#   服务启动暂未完成时有限重试，错误类型或重复提供者直接拒绝。
+# 输入：
+#   gz_binary：Gazebo 程序；service：本次世界与载荷的完整服务名。
+#   env：本次隔离仿真环境；timeout：整个发现阶段的等待上限秒数。
+# 输出：
+#   evidence：已发现服务、请求和响应类型及尝试次数。
+def _require_payload_placement_service(
+    gz_binary: str, *, service: str, env: dict[str, str], timeout: float = 15.0
+) -> dict[str, object]:
+    _runtime_number(timeout, "payload placement discovery timeout", 0.001, 300)
+    if re.fullmatch(r"/world/[^/\s]+/model/[^/\s]+/place_detached", service) is None:
+        raise SimulationRuntimeError("payload placement service name is invalid")
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    while (remaining := deadline - time.monotonic()) > 0:
+        attempts += 1
+        try:
+            result = _run(
+                [gz_binary, "service", "-i", "-s", service],
+                env=env, timeout=min(3.0, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            providers = [
+                tuple(part.strip() for part in line.split(","))
+                for line in result.stdout.splitlines()
+                if line.strip().startswith("tcp://")
+            ]
+            if providers:
+                if len(providers) != 1 or len(providers[0]) != 3 or providers[0][1:] != (
+                    "gz.msgs.Pose", "gz.msgs.Boolean",
+                ):
+                    raise SimulationRuntimeError(
+                        "payload placement service providers are incompatible")
+                evidence = {
+                    "service": service, "request_type": providers[0][1],
+                    "response_type": providers[0][2], "attempts": attempts,
+                    "discovered": True,
+                }
+                return evidence
+        time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+    raise SimulationRuntimeError("payload placement service was not ready before PX4 startup")
 
 
 # 功能：
@@ -2102,9 +2406,12 @@ def _px4_sitl_actuator_output_absolute_maximum(
 #   有界停止本轮拥有的独立进程组，必要时强制结束；该操作仅适用于仿真进程。
 # 输入：
 #   process：使用独立会话启动的子进程；未启动时为 None。
+#   grace_seconds：退出宽限秒数，仅已落地的数据排空允许调用方扩大，最大60秒。
 # 输出：
 #   无。
-def _terminate(process: subprocess.Popen[Any] | None) -> None:
+def _terminate(process: subprocess.Popen[Any] | None, *, grace_seconds: float = 10.0) -> None:
+    if type(grace_seconds) not in (int, float) or not 0 < grace_seconds <= 60:
+        raise ValueError("SIMULATION_PROCESS_SHUTDOWN_BUDGET_INVALID")
     if process is None:
         return
     # 组长已退出不等于孙进程退出；所有调用方均用 start_new_session 创建独占组。
@@ -2114,7 +2421,7 @@ def _terminate(process: subprocess.Popen[Any] | None) -> None:
         process.wait(timeout=5)
         return
     with suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=10)
+        process.wait(timeout=grace_seconds)
     # 组长退出后同组进程仍可能持有传感器或日志管道，必须完成整组清理。
     with suppress(ProcessLookupError):
         os.kill(-process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
@@ -2459,6 +2766,11 @@ def run_px4_gazebo_track(
     executor_extra_args: list[str] | None = None,
     checkpoint_contract_path: Path | None = None,
     runtime_action_contract_path: Path | None = None,
+    runtime_control_dir: Path | None = None,
+    checkpoint_timeout_seconds: float = 180.0,
+    runtime_hold_timeout_seconds: float = 12.0,
+    runtime_decision_timeout_seconds: float = 180.0,
+    runtime_replan_hold_seconds: float = 60.0,
     live_camera_enabled: bool = True,
     local_navigation_provider: str | None = None,
     local_navigation_fallback_provider: str | None = None,
@@ -2468,6 +2780,8 @@ def run_px4_gazebo_track(
     local_navigation_context_id: str | None = None,
     local_navigation_visual_enabled: bool = False,
     local_navigation_control_authority_required: bool = False,
+    bounded_hybrid_control: bool = False,
+    independent_route_control: bool = False,
     local_navigation_omit_coordinate_candidates: bool = False,
     heading_policy: str = "measured-hold",
     maximum_yaw_rate_deg_s: float = 20.0,
@@ -2480,6 +2794,7 @@ def run_px4_gazebo_track(
     local_policy_package_paths: tuple[Path, ...] = (),
     local_policy_qualification_paths: tuple[Path, ...] = (),
     local_policy_simulation_admission_paths: tuple[Path, ...] = (),
+    local_policy_trial_path: Path | None = None,
     development_depth_drop_after_seconds: float | None = None,
     development_depth_drop_duration_seconds: float | None = None,
     development_payload_collection: bool = False,
@@ -2496,10 +2811,33 @@ def run_px4_gazebo_track(
     render_cache_bundle: Path | None = None,
     render_replica_runtime: Path | None = None,
     native_sensor_runtime: Path | None = None,
+    native_source_clock_domain: str | None = None,
+    localization_source_channel: Path | None = None,
+    local_reference_prearm: bool = False,
+    simulation_fusion_inputs: Path | None = None,
+    simulation_ground_truth_control: bool = False,
 ) -> dict[str, object]:
     """Execute one route; success requires runtime state and evidence, not process exit alone."""
 
     executor_options = _validated_executor_options(executor_extra_args)
+    local_reference_arguments = _local_reference_arguments(
+        local_reference_prearm, localization_source_channel, native_source_clock_domain)
+    if native_source_clock_domain is not None and (
+        type(native_source_clock_domain) is not str
+        or not re.fullmatch(r"px4-gz-sitl:[a-zA-Z0-9_-]{1,100}", native_source_clock_domain)
+    ):
+        raise ValueError("NATIVE_SOURCE_CLOCK_DOMAIN_INVALID")
+    if localization_source_channel is not None and (
+        native_source_clock_domain is None
+        or localization_source_channel.absolute()
+        != (run_dir / "runtime-state" / "localization-source.json").absolute()
+    ):
+        raise ValueError("LOCALIZATION_SOURCE_RUN_BINDING_INVALID")
+    contract_timeouts = (checkpoint_timeout_seconds, runtime_hold_timeout_seconds,
+                         runtime_decision_timeout_seconds, runtime_replan_hold_seconds)
+    _executor_contract_arguments(checkpoint_contract_path, runtime_action_contract_path,
+                                 semantic_path, vehicle_metadata_path, runtime_control_dir,
+                                 contract_timeouts)
     heading_policy = executor_options.get("--heading-policy", heading_policy)
     if "--maximum-yaw-rate-deg-s" in executor_options:
         maximum_yaw_rate_deg_s = float(executor_options["--maximum-yaw-rate-deg-s"])
@@ -2507,6 +2845,7 @@ def run_px4_gazebo_track(
         "live_camera_enabled": live_camera_enabled,
         "local_navigation_visual_enabled": local_navigation_visual_enabled,
         "local_navigation_control_authority_required": local_navigation_control_authority_required,
+        "bounded_hybrid_control": bounded_hybrid_control,
         "local_navigation_omit_coordinate_candidates": local_navigation_omit_coordinate_candidates,
         "development_payload_collection": development_payload_collection,
         "record_learning_observations": record_learning_observations,
@@ -2514,6 +2853,7 @@ def run_px4_gazebo_track(
         "batch_static_world_visuals": batch_static_world_visuals,
         "preflight_render_warmup": preflight_render_warmup,
         "preflight_depth_warmup": preflight_depth_warmup,
+        "simulation_ground_truth_control": simulation_ground_truth_control,
     }.items():
         if type(value) is not bool:
             raise ValueError(f"{name} must be boolean")
@@ -2532,10 +2872,22 @@ def run_px4_gazebo_track(
     if type(multimodal_dataset_maximum_mib) is not int:
         raise ValueError("multimodal dataset quota must be an integer")
     _runtime_number(multimodal_record_period_seconds, "recording period", 0.05, 10)
+    from .route_control_mode import validate_route_control_mode
+    validate_route_control_mode(enabled=independent_route_control,
+        model_required=local_navigation_control_authority_required,
+        provider=local_navigation_provider, hybrid=bounded_hybrid_control,
+        teacher=simulation_teacher_control, training=simulation_training_channel is not None,
+        fusion=simulation_fusion_inputs is not None and local_reference_prearm,
+        heading=heading_policy)
     check_plain_plugin_path(run_dir)
     validate_camera_profile_choice(simulation_camera_profile, camera_source_model_sha256)
+    # 教师采集与在线学习器均属显式训练；不能要求教师伪造一个互斥的学习器通道。
+    # 相机派生与渲染隔离共用这一权限，后续仍检查记录、真实机型及模型权限不能混用。
+    camera_training_authorized = simulation_training_channel is not None or (
+        simulation_teacher_control and record_learning_observations
+    )
     if render_replica_runtime is not None and (
-        simulation_training_channel is None
+        not camera_training_authorized
         or not local_navigation_visual_enabled
         or simulation_camera_profile == "native"
         or live_camera_enabled
@@ -2558,13 +2910,11 @@ def run_px4_gazebo_track(
         simulation_camera_profile == "native" or simulation_training_channel is None
     ):
         raise ValueError("render warmup requires explicit source-bound visual training")
-    # 教师采集与在线学习器均属显式训练；不能要求教师伪造一个互斥的学习器通道。
-    # 仅记录观察不授予该权限，教师还必须明确开启，后续仍检查其不能混入模型控制权限。
-    camera_training_authorized = simulation_training_channel is not None or (
-        simulation_teacher_control and record_learning_observations
-    )
-    if simulation_camera_profile != "native" and (
-        not camera_training_authorized or not local_navigation_visual_enabled
+    if simulation_camera_profile != "native" and not independent_route_control and (
+        (not camera_training_authorized and local_policy_trial_path is None)
+        or (not local_navigation_visual_enabled and not (
+            simulation_training_channel is not None and multimodal_dataset_root is not None
+            and localization_source_channel is not None))
     ):
         raise ValueError(
             "camera stream profile is restricted to explicit visual simulation training"
@@ -2676,6 +3026,7 @@ def run_px4_gazebo_track(
     if local_navigation_provider == "local-policy":
         if not local_policy_package_paths or not (
             local_policy_qualification_paths or local_policy_simulation_admission_paths
+            or local_policy_trial_path
         ):
             raise ValueError(
                 "local policy navigation requires packages and qualification "
@@ -2687,22 +3038,56 @@ def run_px4_gazebo_track(
         or local_policy_simulation_admission_paths
     ):
         raise ValueError("local policy artifacts require the local-policy provider")
-    if development_payload_collection:
+    trial_permit = None
+    if local_policy_trial_path is not None:
+        from .simulation_trial import validate_trial_configuration
+
         if local_navigation_provider != "local-policy":
-            raise ValueError("development payload collection requires local-policy")
-        if not local_policy_simulation_admission_paths or local_policy_qualification_paths:
-            raise ValueError("development payload collection requires simulation admission only")
-        if multimodal_dataset_root is None:
-            raise ValueError("development payload collection requires multimodal recording")
+            raise ValueError("SIMULATION_TRIAL_LOCAL_POLICY_REQUIRED")
+        trial_permit = validate_trial_configuration(
+            local_policy_trial_path, local_policy_package_paths, semantic_path,
+            _runtime_contract(vehicle_metadata_path, VehicleAsset),
+            qualifications=local_policy_qualification_paths,
+            admissions=local_policy_simulation_admission_paths,
+            fallback=local_navigation_fallback_provider,
+            incompatible=(development_payload_collection or simulation_teacher_control
+                          or simulation_training_channel is not None
+                          or not local_navigation_control_authority_required),
+        )
+    if (simulation_camera_profile != "native" and not camera_training_authorized
+            and not independent_route_control):
+        # 显式、已验证的本地模型仿真试用可比较真实传感器配置；不能外推成
+        # 已验收相机、真机资格或训练权限。来源摘要、光学参数和实际尺寸仍逐项校验。
+        if trial_permit is None or not local_navigation_visual_enabled:
+            raise ValueError("camera stream profile requires a verified visual simulation trial")
+    if simulation_fusion_inputs is not None:
+        from .map_fusion_experiment import read_map_fusion_experiment
+
+        fusion = read_map_fusion_experiment(simulation_fusion_inputs)
+        if ((trial_permit is None and not independent_route_control) or not local_reference_prearm
+                or Path(fusion["run_dir"]).resolve() != run_dir.resolve()
+                or Path(fusion["world_sdf"]).resolve() != world_sdf.resolve()
+                or Path(fusion["semantic_path"]).resolve() != semantic_path.resolve()
+                or native_source_clock_domain != "px4-gz-sitl:" + fusion["run_name"]):
+            raise ValueError("SIMULATION_FUSION_RUN_BINDING_INVALID")
+    if development_payload_collection:
+        if simulation_teacher_control and (
+                checkpoint_contract_path is None or runtime_action_contract_path is None):
+            raise ValueError("payload teacher requires bound checkpoint and action contracts")
+        payload_collection_mode(
+            provider=local_navigation_provider, teacher=simulation_teacher_control,
+            recording=record_learning_observations,
+            model_authority=local_navigation_control_authority_required,
+            model_packages=bool(local_policy_package_paths),
+            admission=bool(local_policy_simulation_admission_paths),
+            qualification=bool(local_policy_qualification_paths),
+            multimodal=multimodal_dataset_root is not None,
+            fallback=local_navigation_fallback_provider is not None)
     runtime_cpu_affinity = _runtime_cpu_affinity_plan(
         local_policy_enabled=local_navigation_provider == "local-policy",
     )
 
-    if run_dir.exists():
-        unexpected = [path for path in run_dir.iterdir() if path.name != "runtime-control"]
-        if unexpected:
-            raise FileExistsError(f"run directory is not empty: {run_dir}")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    _initialize_run_directory(run_dir)
     native_preflight_marker = run_dir / "native-runtime-preflight-ready.json"
     native_preflight_marker.unlink(missing_ok=True)
     for required in (
@@ -2739,7 +3124,7 @@ def run_px4_gazebo_track(
 
     executor_help = _run(
         [sys.executable, str(executor_path), "--help"],
-        env=os.environ.copy(),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         timeout=15,
     )
     required_executor_flags = {
@@ -2748,6 +3133,15 @@ def run_px4_gazebo_track(
         "--takeoff-climb-rate-m-s",
         "--takeoff-stable-window-seconds",
     }
+    if independent_route_control:
+        required_executor_flags.add("--independent-route-control")
+    if bounded_hybrid_control:
+        from .hybrid_control import require_hybrid_provider
+
+        require_hybrid_provider(provider=local_navigation_provider,
+            model_authority=local_navigation_control_authority_required,
+            teacher_control=simulation_teacher_control, training_channel=simulation_training_channel)
+        required_executor_flags.update({"--bounded-hybrid-control", "--hybrid-route-sha256"})
     if local_navigation_control_authority_required:
         required_executor_flags.update(
             {"--model-progress-slack-m", "--require-model-control-authority"}
@@ -2781,6 +3175,12 @@ def run_px4_gazebo_track(
     world_name = _sdf_entity_name(world_sdf, "world", world_name)
     vehicle_name = _sdf_entity_name(vehicle_sdf, "model", vehicle_name)
     route = _runtime_contract(route_path, GraphRoute)
+    _validate_execution_contract_binding(
+        _runtime_contract(checkpoint_contract_path, RuntimeCheckpointContract)
+        if checkpoint_contract_path is not None else None,
+        _runtime_contract(runtime_action_contract_path, RuntimeActionExecutionContract)
+        if runtime_action_contract_path is not None else None,
+        route, contract_id, simulation_teacher_control and development_payload_collection)
     track = _runtime_contract(track_path, Px4Track)
     clearance = _runtime_contract(clearance_path, RouteClearanceReport)
     if not clearance.accepted or clearance.route_sha256 != sha256_json(route):
@@ -2827,12 +3227,27 @@ def run_px4_gazebo_track(
         raise SimulationRuntimeError(
             "runtime spawn or collision offset differs from selected assets"
         )
+    source_training = simulation_training_channel is not None or simulation_teacher_control
     payload_spawn = _payload_spawn_spec(
         vehicle_sdf=vehicle_sdf,
         runtime_action_contract_path=runtime_action_contract_path,
         checkpoint_contract_path=checkpoint_contract_path,
         track=track,
     )
+    payload_deployment = None
+    if payload_spawn is not None:
+        from .simulation_payload_runtime import prepare_payload_runtime
+
+        # 放置人员的物理操作使用独立、摘要绑定的原生组件；不回退旧的单纯位置传送。
+        placement_root = executor_path.parent / 'payload-placement'
+        if source_training:
+            placement_root = Path(os.environ.get('DRONEDREAM_PAYLOAD_PLACEMENT_RUNTIME',
+                                                str(placement_root)))
+        payload_deployment = prepare_payload_runtime(
+            payload_sdf=Path(payload_spawn['sdf_path']), runtime_root=placement_root,
+            output=run_dir / 'payload-placement',
+            source_root=(Path(__file__).resolve().parents[2] / 'native/payload_placement'
+                         if source_training else None))
 
     trial_rootfs, px4_executable = _prepare_rootfs(px4_root, run_dir)
     copied_track = run_dir / "reference_track.json"
@@ -2865,7 +3280,6 @@ def run_px4_gazebo_track(
     source_depth_worker_script = (
         Path(__file__).resolve().parents[2] / "scripts" / ("runtime_depth_safety_worker.py")
     )
-    source_training = simulation_training_channel is not None or simulation_teacher_control
     depth_worker_script = _select_depth_worker(
         packaged_worker=packaged_depth_worker_script,
         source_worker=source_depth_worker_script,
@@ -2880,12 +3294,16 @@ def run_px4_gazebo_track(
         },
     )
     depth_safety_supported = bool(
+        not simulation_ground_truth_control
+        and
         local_safety_supported
         and depth_worker_script.is_file()
         and "model://x500_depth" in vehicle_sdf.read_text(encoding="utf-8")
     )
     if record_learning_observations and not depth_safety_supported:
         raise ValueError("learning observations require the native depth safety worker")
+    if independent_route_control and not depth_safety_supported:
+        raise ValueError("ROUTE_CONTROL_REQUIRES_NATIVE_DEPTH_SAFETY")
     if depth_safety_supported and "--local-safety-channel" not in executor_help.stdout:
         raise ValueError(
             "native sensor control requires the current atomic safety channel executor"
@@ -2936,8 +3354,26 @@ def run_px4_gazebo_track(
         )
         if _sha256(copied_checkpoint_contract) != input_hashes[checkpoint_contract_path]:
             raise SimulationRuntimeError("RUNTIME_STAGED_CHECKPOINT_CHANGED")
+    copied_action_contract = None
+    if runtime_action_contract_path is not None:
+        copied_action_contract = run_dir / "runtime-actions.json"
+        hash_plugin_file(runtime_action_contract_path, limit=64 * 1024**2,
+                         destination=copied_action_contract)
+        if _sha256(copied_action_contract) != input_hashes[runtime_action_contract_path]:
+            raise SimulationRuntimeError("RUNTIME_STAGED_ACTION_CHANGED")
+    contract_executor_arguments = _executor_contract_arguments(
+        copied_checkpoint_contract, copied_action_contract, semantic_path, vehicle_metadata_path,
+        runtime_control_dir, contract_timeouts)
 
     env = os.environ.copy()
+    env.pop("DRONEDREAM_INDEPENDENT_ROUTE_CONTROL", None)
+    if independent_route_control:
+        env["DRONEDREAM_INDEPENDENT_ROUTE_CONTROL"] = "1"
+    if simulation_fusion_inputs is not None:
+        env["DRONEDREAM_MAP_FUSION_INPUTS"] = str(simulation_fusion_inputs.absolute())
+        env["DRONEDREAM_MAP_FUSION_PX4_ROOT"] = str(px4_root.absolute())
+        env["PX4_PARAM_EKF2_GPS_CTRL"] = "4"
+        env["PX4_PARAM_EKF2_HGT_REF"] = "3"
     partition = f"dronedream_agent_{os.getpid()}_{int(time.time())}"
     state = run_dir / "runtime-state"
     for name in ("cache", "config", "data"):
@@ -2989,6 +3425,18 @@ def run_px4_gazebo_track(
         require_depth=depth_safety_supported,
     )
     _write_json(run_dir / "simulation-sensor-frames.json", sensor_frames)
+    initial_sensor_yaw = None
+    if simulation_fusion_inputs is not None and depth_safety_supported:
+        from .optical_map import compile_optical_map
+        from .simulation_start_view import select_simulation_start_view
+
+        optical_index, _, _ = compile_optical_map(
+            world_sdf, expected_world_sha256=input_hashes[world_sdf])
+        start_view = select_simulation_start_view(
+            index=optical_index, frames=sensor_frames, model_root=model_root)
+        _write_json(run_dir / "initial-sensor-view.json", start_view)
+        initial_sensor_yaw = start_view["selected_yaw_rad"]
+        # 预测仅影响生成时朝向，不进入观测通道；原生回读与起飞净空检查完全保留。
     env.update(
         {
             "GZ_PARTITION": partition,
@@ -3013,6 +3461,8 @@ def run_px4_gazebo_track(
             "PX4_SYS_AUTOSTART": _px4_autostart_id(trial_rootfs, px4_sitl_model),
             "GZ_IP": "127.0.0.1",
             "PYTHONUNBUFFERED": "1",
+            # 安装资源按完整文件索引校验，子进程不得向该目录写入隐式 Python 缓存。
+            "PYTHONDONTWRITEBYTECODE": "1",
             "XDG_CACHE_HOME": str(state / "cache"),
             "XDG_CONFIG_HOME": str(state / "config"),
             "XDG_DATA_HOME": str(state / "data"),
@@ -3031,6 +3481,7 @@ def run_px4_gazebo_track(
     sensor_deployment = None
     if depth_safety_supported and (
         simulation_teacher_control or local_navigation_control_authority_required
+        or independent_route_control
     ):
         sensor_root = native_sensor_runtime or Path(
             env.get(
@@ -3049,6 +3500,19 @@ def run_px4_gazebo_track(
             ),
         )
         env.update(sensor_deployment["environment"])
+    native_camera_clock = None
+    if (render_replica_runtime is None and (local_navigation_control_authority_required
+                                           or independent_route_control)
+            and (local_navigation_visual_enabled or localization_source_channel is not None)):
+        native_camera_clock = prepare_native_camera_clock(
+            runtime_root=Path(env.get("DRONEDREAM_NATIVE_CAMERA_CLOCK_RUNTIME",
+                                     str(executor_path.parent / "camera-clock"))),
+            server_config=Path(env["GZ_SIM_SERVER_CONFIG_PATH"]),
+            rgb_topic=f"/world/{world_name}/model/{vehicle_name}/link/camera_link/sensor/IMX214/image",
+            depth_topic="/depth_camera", output=run_dir / "native-camera-clock",
+            source_root=(Path(__file__).resolve().parents[2] / "native/camera_clock"
+                         if source_training else None))
+        env.update(native_camera_clock["environment"])
     render_cache_deployment = None
     render_replica_deployment = None
     if render_replica_runtime is not None:
@@ -3199,12 +3663,13 @@ def run_px4_gazebo_track(
     identity_mismatch_samples = 0
     identity_stale_samples = 0
     last_estimator_offset = Vector3(x=0.0, y=0.0, z=0.0)
-    last_raw_estimator_offset = Vector3(x=0.0, y=0.0, z=0.0)
     has_validated_estimator_offset = False
     maximum_absolute_identity_correction_m = 1.0
     estimator_offset_filter_alpha = 0.2
     last_identity_validated_at_unix_ms: int | None = None
     last_identity_tracking_sample_unix_ms: int | None = None
+    last_identity_estimator_reset_counter: int | None = None
+    identity_estimator_reset_settling_until_unix_ms: int | None = None
     last_identity_debug_at = 0.0
     runtime_primitives = semantic.get("runtime_collision_primitives", primitives)
     if not isinstance(runtime_primitives, list) or len(runtime_primitives) > 100_000:
@@ -3216,6 +3681,7 @@ def run_px4_gazebo_track(
     identity_phase_monitor = SimulationPhaseMonitor(channel=phase_channels[1])
     training_witness: GazeboOutcomeWitness | None = None
     localization_truth: LocalizationTruthCapture | None = None
+    recovery_witness: RecoveryObstacleWitness | None = None
 
     # 功能：
     #   按当前速度确定有限搜索范围，筛选与无人机相邻的已验证世界碰撞基元。
@@ -3243,9 +3709,11 @@ def run_px4_gazebo_track(
     def process_pose(message: Any, received_at: float, received_at_unix_ms: int) -> None:
         nonlocal abort_reason, controlled_entity_name, identity_mismatch_samples
         nonlocal identity_stale_samples, last_estimator_offset
-        nonlocal last_raw_estimator_offset, has_validated_estimator_offset
+        nonlocal has_validated_estimator_offset
         nonlocal last_identity_validated_at_unix_ms
         nonlocal last_identity_tracking_sample_unix_ms
+        nonlocal last_identity_estimator_reset_counter
+        nonlocal identity_estimator_reset_settling_until_unix_ms
         nonlocal last_identity_debug_at, last_local_safety_at, live_safety_event
         nonlocal last_local_safety_history_at, local_safety_sequence
         nonlocal pose_messages_processed
@@ -3419,6 +3887,28 @@ def run_px4_gazebo_track(
                         px4_velocity_ned_mps=px4_velocity_ned,
                         minimum_alignment_speed_mps=0.05,
                     )
+                    identity_estimator_reset_counter = _identity_estimator_reset_counter(tracking)
+                    identity_estimator_reset_observed = bool(
+                        identity_estimator_reset_counter is not None
+                        and last_identity_estimator_reset_counter is not None
+                        and identity_estimator_reset_counter
+                        != last_identity_estimator_reset_counter
+                    )
+                    if identity_estimator_reset_observed:
+                        # PX4 can publish one or more transient local-position
+                        # samples immediately after an odometry origin reset.
+                        # The native reset epoch proves this is not an entity
+                        # swap; keep the absolute one-metre guard while the new
+                        # transform settles instead of anchoring to its first
+                        # transient sample.
+                        identity_estimator_reset_settling_until_unix_ms = (
+                            now_unix_ms + 1_500
+                        )
+                    identity_estimator_reset_settling_active = bool(
+                        identity_estimator_reset_settling_until_unix_ms is not None
+                        and now_unix_ms
+                        <= identity_estimator_reset_settling_until_unix_ms
+                    )
                     raw_identity_error_m = identity_alignment.raw_disagreement_m
                     identity_error_m = identity_alignment.time_aligned_disagreement_m
                     effective_identity_limit_m = dynamic_identity_disagreement_limit_m(
@@ -3429,7 +3919,10 @@ def run_px4_gazebo_track(
                     offset_innovation_m = identity_offset_innovation_m(
                         estimator_offset_m=identity_alignment.estimator_offset_m,
                         reference_offset_m=(
-                            last_raw_estimator_offset if has_validated_estimator_offset else None
+                            last_estimator_offset
+                            if has_validated_estimator_offset
+                            and not identity_estimator_reset_settling_active
+                            else None
                         ),
                     )
                     identity_transform_consistent = bool(
@@ -3444,11 +3937,18 @@ def run_px4_gazebo_track(
                     )
                     if is_new_identity_sample:
                         last_identity_tracking_sample_unix_ms = tracking_sample_unix_ms
+                        if identity_estimator_reset_counter is not None:
+                            last_identity_estimator_reset_counter = (
+                                identity_estimator_reset_counter
+                            )
                         if identity_fresh and identity_transform_consistent:
                             identity_mismatch_samples = 0
                             identity_stale_samples = 0
                             raw_offset = identity_alignment.estimator_offset_m
-                            if not has_validated_estimator_offset:
+                            if (
+                                not has_validated_estimator_offset
+                                or identity_estimator_reset_settling_active
+                            ):
                                 last_estimator_offset = raw_offset
                                 has_validated_estimator_offset = True
                             else:
@@ -3467,7 +3967,6 @@ def run_px4_gazebo_track(
                                         + alpha * (raw_offset.z - last_estimator_offset.z)
                                     ),
                                 )
-                            last_raw_estimator_offset = raw_offset
                             last_identity_validated_at_unix_ms = now_unix_ms
                             correction_source = "live"
                         elif identity_fresh:
@@ -3512,6 +4011,11 @@ def run_px4_gazebo_track(
                         "maximum_offset_innovation_m": effective_identity_limit_m,
                         "maximum_absolute_correction_m": (maximum_absolute_identity_correction_m),
                         "identity_alignment_seconds": (identity_alignment.alignment_seconds),
+                        "estimator_reset_counter": identity_estimator_reset_counter,
+                        "estimator_reset_observed": identity_estimator_reset_observed,
+                        "estimator_reset_settling_active": (
+                            identity_estimator_reset_settling_active
+                        ),
                         "aligned_gazebo_collision_center_world_enu_m": (
                             identity_alignment.aligned_gazebo_position_m.model_dump(mode="json")
                         ),
@@ -3563,6 +4067,11 @@ def run_px4_gazebo_track(
                                 maximum_absolute_identity_correction_m
                             ),
                             "identity_alignment_seconds": (identity_alignment.alignment_seconds),
+                            "estimator_reset_counter": identity_estimator_reset_counter,
+                            "estimator_reset_observed": identity_estimator_reset_observed,
+                            "estimator_reset_settling_active": (
+                                identity_estimator_reset_settling_active
+                            ),
                             "selected_entity_name": selected_entity_name,
                             "pose_reference": pose_reference,
                             "tracking_age_seconds": tracking_age_seconds,
@@ -3587,6 +4096,9 @@ def run_px4_gazebo_track(
                     dynamic_obstacles=obstacles,
                 )
                 if depth_safety_supported:
+                    # 恢复挑战仅离线使用独立见证；不恢复旧的真值规划或向执行器发布真值动作。
+                    if recovery_witness is not None:
+                        recovery_witness.record(observation)
                     # This file is label/verification-only. The actuator already
                     # consumes the native depth channel selected above; never
                     # spend its observer thread planning unused truth commands.
@@ -3624,6 +4136,11 @@ def run_px4_gazebo_track(
                     valid_until_unix_ms=now_unix_ms + 500,
                     source=observation.source,
                     estimator_to_world_position_offset_m=estimator_offset,
+                    evaluated_target_position_m=target,
+                    navigation_goal_id=target_payload.get("navigation_goal_id"),
+                    tracking_recovery_active=bool(
+                        target_payload.get("tracking_recovery_active", False)
+                    ),
                     command_position_m=Vector3(
                         x=current.x + decision.selected_velocity_mps.x * 0.2,
                         y=current.y + decision.selected_velocity_mps.y * 0.2,
@@ -3770,8 +4287,28 @@ def run_px4_gazebo_track(
         copied.CopyFrom(message)
         preview_worker.submit(copied)
 
+    last_onboard_frame_at = 0.0
+
+    # 功能：
+    #   将真实机载相机帧限频送到独立显示线程，不让 UI 编码阻塞控制编码器。
+    # 输入：
+    #   message：Gazebo 机载 RGB 原始消息。
+    # 输出：
+    #   无：最新帧交给有界预览队列，过密帧直接丢弃。
+    def on_onboard_frame(message: Any) -> None:
+        nonlocal last_onboard_frame_at
+        now = time.monotonic()
+        with frame_lock:
+            if now - last_onboard_frame_at < 0.25:
+                return
+            last_onboard_frame_at = now
+        copied = Image()
+        copied.CopyFrom(message)
+        onboard_preview_worker.submit(copied)
+
     observer_pause_monitor = None
     preview_worker = None
+    onboard_preview_worker = None
     try:
         independent_phase_monitor.open()
         identity_phase_monitor.open()
@@ -3784,10 +4321,15 @@ def run_px4_gazebo_track(
                 run_dir / "live-frame.png", _gazebo_image_png(message)
             )
         )
+        onboard_preview_worker = LatestPreviewWorker(
+            lambda message: _write_bytes_atomic(
+                run_dir / "live-onboard.png", _gazebo_image_png(message))
+        )
         if source_training and depth_safety_supported:
             localization_truth = LocalizationTruthCapture(
                 run_dir, frames=sensor_frames, summary_publisher=_write_json
             )
+            recovery_witness = RecoveryObstacleWitness(run_dir, _write_json)
         if simulation_training_channel is not None:
             training_witness = GazeboOutcomeWitness(
                 publisher=OutcomePublisher(outcome_descriptor_path(simulation_training_channel)),
@@ -3812,10 +4354,15 @@ def run_px4_gazebo_track(
             (run_dir / "depth-safety-worker.log").open("w", encoding="utf-8") as depth_worker_log,
             (run_dir / "render-replica.log").open("w", encoding="utf-8") as render_replica_log,
         ):
-            gazebo_env, graphics_lifetime = prepare_render_process_environment(env)
+            from .simulation_graphics_selection import select_render_process_environment
+
+            selected_graphics_env, graphics_selection = select_render_process_environment(env)
+            gazebo_env, graphics_lifetime = prepare_render_process_environment(
+                selected_graphics_env)
             _write_json(
                 run_dir / "simulation-graphics-request.json",
-                {**graphics_request_evidence(gazebo_env), "driver_lifetime": graphics_lifetime},
+                {**graphics_request_evidence(gazebo_env), "driver_lifetime": graphics_lifetime,
+                 "selection_probe": graphics_selection},
             )
             gazebo = subprocess.Popen(
                 _with_runtime_cpu_affinity(
@@ -3917,7 +4464,7 @@ def run_px4_gazebo_track(
                     gz_binary,
                     world_name=world_name,
                     entity_name=str(payload_spawn["entity_name"]),
-                    sdf_path=Path(payload_spawn["sdf_path"]),
+                    sdf_path=Path(payload_deployment["sdf_path"]),
                     pose=tuple(payload_spawn["pose"]),
                     env=env,
                 )
@@ -3929,6 +4476,7 @@ def run_px4_gazebo_track(
                         "attach_topic": payload_spawn["attach_topic"],
                         "detach_topic": payload_spawn["detach_topic"],
                         "output_topic": payload_spawn["output_topic"],
+                        "placement_runtime": payload_deployment,
                     }
                 )
                 _write_json(run_dir / "payload_spawn.json", payload_evidence)
@@ -3940,6 +4488,7 @@ def run_px4_gazebo_track(
                 sdf_path=vehicle_sdf,
                 pose=(float(model_root[0]), float(model_root[1]), float(model_root[2])),
                 env=env,
+                yaw_rad=initial_sensor_yaw,
             )
             _write_json(run_dir / "vehicle_spawn.json", spawn_evidence)
             if payload_spawn is not None:
@@ -3947,6 +4496,12 @@ def run_px4_gazebo_track(
                     gz_binary,
                     detach_topic=str(payload_spawn["detach_topic"]),
                     output_topic=str(payload_spawn["output_topic"]),
+                    state_service=f"/world/{world_name}/model/{payload_spawn['entity_name']}/attachment_state",
+                    env=env,
+                )
+                placement_service = _require_payload_placement_service(
+                    gz_binary,
+                    service=f"/world/{world_name}/model/{payload_spawn['entity_name']}/place_detached",
                     env=env,
                 )
                 payload_evidence.update(
@@ -3955,6 +4510,7 @@ def run_px4_gazebo_track(
                             "gazebo-harmonic-start-attached-then-verified-preflight-detach"
                         ),
                         "preflight_detach": preflight_detach,
+                        "placement_service_preflight": placement_service,
                     }
                 )
                 _write_json(run_dir / "payload_spawn.json", payload_evidence)
@@ -3970,7 +4526,8 @@ def run_px4_gazebo_track(
                 env["PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256"] = _sha256(payload_preflight_path)
             camera_ready = False
             if live_camera_enabled:
-                camera_sdf, camera_pose = _live_camera_sdf(route_points)
+                camera_sdf, camera_pose = _live_camera_sdf(
+                    route_points, control_priority=local_navigation_control_authority_required)
                 camera_sdf_path = run_dir / "live-camera.sdf"
                 camera_sdf_path.write_text(camera_sdf, encoding="utf-8")
                 try:
@@ -4088,7 +4645,8 @@ def run_px4_gazebo_track(
                     "--vehicle-height",
                     f"{height:.12g}",
                     "--max-speed",
-                    f"{local_max_speed_mps:.12g}",
+                    f"{min(local_max_speed_mps, trial_permit.maximum_speed_mps):.12g}"
+                    if trial_permit else f"{local_max_speed_mps:.12g}",
                     "--max-acceleration",
                     f"{local_max_acceleration_mps2:.12g}",
                     "--required-clearance",
@@ -4097,8 +4655,27 @@ def run_px4_gazebo_track(
                 onboard_rgb_topic = (
                     f"/world/{world_name}/model/{vehicle_name}/link/camera_link/sensor/IMX214/image"
                 )
-                if local_navigation_visual_enabled or multimodal_dataset_root is not None:
+                if native_camera_clock is not None:
+                    onboard_rgb_topic = native_camera_clock["rgb_topic"]
+                    depth_worker_command.extend([
+                        "--native-camera-epoch", native_camera_clock["epoch"],
+                        "--depth-topic", native_camera_clock["depth_topic"]])
+                if native_source_clock_domain is not None:
+                    depth_worker_command.extend([
+                        "--native-source-clock-domain", native_source_clock_domain])
+                if localization_source_channel is not None:
+                    depth_worker_command.extend([
+                        "--localization-source-channel", str(localization_source_channel)])
+                if (local_navigation_visual_enabled or multimodal_dataset_root is not None
+                        or independent_route_control):
                     depth_worker_command.extend(["--rgb-topic", onboard_rgb_topic])
+                    if (simulation_training_channel is not None
+                            and not local_navigation_visual_enabled
+                            and localization_source_channel is not None
+                            and native_camera_clock is not None):
+                        depth_worker_command.append('--recording-only-rgb')
+                    if live_camera_enabled:
+                        gazebo_subscriptions.subscribe(Image, onboard_rgb_topic, on_onboard_frame)
                 if render_replica_deployment is not None:
                     depth_worker_command.extend(
                         [
@@ -4156,6 +4733,10 @@ def run_px4_gazebo_track(
                             str(development_depth_fault_path),
                         ]
                     )
+                if independent_route_control:
+                    depth_worker_command.extend(["--independent-route-control",
+                        "--qualified-route", str(route_path),
+                        "--qualified-clearance", str(clearance_path)])
                 if local_navigation_provider is not None:
                     depth_worker_command.extend(
                         [
@@ -4181,6 +4762,8 @@ def run_px4_gazebo_track(
                     )
                     if local_navigation_control_authority_required:
                         depth_worker_command.append("--require-model-control-authority")
+                    if bounded_hybrid_control:
+                        depth_worker_command.append("--bounded-hybrid-control")
                     if simulation_training_channel is not None:
                         depth_worker_command.extend(
                             ["--simulation-training-channel", str(simulation_training_channel)]
@@ -4206,8 +4789,12 @@ def run_px4_gazebo_track(
                         depth_worker_command.extend(
                             ["--local-policy-simulation-admission", str(admission_path)]
                         )
-                    if development_payload_collection:
-                        depth_worker_command.append("--development-payload-collection")
+                    if local_policy_trial_path is not None:
+                        depth_worker_command.extend(
+                            ["--local-policy-trial", str(local_policy_trial_path)])
+                # 测量权限也适用于无模型权限的显式教师，不能只在模型分支传递。
+                if development_payload_collection:
+                    depth_worker_command.append("--development-payload-collection")
                 if camera_profile is not None:
                     depth_worker_command.extend(
                         [
@@ -4478,8 +5065,11 @@ def run_px4_gazebo_track(
                         "--abort-file",
                         str(abort_file),
                         "--setpoint-rate-hz",
-                        "20",
+                        f"{1 / LOCAL_SETPOINT_PERIOD_SECONDS:g}",
                         *(["--simulation-teacher-control"] if simulation_teacher_control else []),
+                        *(["--independent-route-control"] if independent_route_control else []),
+                        *(["--teacher-payload-checkpoints"]
+                          if simulation_teacher_control and development_payload_collection else []),
                         "--takeoff-timeout-seconds",
                         f"{SIMULATION_TAKEOFF_STABILITY_TIMEOUT_SECONDS:g}",
                         "--takeoff-climb-rate-m-s",
@@ -4509,6 +5099,7 @@ def run_px4_gazebo_track(
                         "--tracking-telemetry-recovery-timeout-seconds",
                         "5",
                         *heading_executor_arguments,
+                        *contract_executor_arguments,
                         *(argument for path in phase_channels
                           for argument in ("--runtime-phase-channel", str(path))),
                         "--log",
@@ -4548,11 +5139,14 @@ def run_px4_gazebo_track(
                                     if local_navigation_control_authority_required
                                     else []
                                 ),
+                                *(["--bounded-hybrid-control", "--hybrid-route-sha256",
+                                    sha256_json(route)] if bounded_hybrid_control else []),
                             ]
                             if local_safety_supported
                             else []
                         ),
                         *(value for pair in executor_options.items() for value in pair),
+                        *local_reference_arguments,
                     ],
                     plan=runtime_cpu_affinity,
                     local_model=False,
@@ -4805,8 +5399,21 @@ def run_px4_gazebo_track(
                     )
                     route_deviation = _distance_to_polyline(center, monitored_route)
                     if minimum < -0.001:
+                        # Before the executor publishes its first phase, the
+                        # independent monitor intentionally reports
+                        # ``phase=None, issue=None``.  That bounded startup
+                        # state is preflight, not an unknown airborne phase.
+                        # Once any phase has existed, loss is either served
+                        # from the short cache or reported as an issue above.
+                        contact_phase = (
+                            phase
+                            if phase is not None
+                            else "PREFLIGHT"
+                            if phase_read["issue"] is None
+                            else None
+                        )
                         if _is_tolerated_landing_contact(
-                            phase=phase,
+                            phase=contact_phase,
                             primitive_name=minimum_name,
                             clearance_m=minimum,
                         ) and _landing_contact_from_above(
@@ -4921,6 +5528,10 @@ def run_px4_gazebo_track(
             if localization_truth
             else None
         )
+        recovery_witness_summary = (
+            _cleanup_runtime_resource(cleanup_errors, recovery_witness.close)
+            if recovery_witness is not None else None
+        )
         # Stop sampling before deliberate process shutdown; otherwise shutdown
         # waits overwrite the finite buffer containing the actual live stall.
         stall_probe_summary = (
@@ -4929,12 +5540,22 @@ def run_px4_gazebo_track(
             else None
         )
         for process in reversed(processes):
-            _cleanup_runtime_resource(cleanup_errors, _terminate, process)
+            if (process is depth_worker_process
+                    and local_navigation_provider == "simulation-training"
+                    and native_terminal_lifecycle is not None
+                    and native_terminal_lifecycle.get("landing_confirmed") is True
+                    and native_terminal_lifecycle.get("safe_to_stop_watchdog") is True):
+                # 只在真正确认落地后等待完整审计 FIFO，避免8秒子预算之外父进程10秒强杀。
+                _cleanup_runtime_resource(cleanup_errors, _terminate, process, grace_seconds=60.0)
+            else:
+                _cleanup_runtime_resource(cleanup_errors, _terminate, process)
         preview_summary = (
             _cleanup_runtime_resource(cleanup_errors, preview_worker.close)
             if preview_worker
             else None
         )
+        if onboard_preview_worker:
+            _cleanup_runtime_resource(cleanup_errors, onboard_preview_worker.close)
         interpreter_summary = (
             _cleanup_runtime_resource(cleanup_errors, observer_pause_monitor.close)
             if observer_pause_monitor
@@ -4982,6 +5603,7 @@ def run_px4_gazebo_track(
                 "subscription_shutdown": subscription_summary,
                 "training_witness": training_witness_summary,
                 "localization_truth": localization_truth_summary,
+                "recovery_obstacle_witness": recovery_witness_summary,
                 "interpreter": interpreter_summary,
                 "preview": preview_summary,
                 "pose_source_intervals": pose_source_intervals.summary(),
@@ -5409,7 +6031,14 @@ def run_px4_gazebo_track(
                 and local_policy_selection.get("qualification_receipt_id")
                 and local_policy_selection.get("package_sha256")
             )
-            if local_policy_simulation_admission_paths:
+            if local_policy_trial_path is not None:
+                gates["local_policy_candidate_trial_recorded"] = bool(
+                    local_policy_selection_recorded and local_policy_selection is not None
+                    and local_policy_selection.get("simulation_only") is True
+                    and local_policy_selection.get("selection_reason")
+                    == "explicit-candidate-simulation-trial"
+                )
+            elif local_policy_simulation_admission_paths:
                 gates["local_policy_simulation_admission_recorded"] = bool(
                     local_policy_selection_recorded
                     and local_policy_selection is not None
@@ -5452,6 +6081,9 @@ def run_px4_gazebo_track(
     evidence = {
         "schema_version": "dronedream.generic-px4-gazebo-run.v1",
         "status": "verified" if all(gates.values()) else "failed",
+        "candidate_simulation_trial": (
+            trial_permit.model_dump(mode="json") if trial_permit else None),
+        "model_qualification_granted": False,
         "world": world_name,
         "vehicle": vehicle_name,
         "gates": gates,
@@ -5596,6 +6228,9 @@ def run_px4_gazebo_track(
             "simulation_learning": {
                 "observations_recorded": record_learning_observations,
                 "deterministic_teacher_control": simulation_teacher_control,
+                "teacher_contract_sha256": (
+                    SIMULATION_TEACHER_CONTRACT_SHA256 if simulation_teacher_control else None
+                ),
                 "model_control_qualification_granted": False,
                 "observation_summary": learning_observation_summary,
             },

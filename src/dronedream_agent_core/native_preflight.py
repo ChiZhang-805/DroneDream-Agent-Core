@@ -8,7 +8,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from .collision import build_tracking_corridor_budget
+from .collision import assess_tracking_corridor_budget, build_tracking_corridor_budget
+from .control_timing import LOCAL_DISPATCH_RESERVE_MS
 from .perception_health_channel import PerceptionHealthReceiver
 from .runtime_control_io import read_runtime_object
 from .sensor_diagnostics import sensor_issue_codes
@@ -48,10 +49,12 @@ class NativePerceptionReadiness:
     first_frame_time: int | None = None
     last_frame_time: int | None = None
     last_health_time: int | None = None
+    last_check_time: int | None = None
     source_observed_at_unix_ms: int | None = None
     tracking_budget: dict[str, float] | None = None
     _worst_variance_m2: float | None = None
     last_issue: str | None = None
+    budget_assessment: dict | None = None
 
     # 功能：
     #   校验连续稳定窗口，稳定时长与单份观测有效期分别管理，不能互相替代。
@@ -72,7 +75,7 @@ class NativePerceptionReadiness:
     #   None：不返回业务数据。
     def _reset_window(self) -> None:
         self.last_sequence, self.independent_frames, self.first_frame_time = -1, 0, None
-        self.last_frame_time = self.last_health_time = None
+        self.last_frame_time = self.last_health_time = self.last_check_time = None
         self.source_observed_at_unix_ms = None
         self._worst_variance_m2 = None
         self.tracking_budget = None
@@ -89,6 +92,7 @@ class NativePerceptionReadiness:
     def observe(self, payload: dict, *, now_unix_ms: int) -> bool:
         self.last_issue = None
         self.tracking_budget = None
+        self.budget_assessment = None
         if (not isinstance(payload, dict) or type(now_unix_ms) is not int
                 or not 0 <= now_unix_ms < 2**63):
             self.last_issue = "NATIVE_PREFLIGHT_CLOCK_OR_PAYLOAD_INVALID"
@@ -140,6 +144,8 @@ class NativePerceptionReadiness:
                 self.last_issue = "NATIVE_ROUTE_LOCALIZATION_EVIDENCE_UNAVAILABLE"
             else:
                 try:
+                    self.budget_assessment = assess_tracking_corridor_budget(
+                        self.minimum_route_clearance_m, variance)
                     # 先验证本次方差，再取窗口最差值；否则 NaN 可能被以前的合法值遮住。
                     self.tracking_budget = build_tracking_corridor_budget(
                         self.minimum_route_clearance_m, localization_covariance_m2=variance)
@@ -156,19 +162,28 @@ class NativePerceptionReadiness:
             sequence < self.last_sequence
             or (self.last_health_time is not None and updated < self.last_health_time)
             or (self.last_frame_time is not None and frame_time < self.last_frame_time)
+            or (self.last_check_time is not None and now_unix_ms < self.last_check_time)
         )
-        interrupted = (self.last_frame_time is not None
-                       and now_unix_ms - self.last_frame_time > NATIVE_PREFLIGHT_MAXIMUM_AGE_MS)
+        distinct = valid and sequence > self.last_sequence and (
+            self.last_frame_time is None or frame_time > self.last_frame_time)
+        # 新帧已单独通过当前年龄检查。连续性应比较相邻独立来源时刻，
+        # 不能把上一帧年龄（来源间隔 + 当前处理延迟）误当成断流时长。
+        # 重发旧序列仍按旧来源到现在计龄；消费端长时间失联也必须重建窗口。
+        interrupted = self.last_frame_time is not None and (
+            (frame_time if distinct else now_unix_ms) - self.last_frame_time
+            > NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
+            or (self.last_check_time is not None
+                and now_unix_ms - self.last_check_time > NATIVE_PREFLIGHT_MAXIMUM_AGE_MS)
+        )
         if not valid or regressed or interrupted:
             if self.last_issue is None:
                 self.last_issue = ("NATIVE_PREFLIGHT_SOURCE_REGRESSED" if regressed
                                    else "NATIVE_PREFLIGHT_SOURCE_INTERRUPTED")
             self._reset_window()
             return False
-        distinct = sequence > self.last_sequence and (
-            self.last_frame_time is None or frame_time > self.last_frame_time)
         self.last_sequence = sequence
         self.last_health_time = updated
+        self.last_check_time = now_unix_ms
         if distinct:
             self.independent_frames += 1
             self.last_frame_time = frame_time
@@ -260,7 +275,17 @@ async def wait_for_native_perception(
                 now = int(time.time() * 1000)
                 diagnostics["checks"] += 1
                 previous_frames = readiness.independent_frames
-                if readiness.observe(payload, now_unix_ms=now):
+                ready = readiness.observe(payload, now_unix_ms=now)
+                if readiness.budget_assessment is not None:
+                    diagnostics["route_budget_assessment"] = readiness.budget_assessment
+                # 连续性成立不等于还有足够交接时间；不能把只剩几毫秒的旧帧交给解锁。
+                # 等下一份更鲜的真实来源，保留原时刻与250毫秒期限，不续期、不降低稳定窗口。
+                if ready and (readiness.source_observed_at_unix_ms
+                              + NATIVE_PREFLIGHT_MAXIMUM_AGE_MS - int(time.time() * 1000)
+                              < LOCAL_DISPATCH_RESERVE_MS):
+                    ready = False
+                    readiness.last_issue = 'NATIVE_PREFLIGHT_WAITING_FOR_DISPATCH_MARGIN'
+                if ready:
                     if time.monotonic() >= deadline:
                         break
                     receipt = {"ready": True, "independent_frames": readiness.independent_frames,
@@ -271,6 +296,7 @@ async def wait_for_native_perception(
                                                     + NATIVE_PREFLIGHT_MAXIMUM_AGE_MS),
                             "elapsed_seconds": time.monotonic() - started,
                             "transport": "run-scoped-datagram" if receiver is not None else "file",
+                            "dispatch_reserve_ms": LOCAL_DISPATCH_RESERVE_MS,
                             "tracking_budget": readiness.tracking_budget,
                             "uncertainty_basis": ("live-native-localization"
                                 if readiness.tracking_budget is not None else "not-assessed"),

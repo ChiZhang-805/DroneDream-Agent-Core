@@ -205,6 +205,8 @@ def test_payload_advisor_uses_history_not_only_the_current_sample(tmp_path: Path
             ["risk_score", "controller_step_scale"],
             {
                 "payload_features": np.asarray([sample.payload_features], dtype=np.float32),
+                "maneuver_features": np.asarray([sample.maneuver_features], dtype=np.float32),
+                "state_history": np.asarray([sample.state_history], dtype=np.float32),
                 "payload_history": np.asarray([sample.payload_history], dtype=np.float32),
                 "history_mask": np.asarray([sample.history_mask], dtype=np.float32),
             },
@@ -369,6 +371,8 @@ def test_trains_and_exports_independent_local_advisors(tmp_path: Path) -> None:
         ["risk_score", "controller_step_scale"],
         {
             "payload_features": np.asarray([risky_payload.payload_features], dtype=np.float32),
+            "maneuver_features": np.asarray([risky_payload.maneuver_features], dtype=np.float32),
+            "state_history": np.asarray([risky_payload.state_history], dtype=np.float32),
             "payload_history": np.asarray([risky_payload.payload_history], dtype=np.float32),
             "history_mask": np.asarray([risky_payload.history_mask], dtype=np.float32),
         },

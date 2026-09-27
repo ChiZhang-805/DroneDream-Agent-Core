@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from clock_fixtures import isolate_monotonic
 
 
 # 功能：
@@ -112,7 +113,7 @@ def test_native_packet_identity_and_ownership():
 #   None：断言阻断条件及独立快照。
 def test_dynamics_errors_and_future_samples_revoke_readiness(monkeypatch):
     base = executor_module()
-    monkeypatch.setattr(base.time, "monotonic", lambda: 100.0)
+    isolate_monotonic(monkeypatch, base, lambda: 100.0)
     client = object.__new__(base.MavsdkOffboardClient)
     client._dynamics_samples = {
         "imu": ({"timestamp_us": 1}, 100.0),
@@ -378,6 +379,45 @@ def test_preflight_payload_receipt_is_run_bound(tmp_path, monkeypatch):
             await client._prime_payload_observer()
         await client.close()
 
+    asyncio.run(scenario())
+
+
+# 功能：慢启动后必须重新测量，不能刷新旧回执冒充新状态；挂载或查询失败仍拒绝。
+# 输入：旧的运行绑定回执、当前查询结果；输出：真实查询覆盖或拒绝断言。
+@pytest.mark.parametrize("detached", [True, False, None])
+def test_slow_startup_queries_current_joint_not_old_receipt(tmp_path, monkeypatch, detached):
+    from dronedream_agent_core import payload_state_query
+    base = executor_module()
+    client = event_client(base, monkeypatch)
+    monkeypatch.setenv("GZ_PARTITION", "snapshot-integrity")
+    monkeypatch.setenv("PX4_GAZEBO_WORLD_NAME", "world-test")
+    path = tmp_path / "preflight.json"
+    old_time = int(base.time.time() * 1000) - 120_000
+    base._write_json_atomic(path, {
+        "schema_version": "dronedream.payload-preflight-observation", "world": "world-test",
+        "partition": "snapshot-integrity", "observed_at_unix_ms": old_time,
+        "observation": {"confirmed": True, "detached": True, "output_topic": "/payload/state",
+                        "state_service": "/world/world-test/model/parcel/attachment_state"}})
+    monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_PATH", str(path))
+    monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256", hashlib.sha256(path.read_bytes()).hexdigest())
+    def read(*args, **kwargs):
+        if detached is None:
+            raise RuntimeError("unknown state")
+        return dict(detached=detached, source="gazebo-ecm-joint-query", iteration=12,
+                    observed_at_unix_ms=int(base.time.time() * 1000))
+    monkeypatch.setattr(payload_state_query, "query_attachment_state", read)
+    async def scenario():
+        try:
+            if detached is True:
+                await client._prime_payload_observer()
+                state = await client.sample_payload_state("/payload/state", 1)
+                assert state["detached"] is True and state["observed_at_unix_ms"] > old_time
+                assert state["observation_kind"] == "request-bound-physics-snapshot"
+            else:
+                with pytest.raises(RuntimeError, match="attached before|unknown state"):
+                    await client._prime_payload_observer()
+        finally:
+            await client.close()
     asyncio.run(scenario())
 
 

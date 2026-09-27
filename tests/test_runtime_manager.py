@@ -20,6 +20,8 @@ from dronedream_agent_app.custom_models import ModelConnection
 from dronedream_agent_app.plugin_manager import PluginManager
 from dronedream_agent_app.runtime_manager import RuntimeBridgeError, RuntimeManager
 from dronedream_agent_app.storage import AppStore
+from dronedream_agent_core.contracts import MapAsset
+from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.local_policy_packages import load_local_policy_package
 from dronedream_agent_core.model_harness.boundary import (
     HarnessInputEnvelope,
@@ -31,7 +33,10 @@ from dronedream_agent_core.model_harness.boundary import (
     selections_from_plugin_snapshot,
 )
 from dronedream_agent_core.model_harness.memory import MemoryOwnerScope
+from dronedream_agent_core.simulation_payload_runtime import CONTRACT as PAYLOAD_CONTRACT
 from dronedream_agent_core.simulation_sensor_runtime import MAGNETIC_SENSOR_CONTRACT_SHA256
+
+pytestmark = pytest.mark.usefixtures("isolated_wsl_host_paths")
 
 _LOCAL_POLICY_ARTIFACT_CONTRACTS = {
     "local-navigation-policy": (
@@ -70,7 +75,22 @@ def _runtime_resources(root: Path) -> Path:
         "native-sensors/libdronedream-magnetometer.so": b"unit-test-native-library",
         "native-sensors/magnetic-field-probe": b"unit-test-native-probe",
         "native-sensors/geo_magnetic_tables.hpp": b"unit-test-native-table",
+        "payload-placement/libdronedream-payload-placement.so": b"\x7fELF\x02\x01unit-test-only",
+        "camera-clock/libdronedream-camera-clock.so": b"unit-test-clock-library",
     }
+    files["camera-clock/camera-clock-runtime.json"] = json.dumps({
+        "schema_version": "dronedream.native-camera-clock.v1",
+        "clock_contract": "exact-native-sim-tick-preupdate-v1",
+        "library_sha256": hashlib.sha256(files["camera-clock/libdronedream-camera-clock.so"]).hexdigest(),
+        "sources": dict.fromkeys(('camera_clock.cpp', 'capture_clock.hpp', 'CMakeLists.txt',
+                                  'capture_clock_test.cpp'), 'a' * 64),
+    }).encode()
+    files["payload-placement/payload-placement-runtime.json"] = json.dumps({
+        "contract": PAYLOAD_CONTRACT,
+        "library_sha256": hashlib.sha256(
+            files["payload-placement/libdronedream-payload-placement.so"]).hexdigest(),
+        "sources": {"CMakeLists.txt": "a" * 64, "PayloadPlacement.cc": "b" * 64},
+    }).encode()
     files["native-sensors/native-sensor-runtime.json"] = json.dumps(
         {
             "wire_contract": "px4-gz-fimex-gauss",
@@ -502,6 +522,36 @@ def test_runtime_unlisted_native_dependency_cannot_inherit_manifest(tmp_path):
 
 
 # 功能：
+#   载荷运行库缺失、字节变化或契约过期时拒绝就绪，不回退旧的位置传送接口。
+# 输入：
+#   tmp_path：隔离资源根；mode：要破坏的文件或语义边界。
+# 输出：
+#   None：由就绪拒绝断言给出结果。
+@pytest.mark.parametrize('mode', ['missing', 'bytes', 'contract'])
+def test_runtime_payload_placement_required(tmp_path, mode):
+    resources = _runtime_resources(tmp_path / 'res')
+    runtime = resources / 'runtime'
+    library = runtime / 'payload-placement/libdronedream-payload-placement.so'
+    if mode == 'missing':
+        library.unlink()
+    elif mode == 'bytes':
+        library.write_bytes(b'changed')
+    else:
+        path = runtime / 'payload-placement/payload-placement-runtime.json'
+        receipt = json.loads(path.read_text())
+        receipt['contract'] = 'old-set-pose'
+        path.write_text(json.dumps(receipt))
+        manifest_path = runtime / 'runtime-manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for entry in manifest['files']:
+            if entry['path'] == 'payload-placement/payload-placement-runtime.json':
+                entry.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                             bytes=path.stat().st_size)
+        manifest_path.write_text(json.dumps(manifest))
+    assert _manager(tmp_path / 'store', resources)._resources_ready() is False
+
+
+# 功能：
 #   验证全部文件大小与哈希一致时，过时的传感器语义契约仍被独立拒绝。
 # 输入：
 #   tmp_path：隔离测试目录。
@@ -648,9 +698,23 @@ def _execution_fixture(tmp_path, monkeypatch):
     repository = Path(__file__).resolve().parents[1]
     bundled_assets = repository / "app" / "desktop" / "src-tauri" / "resources" / "default-assets"
     version_records = AssetImportService(store).seed_bundled_sources(bundled_assets)
-    records_by_kind = {str(record["kind"]): record for record in version_records}
-    map_asset = records_by_kind["map"]
-    vehicle_asset = records_by_kind["vehicle"]
+    bundled_index = json.loads((bundled_assets / "index.json").read_text(encoding="utf-8"))
+    default_packages = {
+        str(entry["kind"]): entry for entry in bundled_index["qualified_pair"]["packages"]
+    }
+    records_by_key = {
+        (str(record["asset_id"]), str(record["content_sha256"])): record
+        for record in version_records
+    }
+    map_asset = records_by_key[
+        (default_packages["map"]["asset_id"], default_packages["map"]["content_sha256"])
+    ]
+    vehicle_asset = records_by_key[
+        (
+            default_packages["vehicle"]["asset_id"],
+            default_packages["vehicle"]["content_sha256"],
+        )
+    ]
     map_selection = resolve_versioned_map(map_asset)
     vehicle_selection = resolve_versioned_vehicle(vehicle_asset)
     pair_qualification = store.qualified_asset_pair(
@@ -667,9 +731,9 @@ def _execution_fixture(tmp_path, monkeypatch):
     store.patch_thread(
         thread_id,
         {
-            "selected_map_id": "dronedream.school-map.v1",
+            "selected_map_id": map_asset["asset_id"],
             "selected_map_content_sha256": map_asset["content_sha256"],
-            "selected_vehicle_id": "dronedream.my-drone.v1",
+            "selected_vehicle_id": vehicle_asset["asset_id"],
             "selected_vehicle_content_sha256": vehicle_asset["content_sha256"],
         },
     )
@@ -788,15 +852,15 @@ def _execution_fixture(tmp_path, monkeypatch):
         lambda: dict(qualification["environment_versions"]),
     )
     monkeypatch.setattr(
-        "dronedream_agent_app.runtime_manager.PreparedMission.model_validate",
-        lambda _payload: SimpleNamespace(
+        "dronedream_agent_app.runtime_manager.PreparedMission.model_validate_json",
+        lambda _payload, **_kwargs: SimpleNamespace(
             schema_version="dronedream.prepared-mission.v4",
             contract=SimpleNamespace(
                 contract_id="mission-layout",
                 conversation_id=thread_id,
-                map_asset_id="dronedream.school-map.v1",
-                vehicle_asset_id="dronedream.my-drone.v1",
-                map_sha256=hashlib.sha256(map_selection.graph.read_bytes()).hexdigest(),
+                map_asset_id=map_asset["asset_id"],
+                vehicle_asset_id=vehicle_asset["asset_id"],
+                map_sha256=sha256_json(MapAsset.model_validate_json(map_selection.graph.read_bytes())),
                 map_semantic_sha256=hashlib.sha256(map_selection.semantic.read_bytes()).hexdigest(),
                 vehicle_sha256=hashlib.sha256(
                     vehicle_selection.vehicle_sdf.read_bytes()
@@ -823,7 +887,10 @@ def _execution_fixture(tmp_path, monkeypatch):
             ],
         ),
     )
-    monkeypatch.setattr("dronedream_agent_app.runtime_manager.sha256_json", lambda _value: "a" * 64)
+    monkeypatch.setattr(
+        "dronedream_agent_app.runtime_manager.sha256_json",
+        lambda value: "a" * 64 if isinstance(value, SimpleNamespace) else sha256_json(value),
+    )
     provider, _plugin_id, capability_id = plugins.model_binding_for_model("gpt-5.4")
     connection = ModelConnection(
         selection_id="gpt-5.4",
@@ -856,6 +923,14 @@ def _execution_fixture(tmp_path, monkeypatch):
 #   None：不返回业务数据。
 def test_execute_keeps_supervisor_files_outside_empty_simulation_run(tmp_path, monkeypatch):
     manager, arguments = _execution_fixture(tmp_path, monkeypatch)
+    # 夹具必须保留两种摘要的真实差异，否则再次误用原始文件摘要也可能通过测试。
+    selected = manager.store.get_thread(arguments["thread_id"])
+    graph_path = resolve_versioned_map(manager.store.get_asset_version(
+        selected["selected_map_id"], selected["selected_map_content_sha256"],
+    )).graph
+    assert hashlib.sha256(graph_path.read_bytes()).hexdigest() != sha256_json(
+        MapAsset.model_validate_json(graph_path.read_bytes())
+    )
 
     class RecordingInput(io.StringIO):
         # 功能：

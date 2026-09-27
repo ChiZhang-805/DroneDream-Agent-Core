@@ -1,0 +1,98 @@
+{
+  "schema_version": "dronedream.bundled-interpretation.v1",
+  "asset_id": "dronedream.my-drone.v1",
+  "content_sha256": "7be3c22e426acf7f0f794a6d8a8de6fb839544fd2362e2ede96b68e98f6419fd",
+  "source_sha256": "418cc59b894f7009f0fa937592f5b26f26eeeb45e0deb52b9fc6367d77b331cb",
+  "prompt_sha256": "069a4baca39347fd083bf6de7eb294013937e91e701740288de79be5879dfc94",
+  "locale": "en-US",
+  "understanding": {
+    "summary": "My Drone (dronedream.my-drone.v1) is a small quadcopter-class UAV with 2.125 kg dry mass and 40 g pickup payload capacity. It operates in base_link_frd coordinate frame with FRD body axes. Maximum takeoff mass is 2.165 kg, leaving 40 g total payload margin. Flight envelope: 1.2 m/s max speed, 0.8 m/s² max acceleration. Range is 413 m including 30% battery reserve; do not deduct reserve again. Body dimensions: 0.43 m height, 0.38 m radius, with collision center offset 0.228 m above model origin in Z. Sensor suite includes IMU, magnetometer, barometer, GPS, odometry, and OAK-D Lite depth camera for visual-inertial navigation and obstacle sensing. No geometry summary available; runtime clearance checks required.",
+    "items": [
+      {
+        "source_id": "body_height_m",
+        "explanation": "Body height 0.43 m defines the vertical extent of the vehicle body for clearance and envelope planning."
+      },
+      {
+        "source_id": "body_radius_m",
+        "explanation": "Body radius 0.38 m defines the horizontal circular cross-section for obstacle clearance and corridor width checks."
+      },
+      {
+        "source_id": "collision_center_offset_model_m",
+        "explanation": "collision_center_offset_model_m belongs to the model geometry convention. The geometry adapter applies it to the collision envelope; do not reinterpret model geometry axes as FRD flight-control axes."
+      },
+      {
+        "source_id": "coordinate_frame",
+        "explanation": "The vehicle contract declares base_link_frd, with forward-right-down body axes. State estimates, sensors, maps and command interfaces may use other declared frames; explicit transforms remain required."
+      },
+      {
+        "source_id": "dry_mass_kg",
+        "explanation": "Configured unloaded vehicle mass is 2.125 kg; used in dynamics and takeoff mass budgeting. Battery inclusion status is as-configured by this product, not separately specified."
+      },
+      {
+        "source_id": "max_acceleration_mps2",
+        "explanation": "Maximum acceleration 0.8 m/s² limits commanded translational acceleration in all axes; trajectory planners must respect this bound."
+      },
+      {
+        "source_id": "max_pickup_payload_kg",
+        "explanation": "Maximum pickup payload is 40 g; this is the cargo capacity for package retrieval missions, separate from the vehicle's own equipment."
+      },
+      {
+        "source_id": "max_speed_mps",
+        "explanation": "Maximum speed 1.2 m/s bounds commanded translational velocity; planners must enforce this in all flight regimes."
+      },
+      {
+        "source_id": "max_takeoff_mass_kg",
+        "explanation": "Maximum takeoff mass 2.165 kg is the hard limit at liftoff; with 2.125 kg dry mass, total payload including pickup must not exceed 40 g."
+      },
+      {
+        "source_id": "qualified_range_m",
+        "explanation": "Qualified range 413 m already includes the 30% battery reserve; mission range budgets must not deduct this reserve a second time."
+      },
+      {
+        "source_id": "reserve_battery_percent",
+        "explanation": "30% reserve is embedded in qualified_range_m; this margin is for safety return and is not available for mission extension."
+      },
+      {
+        "source_id": "sensors",
+        "explanation": "IMU, magnetometer, barometer, GPS, odometry, and OAK-D Lite depth camera provide state estimation, altitude, global position, visual odometry, and depth-based obstacle detection; sensor transforms are separate from the base_link_frd vehicle frame contract."
+      }
+    ],
+    "limitations": [
+      "No 3D geometry summary available; runtime must verify all spatial clearances.",
+      "40 g payload limit strictly bounds package mass; planners must verify pickup item weight.",
+      "1.2 m/s speed and 0.8 m/s² acceleration limits constrain mission timing and maneuvering.",
+      "413 m range includes reserve; actual usable one-way distance depends on route geometry and wind, not to be extended by reinterpreting reserve.",
+      "OAK-D Lite depth sensing range and field of view not specified; obstacle detection limits require runtime confirmation.",
+      "No battery state, current location, or moving obstacle data in static asset; all require runtime sensing."
+    ]
+  },
+  "output_sha256": "0b6910dc0585c551f34a58853cdf48a9cb65c37bd9e6b8a43ef53fe0ba710ff2",
+  "model_call": {
+    "schema_version": "dronedream.model-call.v1",
+    "call_id": "model-bb38c42a3f3e4e04bf34aa18",
+    "role": "context_summarizer",
+    "attempt": 1,
+    "input_sha256": "893aadf31620b3c8662e67a9109b638326cb47ff164bd68a3b01a772a308191f",
+    "output_sha256": "c3cc9dc9996c4fde9fc31f91592701004d157d4e6fe1c768410da445e0350424",
+    "output_schema": "AssetUnderstanding",
+    "provider": "kimi",
+    "model": "kimi-k2.6",
+    "response_id": "chatcmpl-6ab0fb316cd47b3591268d8f",
+    "previous_response_id": null,
+    "input_tokens": 1076,
+    "output_tokens": 834,
+    "latency_ms": 25000,
+    "created_at": "2026-09-21T09:38:55.182525Z",
+    "local_expert_trace": null
+  },
+  "authority": "advisory-only",
+  "review": {
+    "method": "source-grounded-editor-review",
+    "changes": [
+      "Separated model geometry from FRD control frame",
+      "Removed claim that every command and state interface uses FRD"
+    ],
+    "model_draft_output_sha256": "c3cc9dc9996c4fde9fc31f91592701004d157d4e6fe1c768410da445e0350424",
+    "model_draft_preserved": true
+  }
+}

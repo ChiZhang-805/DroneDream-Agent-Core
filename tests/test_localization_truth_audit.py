@@ -170,3 +170,51 @@ def test_large_source_clock_preserves_small_matching_intervals(tmp_path):
     result = compare_geometry_truth(*inputs)
     assert result["frames"][0]["nearest_witness_time_gap_ms"] == pytest.approx(20.000001, abs=1e-9)
     assert result["compared_count"] == 0  # One nanosecond past the 20 ms matching budget.
+    assert result["comparison_rejection_counts"] == {"source_time_gap_exceeded": 1}
+
+
+# 功能：复现图像源时刻正确但到达延迟过大的情况，保留拒绝并明确诊断原因。
+# 输入：tmp_path 中通过正式写入器生成的独立见证与图像样本。
+# 输出：断言不能把接收延迟误报为拟合误差或成功；原始阈值保持不变。
+def test_source_time_match_does_not_hide_receive_delay(tmp_path):
+    inputs = recordings(tmp_path, True)
+    path = inputs[0]
+    row = json.loads(path.read_text())
+    row["scan"]["observed_at_monotonic_seconds"] = 1.2
+    row.pop("record_sha256")
+    row["record_sha256"] = sha256_json(row)
+    path.write_text(json.dumps(row) + "\n")
+    inputs[1]["capture_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    result = compare_geometry_truth(*inputs)
+    assert result["compared_count"] == 0
+    assert result["comparison_rejection_counts"] == {"receive_time_gap_exceeded": 1}
+    assert result["frames"][0]["nearest_witness_time_gap_ms"] == 0
+    assert result["frames"][0]["nearest_witness_receive_gap_ms"] == pytest.approx(210.)
+    assert result["baseline_absolute_error_xyz_m"] is None
+    assert not result["qualification_granted"]
+
+
+# 功能：源钟中点采用确定的较早见证，不能由浮点秒舍入改变接收时延判定。
+# 输入：大源钟下相距四十毫秒的两个真值、恰在中点的图像。
+# 输出：无；仍使用二十毫秒边界和原始接收时间，不放宽任何验收预算。
+@pytest.mark.parametrize("origin", [0, 10**12, 2**63])
+def test_exact_source_midpoint_uses_earlier_witness(tmp_path, origin):
+    inputs = recordings(tmp_path, True)
+    truth_path = inputs[2]
+    rows = [json.loads(line) for line in truth_path.read_text().splitlines()]
+    for index, row in enumerate(rows):
+        row["publisher_simulation_time_ns"] = origin + 1_001_000_000 + index*40_000_000
+        row.pop("record_sha256")
+        row["record_sha256"] = sha256_json(row)
+    truth_path.write_text("".join(json.dumps(row)+"\n" for row in rows))
+    capture_path = inputs[0]
+    row = json.loads(capture_path.read_text())
+    row["source_clock"]["publisher_simulation_time_ns"] = origin + 1_021_000_000
+    row.pop("record_sha256")
+    row["record_sha256"] = sha256_json(row)
+    capture_path.write_text(json.dumps(row)+"\n")
+    inputs[1]["capture_sha256"] = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    result = compare_geometry_truth(*inputs)
+    assert result["frames"][0]["nearest_witness_time_gap_ms"] == 20.
+    expected_gap = abs(row["scan"]["observed_at_monotonic_seconds"]-.99)*1000
+    assert result["frames"][0]["nearest_witness_receive_gap_ms"] == pytest.approx(expected_gap)

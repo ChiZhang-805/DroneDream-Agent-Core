@@ -95,6 +95,28 @@ def test_nonvisual_role_rejects_blank_training_rows(tmp_path, monkeypatch):
 
 
 # 功能：
+#   无视觉网络不能启用视觉屏蔽，错误配置必须在创建输出和优化权重之前被拒绝。
+# 输入：
+#   tmp_path：独立合成数据目录。
+#   monkeypatch：隔离命令行并禁止优化器运行的测试工具。
+# 输出：
+#   None：不返回业务数据。
+def test_nonvisual_role_rejects_visual_regularization(tmp_path, monkeypatch):
+    argv, config_path, _ = arguments(tmp_path, role)
+    config = json.loads(config_path.read_bytes())
+    assert config.get("visual_feature_count", 0) == 0
+    path = tmp_path / "regularization.json"
+    path.write_text('{"visual_block_dropout": 0.35}', encoding="utf-8")
+    optimize = Mock(side_effect=AssertionError("optimizer-must-not-run"))
+    monkeypatch.setattr(sys, "argv", argv + ["--regularization-config", str(path)])
+    monkeypatch.setattr(role, "train_causal_policy", optimize)
+    with pytest.raises(ValueError, match="REQUIRES_VISUAL_INPUT"):
+        role.main()
+    optimize.assert_not_called()
+    assert not (tmp_path / "output").exists()
+
+
+# 功能：
 #   检查整批专家的种子边界，禁止先训练第一名专家再因下一名种子越界中断。
 # 输入：
 #   tmp_path：独立训练配置目录。

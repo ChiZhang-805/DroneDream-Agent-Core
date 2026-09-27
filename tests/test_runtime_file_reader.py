@@ -5,6 +5,60 @@ import pytest
 from dronedream_agent_core.runtime_file_reader import PinnedRuntimeObjectReader
 
 
+# 功能：批量读取不可跨目录、无限扩张或重复读同名项；输入：非法名字；输出：拒绝且不读磁盘。
+@pytest.mark.parametrize("names", [["../secret"], ["/absolute"], ["x\\y"], ["x:y"],
+    [".."], ["."], [""], [1], ["a", "a"], ["a\0b"], [str(i) for i in range(257)]])
+def test_sibling_names_bounded_to_one_directory(tmp_path, names):
+    reader = PinnedRuntimeObjectReader(tmp_path / "a.json", maximum_bytes=1024)
+    try:
+        with pytest.raises(ValueError, match="SIBLINGS_INVALID"):
+            reader.read_siblings(names)
+    finally:
+        reader.close()
+
+
+# 功能：共用目录身份检查不缓存文件内容；输入：真实原子替换；输出：立即得到新数据。
+def test_sibling_batch_reads_current_bytes_and_closes(tmp_path):
+    (tmp_path / "a.json").write_text('{"a":1}')
+    (tmp_path / "b.json").write_text('{"b":2}')
+    reader = PinnedRuntimeObjectReader(tmp_path / "a.json", maximum_bytes=1024)
+    try:
+        assert reader.read_siblings(["a.json", "b.json"]) == [{"a": 1}, {"b": 2}]
+        (tmp_path / "replacement").write_text('{"b":3}')
+        (tmp_path / "replacement").replace(tmp_path / "b.json")
+        assert reader.read_siblings(["a.json", "b.json"])[1] == {"b": 3}
+        (tmp_path / "b.json").write_text('{broken')
+        with pytest.raises(ValueError):
+            reader.read_siblings(["a.json", "b.json"])
+    finally:
+        reader.close()
+    with pytest.raises(ValueError, match="CLOSED"):
+        reader.read_siblings([])
+
+
+# 功能：批量读取中途被换目录时不返回混合状态；输入：真实目录换名；输出：身份校验拒绝。
+@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="POSIX directory handles")
+def test_sibling_batch_rejects_mid_read_directory_replacement(tmp_path, monkeypatch):
+    directory = tmp_path / "receipts"
+    directory.mkdir()
+    (directory / "a.json").write_text('{}')
+    reader = PinnedRuntimeObjectReader(directory / "a.json", maximum_bytes=1024)
+    original = reader._read_pinned_name
+
+    def replace_after_read(name):
+        value = original(name)
+        directory.rename(tmp_path / "preserved")
+        directory.mkdir()
+        return value
+
+    monkeypatch.setattr(reader, "_read_pinned_name", replace_after_read)
+    try:
+        with pytest.raises(ValueError, match="DIRECTORY_CHANGED"):
+            reader.read_siblings(["a.json"])
+    finally:
+        reader.close()
+
+
 # 功能：
 #   验证固定运行文件可以读取原子替换后的新快照，关闭后不能再次使用。
 # 输入：

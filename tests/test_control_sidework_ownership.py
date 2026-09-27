@@ -53,10 +53,20 @@ def test_async_compiler_and_pending_goal_own_their_input_graph(monkeypatch, mode
         assert pending.submitted_at_unix_ms == 1020
         release.set()
         pending.future.result(timeout=2.)
-        assert recorded[0]["goal_position_m"].x == 3.75
-        assert sha256_json(recorded[0]["realtime_feature_snapshot"]) == original_feature_hash
-        assert recorded[0]["strategic_context"]["task"]["phase"] == "TRANSIT"
-        assert recorded[0]["frame"].observed_at_unix_ms == 1000
+        if mode == "normalized-body-velocity":
+            assert recorded[0]["request"] is None
+            snapshot = recorded[0]["prepared_snapshot"]
+            assert snapshot["goal_position_m"]["x"] == 3.75
+            assert sha256_json(snapshot["realtime_feature_snapshot"]) == original_feature_hash
+            assert snapshot["strategic_context"]["task"]["phase"] == "TRANSIT"
+            assert snapshot["control_reference_observed_at_unix_ms"] == 1020
+        else:
+            assert recorded[0]["prepared_snapshot"] is None
+            request = recorded[0]["request"]
+            assert request.goal_position_m.x == 3.75
+            assert sha256_json(request.realtime_feature_snapshot) == original_feature_hash
+            assert request.strategic_context["task"]["phase"] == "TRANSIT"
+            assert request.frame.observed_at_unix_ms == 1000
     finally:
         release.set()
         coordinator.close()

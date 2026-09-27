@@ -186,6 +186,20 @@ def _runtime_evidence_for_completion(runtime: Px4GazeboRunEvidence) -> dict[str,
     artifacts = runtime.artifacts.model_dump(mode="json")
     px4_ulogs = artifacts.pop("px4_ulogs", [])
     visual_frames = artifacts.pop("model_navigation_visual_frames", [])
+    batching = artifacts.get("static_render_batching")
+    if isinstance(batching, dict) and isinstance(batching.get("batches"), list):
+        # 网格来源映射随地图大小增长，不是完成门控。仅摘要这份清单，
+        # 物理不变性、失败原因和资格标记等其余字段仍逐项保留。
+        batches = batching["batches"]
+        batching["batches"] = {
+            "count": len(batches),
+            "collection_sha256": sha256_json(batches),
+            "preview": [
+                {"batch_sha256": sha256_json(item)}
+                for item in batches[:_COMPLETION_COLLECTION_PREVIEW_ITEMS]
+            ],
+            "preview_truncated": len(batches) > _COMPLETION_COLLECTION_PREVIEW_ITEMS,
+        }
     evidence = {
         "schema_version": runtime.schema_version,
         "status": runtime.status,
@@ -1159,6 +1173,8 @@ def execute_prepared_mission(
     local_navigation_context_id: str | None = None,
     local_navigation_visual_enabled: bool = False,
     local_navigation_control_authority_required: bool = False,
+    bounded_hybrid_control: bool = False,
+    independent_route_control: bool = False,
     heading_policy: str = "measured-hold",
     maximum_yaw_rate_deg_s: float = 20.0,
     multimodal_dataset_root: Path | None = None,
@@ -1168,9 +1184,11 @@ def execute_prepared_mission(
     local_policy_package_paths: tuple[Path, ...] = (),
     local_policy_qualification_paths: tuple[Path, ...] = (),
     local_policy_simulation_admission_paths: tuple[Path, ...] = (),
+    local_policy_trial_path: Path | None = None,
     development_payload_collection: bool = False,
     map_graph_path: Path | None = None,
     vehicle_metadata_path: Path | None = None,
+    simulation_map_fusion: bool = False,
 ) -> SimulationWorkflowResult:
     for name, value in {
         "model_timeout_seconds": model_timeout_seconds,
@@ -1191,10 +1209,21 @@ def execute_prepared_mission(
         for value in (
             local_navigation_visual_enabled,
             local_navigation_control_authority_required,
+            bounded_hybrid_control,
             development_payload_collection,
+            simulation_map_fusion,
         )
     ):
         raise ValueError("execution mode flags must be boolean")
+    if bounded_hybrid_control and (not local_navigation_control_authority_required
+            or local_navigation_provider != "local-policy"):
+        raise ValueError("HYBRID_REQUIRES_LOCAL_MODEL_CONTROL")
+    from .route_control_mode import validate_route_control_mode
+    validate_route_control_mode(enabled=independent_route_control,
+        model_required=local_navigation_control_authority_required,
+        provider=local_navigation_provider, hybrid=bounded_hybrid_control,
+        training=development_payload_collection, fusion=simulation_map_fusion,
+        heading=heading_policy)
     check_plain_plugin_path(run_dir)
     if run_dir.exists() and next(run_dir.iterdir(), None) is not None:
         raise FileExistsError("execution directory must be empty")
@@ -1208,6 +1237,8 @@ def execute_prepared_mission(
         clearance,
         track,
     ) = _load_package(prepared_path, confirm_contract_id, semantic_path, vehicle_sdf)
+    # 在创建执行生命周期和消费授权前检查所有运行钩子，避免进入执行后才发现插件无法重建。
+    runtime_extension_registry(prepared)
     runtime_map_graph: MapAsset | None = None
     runtime_map_catalog = None
     runtime_vehicle: VehicleAsset | None = None
@@ -1242,14 +1273,38 @@ def execute_prepared_mission(
     if local_navigation_provider == "local-policy":
         if not local_policy_package_paths or not (
             local_policy_qualification_paths or local_policy_simulation_admission_paths
+            or local_policy_trial_path
         ):
             raise PreparedMissionBindingError("LOCAL_POLICY_ARTIFACTS_REQUIRED")
     elif (
         local_policy_package_paths
         or local_policy_qualification_paths
         or local_policy_simulation_admission_paths
+        or local_policy_trial_path
     ):
         raise PreparedMissionBindingError("LOCAL_POLICY_PROVIDER_REQUIRED")
+    if local_policy_trial_path is not None:
+        from .simulation_trial import validate_trial_configuration
+
+        validate_trial_configuration(
+            local_policy_trial_path, local_policy_package_paths, semantic_path,
+            runtime_vehicle, qualifications=local_policy_qualification_paths,
+            admissions=local_policy_simulation_admission_paths,
+            fallback=local_navigation_fallback_provider,
+            incompatible=development_payload_collection,
+        )
+    fusion_arguments = {}
+    if simulation_map_fusion:
+        if not independent_route_control and (
+                local_policy_trial_path is None or not local_navigation_visual_enabled
+                or not local_navigation_control_authority_required):
+            raise ValueError("MAP_FUSION_REQUIRES_VISUAL_SIMULATION_TRIAL")
+        from .simulation_fusion_runtime import prepare_simulation_fusion
+
+        executor_path, fusion_arguments = prepare_simulation_fusion(
+            run_dir=run_dir, world_sdf=world_sdf, semantic_path=semantic_path,
+            executor_path=executor_path, px4_root=px4_root,
+        )
     if development_payload_collection:
         if local_navigation_provider != "local-policy":
             raise PreparedMissionBindingError(
@@ -1368,30 +1423,7 @@ def execute_prepared_mission(
                 extra_args = [
                     "--base-executor",
                     str(executor_path),
-                    "--checkpoint-contract",
-                    str(checkpoint_path),
-                    "--checkpoint-timeout-seconds",
-                    f"{checkpoint_timeout_seconds:g}",
                 ]
-                if prepared.runtime_actions is not None:
-                    extra_args.extend(["--runtime-action-contract", str(runtime_actions_path)])
-                if runtime_session is not None:
-                    extra_args.extend(
-                        [
-                            "--runtime-control-dir",
-                            str(control_dir),
-                            "--runtime-hold-timeout-seconds",
-                            f"{runtime_hold_timeout_seconds:g}",
-                            "--runtime-decision-timeout-seconds",
-                            f"{runtime_decision_timeout_seconds:g}",
-                            "--runtime-replan-hold-seconds",
-                            f"{runtime_replan_hold_seconds:g}",
-                            "--semantic",
-                            str(semantic_path),
-                            "--vehicle-metadata",
-                            str(vehicle_metadata_path),
-                        ]
-                    )
                 try:
                     raw_runtime = run_px4_gazebo_track(
                         run_dir=run_dir,
@@ -1408,6 +1440,11 @@ def execute_prepared_mission(
                         contract_id=prepared.contract.contract_id,
                         executor_extra_args=extra_args,
                         checkpoint_contract_path=checkpoint_path,
+                        runtime_control_dir=control_dir if runtime_session is not None else None,
+                        checkpoint_timeout_seconds=checkpoint_timeout_seconds,
+                        runtime_hold_timeout_seconds=runtime_hold_timeout_seconds,
+                        runtime_decision_timeout_seconds=runtime_decision_timeout_seconds,
+                        runtime_replan_hold_seconds=runtime_replan_hold_seconds,
                         runtime_action_contract_path=(
                             runtime_actions_path
                             if prepared.runtime_actions is not None
@@ -1429,6 +1466,8 @@ def execute_prepared_mission(
                         local_navigation_control_authority_required=(
                             local_navigation_control_authority_required
                         ),
+                        bounded_hybrid_control=bounded_hybrid_control,
+                        independent_route_control=independent_route_control,
                         heading_policy=heading_policy,
                         maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,
                         multimodal_dataset_root=multimodal_dataset_root,
@@ -1440,6 +1479,7 @@ def execute_prepared_mission(
                         local_policy_simulation_admission_paths=(
                             local_policy_simulation_admission_paths
                         ),
+                        local_policy_trial_path=local_policy_trial_path,
                         development_payload_collection=development_payload_collection,
                         # Payload-corpus flights need the onboard RGB/depth
                         # sensors recorded below, but not the separate 1280x720
@@ -1447,6 +1487,7 @@ def execute_prepared_mission(
                         # render stream keeps the simulator close to real time
                         # without weakening any flight or dataset gate.
                         live_camera_enabled=not development_payload_collection,
+                        **fusion_arguments,
                     )
                 finally:
                     _stop_execution_workers(owned_workers, model_timeout_seconds + 10.0)
@@ -1488,6 +1529,8 @@ def execute_prepared_mission(
                 local_navigation_control_authority_required=(
                     local_navigation_control_authority_required
                 ),
+                bounded_hybrid_control=bounded_hybrid_control,
+                independent_route_control=independent_route_control,
                 heading_policy=heading_policy,
                 maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,
                 multimodal_dataset_root=multimodal_dataset_root,
@@ -1497,8 +1540,10 @@ def execute_prepared_mission(
                 local_policy_package_paths=local_policy_package_paths,
                 local_policy_qualification_paths=local_policy_qualification_paths,
                 local_policy_simulation_admission_paths=(local_policy_simulation_admission_paths),
+                local_policy_trial_path=local_policy_trial_path,
                 development_payload_collection=development_payload_collection,
                 live_camera_enabled=not development_payload_collection,
+                **fusion_arguments,
             )
         runtime = Px4GazeboRunEvidence.model_validate_json(
             encode_json(raw_runtime, limit=_EXECUTION_JSON_MAX_BYTES, node_limit=1_000_000),

@@ -1,0 +1,5 @@
+{
+  "schema_version": "dronedream.control-profile.v1",
+  "mode": "independent-route-v1",
+  "simulation_only": true
+}

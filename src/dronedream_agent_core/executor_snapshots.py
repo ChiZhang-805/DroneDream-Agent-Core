@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextvars import ContextVar
 from pathlib import Path
 
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
 
 from .runtime_control_io import publish_runtime_json
+from .runtime_phase import phase_context
 
 ACTIVE_SNAPSHOTS: ContextVar[ExecutorSnapshots | None] = ContextVar(
     "executor_snapshots", default=None)
@@ -38,6 +40,8 @@ class ExecutorSnapshots:
         self._closed = False
         self._error = None
         self._submitted = self._written = self._coalesced = 0
+        self._phase_events = []
+        self._phase_history_overflow = False
         self._thread = threading.Thread(target=self._run, name="executor-snapshots", daemon=True)
         self._thread.start()
 
@@ -62,6 +66,20 @@ class ExecutorSnapshots:
                 self._coalesced += 1
             self._pending[path] = raw
             if path == self.phase_path:
+                context = phase_context(decode_json(raw, limit=MAXIMUM_BYTES))
+                identity = (context["phase"], context["executor_phase"])
+                previous = self._phase_events[-1] if self._phase_events else None
+                if previous is None or identity != (previous["phase"], previous["executor_phase"]):
+                    # 在磁盘快照合并前保留阶段转换；只记录标签，不存控制量或传感器数据。
+                    # 容量溢出不得停止飞行，但后续数据审核必须拒绝“完整阶段证据”。
+                    if len(self._phase_events) < 8192:
+                        self._phase_events.append(dict(
+                            sequence=len(self._phase_events) + 1,
+                            at_unix_ms=time.time_ns() // 1_000_000,
+                            phase=identity[0], executor_phase=identity[1],
+                        ))
+                    else:
+                        self._phase_history_overflow = True
                 self._phase = raw
             elif path == self.target_path:
                 self._target = raw
@@ -107,8 +125,12 @@ class ExecutorSnapshots:
                         return
                     path = next(iter(self._pending))
                     raw = self._pending.pop(path)
+                # Windows/WSL 的短暂读锁只能在后台有界等待，不能一次冲突
+                # 就永久停掉遥测发布；持续故障仍由原发布器抛出并锁定失败。
                 self._writer(path, decode_json(raw, limit=MAXIMUM_BYTES),
-                             maximum_bytes=MAXIMUM_BYTES)
+                             maximum_bytes=MAXIMUM_BYTES,
+                             replace_timeout_seconds=0.25,
+                             replace_retry_seconds=0.01)
                 with self._condition:
                     self._written += 1
         except BaseException as error:
@@ -134,4 +156,6 @@ class ExecutorSnapshots:
             summary = {"complete": complete, "submitted": self._submitted,
                        "written": self._written, "coalesced": self._coalesced,
                        "issue": self._error, "thread_alive": self._thread.is_alive()}
+            summary["phase_history_complete"] = complete and not self._phase_history_overflow
+            summary["phase_events"] = [dict(event) for event in self._phase_events]
         return summary

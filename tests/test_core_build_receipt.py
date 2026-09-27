@@ -42,6 +42,10 @@ def make_build(root: Path) -> str:
                  "HEAD^{tree}"), "working_tree_dirty": False,
                   "source_repository": "ChiZhang-805/DroneDream-Agent-Core"}
     payloads = {"local-policy/catalog.json": b"{}",
+                "camera-clock/camera-clock-runtime.json": b"{}",
+                "camera-clock/libdronedream-camera-clock.so": b"unit-test-only",
+                "payload-placement/payload-placement-runtime.json": b"{}",
+                "payload-placement/libdronedream-payload-placement.so": b"unit-test-only",
                 "provenance.json": json.dumps(provenance).encode(),
                 "native-sensors/native-sensor-runtime.json": b"{}", "licenses/LICENSE": b"MIT",
                 "licenses/default-assets-licenses.json": b"{}", "local-policy/licenses.json": b"{}"}
@@ -65,7 +69,18 @@ def make_build(root: Path) -> str:
         (assets / f"{kind}.ddpkg").write_bytes(kind.encode())
         packages.append({"kind": kind, "file": f"{kind}.ddpkg",
                          "sha256": hashlib.sha256(kind.encode()).hexdigest()})
-    (assets / "index.json").write_text(json.dumps({"qualified_pair": {"packages": packages}}))
+    qualification_id = "asset-qualification-fixture"
+    qualified_pair = {
+        "schema_version": "dronedream.bundled-qualified-pair.v1",
+        "qualification_id": qualification_id,
+        "packages": packages,
+    }
+    (assets / "index.json").write_text(json.dumps({
+        "schema_version": "dronedream.bundled-assets.v3",
+        "default_qualification_id": qualification_id,
+        "qualified_pair": qualified_pair,
+        "qualified_pairs": [qualified_pair],
+    }))
     return commit
 
 
@@ -167,6 +182,8 @@ def test_build_manifest_rejects_unsafe_paths(tmp_path: Path, relative: str) -> N
 def test_builder_preflights_before_reset_and_supports_components_only() -> None:
     source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
     assert source.index("--check-only --verify-onnx") < source.index("Reset-GeneratedDirectory")
+    assert source.index("--stage-from $PayloadPlacementRuntime --check-only") < source.index("Reset-GeneratedDirectory")
+    assert source.index("--source $CameraClockRuntime --check-only") < source.index("Reset-GeneratedDirectory")
     assert source.index("core_build_receipt.py") < source.index("if ($StageOnly)")
     assert source.index("if ($StageOnly)") < source.index('run build\n')
     assert "ReuseOfficialPluginBundle" not in source

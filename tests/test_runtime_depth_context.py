@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from clock_fixtures import isolate_time
 
 import scripts.runtime_depth_safety_worker as depth_worker
 from dronedream_agent_core.contracts import (
@@ -71,7 +72,8 @@ def test_local_visual_transports_do_not_wait_for_png_disk_write(provider, tmp_pa
     path = tmp_path / "not-yet-written.png"
     depth_worker._persist_navigation_image(
         provider=provider,
-        writer=SimpleNamespace(submit_bytes=lambda *args: submitted.append(args)),
+        writer=SimpleNamespace(available_for_new_path=True,
+                               submit_bytes=lambda *args: submitted.append(args) or True),
         path=path, png=b"real-camera-bytes",
     )
     assert submitted == [(path, b"real-camera-bytes")]
@@ -102,7 +104,7 @@ def test_cloud_visual_transport_preserves_file_backed_contract(tmp_path):
 def test_ready_continuous_result_uses_current_perception_without_waiting(healthy, monkeypatch):
     from test_perception_runtime import _frame
 
-    monkeypatch.setattr(depth_worker.time, "time", lambda: 1.1)
+    isolate_time(monkeypatch, depth_worker, time=lambda: 1.1)
     health = SimpleNamespace(stream_healthy=healthy)
     fusion = SimpleNamespace(health=Mock(return_value=health))
     coordinator = SimpleNamespace(poll=Mock(return_value="ready-receipt"))
@@ -146,6 +148,25 @@ def test_direct_model_uses_semantic_goal_not_teachers_advancing_route_reference(
         omitted_coordinate_candidates=False,
         control_output_mode="legacy-candidate-selection",
     ) == (navigation_goal, navigation_goal, "legacy-candidate-selection")
+
+
+# 功能：
+#   验证异步接纳后使用真正当前时钟查询权限，不沿用旧周期时间，也不把真实倒退时间钳成未来。
+# 输入：
+#   seconds：接纳后的实际时钟，包含正常与倒退情形；monkeypatch：独立时钟替身。
+# 输出：
+#   None：调用参数与下游返回时间完全一致，源目标和原生位置不被替换。
+@pytest.mark.parametrize('seconds', [1.101, 1.099])
+def test_directive_clock_is_sampled_after_poll_without_clamping(seconds, monkeypatch):
+    isolate_time(monkeypatch, depth_worker, time=lambda: seconds)
+    coordinator = SimpleNamespace(controller_directive=Mock(return_value='checked-directive'))
+    position, target = Vector3(x=1., y=2., z=3.), Vector3(x=4., y=5., z=6.)
+    directive, stamp = depth_worker._current_navigation_directive(
+        coordinator, position=position, target=target, goal_id='goal-a', maximum_step_m=.5)
+    assert directive == 'checked-directive' and stamp == int(seconds*1000)
+    coordinator.controller_directive.assert_called_once_with(
+        current_position_m=position, fallback_target_m=target, now_unix_ms=stamp,
+        navigation_goal_id='goal-a', maximum_step_m=.5)
 
 
 # 功能：
@@ -243,6 +264,28 @@ def test_late_model_control_tick_becomes_a_freshly_validated_unhealthy_observati
     assert expired.stream_healthy is False
     assert expired.stream_age_seconds == pytest.approx(1.25)
     assert expired.current_position_m == observation.current_position_m
+
+
+# 功能：
+#   验证新鲜与过期深度均绑定最新控制位姿，不借此刷新旧几何或恢复健康标记。
+# 输入：
+#   healthy：深度融合原有的健康状态。
+# 输出：
+#   None：只有当前运动状态变化，原观测和几何时效保持不变。
+@pytest.mark.parametrize('healthy', [True, False])
+def test_current_control_pose_does_not_refresh_depth(healthy):
+    observation = RuntimeLocalSafetyObservation(sequence=4, observed_at_unix_ms=1000,
+        source='onboard', stream_healthy=healthy, stream_age_seconds=0.2,
+        localization_covariance_m2=0.01, current_position_m=Vector3(x=0, y=0, z=1),
+        current_velocity_mps=Vector3(x=0, y=0, z=0), target_position_m=Vector3(x=2, y=0, z=1))
+    position, velocity = Vector3(x=0.1, y=0, z=1), Vector3(x=0.2, y=0, z=0)
+    result = depth_worker._bind_current_control_state(
+        observation, position=position, velocity=velocity)
+    expected = observation.model_dump()
+    expected.update(current_position_m=position.model_dump(),
+                    current_velocity_mps=velocity.model_dump())
+    assert result.model_dump() == expected
+    assert observation.current_position_m.x == 0
 
 
 # 功能：
@@ -1343,9 +1386,9 @@ def test_dispatch_budget_is_required_and_rejected_call_gets_only_hold_attributio
 
     worker = _load_depth_worker()
     assert worker._model_control_dispatch_unavailable(
-        published_at_unix_ms=1000, authority_deadline_unix_ms=1069)
+        published_at_unix_ms=1000, authority_deadline_unix_ms=1039)
     assert not worker._model_control_dispatch_unavailable(
-        published_at_unix_ms=1000, authority_deadline_unix_ms=1070)
+        published_at_unix_ms=1000, authority_deadline_unix_ms=1040)
     rejected = SimpleNamespace(hold_reason="MODEL_NAVIGATION_DECISION_STALE",
                                model_call_id="new-rejected-call")
     held = SimpleNamespace(model_navigation_authorized=False, model_call_id="old-call")
@@ -1354,3 +1397,21 @@ def test_dispatch_budget_is_required_and_rejected_call_gets_only_hold_attributio
     assert worker._safety_hold_call_id(None, rejected) == "new-rejected-call"
     assert worker._safety_hold_call_id(active, rejected) == "active-call"
     assert worker._safety_hold_call_id(held, None) == "old-call"
+
+
+# 功能：模型悬停可以保留源快照但不能获得运动权限；过期和错调用均不得绑定旧来源。
+# 输入：有效指令及UNIX毫秒边界；输出：仅同一有效调用返回原始摘要。
+def test_hold_snapshot_identity_does_not_grant_motion_authority():
+    from types import SimpleNamespace
+    from test_runtime_commands import _load_depth_worker
+
+    worker = _load_depth_worker()
+    held = SimpleNamespace(model_navigation_authorized=False, model_call_id="held-call",
+        reason="model-requested-hold", valid_until_unix_ms=1100,
+        navigation_snapshot_sha256="b"*64)
+    assert worker._directive_source_snapshot(held, "held-call", 1099) == "b"*64
+    assert not held.model_navigation_authorized
+    assert worker._directive_source_snapshot(held, "held-call", 1100) is None
+    assert worker._directive_source_snapshot(held, "new-rejected-call", 1099) is None
+    held.reason = "model-lease-expired"
+    assert worker._directive_source_snapshot(held, "held-call", 1099) is None

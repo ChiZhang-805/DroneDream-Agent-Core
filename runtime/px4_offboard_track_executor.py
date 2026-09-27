@@ -802,6 +802,14 @@ class OffboardClientProtocol(Protocol):
     async def set_velocity_ned(self, velocity: VelocitySetpoint) -> None: ...
 
     # 功能：
+    #   在外部航向暂缺时请求零平移速度和零偏航角速度，不指定位置或绝对航向。
+    # 输入：
+    #   self：仍有有效机载状态估计的多旋翼连接。
+    # 输出：
+    #   None：传输回执或异常。
+    async def set_braking_hold(self) -> None: ...
+
+    # 功能：
     #   请求飞控切换到已经预发送指令的外部控制模式。
     # 输入：
     #   self：完成指令预发送的客户端。
@@ -1027,6 +1035,7 @@ class MavsdkOffboardClient:
             from mavsdk.offboard import (
                 OffboardError,
                 PositionNedYaw,
+                VelocityBodyYawspeed,
                 VelocityNedYaw,
             )
         except ModuleNotFoundError as exc:
@@ -1035,6 +1044,7 @@ class MavsdkOffboardClient:
         self._system_cls = System
         self._position_cls = PositionNedYaw
         self._velocity_cls = VelocityNedYaw
+        self._body_velocity_cls = VelocityBodyYawspeed
         self._offboard_error_cls = OffboardError
         self._system: Any | None = None
         self._flight_command_requested = False
@@ -1198,7 +1208,22 @@ class MavsdkOffboardClient:
             and timestamp is not None
             and previous[0].get("timestamp_us") == timestamp
         ):
-            if previous[0] != payload:
+            from dronedream_agent_core.hashing import sha256_json
+
+            old_wire = previous[0].get("mavlink_source")
+            new_wire = payload.get("mavlink_source")
+            if source == "odometry" and isinstance(old_wire, dict) and isinstance(new_wire, dict):
+                # 仅接收时刻不属于传感器内容；保留首次接收时刻，不让重传续期。
+                old_receipt = old_wire.get("received_monotonic_seconds")
+                new_receipt = new_wire.get("received_monotonic_seconds")
+                if any(type(value) not in (int, float) or not math.isfinite(value)
+                       or value < 0 for value in (old_receipt, new_receipt)):
+                    raise ValueError("PX4 odometry receipt time is invalid")
+                if new_receipt < old_receipt:
+                    raise RuntimeError("PX4 odometry receipt time regressed")
+                new_wire["received_monotonic_seconds"] = old_receipt
+            # JSON identity also rejects bool/numeric substitution, unlike dict equality.
+            if sha256_json(previous[0]) != sha256_json(payload):
                 raise RuntimeError("PX4 repeated timestamp has conflicting sensor content")
             # A retransmission is not a fresh physical sample.
             return
@@ -1341,15 +1366,57 @@ class MavsdkOffboardClient:
         retry_delay_seconds = 0.1
         while True:
             try:
+                direct = getattr(self._require_system(), "mavlink_direct", None)
+                if callable(getattr(direct, "message", None)):
+                    # The raw protocol retains LOCAL_NED/LOCAL_FRD identifiers
+                    # and reset_counter. MAVSDK's legacy Odometry.MavFrame enum
+                    # can turn wire value 1 (LOCAL_NED) into BODY_NED.
+                    from dronedream_agent_core.native_odometry_source import (
+                        canonical_odometry_fields,
+                        decode_source_odometry,
+                    )
+
+                    async for message in self._guarded_dynamics_stream(
+                        "odometry", direct.message("ODOMETRY")
+                    ):
+                        raw = decode_source_odometry(message.fields_json,
+                            system_id=message.system_id, component_id=message.component_id,
+                            received_monotonic=time.monotonic())
+                        canonical = canonical_odometry_fields(raw)
+                        source_identity = (raw.system_id, raw.component_id)
+                        previous_identity = getattr(self, "_raw_odometry_source_identity", None)
+                        if previous_identity is not None and previous_identity != source_identity:
+                            raise ValueError("NATIVE_ODOMETRY_AUTOPILOT_IDENTITY_CHANGED")
+                        self._raw_odometry_source_identity = source_identity
+                        self._store_dynamics_sample("odometry", {
+                            **canonical,
+                            "mavlink_source": {"system_id": raw.system_id,
+                                "component_id": raw.component_id,
+                                "received_monotonic_seconds": raw.received_monotonic_seconds,
+                                "fields_json": message.fields_json},
+                        })
+                        retry_delay_seconds = .1
+                    continue
                 async for sample in self._guarded_dynamics_stream(
                     "odometry", self._require_system().telemetry.odometry()
                 ):
                     from dronedream_agent_core.localization_evidence import (
                         normalize_native_pose_covariance,
+                        normalize_native_twist_covariance,
                     )
 
                     covariance = normalize_native_pose_covariance(
                         list(sample.pose_covariance.covariance_matrix)
+                    )
+                    twist = getattr(sample, "velocity_covariance", None)
+                    twist_covariance = (
+                        normalize_native_twist_covariance(list(twist.covariance_matrix))
+                        if twist is not None else None
+                    )
+                    velocity = getattr(sample, "velocity_body", None)
+                    velocity_body = (
+                        [_native_number(getattr(velocity, f"{axis}_m_s"), f"odometry_v{axis}")
+                         for axis in "xyz"] if velocity is not None else None
                     )
                     timestamp = sample.time_usec
                     if (
@@ -1365,6 +1432,14 @@ class MavsdkOffboardClient:
                             "timestamp_us": timestamp,
                             "frame_id": frame_id,
                             "pose_covariance_upper_m2": covariance,
+                            # The twist frame is independent of the pose frame.
+                            # Unknown/legacy fields stay explicit; they are not
+                            # zero noise or evidence synchronized to an image.
+                            "child_frame_id": getattr(
+                                getattr(sample, "child_frame_id", None), "name", "UNSUPPORTED"
+                            ),
+                            "twist_covariance_upper": twist_covariance,
+                            "velocity_child_frame_m_s": velocity_body,
                         },
                     )
                     retry_delay_seconds = 0.1
@@ -1676,6 +1751,20 @@ class MavsdkOffboardClient:
         self,
         timeout_seconds: float,
     ) -> TelemetryHealth:
+        return await self._wait_for_native_health(timeout_seconds, require_armable=True)
+
+    # 功能：只检查模式准备需要的本地定位，不授予解锁或任务执行权限。
+    # 输入：timeout_seconds：连接、本地位置和原点遥测的总等待期限。
+    # 输出：保留实际 armable 值的健康回执；后续必须重新核对实际可解锁状态。
+    async def wait_until_local_position_ready(self, timeout_seconds: float) -> TelemetryHealth:
+        return await self._wait_for_native_health(timeout_seconds, require_armable=False)
+
+    # 功能：共享只读健康等待，不发送模式或解锁命令。
+    # 输入：有限期限；require_armable 区分模式准备前后的健康要求。
+    # 输出：当前阶段的真实健康回执；超时保留最后实际状态。
+    async def _wait_for_native_health(
+        self, timeout_seconds: float, *, require_armable: bool,
+    ) -> TelemetryHealth:
         timeout_seconds = _timeout_budget(timeout_seconds)
         system = self._require_system()
         last_health: TelemetryHealth | None = None
@@ -1702,7 +1791,8 @@ class MavsdkOffboardClient:
                     # advisory. PX4 armability is still a required preflight
                     # signal: numeric local coordinates alone are not proof that
                     # the estimator considers them stable enough for flight.
-                    if sample.home_position_ok and sample.local_position_ok and sample.armable:
+                    if (sample.home_position_ok and sample.local_position_ok
+                            and (sample.armable or not require_armable)):
                         return sample
                 raise RuntimeError("PX4 health stream ended before the vehicle became ready")
         except TimeoutError:
@@ -1711,6 +1801,78 @@ class MavsdkOffboardClient:
             raise TimeoutError(
                 f"PX4 readiness timeout after {timeout_seconds}s; last_health: {details}"
             ) from None
+
+    # 功能：用实测原地保持完成本地模式准备，不输入路线、不解锁、不忽略固件健康检查。
+    # 输入：command_attempts：外层失败清理所有权；evidence：准备记录及有限期限。
+    # 输出：原生模式/健康/未解锁确认；成功交接模式，失败尝试退出。
+    async def prepare_local_offboard_mode(
+        self, *, command_attempts, evidence: dict, timeout_seconds: float = 12.,
+    ) -> TelemetryHealth:
+        from dronedream_agent_core.local_offboard_prearm import prepare_local_offboard
+
+        timeout_seconds = _timeout_budget(timeout_seconds)
+        system = self._require_system()
+        started = time.monotonic()
+        async with asyncio.timeout(timeout_seconds):
+            # 模式准备也会新建真实遥测订阅。慢速仿真或重连时首帧不保证两秒内到达；
+            # 与连接预检共用有界等待原则，未知状态始终禁止模式请求，不能复用旧 False。
+            disarmed_budget = min(30., timeout_seconds)
+            evidence['disarmed_timeout_seconds'] = disarmed_budget
+            evidence['disarmed_check'] = await self.verify_disarmed_before_preflight(
+                timeout_seconds=disarmed_budget)
+            await self.wait_until_local_position_ready(timeout_seconds)
+            evidence['offboard_loss_failsafe'] = await configure_offboard_loss_failsafe(self)
+            yaw = await self.sample_heading_deg(2.)
+            pose = await self.sample_position_velocity_ned(2.)
+            if (type(pose.received_at_unix_ms) is not int
+                    or not 0 <= time.time()*1000 - pose.received_at_unix_ms <= 250):
+                raise RuntimeError('LOCAL_PREARM_MEASURED_HOLD_STALE')
+            hold = Setpoint(north_m=pose.north_m, east_m=pose.east_m,
+                            down_m=pose.down_m, yaw_deg=yaw)
+            _validate_control_setpoint(hold)
+            evidence['measured_hold'] = dict(vars(hold))
+            handshake = evidence['handshake'] = {}
+
+            # 功能：读原生解锁状态；输入：当前遥测；输出：未经真假转换的固件值。
+            async def read_armed():
+                stream = system.telemetry.armed()
+                try:
+                    return await anext(stream)
+                finally:
+                    await stream.aclose()
+
+            # 功能：只发送实测原地保持；输入：已验证的保持值；输出：发送回执。
+            async def publish_hold():
+                await self.set_position_ned(hold)
+
+            # 功能：发送前登记模式所有权，丢失回执也有退出依据；不请求解锁。
+            # 输入：当前客户端和外层命令记录；输出：模式回执。
+            async def enter_mode():
+                command_attempts.offboard_requested = True
+                await self.start_offboard()
+                command_attempts.offboard_acknowledged = True
+
+            # 功能：核对原生模式后重新取得健康，不以命令成功代替固件准入。
+            # 输入：实际模式和健康流；输出：健康回执，受外层总期限约束。
+            async def verify():
+                stream = system.telemetry.flight_mode()
+                try:
+                    async for mode in stream:
+                        if getattr(mode, 'name', None) == 'OFFBOARD':
+                            break
+                    else:
+                        raise RuntimeError('LOCAL_PREARM_MODE_STREAM_ENDED')
+                finally:
+                    await stream.aclose()
+                return await self._wait_for_native_health(timeout_seconds, require_armable=True)
+
+            remaining = timeout_seconds - (time.monotonic() - started)
+            if remaining < 3.:
+                raise TimeoutError('LOCAL_PREARM_PREPARATION_DEADLINE')
+            return await prepare_local_offboard(read_armed=read_armed,
+                publish_hold=publish_hold, enter_mode=enter_mode, leave_mode=self.stop_offboard,
+                verify_mode_and_health=verify, evidence=handshake,
+                timeout_seconds=min(60., remaining))
 
     # 功能：
     #   有界等待飞控解锁回执；回执丢失时不能推断飞控没有解锁。
@@ -1812,6 +1974,17 @@ class MavsdkOffboardClient:
                 velocity.down_m_s,
                 velocity.yaw_deg,
             )
+        )
+
+    # 功能：
+    #   发送只能取零值的机体系刹停请求，第四个零是偏航角速度而非朝北的航向角。
+    # 输入：
+    #   self：支持速度控制且机载估计仍有效的多旋翼连接。
+    # 输出：
+    #   None：传输回执，不代表已经停稳。
+    async def set_braking_hold(self) -> None:
+        await self._require_system().offboard.set_velocity_body(
+            self._body_velocity_cls(0.0, 0.0, 0.0, 0.0)
         )
 
     # 功能：
@@ -2040,7 +2213,7 @@ class MavsdkOffboardClient:
         timeout_seconds: float = 10.0,
         gazebo_node: Any | None = None,
     ) -> dict[str, GazeboModelPose]:
-        from dronedream_agent_core.gazebo_subscriptions import GazeboSubscriptions
+        from dronedream_agent_core.gazebo_pose_sampling import FreshGazeboPoseStream
 
         timeout_seconds = _timeout_budget(timeout_seconds)
         _validate_gazebo_entity(world_name)
@@ -2049,76 +2222,57 @@ class MavsdkOffboardClient:
         for model_name in model_names:
             _validate_gazebo_entity(model_name)
         GazeboNode, _, Pose_V, _, _, _ = _gazebo_transport_bindings()
-        node = gazebo_node or GazeboNode()
         topic = f"/world/{world_name}/dynamic_pose/info"
-        loop = asyncio.get_running_loop()
-        result: asyncio.Future[dict[str, GazeboModelPose]] = loop.create_future()
         required = set(model_names)
 
         # 功能：
-        #   在所属事件循环完成采样，迟到回调不能覆写已有结果。
-        # 输入：
-        #   poses：完整同帧位姿集合或解析异常。
-        # 输出：
-        #   None：一次性完成外层 result。
-        def resolve(poses: dict[str, GazeboModelPose] | Exception) -> None:
-            if not result.done():
-                if isinstance(poses, Exception):
-                    result.set_exception(poses)
-                else:
-                    result.set_result(poses)
-
-        # 功能：
-        #   在传输线程校验实体数量、重复身份和数值，再安全投递到事件循环。
+        #   校验同一帧的实体数量、重复身份和有限位姿，不跨帧拼接缺失实体。
         # 输入：
         #   message：原生 Pose_V 消息。
         # 输出：
-        #   None：完整帧触发结果，缺失实体继续等待，损坏数据触发失败。
-        def on_pose(message: Any) -> None:
+        #   poses：完整实体集合；缺失时为 None。
+        def decode(message: Any) -> dict[str, GazeboModelPose] | None:
             poses: dict[str, GazeboModelPose] = {}
-            try:
-                if len(message.pose) > 100_000:
-                    raise RuntimeError("Gazebo pose vector exceeds the entity budget")
-                for raw_pose in message.pose:
-                    if raw_pose.name not in required:
-                        continue
-                    if raw_pose.name in poses:
-                        raise RuntimeError("Gazebo pose vector repeats a selected model")
-                    poses[raw_pose.name] = GazeboModelPose(
-                        raw_pose.position.x,
-                        raw_pose.position.y,
-                        raw_pose.position.z,
-                        raw_pose.orientation.x,
-                        raw_pose.orientation.y,
-                        raw_pose.orientation.z,
-                        raw_pose.orientation.w,
-                    )
-                if required.issubset(poses) and not loop.is_closed():
-                    loop.call_soon_threadsafe(resolve, poses)
-            except Exception as error:
-                if not loop.is_closed():
-                    with contextlib.suppress(RuntimeError):
-                        loop.call_soon_threadsafe(resolve, error)
+            if len(message.pose) > 100_000:
+                raise RuntimeError("Gazebo pose vector exceeds the entity budget")
+            for raw_pose in message.pose:
+                if raw_pose.name not in required:
+                    continue
+                if raw_pose.name in poses:
+                    raise RuntimeError("Gazebo pose vector repeats a selected model")
+                poses[raw_pose.name] = GazeboModelPose(
+                    raw_pose.position.x, raw_pose.position.y, raw_pose.position.z,
+                    raw_pose.orientation.x, raw_pose.orientation.y,
+                    raw_pose.orientation.z, raw_pose.orientation.w,
+                )
+            return poses if required.issubset(poses) else None
 
-        subscriptions = GazeboSubscriptions(node)
+        # 同一次载荷操作复用订阅，消除读回后退订阻塞造成的自由落体窗口。
+        # sample 始终等待新消息，复用连接不等于复用旧观测。
+        streams = getattr(self, "_payload_pose_streams", None)
+        key = (id(gazebo_node), world_name, model_names)
+        stream = streams.get(key) if streams is not None else None
+        if stream is None:
+            stream = FreshGazeboPoseStream(gazebo_node or GazeboNode(), Pose_V, topic, decode)
+            if streams is not None:
+                streams[key] = stream
         try:
-            subscriptions.subscribe(Pose_V, topic, on_pose)
-            poses = await asyncio.wait_for(result, timeout=timeout_seconds)
+            poses = await stream.sample(timeout_seconds)
             return poses
         except TimeoutError as error:
             raise RuntimeError(
                 "Gazebo dynamic-pose discovery timed out for models: " + ", ".join(model_names)
             ) from error
         finally:
-            primary = sys.exception()
-            result.cancel()
-            summary = subscriptions.close()
-            if summary["complete"] is not True:
-                message = "Gazebo dynamic-pose subscription cleanup failed"
-                if primary is not None:
-                    primary.add_note(message)
-                else:
-                    raise RuntimeError(message)
+            if streams is None:
+                primary = sys.exception()
+                summary = stream.close()
+                if summary["complete"] is not True:
+                    message = "Gazebo dynamic-pose subscription cleanup failed"
+                    if primary is not None:
+                        primary.add_note(message)
+                    else:
+                        raise RuntimeError(message)
 
     # 功能：
     #   为显式模拟工作人员挂载提交载荷位姿；此接口不能当作无人机运动控制。
@@ -2126,7 +2280,7 @@ class MavsdkOffboardClient:
     #   world_name、model_name：当前世界及待移动的已分离载荷名称。
     #   pose：有限位置和单位旋转。
     #   timeout_seconds：原生服务请求预算。
-    #   gazebo_node：可复用节点。
+    #   gazebo_node：保留调用接口；同步服务在隔离进程中使用独立节点。
     # 输出：
     #   result：服务接受回执；实际位置必须另行读回。
     async def _set_named_gazebo_pose(
@@ -2142,47 +2296,26 @@ class MavsdkOffboardClient:
         _validate_gazebo_entity(world_name)
         _validate_gazebo_entity(model_name)
         pose.__post_init__()
-        GazeboNode, Pose, _, Boolean, _, _ = _gazebo_transport_bindings()
-        node = gazebo_node or GazeboNode()
-        request = Pose()
-        request.name = model_name
-        request.position.x = pose.x
-        request.position.y = pose.y
-        request.position.z = pose.z
-        request.orientation.x = pose.qx
-        request.orientation.y = pose.qy
-        request.orientation.z = pose.qz
-        request.orientation.w = pose.qw
-        service_name = f"/world/{world_name}/set_pose"
-        # Python 取消不能杀掉正在执行的原生请求；持有线程任务并等原生超时结束后再退出。
-        operation = asyncio.create_task(
-            asyncio.to_thread(
-                node.request,
-                service_name,
-                request,
-                Pose,
-                Boolean,
-                max(1, int(timeout_seconds * 1_000)),
-            )
-        )
+        from dronedream_agent_core.gazebo_payload_service import PayloadPoseService
+
+        service_name = f"/world/{world_name}/model/{model_name}/place_detached"
+        # Gazebo 13 的 request_raw 持有 GIL，线程不能隔离其阻塞；独立进程不占控制解释器。
+        # 服务仅在一次挂载动作内复用，禁止在关节发布以后再执行位姿对齐。
+        service = getattr(self, "_payload_pose_service", None)
+        owned_by_action = getattr(self, "_payload_command_active", False)
+        if service is None:
+            service = PayloadPoseService()
+            if owned_by_action:
+                self._payload_pose_service = service
         try:
-            requested, response = await asyncio.wait_for(
-                asyncio.shield(operation),
-                timeout=timeout_seconds + 1.0,
+            response = await service.set_pose(
+                world=world_name, model=model_name,
+                pose=[pose.x, pose.y, pose.z, pose.qx, pose.qy, pose.qz, pose.qw],
+                timeout_ms=max(1, int(timeout_seconds * 1_000)),
             )
-        except TimeoutError as error:
-            raise RuntimeError(
-                f"Gazebo set-pose service timed out for model: {model_name}"
-            ) from error
         finally:
-            primary = sys.exception()
-            try:
-                await asyncio.shield(operation)
-            except (Exception, asyncio.CancelledError):
-                if primary is None:
-                    raise
-        if requested is not True or response.data is not True:
-            raise RuntimeError(f"Gazebo payload mount-pose command failed: {response}")
+            if not owned_by_action:
+                await service.close()
         result = {
             "service": service_name,
             "request_model": model_name,
@@ -2244,9 +2377,15 @@ class MavsdkOffboardClient:
         # repeatedly bind the target to the newest vehicle pose and require an
         # independent dynamic-pose readback inside the declared tolerance.
         maximum_alignment_attempts = 6
+        # 挂接容差属于最终关节位置，不应在发命令之前全部消耗。
+        # 预对齐仅用四分之一预算，为真实仿真步内的重力和微小姿态变化留余量。
+        # 这只收紧前置条件；最终容差及原生关节回读均保持不变。
+        pre_attachment_error_limit_m = maximum_error_m * 0.25
         alignment_attempts_completed = 0
+        alignment_diagnostics = []
         for alignment_attempt in range(1, maximum_alignment_attempts + 1):
             alignment_attempts_completed = alignment_attempt
+            alignment_started = time.monotonic()
             sampled_poses = await self._sample_named_gazebo_poses(
                 world_name=world_name,
                 model_names=(vehicle_model_name, payload_model_name),
@@ -2269,6 +2408,7 @@ class MavsdkOffboardClient:
                 pose=target,
                 gazebo_node=gazebo_node,
             )
+            service_completed = time.monotonic()
             readback = await self._sample_named_gazebo_poses(
                 world_name=world_name,
                 model_names=(vehicle_model_name, payload_model_name),
@@ -2290,13 +2430,29 @@ class MavsdkOffboardClient:
                     observed_payload_pose.z,
                 ),
             )
-            if alignment_error_m <= maximum_error_m:
+            # 失败也保留每次真实读回的分量与耗时，区分载荷下落、车辆移动和服务排队。
+            # 只记录观测，不通过回推坐标、外推位姿或放宽容差制造挂载成功。
+            alignment_diagnostics.append({
+                "attempt": alignment_attempt,
+                "elapsed_ms": (time.monotonic() - alignment_started) * 1000.0,
+                "readback_after_service_ms": (time.monotonic() - service_completed) * 1000.0,
+                "target_position_m": [target.x, target.y, target.z],
+                "expected_position_m": list(expected_readback_position),
+                "observed_position_m": [
+                    observed_payload_pose.x, observed_payload_pose.y, observed_payload_pose.z],
+                "error_m": alignment_error_m,
+            })
+            if alignment_error_m <= pre_attachment_error_limit_m:
                 break
         else:
+            # 动作回执的问题码有长度上限；完整诊断保留在执行器日志，不塞进被截断的问题码。
+            print("payload alignment rejected: " + json.dumps(
+                alignment_diagnostics, allow_nan=False, separators=(",", ":")),
+                file=sys.stderr, flush=True)
             raise RuntimeError(
                 "Gazebo payload did not reach the declared mount before attachment: "
-                f"observed={alignment_error_m:.6f}m limit={maximum_error_m:.6f}m "
-                f"attempts={maximum_alignment_attempts}"
+                f"observed={alignment_error_m:.6f}m limit={pre_attachment_error_limit_m:.6f}m "
+                f"attempts={maximum_alignment_attempts}; see executor alignment diagnostics"
             )
         return {
             "binding_sha256": str(parameters["payload_mount_binding_sha256"]),
@@ -2319,6 +2475,7 @@ class MavsdkOffboardClient:
             },
             "set_pose": service,
             "set_pose_attempts": alignment_attempts_completed,
+            "alignment_attempt_diagnostics": alignment_diagnostics,
             "pre_attachment_pose_readback": {
                 "payload_position_world_enu_m": [
                     observed_payload_pose.x,
@@ -2327,6 +2484,7 @@ class MavsdkOffboardClient:
                 ],
                 "alignment_error_m": alignment_error_m,
                 "maximum_alignment_error_m": maximum_error_m,
+                "pre_attachment_error_limit_m": pre_attachment_error_limit_m,
                 "accepted": True,
             },
         }
@@ -2446,7 +2604,7 @@ class MavsdkOffboardClient:
             or not receipt.get("partition")
             or not receipt.get("world")
             or type(receipt.get("observed_at_unix_ms")) is not int
-            or not 0 <= now - receipt["observed_at_unix_ms"] <= 60_000
+            or now < receipt["observed_at_unix_ms"]
         ):
             raise RuntimeError(
                 "Gazebo payload preflight receipt is stale or belongs to another runtime"
@@ -2458,7 +2616,21 @@ class MavsdkOffboardClient:
             or observation.get("detached") is not True
         ):
             raise RuntimeError("Gazebo payload preflight detached state is not confirmed")
+        if (not observation.get("state_service")
+                and now - receipt["observed_at_unix_ms"] > 60_000):
+            raise RuntimeError("Gazebo payload preflight receipt is stale or belongs to another runtime")
         observer = self._ensure_payload_observer(observation.get("output_topic"))
+        if observation.get("state_service"):
+            service = observation["state_service"]
+            expected_prefix = f"/world/{receipt['world']}/model/"
+            if (not isinstance(service, str) or not service.startswith(expected_prefix)
+                    or re.fullmatch(r"/world/[^/\s]+/model/[^/\s]+/attachment_state", service) is None):
+                raise RuntimeError("Gazebo payload state service belongs to another runtime")
+            observer["state_service"] = service
+            # 旧回执只用于绑定查询入口；启动耗时较长时重新读真实状态，不能给旧事件刷新时间。
+            snapshot = await self._refresh_payload_snapshot(observer)
+            if snapshot["detached"] is not True:
+                raise RuntimeError("Gazebo payload is attached before PX4 arming")
         # 初态只衔接尚无事件的订阅；任何已经收到的新事件优先，不能被旧回执覆盖。
         if observer["sequence"] == 0:
             observer.update(
@@ -2466,6 +2638,19 @@ class MavsdkOffboardClient:
                 source="verified-preflight-detach-readback",
                 observed_at_unix_ms=receipt["observed_at_unix_ms"],
             )
+
+    # 功能：异步查询当前原生关节，补偿事件丢失；不让同步 Gazebo 绑定阻塞控制循环。
+    # 输入：observer：由本次起飞回执绑定的订阅；输出：新的实际快照，未知即抛错。
+    async def _refresh_payload_snapshot(self, observer: dict[str, Any]) -> dict[str, Any]:
+        from dronedream_agent_core.payload_state_query import query_attachment_state
+        snapshot = await asyncio.to_thread(query_attachment_state, "gz",
+            service=observer["state_service"], env=dict(os.environ), timeout=2.5)
+        if not observer["alive"]:
+            raise RuntimeError("Gazebo payload observer closed during query")
+        observer.update(detached=snapshot["detached"], error=None,
+                        observed_at_unix_ms=snapshot["observed_at_unix_ms"], source=snapshot["source"])
+        observer["sequence"] += 1
+        return snapshot
 
     # 功能：
     #   串行执行载荷动作，拒绝并发挂载与分离，并在所有退出路径释放动作所有权。
@@ -2480,11 +2665,35 @@ class MavsdkOffboardClient:
         if getattr(self, "_payload_command_active", False):
             raise RuntimeError("Gazebo payload command is already in progress")
         self._payload_command_active = True
+        self._payload_pose_streams = {}
+        self._payload_pose_service = None
         try:
             result = await self._execute_payload_command(parameters)
             return result
         finally:
+            primary = sys.exception()
+            failures = []
+            service = self._payload_pose_service
+            self._payload_pose_service = None
+            if service is not None:
+                try:
+                    await service.close()
+                except Exception as error:
+                    failures.append(str(error))
+            for stream in self._payload_pose_streams.values():
+                try:
+                    if stream.close()["complete"] is not True:
+                        failures.append("incomplete pose subscription shutdown")
+                except Exception as error:
+                    failures.append(str(error))
+            self._payload_pose_streams = None
             self._payload_command_active = False
+            if failures:
+                message = "Gazebo payload pose cleanup failed: " + "; ".join(failures)
+                if primary is not None:
+                    primary.add_note(message)
+                else:
+                    raise RuntimeError(message)
 
     # 功能：
     #   发送已授权的执行器或关节动作；位置贴合不能替代真实关节事件，发布后不再搬动载荷。
@@ -2558,6 +2767,8 @@ class MavsdkOffboardClient:
         publish_attempts = 0
         try:
             if operation == "attach":
+                if observer.get("state_service"):
+                    await self._refresh_payload_snapshot(observer)
                 if observer["detached"] is not True or observer["error"] is not None:
                     raise RuntimeError("payload must be observed detached before mount alignment")
                 alignment = await asyncio.wait_for(
@@ -2584,6 +2795,14 @@ class MavsdkOffboardClient:
                 if remaining <= 0.0:
                     break
                 await asyncio.sleep(min(GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS, remaining))
+                if observer.get("state_service"):
+                    try:
+                        await asyncio.wait_for(self._refresh_payload_snapshot(observer),
+                            timeout=max(0.001, state_deadline - loop.time()))
+                    except (RuntimeError, subprocess.TimeoutExpired):
+                        # 状态未知不复用旧事件，也不在发布挂载后再次搬动物品。
+                        observer["detached"] = None
+                        continue
                 if observer["error"] is not None:
                     raise RuntimeError("Gazebo payload state event is invalid")
                 if (
@@ -2603,7 +2822,7 @@ class MavsdkOffboardClient:
                 f"{publish_attempts} bounded command publications within "
                 f"{GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS:g} seconds: "
                 f"{output_topic}; alignment_attempts={alignment_attempts}; "
-                "post_publication_realignments=0; native joint event required"
+                "post_publication_realignments=0; native joint readback required"
             ) from error
         if observed_detached != expected_detached:
             raise RuntimeError(
@@ -2619,7 +2838,7 @@ class MavsdkOffboardClient:
             "command_publish_attempts": publish_attempts,
             "state_transition_timeout_seconds": (GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS),
             "post_publication_realignments": 0,
-            "state_readback_source": "gazebo-detachable-joint-event",
+            "state_readback_source": observer.get("source", "gazebo-detachable-joint-event"),
             "observed_at_unix_ms": observer["observed_at_unix_ms"],
             "raw_state": f'data: "{"detached" if observed_detached else "attached"}"',
         }
@@ -2653,7 +2872,12 @@ class MavsdkOffboardClient:
             if alignment_error_m > maximum_error_m:
                 raise RuntimeError(
                     "Gazebo payload attachment pose exceeded the qualified mount tolerance: "
-                    f"observed={alignment_error_m:.6f}m limit={maximum_error_m:.6f}m"
+                    f"observed={alignment_error_m:.6f}m limit={maximum_error_m:.6f}m; "
+                    "pre_error="
+                    f"{alignment.get('pre_attachment_pose_readback', {}).get('alignment_error_m')}"
+                    "; "
+                    f"expected={expected_position}; "
+                    f"actual={(payload_pose.x, payload_pose.y, payload_pose.z)}"
                 )
             alignment["attachment_pose_readback"] = {
                 "payload_position_world_enu_m": [
@@ -2681,6 +2905,10 @@ class MavsdkOffboardClient:
     ) -> dict[str, Any]:
         deadline = time.monotonic() + _timeout_budget(timeout_seconds)
         observer = self._ensure_payload_observer(output_topic)
+        snapshot = None
+        if observer.get("state_service"):
+            snapshot = await asyncio.wait_for(self._refresh_payload_snapshot(observer),
+                                             timeout=timeout_seconds)
         while observer["detached"] is None:
             if observer["error"] is not None or time.monotonic() >= deadline:
                 raise RuntimeError("Gazebo payload state is unknown or invalid")
@@ -2700,7 +2928,8 @@ class MavsdkOffboardClient:
             "state_source": observer["source"],
             "observed_at_unix_ms": observer["observed_at_unix_ms"],
             "state_age_ms": age,
-            "observation_kind": "last-confirmed-event-with-live-subscription",
+            "observation_kind": ("request-bound-physics-snapshot" if snapshot is not None
+                                 else "last-confirmed-event-with-live-subscription"),
         }
         return result
 
@@ -2963,6 +3192,7 @@ class FakeOffboardClient:
         self.offboard_started = False
         self.setpoints: list[Setpoint] = []
         self.velocity_setpoints: list[VelocitySetpoint] = []
+        self.braking_hold_count = 0
         self.landed = False
         self.closed = False
         self.payload_detached = True
@@ -3105,6 +3335,15 @@ class FakeOffboardClient:
     #   None：仅追加速度命令列表。
     async def set_velocity_ned(self, velocity: VelocitySetpoint) -> None:
         self.velocity_setpoints.append(velocity)
+
+    # 功能：
+    #   单独记录测试零角速度刹停，不伪装为带绝对航向的 NED 速度指令。
+    # 输入：
+    #   self：纯内存测试替身。
+    # 输出：
+    #   None：刹停调用计数增加。
+    async def set_braking_hold(self) -> None:
+        self.braking_hold_count += 1
 
     # 功能：
     #   记录测试进入外部控制模式。
@@ -5105,6 +5344,7 @@ async def connect_preflight_with_recovery(
     log_path: Path,
     evidence: dict[str, Any],
     maximum_attempts: int = MAVSDK_PREFLIGHT_MAX_ATTEMPTS,
+    local_mode_preparation_only: bool = False,
 ) -> TelemetryHealth:
     """Connect and pass readiness with bounded, pre-arm-only recovery attempts.
 
@@ -5113,11 +5353,22 @@ async def connect_preflight_with_recovery(
     required-rate failure, closes the owned server, and records every attempt. Estimator
     readiness failures, safety aborts, and every in-flight transport failure
     remain fail-closed and are never retried here.
+
+    local_mode_preparation_only returns local-position readiness, NOT arming
+    permission. Its caller must subsequently own explicit mode preparation and
+    obtain current firmware armability before any arm request. Recovery must
+    have finished before that mode request; it cannot contain mode side effects.
     """
 
     readiness_timeout_seconds = _timeout_budget(readiness_timeout_seconds)
     if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 3:
         raise ValueError("MAVSDK preflight attempts must be an integer within [1, 3]")
+    if type(local_mode_preparation_only) is not bool:
+        raise ValueError('PREFLIGHT_LOCAL_PREPARATION_FLAG_INVALID')
+    readiness_reader = (getattr(client, 'wait_until_local_position_ready', None)
+                        if local_mode_preparation_only else client.wait_until_ready)
+    if not callable(readiness_reader):
+        raise RuntimeError('PREFLIGHT_LOCAL_PREPARATION_UNSUPPORTED')
 
     from dronedream_agent_core.preflight_recovery import (
         TelemetryRateSetupPending,
@@ -5148,13 +5399,9 @@ async def connect_preflight_with_recovery(
             row["disarmed_timeout_seconds"] = disarmed_timeout
             row["disarmed_check"] = await _await_with_abort_polling(
                 disarmed_check(timeout_seconds=disarmed_timeout), abort_check=abort_check)
-        row["stage"] = "readiness"
-        health = await _await_with_abort_polling(
-            client.wait_until_ready(max(.001, deadline-time.monotonic())),
-            abort_check=abort_check)
-        if any(getattr(health, field, None) is not True for field in
-               ("connected", "home_position_ok", "local_position_ok", "armable")):
-            raise RuntimeError("PREFLIGHT_FIRMWARE_NOT_READY: incomplete readiness")
+        # Visual/map localization consumes IMU and odometry while the estimator
+        # is initializing. Request those streams before waiting for readiness,
+        # otherwise a vision-reference setup waits on its own missing inputs.
         rate_configurer = getattr(client, "configure_dynamics_telemetry_rates", None)
         if callable(rate_configurer):
             row["stage"] = "dynamics-telemetry-rates"
@@ -5176,6 +5423,17 @@ async def connect_preflight_with_recovery(
                 raise TelemetryRateSetupPending("PREFLIGHT_TELEMETRY_RATE_REQUEST_FAILED")
             if rates.get("required_rate_requests_succeeded") is not True:
                 raise RuntimeError("PREFLIGHT_TELEMETRY_RATE_RECEIPT_INVALID")
+        row["stage"] = "readiness"
+        row['local_mode_preparation_only'] = local_mode_preparation_only
+        health = await _await_with_abort_polling(
+            readiness_reader(max(.001, deadline-time.monotonic())),
+            abort_check=abort_check)
+        required_health = ('connected', 'home_position_ok', 'local_position_ok')
+        if not local_mode_preparation_only:
+            required_health += ('armable',)
+        if any(getattr(health, field, None) is not True for field in
+               required_health):
+            raise RuntimeError("PREFLIGHT_FIRMWARE_NOT_READY: incomplete readiness")
         _log(log_path, f"preflight transport ready on attempt {row['attempt']}/{maximum_attempts}")
         return health
 

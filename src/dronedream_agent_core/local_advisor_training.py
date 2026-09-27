@@ -107,6 +107,9 @@ class LocalAdvisorTrainingConfig(StrictModel):
     controller_scale_loss_weight: float = Field(default=0.5, ge=0.0, le=100.0)
     l2_weight: float = Field(default=0.00001, ge=0.0, le=1.0)
     random_seed: int = Field(default=2905, ge=0, le=2**32 - 1)
+    settle_motion_only: bool = False
+    sensor_state_only: bool = False
+    payload_history_dropout: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,7 +171,8 @@ def _input_count(role: TrainableAdvisorRole) -> int:
         if role == "settle-stability-critic":
             input_count += LOCAL_POLICY_MANEUVER_FEATURE_COUNT
         elif role == "payload-dynamics-adapter":
-            input_count += LOCAL_POLICY_PAYLOAD_FEATURE_COUNT
+            input_count += LOCAL_POLICY_PAYLOAD_FEATURE_COUNT + LOCAL_POLICY_MANEUVER_FEATURE_COUNT
+            input_count += LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_STATE_FEATURE_COUNT
     return input_count
 
 
@@ -201,17 +205,78 @@ def _sample_input(sample: LocalAdvisorTrainingSample) -> list[float]:
         if sample.role == "settle-stability-critic":
             features = [*sample.maneuver_features, *features]
         elif sample.role == "payload-dynamics-adapter":
-            features = [*sample.payload_features, *features]
+            # 负载风险标签包含运动失稳；仅凭加速度和负载历史无法区分静止与匀速下降。
+            # 显式提供同源速度、阶段和稳定阈值，不让网络从电机噪声猜速度。
+            motion_history = [value if mask else 0.0
+                              for row, mask in zip(sample.state_history, sample.history_mask, strict=True)
+                              for value in row]
+            features = [*sample.payload_features, *sample.maneuver_features,
+                        *features[:-LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH], *motion_history,
+                        *sample.history_mask]
     return features
 
 
 # 功能：
-#   以固定随机种子初始化单隐层 ReLU 网络，只有负载专家拥有额外的连续尺度输出头。
+#   按专家职责显式限制可学习输入，避免从目标位置或地图上下文记忆故障标签。
 # 输入：
-#   role：明确的专家角色。
-#   config：网络宽度与随机种子配置。
+#   role：本次训练角色；config：是否启用纯运动状态投影的明确配置。
 # 输出：
-#   model：拥有独立 float32 参数的初始网络。
+#   mask：对第一层权重及梯度共同使用的列掩码，不改变部署输入顺序或尺寸。
+def _trainable_input_mask(role: TrainableAdvisorRole, config: LocalAdvisorTrainingConfig):
+    import numpy as np
+
+    mask = np.ones((_input_count(role), 1), dtype=np.float32)
+    if config.payload_history_dropout and role != "payload-dynamics-adapter":
+        raise ValueError("payload history dropout requires payload-dynamics-adapter")
+    if role == "payload-dynamics-adapter":
+        payload_start = LOCAL_POLICY_PAYLOAD_FEATURE_COUNT + LOCAL_POLICY_MANEUVER_FEATURE_COUNT
+        payload_stop = payload_start + LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_PAYLOAD_FEATURE_COUNT
+        payload = mask[payload_start:payload_stop].reshape(LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_PAYLOAD_FEATURE_COUNT)
+        # 过往“已稳定”不能投票覆盖当前“刚挂载”；质量变化与实测动力学仍保留完整历史。
+        # 生命周期、授权及机动状态只读取当前帧，不从不同课程的状态持续时长猜当前风险。
+        payload[:, :12] = 0.0
+        payload[:, 6] = 1.0
+        start = (LOCAL_POLICY_PAYLOAD_FEATURE_COUNT + LOCAL_POLICY_MANEUVER_FEATURE_COUNT
+                 + LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_PAYLOAD_FEATURE_COUNT)
+        stop = start + LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_STATE_FEATURE_COUNT
+        motion = mask[start:stop].reshape(LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_STATE_FEATURE_COUNT)
+        motion[:] = 0.0
+        # 补足监督所依赖的速度与反向运动历史，同时屏蔽任务目标和地图身份。
+        motion[:, [0, 1, 2, 12]] = 1.0
+    if config.sensor_state_only:
+        if config.settle_motion_only or role not in {
+                "perception-health-critic", "state-anomaly-detector"}:
+            raise ValueError("sensor-state input projection requires health or anomaly critic")
+        if role == "perception-health-critic":
+            mask[:] = 0.0
+            mask[[7, 8, 9]] = 1.0
+        else:
+            stop = LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_STATE_FEATURE_COUNT
+            history = mask[:stop].reshape(
+                LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_STATE_FEATURE_COUNT)
+            history[:] = 0.0
+            # 运动用完整历史；健康与时效用末帧，避免旧健康多数掩盖刚发生的故障。
+            history[:, [0, 1, 2, 12]] = 1.0
+            history[-1, [7, 8, 9]] = 1.0
+    if config.settle_motion_only:
+        if role != "settle-stability-critic":
+            raise ValueError("motion-only input projection requires settle-stability-critic")
+        start = LOCAL_POLICY_MANEUVER_FEATURE_COUNT
+        stop = start + LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH * LOCAL_POLICY_STATE_FEATURE_COUNT
+        history = mask[start:stop].reshape(
+            LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_STATE_FEATURE_COUNT)
+        history[:] = 0.0
+        # 仅保留三轴速度及其物理归一化尺度；阶段、机动特征和历史掩码仍完整保留。
+        history[:, [0, 1, 2, 12]] = 1.0
+    return mask
+
+
+# 功能：
+#   按有效输入数量初始化网络，未授权学习的上下文权重固定为零。
+# 输入：
+#   role：专家角色；config：网络宽度、种子及明确的输入投影配置。
+# 输出：
+#   model：具有独立参数数组的初始网络。
 def _new_model(
     role: TrainableAdvisorRole,
     config: LocalAdvisorTrainingConfig,
@@ -221,7 +286,8 @@ def _new_model(
     config = LocalAdvisorTrainingConfig.model_validate(config.model_dump(), strict=True)
     generator = np.random.default_rng(config.random_seed)
     input_count = _input_count(role)
-    input_scale = math.sqrt(2.0 / input_count)
+    input_mask = _trainable_input_mask(role, config)
+    input_scale = math.sqrt(2.0 / float(input_mask.sum()))
     hidden_scale = math.sqrt(2.0 / config.hidden_feature_count)
     with_scale = role == "payload-dynamics-adapter"
     model = NumpyLocalAdvisorModel(
@@ -230,7 +296,7 @@ def _new_model(
             0.0,
             input_scale,
             (input_count, config.hidden_feature_count),
-        ).astype(np.float32),
+        ).astype(np.float32) * input_mask,
         input_bias=np.zeros(config.hidden_feature_count, dtype=np.float32),
         risk_weight=generator.normal(0.0, hidden_scale, (config.hidden_feature_count, 1)).astype(
             np.float32
@@ -328,6 +394,33 @@ def _forward(model: NumpyLocalAdvisorModel, inputs: Any) -> tuple[Any, ...]:
 
 
 # 功能：
+#   遮蔽负载样本较旧的历史前缀，保留当前状态及监督所依赖的最近两帧，不增加原始样本数量。
+# 输入：
+#   inputs：当前负载批次；cutoffs：每行需要清除的旧历史槽数，范围零至六。
+# 输出：
+#   augmented：独立的输入副本，物理历史与有效位同时清除，标签及当前输入不改变。
+def drop_payload_history_prefix(inputs, cutoffs):
+    import numpy as np
+
+    count = LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH
+    cutoffs = np.asarray(cutoffs)
+    if (not isinstance(inputs, np.ndarray) or inputs.ndim != 2
+            or inputs.shape[1] != _input_count("payload-dynamics-adapter")
+            or cutoffs.shape != (len(inputs),) or cutoffs.dtype.kind not in 'iu'
+            or np.any(cutoffs < 0) or np.any(cutoffs > count - 2)):
+        raise ValueError("payload history prefix dropout shape or bounds invalid")
+    augmented = inputs.copy()
+    keep = np.arange(count)[None, :] >= cutoffs[:, None]
+    start = LOCAL_POLICY_PAYLOAD_FEATURE_COUNT + LOCAL_POLICY_MANEUVER_FEATURE_COUNT
+    for width in (LOCAL_POLICY_PAYLOAD_FEATURE_COUNT, LOCAL_POLICY_STATE_FEATURE_COUNT):
+        stop = start + count * width
+        augmented[:, start:stop].reshape(-1, count, width)[:] *= keep[:, :, None]
+        start = stop
+    augmented[:, start:start + count] *= keep
+    return augmented
+
+
+# 功能：
 #   1. 冻结输入与配置，以 Adam 优化类别平衡的二元风险损失和独立的负载尺度损失。
 #   2. 检查梯度及更新数值，返回训练分区指标；独立验证及飞行接纳由上层另行执行。
 # 输入：
@@ -361,6 +454,7 @@ def train_local_advisor(
         risk_class_weights[~risky_mask, 0] = len(risks) / (2.0 * safe_count)
     risk_weights = weights * risk_class_weights
     model = _new_model(role, config)
+    input_mask = _trainable_input_mask(role, config)
     parameters = [
         model.input_weight,
         model.input_bias,
@@ -378,6 +472,10 @@ def train_local_advisor(
         for start in range(0, len(inputs), config.batch_size):
             indices = order[start : start + config.batch_size]
             batch_inputs = inputs[indices]
+            if config.payload_history_dropout:
+                # 原监督仅依赖当前负载/动力学和最近两帧运动；不遮蔽它实际依赖的来源。
+                batch_inputs = drop_payload_history_prefix(batch_inputs, generator.integers(
+                    0, LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH - 1, size=len(indices)))
             batch_risks = risks[indices]
             batch_scales = scales[indices]
             batch_weights = weights[indices]
@@ -410,7 +508,7 @@ def train_local_advisor(
             hidden_delta[hidden_pre <= 0.0] = 0.0
             input_weight_gradient = (
                 batch_inputs.T @ hidden_delta + config.l2_weight * model.input_weight
-            )
+            ) * input_mask
             input_bias_gradient = hidden_delta.sum(axis=0)
             gradients.extend(
                 (
@@ -647,6 +745,13 @@ def export_local_advisor_onnx(
                 [None, LOCAL_POLICY_PAYLOAD_FEATURE_COUNT],
             ),
             helper.make_tensor_value_info(
+                "maneuver_features", TensorProto.FLOAT, [None, LOCAL_POLICY_MANEUVER_FEATURE_COUNT],
+            ),
+            helper.make_tensor_value_info(
+                "state_history", TensorProto.FLOAT,
+                [None, LOCAL_POLICY_TEMPORAL_HISTORY_LENGTH, LOCAL_POLICY_STATE_FEATURE_COUNT],
+            ),
+            helper.make_tensor_value_info(
                 "payload_history",
                 TensorProto.FLOAT,
                 [
@@ -665,7 +770,7 @@ def export_local_advisor_onnx(
             helper.make_node("Flatten", ["masked_history"], ["flat_history"], axis=1),
             helper.make_node(
                 "Concat",
-                ["payload_features", "flat_history", "history_mask"],
+                ["payload_features", "maneuver_features", "flat_history", "flat_motion_history", "history_mask"],
                 ["advisor_features"],
                 axis=1,
             ),
@@ -685,6 +790,11 @@ def export_local_advisor_onnx(
             helper.make_node("Unsqueeze", ["history_mask", "mask_axes"], ["expanded_mask"]),
             helper.make_node("Mul", [history_name, "expanded_mask"], ["masked_history"]),
         ]
+        if model.role == "payload-dynamics-adapter":
+            nodes[2:2] = [
+                helper.make_node("Mul", ["state_history", "expanded_mask"], ["masked_motion_history"]),
+                helper.make_node("Flatten", ["masked_motion_history"], ["flat_motion_history"], axis=1),
+            ]
     nodes.extend(
         (
             helper.make_node("MatMul", [flat_input, "input_weight"], ["hidden_linear"]),

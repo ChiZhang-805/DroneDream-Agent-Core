@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import math
 import time
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -51,6 +52,7 @@ from dronedream_agent_core.plugin_files import (
     hash_plugin_file,
     read_plugin_file,
 )
+from dronedream_agent_core.training.action_risk_evaluation import evaluate_action_risk_artifact
 from dronedream_agent_core.training.admission_inputs import (
     bind_admission_history,
     freeze_admission_inputs,
@@ -60,7 +62,14 @@ from dronedream_agent_core.training.admission_inputs import (
 from dronedream_agent_core.training.advisor_sources import validate_advisor_spatial_splits
 from dronedream_agent_core.training.artifact_assembly import validate_embedded_graph
 from dronedream_agent_core.training.evidence_publication import write_evidence_object
+from dronedream_agent_core.training.heading_admission import read_heading_admission_inputs
 from dronedream_agent_core.training.mission_groups import SPATIAL_SPLIT_CONTRACT
+from dronedream_agent_core.training.risk_admission_evidence import (
+    ActionRiskAdmissionEvidence,
+    action_risk_evidence_from_reports,
+    action_risk_evidence_issues,
+    action_risk_summary,
+)
 from dronedream_agent_core.training.visual_lineage import VisualInputContract
 from dronedream_plugin_sdk.protocol import decode_json
 
@@ -513,6 +522,7 @@ def _navigation_admission_scope(
 #   dataset_path：完整验证数据路径。
 #   navigation_role：可选目标角色；其他角色样本仍参与历史准备而不计入该角色指标。
 #   observations：可选、与原始分区绑定的完整观测列表。
+#   heading_inputs：可选、已从同一原始快照核验的偏航输入索引。
 # 输出：
 #   metrics：实际计分样本的导航质量指标。
 #   latencies：包含特征和时序准备的有效毫秒观测。
@@ -522,6 +532,8 @@ def _evaluate_runtime_package(
     *,
     navigation_role: str | None = None,
     observations=None,
+    heading_inputs=None,
+    action_risk_evidence=None,
 ) -> tuple[LocalPolicyTrainingMetrics, list[float]]:
 
     package = load_local_policy_package(package_path)
@@ -549,7 +561,9 @@ def _evaluate_runtime_package(
     )
     try:
         metrics, latencies = _evaluate_runtime_samples(
-            package, samples, backend, navigation_role=navigation_role, observations=observations
+            package, samples, backend, navigation_role=navigation_role, observations=observations,
+            heading_inputs=heading_inputs,
+            action_risk_evidence=action_risk_evidence,
         )
     except BaseException as error:
         try:
@@ -570,11 +584,14 @@ def _evaluate_runtime_package(
 #   backend：实际本地专家后端；测试可显式替换。
 #   navigation_role：可选限定计分角色。
 #   observations：可选完整历史，只有匹配的标签行才参与指标计算。
+#   heading_inputs：只为显式声明偏航扩展的当前控制分支提供同源额外输入。
+#   action_risk_evidence：同包风险图的独立动作标签评估；不能用行为零占位替代。
 # 输出：
 #   metrics：只针对实际评估行的质量和类别支持数量。
 #   latencies：包含本地特征构造及历史准备的有效调用耗时。
 def _evaluate_runtime_samples(
-    package, samples, backend, *, navigation_role=None, observations=None
+    package, samples, backend, *, navigation_role=None, observations=None, heading_inputs=None,
+    action_risk_evidence=None,
 ):
     import numpy as np
 
@@ -582,7 +599,19 @@ def _evaluate_runtime_samples(
         raise ValueError("local policy validation sample count is invalid")
     samples = [LocalPolicyTrainingSample.model_validate(sample.model_dump()) for sample in samples]
     require_behavior_supervision(samples)
+    if package.manifest.requires_heading_evidence() != (
+            heading_inputs is not None):
+        raise ValueError('HEADING_ADMISSION_EXPLICIT_SOURCE_REQUIRED')
     causal = package.manifest.navigation_architecture == "causal-gru-control"
+    if causal and action_risk_evidence is None:
+        raise ValueError('CAUSAL_ADMISSION_ACTION_RISK_EVIDENCE_REQUIRED')
+    if action_risk_evidence is not None:
+        action_risk_evidence = ActionRiskAdmissionEvidence.model_validate(
+            action_risk_evidence.model_dump(), strict=True)
+        expected_risk = next((a.sha256 for a in package.manifest.artifacts
+                              if a.role == 'risk-critic'), None)
+        if expected_risk != action_risk_evidence.model_sha256:
+            raise ValueError('ADMISSION_ACTION_RISK_MODEL_MISMATCH')
     if not causal and observations is not None:
         raise ValueError("noncausal runtime evaluation cannot consume causal histories")
     replay = bind_admission_history(samples, observations) if causal else [(s, s) for s in samples]
@@ -658,6 +687,9 @@ def _evaluate_runtime_samples(
             continue
         if navigation_role is not None and sample.navigation_expert_role != navigation_role:
             continue
+        if (heading_inputs is not None
+                and package.manifest.heading_context_for_role(batch.navigation_expert_role) is not None):
+            batch = replace(batch, precision_heading_context=heading_inputs.features_for(sample))
         output = backend.infer(batch, multimodal=[])
         output = LocalPolicyRawInference.model_validate(output.model_dump())
         evaluated_samples.append(sample)
@@ -786,6 +818,13 @@ def _evaluate_runtime_samples(
             else {}
         ),
     )
+    if action_risk_evidence is not None:
+        # 上面的 risk_target 属于示范占位，不能给模型的新动作评分。
+        # 行为授权仍使用实际运行时接管结果；风险准确率来自同动作的独立专用测试。
+        metrics = LocalPolicyTrainingMetrics.model_validate({
+            **metrics.model_dump(), **action_risk_summary(action_risk_evidence),
+            'action_risk_evidence': action_risk_evidence.model_dump(),
+        })
     return metrics, latencies
 
 
@@ -847,6 +886,12 @@ def _advisor_feeds(
             history_name: np.asarray([history], dtype=np.float32),
             "history_mask": np.asarray([sample.history_mask], dtype=np.float32),
         }
+        # 当前负载图必须同时看到瞬时运动和历史速度；不能仅完成旧三输入接口。
+        # 只识别完整的五输入合同，缺项或多项仍由下面的精确集合检查拒绝。
+        if input_names == {"payload_features", "maneuver_features", "payload_history",
+                           "state_history", "history_mask"}:
+            feeds["maneuver_features"] = np.asarray([sample.maneuver_features], dtype=np.float32)
+            feeds["state_history"] = np.asarray([sample.state_history], dtype=np.float32)
     elif role == "cross-modal-consistency-critic":
         feeds = {"sensor_features": np.asarray([sample.sensor_features], dtype=np.float32)}
     elif role == "state-anomaly-detector":
@@ -977,6 +1022,7 @@ def main() -> int:
     parser.add_argument("--validation-data", type=Path, required=True)
     parser.add_argument("--dataset-receipt", type=Path, required=True)
     parser.add_argument("--validation-observations", type=Path)
+    parser.add_argument("--heading-observations", type=Path)
     parser.add_argument("--stream-groups", type=Path)
     parser.add_argument("--visual-encoding-receipt", type=Path)
     parser.add_argument("--composition-receipt", type=Path)
@@ -988,6 +1034,7 @@ def main() -> int:
     parser.add_argument("--advisor-validation-data", type=Path, action="append", default=[])
     parser.add_argument("--advisor-training-receipt", type=Path, action="append", default=[])
     parser.add_argument("--advisor-dataset-receipt", type=Path, action="append", default=[])
+    parser.add_argument('--risk-validation-data', type=Path, action='append', default=[])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     check_plain_plugin_path(args.output)
@@ -1128,9 +1175,14 @@ def _evaluate_frozen_inputs(args) -> int:
             [visual_receipt.get("p99_preprocess_latency_ms")], 99
         )
         visual_encoder_p99 = latency_percentile([visual_receipt.get("p99_encoder_latency_ms")], 99)
+    heading_path = getattr(args, 'heading_observations', None)
+    heading_inputs = (read_heading_admission_inputs(heading_path)
+                      if heading_path is not None else None)
+    action_risk_evidence = _evaluate_frozen_action_risk(package, args)
     metrics, latencies = _evaluate_runtime_package(
-        args.package, args.validation_data, observations=observations
-    )
+        args.package, args.validation_data, observations=observations,
+        heading_inputs=heading_inputs,
+        action_risk_evidence=action_risk_evidence)
     # 因果暖机行不是计分样本。回执类别数量取实际评估指标，不能用原输入总行数充数。
     evaluated_count = metrics.sample_count
     motion_sample_count, non_motion_sample_count = (
@@ -1149,6 +1201,9 @@ def _evaluate_frozen_inputs(args) -> int:
         "p99": latency_percentile(latencies, 99.0),
     }
     issues: list[str] = []
+    if action_risk_evidence is not None:
+        issues.extend(action_risk_evidence_issues(action_risk_evidence,
+            maximum_latency_ms=package.manifest.maximum_inference_latency_ms))
     navigation_expert_metrics: dict[str, LocalPolicyTrainingMetrics] = {}
     for role in NAVIGATION_EXPERT_ROLES:
         if role not in package.artifact_paths:
@@ -1157,7 +1212,9 @@ def _evaluate_frozen_inputs(args) -> int:
             issues.append(f"NAVIGATION_EXPERT_EVIDENCE_MISSING_{role.upper()}")
             continue
         role_metrics, _role_latencies = _evaluate_runtime_package(
-            args.package, args.validation_data, navigation_role=role, observations=observations
+            args.package, args.validation_data, navigation_role=role, observations=observations,
+            heading_inputs=heading_inputs,
+            action_risk_evidence=action_risk_evidence,
         )
         navigation_expert_metrics[role] = role_metrics
         issues.extend(
@@ -1372,6 +1429,8 @@ def _evaluate_frozen_inputs(args) -> int:
         "admitted_to_simulation": not issues,
         "issue_codes": list(dict.fromkeys(issues)),
     }
+    if heading_path is not None:
+        receipt_payload['heading_observations_sha256'] = _sha256(heading_path)
     receipt = LocalPolicySimulationAdmissionReceipt(
         control_feature_contract_sha256=package.manifest.control_feature_contract_sha256,
         receipt_id=("policy-simulation-admission-" + sha256_json(receipt_payload)[:32]),
@@ -1382,6 +1441,41 @@ def _evaluate_frozen_inputs(args) -> int:
     print(receipt.model_dump_json())
     status = 0 if receipt.admitted_to_simulation else 1
     return status
+
+
+# 功能：
+#   使用已冻结的同包风险图与独立风险数据重新推理，拒绝训练/开发分组重用和缺失类别。
+# 输入：
+#   package：本次固定模型包；args：包含固定风险数据与原训练回执的评估参数。
+# 输出：
+#   evidence：当前因果控制所需的同动作风险证据；旧非因果接口无此证据时为空。
+def _evaluate_frozen_action_risk(package, args):
+    roots = getattr(args, 'risk_validation_data', [])
+    if not roots:
+        if package.manifest.navigation_architecture == 'causal-gru-control':
+            raise ValueError('CAUSAL_ADMISSION_ACTION_RISK_EVIDENCE_REQUIRED')
+        return None
+    evidence_path = getattr(args, 'risk_training_evidence', None)
+    if evidence_path is None or 'risk-critic' not in package.artifact_paths:
+        raise ValueError('ADMISSION_RISK_TRAINING_SOURCE_REQUIRED')
+    training, _ = _read_receipt(evidence_path)
+    artifact = next(a for a in package.manifest.artifacts if a.role == 'risk-critic')
+    if training.get('model_sha256') != artifact.sha256:
+        raise ValueError('ADMISSION_ACTION_RISK_MODEL_MISMATCH')
+    excluded = set(args.expert_training_groups)
+    reports = []
+    for root in roots:
+        result = evaluate_action_risk_artifact(package.artifact_paths['risk-critic'], [root],
+            model_sha256=artifact.sha256, teacher_sha256=training['teacher_config_sha256'],
+            excluded_groups=excluded,
+            maximum_latency_ms=package.manifest.maximum_inference_latency_ms)
+        if not result['inference_performed']:
+            raise ValueError('ADMISSION_ACTION_RISK_COVERAGE_INCOMPLETE:'
+                             + ','.join(result['issue_codes']))
+        reports.append(result)
+        excluded.update(result['test_groups'])
+    evidence = action_risk_evidence_from_reports(reports)
+    return evidence
 
 
 if __name__ == "__main__":

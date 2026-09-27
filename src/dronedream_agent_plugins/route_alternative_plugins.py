@@ -6,7 +6,9 @@ import json
 import math
 from collections.abc import Callable
 
-from dronedream_agent_core.collision import CONSERVATIVE_VEHICLE_ENVELOPE_SCALE
+from dronedream_agent_core.collision import (
+    CONSERVATIVE_VEHICLE_ENVELOPE_SCALE, localization_required_clearance_m,
+)
 from dronedream_agent_core.contracts import (
     GraphRoute,
     RouteAlternativeDecision,
@@ -146,7 +148,14 @@ def _metric_candidate_definition() -> PluginDefinition:
     #   plugins：度量路线工具列表；缺少可用几何时为空列表。
     def tools(environment: ToolEnvironment) -> list[ToolPlugin]:
         planning_clearance_m = _planning_clearance_requirement_m(environment.vehicle_diameter_m)
+        variance = getattr(environment, "planning_localization_variance_m2", None)
+        if variance is not None:
+            planning_clearance_m = max(planning_clearance_m, localization_required_clearance_m(
+                variance))
         try:
+            planning_phase = getattr(environment, "planning_phase", "runtime")
+            if planning_phase not in {"initial", "runtime"}:
+                raise ValueError("METRIC_PLANNING_PHASE_INVALID")
             planner = KnownMapMetricPlanner(
                 graph=environment.map_graph,
                 semantic_path=environment.semantic_path,
@@ -165,11 +174,8 @@ def _metric_candidate_definition() -> PluginDefinition:
                     required_clearance_m=planning_clearance_m,
                     vertical_cost_multiplier=2.4,
                     clearance_cost_weight=0.22,
-                    # Online amendments must never leave the aircraft waiting
-                    # on an unbounded geometry search.  A qualified topology
-                    # route remains available and is independently checked by
-                    # the same continuous vehicle-envelope safety gate.
-                    maximum_search_seconds=8.0,
+                    # 起飞前长路线允许充分求解；飞行中改令仍只有短预算，本地安全控制独立运行。
+                    maximum_search_seconds=60.0 if planning_phase == "initial" else 8.0,
                 ),
             )
         except (OSError, ValueError, json.JSONDecodeError):

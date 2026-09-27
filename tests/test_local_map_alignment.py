@@ -176,7 +176,7 @@ def test_index_owns_geometry_and_rejects_unsupported_shapes():
     for unsupported in ({"radius_m": 1}, {"mesh": "unknown"}, box(radius_m=1)):
         with pytest.raises(ValueError, match="MAP_ALIGNMENT"):
             MapSurfaceIndex([box(), unsupported])
-    assert index.primitive_counts == {"box": 1, "cylinder": 0, "sphere": 0}
+    assert index.primitive_counts == {"box": 1, "cylinder": 0, "sphere": 0, "mesh": 0}
     assert fit_map_translation(wall_points(), index).usable_candidate
     with pytest.raises(ValueError):
         index.centers[0, 0] = 2

@@ -151,6 +151,9 @@ def test_assembly_rejects_computational_failure_before_publication(recipe, tmp_p
 # 输出：
 #   None：不返回业务数据。
 def test_staging_check_executes_all_experts(recipe, tmp_path, monkeypatch, capsys):  # noqa: F811
+    from test_risk_admission_evidence import synthetic_risk_evidence
+
+    from dronedream_agent_core.training.risk_admission_evidence import action_risk_summary
     from scripts.stage_local_policy_runtime import main
 
     package = assemble_complete_ensemble(
@@ -158,6 +161,13 @@ def test_staging_check_executes_all_experts(recipe, tmp_path, monkeypatch, capsy
     )
     admission = tmp_path / "admission.json"
     _admission(admission, package, continuous_evidence=True, expert_evidence=True)
+    # 此处明确是接口夹具，不能把其虚构指标写进任何产品模型包。
+    evidence = json.loads(admission.read_bytes())
+    risk_sha = next(a.sha256 for a in package.manifest.artifacts if a.role == 'risk-critic')
+    risk = synthetic_risk_evidence(risk_sha)
+    for metrics in evidence['navigation_expert_metrics'].values():
+        metrics.update(**action_risk_summary(risk), action_risk_evidence=risk.model_dump())
+    admission.write_text(json.dumps(evidence), encoding='utf-8')
     licenses = tmp_path / "licenses.json"
     licenses.write_text(json.dumps({
         "schema_version": "dronedream.model-distribution-licenses.v1",

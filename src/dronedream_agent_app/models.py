@@ -187,6 +187,8 @@ class MissionPrepareRequest(AppModel):
     placing them in a request does not authenticate their owner.
     """
 
+    progress_request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{16,80}$")
+
     expected_owner_account_id: str | None = Field(
         default=None,
         min_length=2,
@@ -250,6 +252,18 @@ class AssetInterpretationRequest(AppModel):
     gateway_base_url: HttpUrl | None = None
     locale: Literal["zh-CN", "en-US"] = "zh-CN"
     force: bool = Field(default=False, strict=True)
+
+
+class ConversationTitleRequest(AppModel):
+    expected_owner_account_id: str = Field(min_length=2, max_length=160)
+    expected_tenant_id: str | None = Field(default=None, min_length=2, max_length=160)
+    expected_organization_id: str | None = Field(default=None, min_length=2, max_length=160)
+    source_edition: Literal["universal", "sim", "lab", "field", "autonomy"]
+    model_id: str = Field(min_length=1, max_length=80)
+    model_grant: str = Field(pattern=r"^dd[gc]_[A-Za-z0-9_-]{20,124}$", repr=False)
+    gateway_base_url: HttpUrl | None = None
+    locale: Literal["zh-CN", "en-US"] = "zh-CN"
+    message: str = Field(min_length=1, max_length=2000)
 
 
 class MissionExecuteRequest(AppModel):

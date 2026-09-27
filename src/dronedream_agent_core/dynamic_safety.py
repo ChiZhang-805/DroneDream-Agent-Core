@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
-from .collision import _box_half_sizes, _validated_primitive, vehicle_clearance
+from .collision import (
+    _box_half_sizes,
+    _validated_primitive,
+    minimum_vehicle_clearances,
+    vehicle_clearance,
+)
 from .collision_batch import static_point_clearances
 from .contracts import LocalPlannerRequest, PredictiveSafetyDecision, Vector3
 from .motion_envelope import (
@@ -237,12 +243,14 @@ def _dynamic_interval_clearance(start, end, *, start_time, end_time, velocity, r
 # 输入：
 #   request：机体状态、目标或模型控制提议与上限。
 #   vertical_biases：候选竖直方向偏置比例。
+#   include_level_flight：竖直保护器启用时加入保持高度的候选，不增加无授权目标。
 # 输出：
 #   velocities：去重后处于速度包络内的候选速度。
 def _candidate_velocities(
     request: LocalPlannerRequest,
     *,
     vertical_biases: tuple[float, ...] = (0.0,),
+    include_level_flight: bool = False,
 ) -> list[Point]:
     position = _point(request.current_position_m)
     target = _point(request.target_position_m)
@@ -263,10 +271,20 @@ def _candidate_velocities(
         desired_speed = min(request.max_speed_mps, target_distance)
         desired_vertical = desired_speed * to_target[2] / target_distance
     candidates: list[Point] = []
+    # 环绕方向的采样不是原意图的减速版本：例如纯爬升会被额外加入水平速度。
+    # 保留完整三维方向的分级减速，使窄通道内可以只放慢，而不被迫横移或制动。
+    # 与探索候选一样，先施加加速度／加加速度约束，之后仍经过全部几何与时效检查。
+    nominal = _limit_magnitude(requested_velocity, request.max_speed_mps) if requested_velocity is not None else tuple(
+        component * desired_speed / target_distance for component in to_target)
+    for ratio in (1.0, 0.7, 0.4):
+        candidates.append(_reachable_velocity(request, tuple(component * ratio for component in nominal)))
     for speed_ratio in (1.0, 0.7, 0.4):
         horizontal_speed = desired_speed * speed_ratio
         for angle_degrees in (0, -30, 30, -60, 60, -90, 90, 180):
             angle = heading + math.radians(angle_degrees)
+            if include_level_flight:
+                candidates.append(_reachable_velocity(request, (
+                    horizontal_speed * math.cos(angle), horizontal_speed * math.sin(angle), 0.)))
             for vertical_bias in vertical_biases:
                 requested = _limit_magnitude(
                     (
@@ -480,9 +498,13 @@ def _predict(
     points = [
         tuple(origin[axis] + velocity[axis] * elapsed for axis in range(3)) for elapsed in times
     ]
+    clearances = minimum_vehicle_clearances(
+        points, static_primitives,
+        radius_m=request.vehicle_radius_m, half_height_m=request.vehicle_height_m / 2,
+    )
     samples = [
-        _static_clearance(point, request=request, static_primitives=static_primitives)
-        for point in points
+        (clearance, f"static:{static_primitives[index].get('name', 'unknown')}" if index >= 0 else None)
+        for clearance, index in clearances
     ]
     prediction = _prediction_from_samples(request, velocity, points, times, samples)
     return prediction
@@ -537,6 +559,7 @@ def _predict_candidates(request, velocities, static_primitives):
 #   static_primitives：固定的静态几何。
 #   candidate_count：此前评估的候选数量。
 #   issue_codes：触发保护保持的原因。
+#   avoidance_obstacle_id：原动作确因动态净空或其时效余量受限的障碍身份，其他保护原因留空。
 # 输出：
 #   decision：零控制输出、制动预测和威胁信息组成的保护决策。
 def _braking_hold(
@@ -545,6 +568,7 @@ def _braking_hold(
     *,
     candidate_count: int,
     issue_codes: list[str],
+    avoidance_obstacle_id: str | None = None,
 ) -> PredictiveSafetyDecision:
     velocity = _reachable_velocity(request, (0.0, 0.0, 0.0))
     path, clearance, minimum_time, threat = _predict(request, velocity, static_primitives)
@@ -560,6 +584,7 @@ def _braking_hold(
         minimum_predicted_clearance_m=clearance,
         time_to_minimum_clearance_seconds=minimum_time,
         threat_obstacle_id=threat,
+        avoidance_obstacle_id=avoidance_obstacle_id,
         evaluated_candidate_count=max(1, candidate_count),  # The brake is evaluated too.
         issue_codes=issue_codes,
     )
@@ -592,13 +617,33 @@ def predictive_braking_decision(
 # 输入：
 #   request：当前机体状态、局部模型提议、目标与安全限制。
 #   static_primitives：当前完整静态基元集合。
+#   motion_check：可选的整段运动覆盖、竖直过渡及负载资格检查，不修改候选动作。
+#   candidate_check：可选的速度、净空和偏航时效否决；只筛除动作，不能扩大运动权限。
 # 输出：
 #   decision：动作、速度、来源归因及可追踪的预测证据。
 def predictive_safety_decision(
     request: LocalPlannerRequest,
     static_primitives: list[dict[str, Any]],
+    *, motion_check: Callable | None = None, candidate_check: Callable | None = None,
 ) -> PredictiveSafetyDecision:
     request, static_primitives = _owned_inputs(request, static_primitives)
+    if candidate_check is not None and not callable(candidate_check):
+        raise ValueError("LOCAL_SAFETY_CANDIDATE_CHECK_INVALID")
+
+    # 功能：
+    #   核对候选实际会输出的偏航与速度是否还有执行时间，只接纳明确布尔许可。
+    # 输入：
+    #   velocity：已预测速度；clearance：该候选的预测净空；yaw：实际输出偏航速度。
+    # 输出：
+    #   allowed：附加时效约束是否通过，不替代几何和扫掠检查。
+    def current_candidate(velocity, clearance, yaw):
+        if candidate_check is None:
+            return True
+        allowed = candidate_check(velocity, clearance, yaw)
+        if type(allowed) is not bool:
+            raise ValueError("LOCAL_SAFETY_CANDIDATE_CHECK_INVALID")
+        return allowed
+
     unhealthy_codes: list[str] = []
     if not request.perception_stream_healthy:
         unhealthy_codes.append("PERCEPTION_STREAM_UNHEALTHY")
@@ -650,7 +695,12 @@ def predictive_safety_decision(
         nominal_velocity,
         static_primitives,
     )
-    if nominal_clearance >= request.required_clearance_m + 0.08:
+    nominal_motion_issues = (motion_check(request, nominal_velocity, [position, *nominal_path])
+                             if motion_check is not None else [])
+    nominal_budget_current = current_candidate(nominal_velocity, nominal_clearance, request.requested_yaw_rate_dps)
+    if not nominal_budget_current:
+        nominal_motion_issues = [*nominal_motion_issues, "CANDIDATE_TIME_BUDGET_EXHAUSTED"]
+    if nominal_clearance >= request.required_clearance_m + 0.08 and not nominal_motion_issues:
         # The active model proposal (or explicitly authorized route fallback)
         # owns nominal motion. In a clearly safe
         # corridor, evaluating dozens of alternative 3-D velocities cannot
@@ -677,6 +727,24 @@ def predictive_safety_decision(
             issue_codes=[],
         )
         return decision
+    # 绑定未经避让的原动作所遇到的约束，不是改道后的最近物体。
+    # 感知过期、动力学约束或纯静态避让均不能单独制造动态恢复监督标签。
+    avoidance_obstacle_id = (
+        nominal_threat if nominal_clearance < request.required_clearance_m + 0.08
+        and any(obstacle.obstacle_id == nominal_threat for obstacle in request.dynamic_obstacles)
+        else None
+    )
+    if (avoidance_obstacle_id is None and not nominal_budget_current
+            and any(obstacle.obstacle_id == nominal_threat for obstacle in request.dynamic_obstacles)):
+        # 物体可能先耗尽时效余量、后触及几何硬下限。只为解释原因作一次剔除此物体的对照预测：
+        # 速度、时钟、不确定度和回调不变；对照结果绝不参与候选评分、路径选择或执行。
+        # 如果删除物体后依然过期（例如来源截止已到），不能把普通超时标成动态避让。
+        attribution_request = request.model_copy(update={"dynamic_obstacles": [
+            obstacle for obstacle in request.dynamic_obstacles if obstacle.obstacle_id != nominal_threat]})
+        _, unconstrained_clearance, _, _ = _predict(attribution_request, nominal_velocity, static_primitives)
+        if (unconstrained_clearance > nominal_clearance
+                and current_candidate(nominal_velocity, unconstrained_clearance, request.requested_yaw_rate_dps)):
+            avoidance_obstacle_id = nominal_threat
     origin_clearance, origin_threat = _point_clearance(
         position,
         elapsed=0.0,
@@ -684,7 +752,7 @@ def predictive_safety_decision(
         static_primitives=static_primitives,
     )
     evaluations: list[tuple[float, Point, list[Point], float, float, str | None, bool]] = []
-    candidates = _candidate_velocities(request)
+    candidates = _candidate_velocities(request, include_level_flight=motion_check is not None)
     search_primitives = _candidate_search_primitives(request, static_primitives)
 
     # 功能：
@@ -697,6 +765,11 @@ def predictive_safety_decision(
         predictions = _predict_candidates(request, candidate_set, search_primitives)
         for velocity, prediction in zip(candidate_set, predictions, strict=True):
             path, clearance, minimum_time, threat = prediction
+            candidate_yaw = request.requested_yaw_rate_dps if math.dist(velocity, nominal_velocity) <= 1e-9 else 0.
+            if not current_candidate(velocity, clearance, candidate_yaw):
+                continue
+            if motion_check is not None and motion_check(request, velocity, [position, *path]):
+                continue
             recovering_static_clearance = False
             if clearance < request.required_clearance_m:
                 # A vehicle can begin a controller cycle inside the preferred
@@ -762,7 +835,9 @@ def predictive_safety_decision(
             request,
             static_primitives,
             candidate_count=len(candidates),
-            issue_codes=["NO_SAFE_LOCAL_VELOCITY", "HOLD_AND_REQUEST_REPLAN"],
+            issue_codes=[*nominal_motion_issues[:28],
+                         "NO_SAFE_LOCAL_VELOCITY", "HOLD_AND_REQUEST_REPLAN"],
+            avoidance_obstacle_id=avoidance_obstacle_id,
         )
         return decision
 
@@ -778,6 +853,14 @@ def predictive_safety_decision(
         velocity,
         static_primitives,
     )
+    final_motion_issues = (motion_check(request, velocity, [position, *path])
+                           if motion_check is not None else [])
+    final_yaw = request.requested_yaw_rate_dps if math.dist(velocity, nominal_velocity) <= 1e-9 else 0.
+    if not current_candidate(velocity, clearance, final_yaw):
+        final_motion_issues = [*final_motion_issues, "CANDIDATE_TIME_BUDGET_EXHAUSTED"]
+    if final_motion_issues:
+        return _braking_hold(request, static_primitives, candidate_count=len(candidates),
+                             issue_codes=final_motion_issues[:32])
     if clearance < request.required_clearance_m and recovering_clearance:
         end_clearance, end_threat = _point_clearance(
             path[-1],
@@ -808,7 +891,8 @@ def predictive_safety_decision(
         return decision
     speed = _magnitude(velocity)
     nominal_velocity_preserved = math.dist(velocity, nominal_velocity) <= 1e-9
-    nominal_path_hazard = nominal_clearance < request.required_clearance_m
+    nominal_path_hazard = (nominal_clearance < request.required_clearance_m
+                           or bool(nominal_motion_issues))
     forward = sum(velocity[index] * target_unit[index] for index in range(3))
     cosine = forward / max(speed, 1e-9)
     near_required_margin = clearance < request.required_clearance_m + 0.08
@@ -821,6 +905,7 @@ def predictive_safety_decision(
             static_primitives,
             candidate_count=len(candidates),
             issue_codes=["LOCAL_SAFETY_HOLD"],
+            avoidance_obstacle_id=avoidance_obstacle_id,
         )
         return decision
     elif cosine < math.cos(math.radians(20)) and nominal_path_hazard:
@@ -860,11 +945,13 @@ def predictive_safety_decision(
         minimum_predicted_clearance_m=clearance,
         time_to_minimum_clearance_seconds=minimum_time,
         threat_obstacle_id=threat,
+        avoidance_obstacle_id=avoidance_obstacle_id,
         evaluated_candidate_count=len(candidates),
         issue_codes=(
             ["STATIC_CLEARANCE_RECOVERY"]
             if recovering_clearance
-            else ([] if action == "continue" else [f"LOCAL_SAFETY_{action.upper()}"])
+            else ([*nominal_motion_issues[:28], f"LOCAL_SAFETY_{action.upper()}"]
+                  if nominal_motion_issues or action != "continue" else [])
         ),
     )
     return decision

@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import (
     BodyFrameControlIntent,
     ControlObservationBudget,
+    HybridControlLease,
     LocalPlannerRequest,
     RuntimeLocalSafetyCommand,
     RuntimeLocalSafetyObservation,
@@ -21,6 +22,8 @@ from .hashing import sha256_json
 from .motion_envelope import RUNTIME_PREDICTION_HORIZON_SECONDS, prediction_query_radius_m
 from .observation_validity import observation_validity, publication_deadline
 from .realtime_feature_encoders import body_to_world_enu
+from .vertical_navigation import VerticalMotionGuard
+from .yaw_command_envelope import YawCommandEnvelope
 
 
 # 功能：
@@ -146,6 +149,8 @@ def runtime_safety_query_radius_m(
 #   model_authority_reason：控制授权或拒绝原因。
 #   requested_control_intent：可选的已绑定四轴控制意图。
 #   route_yaw_rate_dps：仅航迹回退模式使用的偏航角速度，单位度每秒。
+#   motion_guard：与观测摘要绑定的本周期竖直运动、覆盖及负载约束。
+#   yaw_envelope：可选的同源偏航变化包络，仅调整安全裁决前的模型提案，不延迟后续制动。
 # 输出：
 #   command：带观测摘要、风险判断、时效预算与执行参照的短时控制指令。
 def evaluate_runtime_local_safety(
@@ -162,6 +167,7 @@ def evaluate_runtime_local_safety(
     tracking_recovery_active: bool = False,
     navigation_goal_id: str | None = None,
     navigation_control_authority: str = "route-fallback",
+    hybrid_lease: HybridControlLease | None = None,
     model_navigation_authorized: bool = False,
     model_call_id: str | None = None,
     model_selected_candidate_id: str | None = None,
@@ -170,6 +176,8 @@ def evaluate_runtime_local_safety(
     model_authority_reason: str | None = None,
     requested_control_intent: BodyFrameControlIntent | None = None,
     route_yaw_rate_dps: float = 0.0,
+    motion_guard: VerticalMotionGuard | None = None,
+    yaw_envelope: YawCommandEnvelope | None = None,
 ) -> RuntimeLocalSafetyCommand:
     if not _finite_scalar(command_horizon_seconds) or not 0.05 <= command_horizon_seconds <= 1.0:
         raise ValueError("command horizon must be in [0.05, 1.0] seconds")
@@ -189,8 +197,22 @@ def evaluate_runtime_local_safety(
         type(flag) is not bool for flag in (tracking_recovery_active, model_navigation_authorized)
     ):
         raise ValueError("control authority and recovery flags must be explicit booleans")
-    if navigation_control_authority not in {"route-fallback", "model-required"}:
+    if navigation_control_authority not in {"route-fallback", "model-required", "bounded-hybrid"}:
         raise ValueError("unknown navigation control authority")
+    if navigation_control_authority == "bounded-hybrid":
+        if hybrid_lease is None or motion_guard is None:
+            raise ValueError("HYBRID_REQUIRES_LEASE_AND_MOTION_GUARD")
+        hybrid_lease = HybridControlLease.model_validate(hybrid_lease.model_dump())
+        if (hybrid_lease.navigation_goal_id != navigation_goal_id or model_navigation_authorized
+                or requested_control_intent is not None
+                or generated_at_unix_ms < hybrid_lease.started_at_unix_ms
+                or hybrid_lease.expires_at_unix_ms - generated_at_unix_ms < 50):
+            raise ValueError("HYBRID_EVALUATION_CONTEXT_INVALID")
+        maximum_speed_mps = min(maximum_speed_mps or .25, hybrid_lease.maximum_speed_mps)
+        validity_milliseconds = min(validity_milliseconds,
+            hybrid_lease.expires_at_unix_ms - generated_at_unix_ms)
+    elif hybrid_lease is not None:
+        raise ValueError("HYBRID_LEASE_REQUIRES_HYBRID_AUTHORITY")
     # 私有重验副本让几何计算与最后摘要消费同一观测，外部修改不能篡改已生成的目标或姿态。
     observation = RuntimeLocalSafetyObservation.model_validate(
         observation.model_dump(mode="python"), strict=True
@@ -210,6 +232,8 @@ def evaluate_runtime_local_safety(
     ):
         raise ValueError("route yaw and model control authorities cannot be mixed")
     requested_yaw_rate_dps = route_yaw_rate_dps
+    if yaw_envelope is not None and requested_control_intent is None:
+        raise ValueError('YAW_ENVELOPE_REQUIRES_MODEL_INTENT')
     planner_max_acceleration_mps2 = vehicle.max_acceleration_mps2
     planner_max_jerk_mps3 = 100.0
     if requested_control_intent is not None:
@@ -238,6 +262,11 @@ def evaluate_runtime_local_safety(
             ),
         )
         requested_yaw_rate_dps = requested_control_intent.yaw_rate_dps
+        if yaw_envelope is not None:
+            from .yaw_command_envelope import shape_model_yaw
+
+            requested_yaw_rate_dps = shape_model_yaw(requested_control_intent, yaw_envelope,
+                now_unix_ms=generated_at_unix_ms)
         planner_max_acceleration_mps2 = min(
             vehicle.max_acceleration_mps2,
             requested_control_intent.maximum_acceleration_mps2,
@@ -279,14 +308,28 @@ def evaluate_runtime_local_safety(
             # outside that gate under the contract's bounded settle timeout.
             max(0.04, target_distance_m * 0.45),
         )
+    if (observation.motion_context_sha256
+            != (motion_guard.sha256 if motion_guard is not None else None)):
+        raise ValueError("RUNTIME_MOTION_CONTEXT_BINDING_MISMATCH")
+    if motion_guard is not None:
+        if motion_guard.context["position_m"] != [
+                observation.current_position_m.x, observation.current_position_m.y,
+                observation.current_position_m.z]:
+            raise ValueError("RUNTIME_MOTION_POSITION_BINDING_MISMATCH")
+        if motion_guard.context["geometry_sha256"] != sha256_json(static_primitives):
+            raise ValueError("RUNTIME_MOTION_GEOMETRY_BINDING_MISMATCH")
+        if motion_guard.clearance != required_clearance_m:
+            raise ValueError("RUNTIME_MOTION_CLEARANCE_BINDING_MISMATCH")
+        planner_max_acceleration_mps2 = motion_guard.acceleration_limit(
+            planner_max_acceleration_mps2)
     request = LocalPlannerRequest(
         current_position_m=observation.current_position_m,
         current_velocity_mps=observation.current_velocity_mps,
         current_acceleration_mps2=observation.current_acceleration_world_enu_mps2,
         target_position_m=observation.target_position_m,
         dynamic_obstacles=observation.dynamic_obstacles,
-        vehicle_radius_m=vehicle.body_radius_m,
-        vehicle_height_m=vehicle.body_height_m,
+        vehicle_radius_m=motion_guard.radius if motion_guard is not None else vehicle.body_radius_m,
+        vehicle_height_m=motion_guard.height if motion_guard is not None else vehicle.body_height_m,
         max_speed_mps=planner_max_speed_mps,
         max_acceleration_mps2=planner_max_acceleration_mps2,
         max_jerk_mps3=planner_max_jerk_mps3,
@@ -299,53 +342,87 @@ def evaluate_runtime_local_safety(
         perception_stream_age_seconds=observation.stream_age_seconds,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
-    decision = predictive_safety_decision(request, static_primitives)
+    source_ms = min(observation.observed_at_unix_ms,
+                    generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000))
+    uncertainty_margin_m = localization_uncertainty_margin_m(observation.localization_covariance_m2)
+    ego_speed = math.hypot(observation.current_velocity_mps.x,
+                          observation.current_velocity_mps.y, observation.current_velocity_mps.z)
+    obstacle_speed = max((math.hypot(o.velocity_mps.x, o.velocity_mps.y, o.velocity_mps.z)
+                          for o in observation.dynamic_obstacles), default=0.)
+    inherited_deadline = (requested_control_intent.valid_until_unix_ms
+                          if requested_control_intent is not None
+                          else generated_at_unix_ms + validity_milliseconds)
+
+    # 功能：
+    #   用同一原始时钟和不确定性检查每个候选，避免几何可行但根本没有发令时间的候选获胜。
+    # 输入：
+    #   velocity：预测 ENU 速度三元组；clearance：完整预测净空；yaw：实际输出偏航度每秒。
+    # 输出：
+    #   validity：不延长来源寿命的候选时效结论。
+    def candidate_validity(velocity, clearance, yaw):
+        validity = observation_validity(
+            source_observed_at_unix_ms=source_ms, now_unix_ms=generated_at_unix_ms,
+            inherited_deadline_unix_ms=inherited_deadline,
+            clearance_margin_m=max(0., clearance - required_clearance_m),
+            ego_speed_bound_mps=max(ego_speed, math.hypot(*velocity)),
+            obstacle_speed_bound_mps=obstacle_speed,
+            acceleration_bound_mps2=vehicle.max_acceleration_mps2,
+            uncertainty_margin_m=uncertainty_margin_m,
+            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+            angular_speed_bound_rad_s=abs(math.radians(yaw)))
+        return validity
+
+    first_rejected_budget = None
+
+    # 功能：
+    #   在候选排序之前拒绝时效不足的动作，保留首个被拒动作的诊断，最后输出仍重新检查。
+    # 输入：
+    #   velocity、clearance、yaw：候选动作及其几何证据。
+    # 输出：
+    #   allowed：候选当前具有实际控制预算时为真。
+    def candidate_current(velocity, clearance, yaw):
+        nonlocal first_rejected_budget
+        validity = candidate_validity(velocity, clearance, yaw)
+        allowed = validity.disposition == "control-eligible"
+        if not allowed and first_rejected_budget is None:
+            first_rejected_budget = (validity, max(0., clearance - required_clearance_m))
+        return allowed
+
+    # 已知负载资格不满足时无需枚举几十个必败候选，直接走同一条保留惯性证据的制动路径。
+    if motion_guard is None:
+        decision = predictive_safety_decision(request, static_primitives, candidate_check=candidate_current)
+    elif motion_guard.issues:
+        decision = predictive_braking_decision(request, static_primitives,
+                                               issue_codes=motion_guard.issues)
+    else:
+        decision = predictive_safety_decision(request, static_primitives,
+                                              motion_check=motion_guard.check, candidate_check=candidate_current)
     adaptive_deadline_ms = None
     observation_budget = None
+    if (decision.action == "hold" and first_rejected_budget is not None
+            and "CANDIDATE_TIME_BUDGET_EXHAUSTED" in decision.issue_codes):
+        # 这是被拒运动的预算，不是给紧急制动重新授予运动资格。
+        # 保留原刹停预测、候选数和其他拒绝原因，不能用另一次预测覆盖证据。
+        validity, clearance_margin_m = first_rejected_budget
+        observation_budget = ControlObservationBudget(
+            source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
+            control_deadline_unix_ms=validity.control_deadline_unix_ms,
+            disposition=validity.disposition, reason=validity.reason,
+            clearance_margin_m=clearance_margin_m, uncertainty_margin_m=uncertainty_margin_m,
+            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS)
+        budget_issues = ["OBSERVATION_CONTROL_BUDGET_EXHAUSTED",
+                         "OBSERVATION_" + validity.reason.upper().replace("-", "_")]
+        decision = decision.model_copy(update={"issue_codes": list(dict.fromkeys(
+            [*budget_issues, *decision.issue_codes]))[:32]})
     if decision.action != "hold":
         # Reuse the FULL action-specific collision forecast, not an encoder's
         # nearest range or "free reach" (neither proves a free swept volume).
         # This is a temporal-error veto in addition to that forecast. It does
         # not promote the planner's max acceleration to guaranteed braking.
-        source_ms = min(
-            observation.observed_at_unix_ms,
-            generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000),
-        )
-
-        # 功能：
-        #   计算三轴速度模长，使用 hypot 避免先平方造成不必要的浮点溢出。
-        # 输入：
-        #   v：有限的世界坐标速度向量。
-        # 输出：
-        #   magnitude_mps：速度模长，单位米每秒。
-        def speed(v):
-            magnitude_mps = math.hypot(v.x, v.y, v.z)
-            return magnitude_mps
-
         clearance_margin_m = max(0.0, decision.minimum_predicted_clearance_m - required_clearance_m)
-        uncertainty_margin_m = localization_uncertainty_margin_m(
-            observation.localization_covariance_m2
-        )
-        validity = observation_validity(
-            source_observed_at_unix_ms=source_ms,
-            now_unix_ms=generated_at_unix_ms,
-            inherited_deadline_unix_ms=(
-                requested_control_intent.valid_until_unix_ms
-                if requested_control_intent is not None
-                else generated_at_unix_ms + validity_milliseconds
-            ),
-            clearance_margin_m=clearance_margin_m,
-            ego_speed_bound_mps=max(
-                speed(observation.current_velocity_mps), speed(decision.selected_velocity_mps)
-            ),
-            obstacle_speed_bound_mps=max(
-                (speed(o.velocity_mps) for o in observation.dynamic_obstacles), default=0.0
-            ),
-            acceleration_bound_mps2=vehicle.max_acceleration_mps2,
-            uncertainty_margin_m=uncertainty_margin_m,
-            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
-            angular_speed_bound_rad_s=abs(math.radians(decision.selected_yaw_rate_dps)),
-        )
+        velocity = decision.selected_velocity_mps
+        validity = candidate_validity((velocity.x, velocity.y, velocity.z),
+            decision.minimum_predicted_clearance_m, decision.selected_yaw_rate_dps)
         observation_budget = ControlObservationBudget(
             source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
             control_deadline_unix_ms=validity.control_deadline_unix_ms,
@@ -407,6 +484,7 @@ def evaluate_runtime_local_safety(
         navigation_goal_id=navigation_goal_id,
         tracking_recovery_active=tracking_recovery_active,
         navigation_control_authority=navigation_control_authority,
+        hybrid_lease=hybrid_lease,
         model_navigation_authorized=model_navigation_authorized,
         model_call_id=model_call_id,
         model_selected_candidate_id=model_selected_candidate_id,

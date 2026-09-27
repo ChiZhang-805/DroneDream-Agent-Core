@@ -451,12 +451,19 @@ class CameraProfileReadback:
     #   self：由传感器锁保护的回读器。
     # 输出：
     #   result：已验证宽高、回执摘要及频率校验状态组成的回读记录。
-    def require_ready(self) -> dict:
+    def require_ready(self, *, required_streams: tuple[str, ...] = ("rgb", "depth")) -> dict:
+        # 调用方只等待实际消费的流；不把缺失的 RGB 当成深度定位缺失。
+        # 默认仍核对双流，单流结果不声明另一流已就绪，也不覆盖配置错误。
+        if (type(required_streams) is not tuple or not required_streams
+                or any(type(kind) is not str or kind not in self._expected
+                       for kind in required_streams)
+                or len(set(required_streams)) != len(required_streams)):
+            raise ValueError("SIMULATION_CAMERA_REQUIRED_STREAMS_INVALID")
         if self.error is not None:
             raise ValueError(self.error)
-        if self.seen != set(self._expected):
+        if not set(required_streams).issubset(self.seen):
             raise ValueError("SIMULATION_CAMERA_PROFILE_READBACK_PENDING")
-        dimensions = {kind: list(size) for kind, size in self._expected.items()}
+        dimensions = {kind: list(self._expected[kind]) for kind in required_streams}
         result = {"verified_dimensions": dimensions,
                 "receipt_sha256": self.receipt_sha256,
                 "field_of_view_source": "unchanged source-bound camera SDF",

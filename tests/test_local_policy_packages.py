@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from clock_fixtures import isolate_monotonic
 from control_fixtures import complete_feature_snapshot, qualified_pilot_metrics
 from pydantic import ValidationError
 
@@ -1565,7 +1566,7 @@ def test_port_rejects_submillisecond_latency_over_qualified_bound(
 ) -> None:
     package = _write_package(tmp_path / "general", package_id="local.general")
     ticks = iter((100.0, 100.0, 100.5004))
-    monkeypatch.setattr(local_policy_port.time, "monotonic", lambda: next(ticks))
+    isolate_monotonic(monkeypatch, local_policy_port, lambda: next(ticks))
 
     with pytest.raises(ModelInvocationError) as failure:
         LocalPolicyPort(
@@ -1595,7 +1596,7 @@ def test_port_accepts_only_the_explicit_bounded_host_scheduling_grace(
 ) -> None:
     package = _write_package(tmp_path / "general", package_id="local.general")
     ticks = iter((100.0, 100.0, 100.5204, 100.5204, 100.5204))
-    monkeypatch.setattr(local_policy_port.time, "monotonic", lambda: next(ticks))
+    isolate_monotonic(monkeypatch, local_policy_port, lambda: next(ticks))
 
     result = LocalPolicyPort(
         package,  # type: ignore[arg-type]

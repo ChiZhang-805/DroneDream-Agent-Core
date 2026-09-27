@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(dronedream_payload_placement LANGUAGES CXX)
+find_package(gz-sim8 REQUIRED)
+add_library(dronedream-payload-placement SHARED PayloadPlacement.cc)
+target_compile_features(dronedream-payload-placement PRIVATE cxx_std_17)
+target_compile_options(dronedream-payload-placement PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(dronedream-payload-placement PRIVATE gz-sim8::gz-sim8)
+install(TARGETS dronedream-payload-placement LIBRARY DESTINATION lib)

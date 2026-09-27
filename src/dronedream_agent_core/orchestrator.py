@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from dronedream_plugin_sdk.protocol import encode_json
 
-from .assets import AssetQualificationError, resolve_map_entity
+from .assets import AssetQualificationError, read_map_semantic_object, resolve_map_entity
 from .collision import (
     PREFERRED_TRANSIT_CLEARANCE_M,
     build_tracking_corridor_budget,
@@ -107,7 +107,6 @@ from .runtime_actions import (
     merge_runtime_action_adapters,
 )
 from .runtime_bindings import load_map_runtime_bindings, resolve_vehicle_collision_center_offset
-from .runtime_control_io import read_runtime_object
 from .tools import ToolExecutionError, ToolRegistry
 from .verification import MissionVerificationPlanError, build_mission_verification_plan
 
@@ -675,6 +674,10 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
         "known_limits": list(catalog.known_limits),
         "entity_count": len(catalog.entities),
         "road_segment_count": len(catalog.road_segment_ids),
+        # 二维地标仅提供语义环境；可用于动作绑定的实体仍必须来自下方三维 entities。
+        "non_actionable_planar_landmarks": [
+            landmark.model_dump(mode="json") for landmark in catalog.planar_landmarks
+        ],
         "entities": [
             {
                 "entity_id": entity.entity_id,
@@ -1121,7 +1124,8 @@ def _bind_task_graph_action_contracts(
 
 
 # 功能：
-#   核查任务的地图、授权动作、参数、飞行边界和取送前置条件；目录存在不代表获得授权。
+#   核查地图、授权动作、参数、飞行边界及稳定悬停与挂载前置条件；取件不强制扫码。
+#   外部插件若明确提供身份验证动作，仍检查它的地点与顺序；目录存在不代表获得授权。
 # 输入：
 #   graph：待执行任务图。
 #   contract：本次任务授予的动作和目标范围。
@@ -1207,14 +1211,15 @@ def _validate_task_graph(
             ancestors.add(dependency)
             pending.extend(by_id[dependency].depends_on)
         verification_actions = {"delivery.scan-code", "delivery.verify-recipient"}
+        # 内置取件是悬停挂载，不要求身份动作。显式扩展仍不得把异地或事后验证充当前置。
         verification_task_ids = {
-            task_id
-            for task_id in ancestors
-            if by_id[task_id].action in verification_actions
-            and by_id[task_id].target_node == pickup.target_node
+            task.task_id for task in graph.nodes if task.action in verification_actions
         }
-        if not verification_task_ids:
-            raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PICKUP_VERIFICATION")
+        if any(task_id not in ancestors or by_id[task_id].target_node != pickup.target_node
+               for task_id in verification_task_ids):
+            raise MissionPreparationBlocked(
+                "TASK_GRAPH_PICKUP_VERIFICATION_LOCATION_OR_ORDER_INVALID"
+            )
         if "delivery.precontact-hold" in authorized_actions:
             precontact_task_ids = {
                 task_id
@@ -1224,11 +1229,9 @@ def _validate_task_graph(
             }
             if not precontact_task_ids:
                 raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PRECONTACT_HOLD")
-            if not any(
-                precontact_id in _task_ancestors(graph, verification_id)
-                for precontact_id in precontact_task_ids
-                for verification_id in verification_task_ids
-            ):
+            if any(not any(precontact_id in _task_ancestors(graph, verification_id)
+                           for precontact_id in precontact_task_ids)
+                   for verification_id in verification_task_ids):
                 raise MissionPreparationBlocked("TASK_GRAPH_PRECONTACT_ORDER_INVALID")
         if "delivery.confirm-custody" in authorized_actions:
             custody_tasks = [
@@ -1498,6 +1501,12 @@ def _route_operational_clearance_assessment(
         "rejected_segment_count": len(rejected_indexes),
         "rejected_segment_indexes": rejected_indexes[:256],
     }
+    # 几何通过不代表实际定位达标；将具体定位要求交给后续规划审查，而不是隐含假设。
+    from .collision import assess_tracking_corridor_budget
+
+    if clearance.minimum_clearance_m > 0 and math.isfinite(clearance.minimum_clearance_m):
+        assessment["localization_requirement"] = assess_tracking_corridor_budget(
+            clearance.minimum_clearance_m)
     return assessment
 
 
@@ -1911,6 +1920,7 @@ class MissionOrchestrator:
                     vehicle_height_m=vehicle.body_height_m,
                     waypoint_hold_seconds=config.waypoint_hold_seconds,
                     vehicle=self.vehicle,
+                    planning_phase="initial",
                 )
             )
         self.tool_registry = tool_registry
@@ -2355,6 +2365,8 @@ class MissionOrchestrator:
         context_store: ContextStore,
         evidence: EvidenceChain,
     ) -> None:
+        from .model_harness.progress import report_progress
+        report_progress("tools", f"工具 {receipt.tool_id} 已返回回执，正在记录结果并核对任务约束。", f"Tool {receipt.tool_id} returned a receipt; recording the result and checking task constraints.")
         payload = receipt.model_dump(mode="json")
         context_store.append(
             conversation_id, role="tool", event_type=f"tool.{receipt.tool_id}", payload=payload
@@ -2434,7 +2446,7 @@ class MissionOrchestrator:
         # 坐标基准或碰撞中心缺失不能等到多轮付费规划后才在导出步骤发现。
         try:
             load_map_runtime_bindings(
-                read_runtime_object(self.semantic_path, maximum_bytes=16 * 1024 * 1024)
+                read_map_semantic_object(self.semantic_path)
             )
             resolve_vehicle_collision_center_offset(self.vehicle)
         except ValueError as error:

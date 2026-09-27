@@ -65,6 +65,8 @@ def test_grouped_rays_and_complete_updates_match_scalar(seed):
     for ray, (snapshot, actual) in zip(rays, sampled, strict=True):
         expected = _scalar_keys(world, ray)
         assert actual == expected
+        assert all(type(key) is tuple and len(key) == 3
+                   and all(type(axis) is int for axis in key) for key in actual)
         assert snapshot.confidence == ray.confidence
         bounded = max(.5, min(.99, ray.confidence))
         strength = math.log(bounded / (1. - bounded))
@@ -78,6 +80,63 @@ def test_grouped_rays_and_complete_updates_match_scalar(seed):
                                            if k not in expected_hits)
     assert prepared.ray_count == len(rays)
     assert not world._evidence
+
+
+# 功能：
+#   检查正负体素边界两侧相邻浮点数、零长度射线和短射线填充均保持标量结果。
+# 输入：
+#   axis：贴近体素边界的坐标轴；direction：相邻浮点数所在方向。
+# 输出：
+#   无：所有键必须是独立的普通整数三元组。
+@pytest.mark.parametrize('axis', range(3))
+@pytest.mark.parametrize('direction', [-math.inf, math.inf])
+def test_record_conversion_preserves_boundary_and_zero_length(axis, direction):
+    world = _world()
+    rays = []
+    for value in (-.25, 0., .25):
+        coordinates = [0., 0., 0.]
+        coordinates[axis] = math.nextafter(value, direction)
+        endpoint = Vector3(**dict(zip('xyz', coordinates, strict=True)))
+        for origin in (endpoint, Vector3(x=-1., y=-1., z=-1.)):
+            rays.append(RangeRayObservation(origin_m=origin, endpoint_m=endpoint,
+                hit=True, confidence=.9, observed_at_monotonic_seconds=1.))
+    actual = [keys for _, keys in world._sample_scan(rays)]
+    assert actual == [_scalar_keys(world, ray) for ray in rays]
+    saved = [list(keys) for keys in actual]
+    rays[0].endpoint_m.x = 2.
+    assert actual == saved
+
+
+# 功能：
+#   同置信度内核与降低再升高的混合置信度均逐体素保留最大证据和首次插入顺序。
+# 输入：
+#   confidences：覆盖等值、降低、升高、零强度和命中冲突的序列。
+#   block_limit：批次键引用上限；monkeypatch：临时替换测试上限。
+# 输出：
+#   无。
+@pytest.mark.parametrize('block_limit', [4, 17, 65_536])
+@pytest.mark.parametrize("confidences", [(.92,) * 80, (.92, .7, .95, .5, .8, 1., 0.) * 12])
+def test_uniform_strength_fast_path_matches_ordered_scalar(confidences, block_limit, monkeypatch):
+    from dronedream_agent_core import local_world_model as module
+
+    monkeypatch.setattr(module, 'MAX_BATCH_POINTS', block_limit)
+    world = _world()
+    rays, frees, hits = [], {}, {}
+    for index, confidence in enumerate(confidences):
+        ray = RangeRayObservation(origin_m=Vector3(x=0, y=0, z=0),
+            endpoint_m=Vector3(x=1 + (index % 3) / 4, y=0, z=0),
+            hit=bool(index % 2), confidence=confidence, observed_at_monotonic_seconds=1.)
+        rays.append(ray)
+        keys = _scalar_keys(world, ray)
+        bounded = max(.5, min(.99, confidence))
+        strength = math.log(bounded / (1. - bounded))
+        for key in keys[:-1] if ray.hit else keys:
+            frees[key] = max(frees.get(key, 0.), strength)
+        if ray.hit:
+            hits[keys[-1]] = max(hits.get(keys[-1], 0.), strength)
+    prepared = world.prepare_scan(rays)
+    assert prepared.free_strengths == tuple((k, v) for k, v in frees.items() if k not in hits)
+    assert prepared.occupied_strengths == tuple(hits.items())
 
 
 # 功能：
