@@ -61,14 +61,39 @@ if ($bootstrap.models.Count -ne 7 -or $bootstrap.plugins.Count -lt 4) {
 }
 $mapVersions = @($bootstrap.asset_versions | Where-Object { $_.kind -eq "map" })
 $vehicleVersions = @($bootstrap.asset_versions | Where-Object { $_.kind -eq "vehicle" })
-if ($mapVersions.Count -ne 1 -or $vehicleVersions.Count -ne 1) {
-    throw "A fresh profile must contain exactly one qualified default map and aircraft."
+$defaultAssetCatalog = Get-Content -Raw -LiteralPath $defaultAssetIndex | ConvertFrom-Json
+$qualifiedPairs = @($defaultAssetCatalog.qualified_pairs)
+$expectedMapIds = @(
+    $qualifiedPairs | ForEach-Object {
+        @($_.packages | Where-Object { $_.kind -eq "map" })[0].asset_id
+    }
+)
+$actualMapIds = @($mapVersions | ForEach-Object { $_.asset_id } | Sort-Object)
+if ($qualifiedPairs.Count -ne 8 -or
+    $mapVersions.Count -ne $qualifiedPairs.Count -or
+    $vehicleVersions.Count -ne $qualifiedPairs.Count -or
+    (Compare-Object ($expectedMapIds | Sort-Object) $actualMapIds) -or
+    @($vehicleVersions | Where-Object { $_.asset_id -ne "dronedream.my-drone.v1" }).Count -ne 0 -or
+    @($mapVersions + $vehicleVersions | Where-Object { $_.maturity -ne "qualified" }).Count -ne 0) {
+    throw "Packaged default qualification catalog is incomplete: expected 8 qualified map/My Drone pairs."
 }
-if ($mapVersions[0].asset_id -ne "dronedream.school-map.v1" -or
-    $mapVersions[0].maturity -ne "qualified" -or
-    $vehicleVersions[0].asset_id -ne "dronedream.my-drone.v1" -or
-    $vehicleVersions[0].maturity -ne "qualified") {
-    throw "Packaged default assets are not the exact qualified School Map and My Drone pair."
+$schoolMap = @($mapVersions | Where-Object { $_.asset_id -eq "dronedream.school-map.v1" })
+$myDrone = @($vehicleVersions | Where-Object { $_.asset_id -eq "dronedream.my-drone.v1" })
+if ($schoolMap.Count -ne 1 -or $schoolMap[0].maturity -ne "qualified" -or
+    $myDrone.Count -lt 1 -or @($myDrone | Where-Object { $_.maturity -ne "qualified" }).Count -ne 0) {
+    throw "Packaged canonical School Map and My Drone assets are not qualified."
+}
+$pairCatalog = Invoke-RestMethod `
+    -Uri "http://127.0.0.1:$port/v1/asset-pair-catalog" `
+    -Headers $headers `
+    -TimeoutSec 10
+if ($pairCatalog.map_count -ne 8 -or
+    $pairCatalog.vehicle_count -ne 13 -or
+    $pairCatalog.pair_count -ne 104 -or
+    $pairCatalog.counts.qualified_builtin -ne 8 -or
+    $pairCatalog.counts.compatible_requires_qualification -ne 78 -or
+    $pairCatalog.counts.incompatible -ne 18) {
+    throw "Packaged map/aircraft compatibility catalog is incomplete."
 }
 Invoke-RestMethod `
     -Method Post `
@@ -82,6 +107,6 @@ if (-not $process.HasExited) {
 }
 Write-Output (
     "HEALTH=$($health.status) MODELS=$($bootstrap.models.Count) " +
-    "PLUGINS=$($bootstrap.plugins.Count) MAP=$($mapVersions[0].asset_id) " +
-    "VEHICLE=$($vehicleVersions[0].asset_id) ASSETS=qualified-defaults-and-external-import"
+    "PLUGINS=$($bootstrap.plugins.Count) QUALIFIED_PAIRS=$($qualifiedPairs.Count) " +
+    "CATALOG_PAIRS=$($pairCatalog.pair_count) ASSETS=canonical-catalog-and-external-import"
 )
