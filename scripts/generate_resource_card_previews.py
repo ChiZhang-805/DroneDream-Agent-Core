@@ -59,7 +59,7 @@ def _material_color(visual: ET.Element) -> tuple[int, int, int, int]:
     return tuple(max(0, min(255, round(channel * 255))) for channel in channels[:4])
 
 
-def _school_topdown(world_path: Path, output: Path) -> None:
+def _school_oblique(world_path: Path, output: Path) -> None:
     root = ET.parse(world_path).getroot()
     shapes: list[dict[str, object]] = []
     for model in root.findall(".//world/model"):
@@ -79,50 +79,66 @@ def _school_topdown(world_path: Path, output: Path) -> None:
                 shape: dict[str, object] | None = None
                 if box is not None and box.text:
                     sx, sy, sz = [float(value) for value in box.text.split()]
-                    shape = {"type": "box", "x": x, "y": y, "z": z + sz / 2, "sx": sx, "sy": sy, "yaw": yaw}
+                    shape = {"type": "box", "x": x, "y": y, "z": z + sz / 2, "sx": sx, "sy": sy, "sz": sz, "yaw": yaw}
                 elif cylinder is not None:
                     radius = float(cylinder.findtext("radius") or "0")
                     length = float(cylinder.findtext("length") or "0")
-                    shape = {"type": "circle", "x": x, "y": y, "z": z + length / 2, "radius": radius}
+                    shape = {"type": "cylinder", "x": x, "y": y, "z": z + length / 2, "height": length, "radius": radius}
                 elif sphere is not None and sphere.text:
                     radius = float(sphere.text)
-                    shape = {"type": "circle", "x": x, "y": y, "z": z + radius, "radius": radius}
+                    shape = {"type": "sphere", "x": x, "y": y, "z": z + radius, "height": radius * 2, "radius": radius}
                 if shape is not None:
                     shape["color"] = _material_color(visual)
                     shapes.append(shape)
     if not shapes:
         raise RuntimeError("SCHOOL_MAP_HAS_NO_RENDERABLE_GEOMETRY")
 
-    bounds: list[tuple[float, float]] = []
+    def project(x: float, y: float, z: float) -> tuple[float, float]:
+        return x - y, (x + y) * 0.43 - z * 1.28
+
+    projected_bounds: list[tuple[float, float]] = []
     for shape in shapes:
         radius = float(shape.get("radius", max(float(shape.get("sx", 0)), float(shape.get("sy", 0))) / 2))
-        bounds.extend([
-            (float(shape["x"]) - radius, float(shape["y"]) - radius),
-            (float(shape["x"]) + radius, float(shape["y"]) + radius),
-        ])
-    minimum_x, maximum_x = min(x for x, _ in bounds), max(x for x, _ in bounds)
-    minimum_y, maximum_y = min(y for _, y in bounds), max(y for _, y in bounds)
-    width, height, padding = 960, 560, 34
-    scale = min((width - 2 * padding) / (maximum_x - minimum_x), (height - 2 * padding) / (maximum_y - minimum_y))
+        half_height = float(shape.get("height", shape.get("sz", 0))) / 2
+        for dx, dy, dz in ((-radius, -radius, -half_height), (radius, -radius, -half_height), (radius, radius, half_height), (-radius, radius, half_height)):
+            projected_bounds.append(project(float(shape["x"]) + dx, float(shape["y"]) + dy, float(shape["z"]) + dz))
+    minimum_u, maximum_u = min(u for u, _ in projected_bounds), max(u for u, _ in projected_bounds)
+    minimum_v, maximum_v = min(v for _, v in projected_bounds), max(v for _, v in projected_bounds)
+    width, height, padding = 960, 560, 18
+    scale = min((width - 2 * padding) / (maximum_u - minimum_u), (height - 2 * padding) / (maximum_v - minimum_v))
 
-    def point(x: float, y: float) -> tuple[float, float]:
-        return padding + (x - minimum_x) * scale, height - padding - (y - minimum_y) * scale
+    def point(x: float, y: float, z: float) -> tuple[float, float]:
+        u, v = project(x, y, z)
+        return padding + (u - minimum_u) * scale, padding + (v - minimum_v) * scale
 
-    image = Image.new("RGB", (width, height), "#151922")
+    def shade(color: tuple[int, int, int, int], factor: float) -> tuple[int, int, int, int]:
+        return tuple(max(0, min(255, round(channel * factor))) for channel in color[:3]) + (color[3],)
+
+    image = Image.new("RGB", (width, height), "#111722")
     draw = ImageDraw.Draw(image, "RGBA")
-    for shape in sorted(shapes, key=lambda item: float(item["z"])):
+    for shape in sorted(shapes, key=lambda item: float(item["x"]) + float(item["y"]) + float(item["z"]) * 0.04):
         color = tuple(shape["color"])
-        if shape["type"] == "circle":
-            cx, cy = point(float(shape["x"]), float(shape["y"]))
-            radius = max(1.0, float(shape["radius"]) * scale)
-            draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=color, outline=(255, 255, 255, 35), width=1)
+        x, y, z = (float(shape[key]) for key in ("x", "y", "z"))
+        if shape["type"] == "box":
+            sx, sy, sz, yaw = (float(shape[key]) for key in ("sx", "sy", "sz", "yaw"))
+            cosine, sine = math.cos(yaw), math.sin(yaw)
+            bottom: list[tuple[float, float]] = []
+            top: list[tuple[float, float]] = []
+            for dx, dy in ((-sx / 2, -sy / 2), (sx / 2, -sy / 2), (sx / 2, sy / 2), (-sx / 2, sy / 2)):
+                px, py = x + dx * cosine - dy * sine, y + dx * sine + dy * cosine
+                bottom.append(point(px, py, z - sz / 2))
+                top.append(point(px, py, z + sz / 2))
+            draw.polygon([bottom[0], bottom[1], top[1], top[0]], fill=shade(color, 0.62), outline=(255, 255, 255, 24))
+            draw.polygon([bottom[1], bottom[2], top[2], top[1]], fill=shade(color, 0.78), outline=(255, 255, 255, 24))
+            draw.polygon(top, fill=shade(color, 1.04), outline=(255, 255, 255, 38))
             continue
-        x, y, sx, sy, yaw = (float(shape[key]) for key in ("x", "y", "sx", "sy", "yaw"))
-        cosine, sine = math.cos(yaw), math.sin(yaw)
-        polygon = []
-        for dx, dy in ((-sx / 2, -sy / 2), (sx / 2, -sy / 2), (sx / 2, sy / 2), (-sx / 2, sy / 2)):
-            polygon.append(point(x + dx * cosine - dy * sine, y + dx * sine + dy * cosine))
-        draw.polygon(polygon, fill=color, outline=(255, 255, 255, 28))
+        radius = float(shape["radius"])
+        shape_height = float(shape["height"])
+        base_z, top_z = z - shape_height / 2, z + shape_height / 2
+        ring_bottom = [point(x + math.cos(angle) * radius, y + math.sin(angle) * radius, base_z) for angle in [index * math.tau / 24 for index in range(24)]]
+        ring_top = [point(x + math.cos(angle) * radius, y + math.sin(angle) * radius, top_z) for angle in [index * math.tau / 24 for index in range(24)]]
+        draw.polygon(ring_bottom[6:19] + list(reversed(ring_top[6:19])), fill=shade(color, 0.7), outline=(255, 255, 255, 18))
+        draw.polygon(ring_top, fill=shade(color, 1.05), outline=(255, 255, 255, 32))
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output, "WEBP", quality=88, method=6)
 
@@ -230,7 +246,7 @@ def main() -> int:
     args = parser.parse_args()
 
     map_output = args.output / "maps"
-    _school_topdown(args.school_world, map_output / "school-map.webp")
+    _school_oblique(args.school_world, map_output / "school-map.webp")
     for key, (directory, filename) in MAP_SOURCES.items():
         source = args.map_source_root / directory / filename
         if not source.is_file():
