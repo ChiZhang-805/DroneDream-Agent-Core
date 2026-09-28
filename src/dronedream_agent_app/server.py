@@ -52,6 +52,7 @@ from . import __version__
 from .airspace_service import AirspaceRequest, AirspaceService
 from .asset_import_service import AssetImportService
 from .asset_issue_catalog import asset_job_issue_report
+from .asset_pair_catalog import asset_pair_catalog
 from .asset_qualification_service import (
     AssetQualificationService,
     AssetQualificationServiceError,
@@ -700,6 +701,16 @@ def create_app(
     @app.get("/v1/vehicle-resource-catalog", dependencies=[local])
     def list_vehicle_resources() -> dict[str, object]:
         return vehicle_resource_catalog()
+
+    # 功能：
+    #   返回全部默认地图与无人机的配对矩阵，明确区分兼容、待验收和已验收。
+    # 输入：
+    #   无。接口只返回当前版本中经过审查的只读组合策略。
+    # 输出：
+    #   catalog：8 张地图、13 架无人机及其 104 个精确组合。
+    @app.get("/v1/asset-pair-catalog", dependencies=[local])
+    def list_asset_pairs() -> dict[str, object]:
+        return asset_pair_catalog()
 
     @app.get("/v1/asset-source-adapters", dependencies=[local])
     def list_asset_source_adapters() -> list[dict[str, object]]:
