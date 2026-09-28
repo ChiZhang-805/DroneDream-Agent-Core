@@ -96,6 +96,7 @@ from .plugin_marketplace import PluginMarketplaceError, PluginMarketplaceService
 from .preparation_progress import PreparationProgress
 from .runtime_manager import RuntimeBridgeError, RuntimeManager
 from .storage import AppStore, AssetImportError
+from .vehicle_resource_catalog import vehicle_resource_catalog
 
 
 async def _stage_upload(
@@ -689,6 +690,16 @@ def create_app(
     @app.get("/v1/map-resource-catalog", dependencies=[local])
     def list_map_resources() -> dict[str, object]:
         return map_resource_catalog()
+
+    # 功能：
+    #   返回来源、许可和结构均已审查的默认无人机目录；目录准入不等于飞行认证。
+    # 输入：
+    #   无。接口只返回随当前版本发布的只读目录。
+    # 输出：
+    #   catalog：固定来源、预解析能力、依赖和地图配对前的就绪状态。
+    @app.get("/v1/vehicle-resource-catalog", dependencies=[local])
+    def list_vehicle_resources() -> dict[str, object]:
+        return vehicle_resource_catalog()
 
     @app.get("/v1/asset-source-adapters", dependencies=[local])
     def list_asset_source_adapters() -> list[dict[str, object]]:
