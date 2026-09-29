@@ -206,6 +206,55 @@ def test_grounded_model_root_uses_support_surface_and_vehicle_envelope() -> None
 
 
 # 功能：
+#   回归多层地图只把 terrain 当支撑面、导致三楼出生点被移到零层的错误。
+# 输入：
+#   无；构造地面、楼板、圆形停机坪和高于起飞点的屋顶。
+# 输出：
+#   None：模型根必须停在地图声明的三楼停机坪高度。
+def test_grounded_model_root_selects_declared_storey_launch_pad() -> None:
+    semantic = _semantic()
+    semantic["runtime_bindings"]["vehicle_spawn"] = {"x": -42.25, "y": 15.3, "z": 7.487}
+    semantic["runtime_bindings"]["mission_launch_waypoint"] = {
+        "x": -42.25,
+        "y": 15.3,
+        "z": 8.15,
+    }
+    semantic["runtime_collision_primitives"] = [
+        {
+            "name": "ground", "semantic": "terrain",
+            "center_x": -42.25, "center_y": 15.3, "center_z": -0.05,
+            "size_x": 100.0, "size_y": 100.0, "size_z": 0.1,
+        },
+        {
+            "name": "third-floor", "semantic": "floor",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 7.31,
+            "size_x": 20.0, "size_y": 20.0, "size_z": 0.22,
+        },
+        {
+            "name": "office-drone-launch-pad", "semantic": "launch-pad",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 7.46,
+            "radius_m": 0.85, "height_m": 0.08,
+        },
+        {
+            "name": "roof", "semantic": "roof",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 10.95,
+            "size_x": 20.0, "size_y": 20.0, "size_z": 0.2,
+        },
+    ]
+    vehicle = VehicleAsset.model_validate(
+        {
+            **_vehicle().model_dump(mode="python"),
+            "body_height_m": 0.43,
+            "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
+        }
+    )
+
+    root = resolve_grounded_vehicle_model_root(semantic, vehicle)
+
+    assert (root.x, root.y, root.z) == pytest.approx((-42.25, 15.3, 7.487))
+
+
+# 功能：
 #   确认已废弃的地图内车辆几何字段不能进入当前运行绑定，避免覆盖所选车辆参数。
 # 输入：
 #   tmp_path：临时语义文件目录。

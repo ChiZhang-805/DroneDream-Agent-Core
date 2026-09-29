@@ -51,3 +51,23 @@ def test_rejects_reusing_output(tmp_path):
     output.mkdir()
     with pytest.raises(FileExistsError):
         materialize_runtime_world_plugins(world_sdf=world, server_config=config, output=output)
+
+
+def test_materializes_relative_world_resources(tmp_path):
+    materials = tmp_path / "materials" / "textures"
+    materials.mkdir(parents=True)
+    texture = materials / "campus-surface.ppm"
+    texture.write_bytes(b"P6\n1 1\n255\n\x00\x80\x00")
+    world = _write(tmp_path / "world.sdf", """<sdf version='1.9'><world name='w'>
+      <plugin filename='physics' name='gz::sim::systems::Physics'/>
+    </world></sdf>""")
+    config = _write(tmp_path / "server.config", """<server_config><plugins>
+      <plugin filename='physics' name='gz::sim::systems::Physics'/>
+    </plugins></server_config>""")
+
+    _, receipt = materialize_runtime_world_plugins(
+        world_sdf=world, server_config=config, output=tmp_path / "runtime")
+
+    copied = tmp_path / "runtime" / "materials" / "textures" / texture.name
+    assert copied.read_bytes() == texture.read_bytes()
+    assert receipt["copied_resources"]["materials"]["file_count"] == 1

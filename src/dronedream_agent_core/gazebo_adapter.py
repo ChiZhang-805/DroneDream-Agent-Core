@@ -82,9 +82,8 @@ from .runtime_bindings import (
 )
 from .runtime_control_io import publish_runtime_json, read_runtime_object
 from .runtime_scheduling import InterpreterPauseMonitor, SimulationSourceIntervals
-from .simulation_camera_profile import prepare_camera_profile, validate_camera_profile_choice
 from .simulation_camera_clock import prepare_native_camera_clock
-from .simulation_runtime_world import materialize_runtime_world_plugins
+from .simulation_camera_profile import prepare_camera_profile, validate_camera_profile_choice
 from .simulation_dynamic_obstacles import (
     dynamic_observation,
     dynamic_positions,
@@ -101,6 +100,7 @@ from .simulation_render_cache import (
     verify_render_preparation,
 )
 from .simulation_render_replica import prepare_render_replica
+from .simulation_runtime_world import materialize_runtime_world_plugins
 from .simulation_sensor_frames import (
     collision_center_from_canonical,
     inspect_simulation_sensor_frames,
@@ -798,6 +798,75 @@ def _landing_contact_from_above(primitive, center, radius, half_height):
         and abs(local_y) + radius <= primitive["size_y"] / 2
     )
     return supported
+
+
+# 功能：
+#   在启动 Gazebo/PX4 前用与运行时监视器相同的保守包络检查出生点，避免把机体生成在楼板或墙体内部。
+# 输入：
+#   primitives：已验证地图碰撞基元；model_root、collision_offset：绑定后的模型根和碰撞中心偏移。
+#   radius、half_height：所选机型的保守包络。
+# 输出：
+#   receipt：可审计的最小净空和接触对象；检测到非支撑面重叠时抛出稳定错误码。
+def _spawn_clearance_preflight(
+    primitives,
+    *,
+    model_root,
+    collision_offset,
+    radius,
+    half_height,
+):
+    if len(model_root) != 3 or len(collision_offset) != 3:
+        raise SimulationRuntimeError("PREFLIGHT_SPAWN_CONTRACT_INVALID")
+    center = tuple(float(model_root[index]) + float(collision_offset[index]) for index in range(3))
+    if not all(math.isfinite(value) for value in center):
+        raise SimulationRuntimeError("PREFLIGHT_SPAWN_CONTRACT_INVALID")
+    _runtime_number(radius, "spawn radius", 0.001, 100)
+    _runtime_number(half_height, "spawn half height", 0.001, 100)
+    clearances = []
+    collisions = []
+    for primitive in primitives:
+        primitive = _validated_primitive(primitive)
+        clearance = _clearance(
+            center,
+            primitive,
+            radius_m=float(radius),
+            half_height_m=float(half_height),
+        )
+        if not math.isfinite(clearance):
+            raise SimulationRuntimeError("PREFLIGHT_SPAWN_CLEARANCE_INVALID")
+        name = str(primitive.get("name") or primitive.get("semantic") or "unnamed")
+        clearances.append((clearance, name))
+        if clearance < -0.001 and not (
+            _is_tolerated_landing_contact(
+                phase="PREFLIGHT", primitive_name=name, clearance_m=clearance
+            )
+            and _landing_contact_from_above(
+                primitive, center, float(radius), float(half_height)
+            )
+        ):
+            collisions.append((clearance, name))
+    if not clearances:
+        raise SimulationRuntimeError("PREFLIGHT_SPAWN_CLEARANCE_INVALID")
+    minimum_clearance, nearest_primitive = min(clearances, key=lambda item: item[0])
+    receipt = {
+        "schema_version": "dronedream.spawn-clearance-preflight.v1",
+        "accepted": not collisions,
+        "collision_center_world_enu_m": list(center),
+        "body_radius_m": float(radius),
+        "body_half_height_m": float(half_height),
+        "minimum_clearance_m": minimum_clearance,
+        "nearest_primitive": nearest_primitive,
+        "blocking_primitives": [
+            {"name": name, "clearance_m": clearance}
+            for clearance, name in sorted(collisions)
+        ],
+    }
+    if collisions:
+        clearance, name = min(collisions, key=lambda item: item[0])
+        raise SimulationRuntimeError(
+            f"PREFLIGHT_SPAWN_COLLISION:{name}:{clearance:.6f}"
+        )
+    return receipt
 
 
 # 功能：
@@ -3205,7 +3274,7 @@ def run_px4_gazebo_track(
         limit=64 * 1024**2,
         node_limit=2_000_000,
     )
-    bindings = load_map_runtime_bindings(semantic)
+    load_map_runtime_bindings(semantic)
     primitives = semantic["collision_primitives"]
     if not isinstance(primitives, list) or not primitives or len(primitives) > 100_000:
         raise SimulationRuntimeError("STATIC_COLLISION_GEOMETRY_INVALID")
@@ -3234,6 +3303,14 @@ def run_px4_gazebo_track(
         raise SimulationRuntimeError(
             "runtime spawn or collision offset differs from selected assets"
         )
+    spawn_clearance_receipt = _spawn_clearance_preflight(
+        primitives,
+        model_root=model_root,
+        collision_offset=(offset_east, offset_north, offset_up),
+        radius=diameter / 2.0,
+        half_height=height / 2.0,
+    )
+    _write_json(run_dir / "spawn-clearance-preflight.json", spawn_clearance_receipt)
     source_training = simulation_training_channel is not None or simulation_teacher_control
     payload_spawn = _payload_spawn_spec(
         vehicle_sdf=vehicle_sdf,

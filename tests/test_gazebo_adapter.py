@@ -54,12 +54,67 @@ from dronedream_agent_core.gazebo_adapter import (
     _ros_overlay_environment,
     _runtime_evidence_writer_complete,
     _runtime_snapshot_writer_complete,
+    _spawn_clearance_preflight,
     _terminal_completion_grace_allowed,
     _tracking_corridor_policy,
     _tracking_identity_required,
     _update_goal_progress,
     _with_runtime_cpu_affinity,
 )
+
+
+def test_spawn_clearance_preflight_rejects_floor_embedding() -> None:
+    primitives = [{
+        "name": "teaching-floor-1-slab",
+        "semantic": "floor",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.11,
+        "size_x": 20.0,
+        "size_y": 20.0,
+        "size_z": 0.22,
+    }]
+    with pytest.raises(SimulationRuntimeError, match="PREFLIGHT_SPAWN_COLLISION"):
+        _spawn_clearance_preflight(
+            primitives,
+            model_root=(0.0, 0.0, -0.013),
+            collision_offset=(0.0, 0.0, 0.228),
+            radius=0.35,
+            half_height=0.215,
+        )
+
+
+def test_spawn_clearance_preflight_accepts_storey_launch_pad() -> None:
+    primitives = [
+        {
+            "name": "teaching-floor-3-slab",
+            "semantic": "floor",
+            "center_x": 0.0,
+            "center_y": 0.0,
+            "center_z": 7.31,
+            "size_x": 20.0,
+            "size_y": 20.0,
+            "size_z": 0.22,
+        },
+        {
+            "name": "launch-pad",
+            "semantic": "launch-pad",
+            "center_x": 0.0,
+            "center_y": 0.0,
+            "center_z": 7.46,
+            "radius_m": 1.0,
+            "height_m": 0.08,
+        },
+    ]
+    receipt = _spawn_clearance_preflight(
+        primitives,
+        model_root=(0.0, 0.0, 7.487),
+        collision_offset=(0.0, 0.0, 0.228),
+        radius=0.35,
+        half_height=0.215,
+    )
+    assert receipt["accepted"] is True
+    assert receipt["minimum_clearance_m"] == pytest.approx(0.0)
 
 
 def test_runtime_evidence_writer_gate_recounts_persisted_records() -> None:

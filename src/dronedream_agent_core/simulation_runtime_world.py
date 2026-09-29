@@ -4,10 +4,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .plugin_files import read_plugin_file, check_plain_plugin_path
+from .plugin_files import check_plain_plugin_path, read_plugin_file
 from .xml_values import parse_xml
 
 _CUSTOM_MAGNETOMETER = "dronedream::Magnetometer"
@@ -72,6 +73,30 @@ def materialize_runtime_world_plugins(*, world_sdf: Path, server_config: Path,
     output.mkdir(parents=True)
     runtime_world = output / "world.sdf"
     world_tree.write(runtime_world, encoding="utf-8", xml_declaration=True)
+    # Relative Gazebo resources are resolved from the run-owned world
+    # directory.  Freezing only world.sdf drops textures and meshes that were
+    # present beside the qualified source world, so freeze the bounded resource
+    # trees into the same run-owned directory as well.
+    copied_resources: dict[str, dict[str, int]] = {}
+    for directory_name in ("materials", "meshes", "media", "textures"):
+        source_directory = world_sdf.parent / directory_name
+        if not source_directory.exists():
+            continue
+        check_plain_plugin_path(source_directory)
+        entries = list(source_directory.rglob("*"))
+        files = sorted(path for path in entries if path.is_file())
+        if len(entries) > 2_000:
+            raise ValueError("SIMULATION_RUNTIME_WORLD_RESOURCE_LIMIT_EXCEEDED")
+        if any(path.is_symlink() for path in entries):
+            raise ValueError("SIMULATION_RUNTIME_WORLD_RESOURCE_LINK_FORBIDDEN")
+        total_bytes = sum(path.stat().st_size for path in files)
+        if total_bytes > 256 * 1024**2:
+            raise ValueError("SIMULATION_RUNTIME_WORLD_RESOURCE_LIMIT_EXCEEDED")
+        shutil.copytree(source_directory, output / directory_name, symlinks=False)
+        copied_resources[directory_name] = {
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+        }
     result: dict[str, object] = {
         "schema_version": "dronedream.simulation-runtime-world.v1",
         "source_world_sha256": _sha(world_raw),
@@ -80,6 +105,7 @@ def materialize_runtime_world_plugins(*, world_sdf: Path, server_config: Path,
         "inserted_plugins": inserted,
         "required_custom_plugins": required_custom,
         "stock_magnetometer_removed": custom_magnetometer,
+        "copied_resources": copied_resources,
         "qualification_granted": False,
     }
     (output / "runtime-world.json").write_text(
