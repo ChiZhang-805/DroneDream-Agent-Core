@@ -16,6 +16,7 @@ from contextlib import contextmanager
 
 from .control_timing import (
     LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
     LOCAL_CONTROL_PERIOD_SECONDS,
     LOCAL_DISPATCH_RESERVE_MS,
 )
@@ -356,7 +357,8 @@ class SensorArrivalScheduler:
                 or now_monotonic < 0 or sample_monotonic < 0):
             return False
         eligible = bool(
-            0 <= now_monotonic - sample_monotonic <= LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+            0 <= now_monotonic - sample_monotonic
+            <= LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
             and sample_monotonic > processed_sample_monotonic
             and now_monotonic >= self._last_attempt + self._period
         )

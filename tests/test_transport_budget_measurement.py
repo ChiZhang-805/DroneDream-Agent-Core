@@ -42,14 +42,66 @@ def test_measured_reserve_increases_without_renewing_input(combined, tmp_path):
     )
     assert asyncio.run(executor._dispatch_motion_or_brake(**kwargs)) == 1140
     reserve = args._measured_transport_reserve_ms
-    assert 45 <= reserve <= 46
+    assert reserve == 52
     assert command.valid_until_unix_ms == 1200
     assert events[0]["details"]["deadline_extended"] is False
     assert events[0]["details"]["elapsed_monotonic_ms"] == pytest.approx(40.0)
+    assert events[0]["details"]["elapsed_wall_ms"] == 40
     cost[0] = 0.001
     asyncio.run(executor._dispatch_motion_or_brake(**kwargs))
     assert args._measured_transport_reserve_ms == reserve
     assert len(events) == 1
+
+
+# 功能：实测传输余量包含毫秒取整和调度余量，短租约在物理发送前转为保护性制动。
+# 输入：一次 43.4 毫秒发送以及下一条仅剩 54 毫秒的命令；输出：学习到 56 毫秒余量且不再发送第二条运动。
+def test_fractional_transport_spike_is_reserved_before_next_physical_send(tmp_path):
+    executor = _load_executor()
+    _, inputs = evidence()
+    command = RuntimeLocalSafetyCommand.model_validate(inputs["command_records"][0]["command"])
+    utc, monotonic, calls = [1.100], [10.0], []
+    executor.time = SimpleNamespace(time=lambda: utc[0])
+    executor.asyncio = SimpleNamespace(
+        get_running_loop=lambda: SimpleNamespace(time=lambda: monotonic[0])
+    )
+    executor._record_local_safety_executor_event = lambda *_a, **_kw: None
+
+    async def send(*_args):
+        calls.append("motion")
+        utc[0] += 0.0434
+        monotonic[0] += 0.0434
+
+    args = SimpleNamespace()
+    kwargs = dict(
+        args=args,
+        base=SimpleNamespace(
+            Setpoint=lambda **v: SimpleNamespace(**v),
+            VelocitySetpoint=lambda **v: SimpleNamespace(**v),
+        ),
+        client=SimpleNamespace(set_velocity_ned=send),
+        setpoint=SimpleNamespace(yaw_deg=0.0),
+        velocity_ned_mps=(0.2, 0.0, 0.0),
+        command=command,
+        coordinate_contract=None,
+        phase_path=tmp_path / "phase.json",
+    )
+    assert asyncio.run(executor._dispatch_motion_or_brake(**kwargs)) == 1143
+    assert args._measured_transport_reserve_ms == 56
+
+    # The next command has 54 ms remaining.  The real executor enters its
+    # existing bounded hold path instead of starting another late transport.
+    short = command.model_copy(update={"valid_until_unix_ms": 1197})
+    executor._refresh_px4_identity_telemetry = lambda **_: _async_value(SimpleNamespace(
+        north_m=0.0, east_m=0.0, down_m=-1.0,
+        north_m_s=0.0, east_m_s=0.0, down_m_s=0.0,
+    ))
+    executor._hold_heading_or_brake = lambda **_: _async_value(None)
+    assert asyncio.run(executor._dispatch_motion_or_brake(**{**kwargs, "command": short})) is None
+    assert calls == ["motion"]
+
+
+async def _async_value(value):
+    return value
 
 
 # 功能：自适应余量只会更早拒发，不允许缩短基础预算或伪造类型。

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from dronedream_plugin_sdk.protocol import copy_json
 
+from .control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
 from .hashing import sha256_json
 from .localization_evidence import position_variance_bound_m2
 from .native_odometry_source import (
@@ -129,7 +130,9 @@ class NativeImagePoseBuffer:
             raise ValueError("IMAGE_SOURCE_MICROSECOND_STAMP_REQUIRED")
         if self._invalidated or self._history is None:
             raise ValueError("IMAGE_SOURCE_HISTORY_UNAVAILABLE")
-        if not 0 <= now_unix_ms - image_received_unix_ms <= 250:
+        if not 0 <= now_unix_ms - image_received_unix_ms <= round(
+            LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000
+        ):
             raise ValueError("IMAGE_SOURCE_RECEIPT_EXPIRED")
         maximum_range_m = _real(maximum_range_m)
         maximum_acceleration_mps2 = _real(maximum_acceleration_mps2)
@@ -141,7 +144,9 @@ class NativeImagePoseBuffer:
             available_at_monotonic=now_monotonic,
         )
         received_ms, fields_json = self._records[packet.timestamp_us]
-        if not 0 <= now_unix_ms - received_ms <= 250:
+        if not 0 <= now_unix_ms - received_ms <= round(
+            LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000
+        ):
             raise ValueError("IMAGE_SOURCE_ODOMETRY_EXPIRED")
         position, orientation, velocity = source_pose_in_map(
             packet, binding=self._binding, binding_sha256=self._binding_hash

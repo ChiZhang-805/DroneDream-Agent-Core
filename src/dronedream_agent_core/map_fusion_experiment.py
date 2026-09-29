@@ -16,6 +16,16 @@ from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin
 from .runtime_control_io import publish_runtime_json
 
 
+# 功能：只在真实后备定位已经存在且视觉融合完成初始化后，允许辅助融合退化退出。
+# 输入：三个显式布尔条件；输出：是否可由原生定位、路线和深度安全链继续运行。
+def map_fusion_failure_is_optional(*, independent_route_control,
+                                   gnss_position_fallback, initialized):
+    if any(type(value) is not bool for value in (
+            independent_route_control, gnss_position_fallback, initialized)):
+        raise TypeError("FUSION_DEGRADATION_STATE_INVALID")
+    return independent_route_control and gnss_position_fallback and initialized
+
+
 # 功能：为独占的仿真实验绑定实际地图、源钟和输出位置，不使用开发机硬编码路径。
 # 输入：run_dir：新实验 simulation 目录；world_sdf、semantic：原始地图资产。
 # 输出：新的输入文件和契约，明确不授予定位或飞行资格。
@@ -244,11 +254,21 @@ class MapFusionExperimentMixin:
                 contract=LOCALIZATION_SOURCE_CONTRACT,
             )
             await self.verify_disarmed_before_preflight(timeout_seconds=3.0)
+            allow_gnss_position_fallback = (
+                os.environ.get("DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK") == "1"
+            )
             parameters = [
                 ("EKF2_EV_NOISE_MD", "int", 0),
                 ("EKF2_EVP_NOISE", "float", 0.03),
                 ("EKF2_EVA_NOISE", "float", 0.01),
-                ("EKF2_GPS_CTRL", "int", 4),
+                # Bit 4 retains GNSS velocity.  Bits 1 and 2 additionally
+                # retain horizontal/vertical position when a healthy GNSS
+                # source exists.  Product qualification enables that bounded
+                # fallback so a temporary lack of visual map features is not
+                # mistaken for total localization loss.  The standalone map
+                # fusion experiment keeps its historical vision-only default
+                # unless the orchestrator explicitly enables the fallback.
+                ("EKF2_GPS_CTRL", "int", 7 if allow_gnss_position_fallback else 4),
                 # 该输入是固定起点原点的局部 NED 高度，不是海拔高度。
                 # 已初始化全球原点后切到视觉高度参考会触发绝对高度重置，
                 # 使局部 z 与固定地图绑定分离。保留气压高度基准，视觉只作位置辅助，
@@ -258,6 +278,7 @@ class MapFusionExperimentMixin:
                 ("EKF2_EV_CTRL", "int", 3),
             ]
             report["parameters"] = []
+            report["gnss_position_fallback_enabled"] = allow_gnss_position_fallback
             system = self._require_system()
             for name, kind, value in parameters:
                 before = await asyncio.wait_for(
@@ -343,6 +364,24 @@ class MapFusionExperimentMixin:
         except Exception as error:
             report["issue"] = type(error).__name__ + ":" + str(error)[:300]
             report["traceback"] = traceback.format_exc()
+            optional = map_fusion_failure_is_optional(
+                independent_route_control=(
+                    os.environ.get("DRONEDREAM_INDEPENDENT_ROUTE_CONTROL") == "1"
+                ),
+                gnss_position_fallback=(
+                    os.environ.get("DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK") == "1"
+                ),
+                initialized=self._fusion_ready.is_set(),
+            )
+            if optional:
+                # Map correction is an auxiliary input after initialization.
+                # Stop only that input and retain an auditable reason; PX4
+                # GNSS/IMU, the verified route and live depth safety remain the
+                # independent motion gates.  This never grants qualification.
+                report["degraded_to_native_localization"] = True
+                report["degradation_reason"] = report["issue"]
+                report["motion_permission_granted"] = False
+                return
             # 先保存故障现场；所有者收到停止请求后可能立刻取消本任务。
             publish_runtime_json(output, report, maximum_bytes=16 * 1024 * 1024)
             abort = run / "live_abort.request.json"

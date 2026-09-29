@@ -69,6 +69,18 @@ def test_actual_executor_spends_live_budget_without_increasing_any_tracking_limi
     assert args._tracking_segment_policies[1]["tracking_rejoin_tolerance_m"] == .04
 
 
+# 功能：验证起飞前只核验即将进入的第一段，远端窄段留待其真正激活时重新评估。
+# 输入：无。
+# 输出：None：不返回业务数据。
+def test_native_preflight_uses_initial_segment_instead_of_remote_route_minimum():
+    executor = _load_executor()
+    args = SimpleNamespace(_tracking_segment_policies=(
+        {"minimum_route_clearance_m": 1.16},
+        {"minimum_route_clearance_m": .487},
+    ))
+    assert executor._native_route_preflight_clearance(args) == pytest.approx(1.16)
+
+
 # 功能：
 #   验证缺少可用实测净空的路段不能通过原生飞行预检。
 # 输入：

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from dronedream_plugin_sdk.protocol import copy_json, decode_json
 
+from .control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
 from .native_flight_state import native_flight_state_sample
 from .native_image_pose import NativeImagePoseBuffer
 from .native_pose import NativeMapPose, native_map_pose
@@ -389,7 +390,8 @@ class NativeStateBuffer:
             history = tuple(self._history)
             image_epoch_start = self._image_epoch_started_at_unix_ms
         for image_time in sorted(set(received_times), reverse=True):
-            if (not 0 <= now_unix_ms - image_time <= 250
+            if (not 0 <= now_unix_ms - image_time <= round(
+                    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
                     or image_time < image_epoch_start):
                 continue
             # 先排除时间上绝不可能匹配的历史，再完整重验剩余编码；
@@ -431,7 +433,8 @@ class NativeStateBuffer:
     ) -> AlignedNativePose:
         _validate_consumer_time(now_unix_ms)
         _validate_consumer_time(image_received_at_unix_ms)
-        if (not 0 <= now_unix_ms - image_received_at_unix_ms <= 250
+        if (not 0 <= now_unix_ms - image_received_at_unix_ms <= round(
+                LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
                 or type(maximum_skew_ms) is not int or not 0 < maximum_skew_ms <= 50):
             raise ValueError("IMAGE_NATIVE_ALIGNMENT_TIME_INVALID")
         _validate_alignment_limits((maximum_range_m, maximum_acceleration_mps2))

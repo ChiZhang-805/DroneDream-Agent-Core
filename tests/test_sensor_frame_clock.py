@@ -13,7 +13,7 @@ EPOCH = "a" * 64
 
 
 # 功能：原生预更新时钟必须显式选择身份，并保留实际原始帧龄穿过模型边界。
-# 输入：临时图像目录。输出：验证后的元数据仍在原 250 毫秒截止内，而不是接收后续期。
+# 输入：临时图像目录。输出：验证后的元数据仍在原 350 毫秒截止内，而不是接收后续期。
 def test_native_preupdate_clock_is_pinned_and_reaches_model_deadline(tmp_path):
     from dronedream_agent_core.model_image_cache import PreparedModelImage
     from dronedream_agent_core.observation_validity import image_control_deadline
@@ -26,8 +26,8 @@ def test_native_preupdate_clock_is_pinned_and_reaches_model_deadline(tmp_path):
                                   b"png", b"rgb", "c"*64, "d"*64, value)
     payload = prepared.multimodal(tmp_path)
     assert payload["timestamp_basis"] == "native-simulation-preupdate"
-    assert image_control_deadline(payload, now_unix_ms=1100) == 1250
-    assert image_control_deadline(payload, now_unix_ms=1250) == 0
+    assert image_control_deadline(payload, now_unix_ms=1100) == 1350
+    assert image_control_deadline(payload, now_unix_ms=1350) == 0
     for clock in (SensorFrameClock(), SensorFrameClock(expected_scene_epoch=EPOCH)):
         with pytest.raises(ValueError):
             admit(clock, message)

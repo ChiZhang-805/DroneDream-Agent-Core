@@ -16,9 +16,9 @@ int main() {
   Check(!c.Add(1, 1200000001, 2200000001, false));
   Check(!c.Add(3, 1200000002, 2200000002, false));
   dronedream::CaptureClock capacity;
-  for (int i=1; i<=4097; ++i) Check(capacity.Add(i, 1000000000+i, 2000000000+i, false));
-  Check(!capacity.Find(1, 1000005000, 2000005000));
-  Check(capacity.Find(4097, 1000005000, 2000005000).has_value());
+  for (int i=1; i<=65537; ++i) Check(capacity.Add(i, 1000000000+i, 2000000000+i, false));
+  Check(!capacity.Find(1, 1000070000, 2000070000));
+  Check(capacity.Find(65537, 1000070000, 2000070000).has_value());
   // 功能：一次墙钟偏移不永久停流，但跳变前及跳变当帧均不得获得新租期。
   dronedream::CaptureClock recovery;
   Check(recovery.Add(1, 1000000000, 2000000000, false));

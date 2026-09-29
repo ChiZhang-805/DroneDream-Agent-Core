@@ -166,6 +166,8 @@ _LOCAL_CONTROL_PHASES = {
 }
 _ENCLOSING_EXECUTOR_STATE_KEY = "enclosing_executor_state"
 _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS = 0.05
+_CONTROL_TRANSPORT_INITIAL_RESERVE_MS = LOCAL_TRANSPORT_BUDGET_MS
+_CONTROL_TRANSPORT_HEADROOM_MS = 12
 _STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M = 0.08
 _CONTROLLED_LANDING_DESCENT_RATE_MPS = 0.18
 _CONTROLLED_LANDING_HANDOFF_HEIGHT_M = 0.08
@@ -3856,11 +3858,20 @@ def _publish_local_safety_target(
     tracking_recovery_active: bool = False,
     decision_trigger: str | None = None,
     recovery_episode_id: str | None = None,
+    tracking_segment_index: int | None = None,
+    qualified_route_clearance_m: float | None = None,
 ) -> None:
     if path is None:
         return
     if control_profile not in {"cruise", "precision"}:
         raise ValueError(f"unsupported navigation control profile: {control_profile}")
+    if (tracking_segment_index is None) != (qualified_route_clearance_m is None):
+        raise ValueError("route localization context must be complete")
+    if tracking_segment_index is not None:
+        if type(tracking_segment_index) is not int or tracking_segment_index < 0:
+            raise ValueError("route tracking segment index is invalid")
+        if not finite_positive_number(qualified_route_clearance_m):
+            raise ValueError("route tracking clearance is invalid")
     target = _setpoint_world_enu(setpoint, coordinate_contract)
     effective_navigation_goal = navigation_goal_position_m or target
     effective_navigation_goal_id = navigation_goal_id
@@ -3884,6 +3895,8 @@ def _publish_local_safety_target(
             "tracking_recovery_active": tracking_recovery_active,
             "decision_trigger": decision_trigger,
             "recovery_episode_id": recovery_episode_id,
+            "tracking_segment_index": tracking_segment_index,
+            "qualified_route_clearance_m": qualified_route_clearance_m,
             "updated_at_unix_ms": int(time.time() * 1_000),
         },
     )
@@ -3909,7 +3922,10 @@ def _read_local_safety_command(args: argparse.Namespace) -> RuntimeLocalSafetyCo
         # command even when no further scheduling wait precedes transport.
         # The sender rechecks the transport budget immediately before I/O.
         reserve = (
-            LOCAL_TRANSPORT_BUDGET_MS
+            max(
+                _CONTROL_TRANSPORT_INITIAL_RESERVE_MS,
+                getattr(args, "_measured_transport_reserve_ms", 0),
+            )
             if command.decision.action in {"continue", "slow", "replan"}
             and (
                 getattr(args, "simulation_teacher_control", False)
@@ -3958,7 +3974,10 @@ def _read_local_safety_command(args: argparse.Namespace) -> RuntimeLocalSafetyCo
                     or command.navigation_control_authority == "model-required"
                 )
                 and command.valid_until_unix_ms - int(time.time() * 1000)
-                < LOCAL_TRANSPORT_BUDGET_MS
+                < max(
+                    _CONTROL_TRANSPORT_INITIAL_RESERVE_MS,
+                    getattr(args, "_measured_transport_reserve_ms", 0),
+                )
             ):
                 return None
             return command
@@ -4792,7 +4811,10 @@ async def _dispatch_motion_or_brake(
     )
     # 本次运行实测的较慢传输会提高后续预留，不延长原命令的期限。
     # 251 ms 大于整个 250 ms 输入寿命，因此过慢传输不能继续授权运动。
-    reserve = getattr(args, "_measured_transport_reserve_ms", LOCAL_TRANSPORT_BUDGET_MS)
+    reserve = max(
+        _CONTROL_TRANSPORT_INITIAL_RESERVE_MS,
+        getattr(args, "_measured_transport_reserve_ms", 0),
+    )
     if type(reserve) is not int or not LOCAL_TRANSPORT_BUDGET_MS <= reserve <= 251:
         raise ValueError("CONTROL_TRANSPORT_RESERVE_INVALID")
     dispatch_started = asyncio.get_running_loop().time()
@@ -4886,7 +4908,19 @@ async def _dispatch_motion_or_brake(
     elapsed_ms = (asyncio.get_running_loop().time() - dispatch_started) * 1000
     if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
         raise UserDirectedLanding("CONTROL_TRANSPORT_MONOTONIC_CLOCK_INVALID")
-    next_reserve = max(reserve, min(251, math.ceil(elapsed_ms) + 5))
+    # The adapter return is observed on two clocks.  UTC is quantized to whole
+    # milliseconds while the monotonic clock can also include a scheduler
+    # handoff after the transport coroutine wakes.  Budget the slower observed
+    # duration plus explicit headroom; otherwise a 43.4 ms send admitted with a
+    # 43 ms reserve can be recorded one millisecond beyond an immutable input
+    # deadline.  This never extends that deadline: a short lease is held before
+    # dispatch and an actually late acceptance still fails closed below.
+    wall_elapsed_ms = max(0, accepted_at - dispatch_started_ms)
+    measured_elapsed_ms = max(elapsed_ms, float(wall_elapsed_ms))
+    next_reserve = max(
+        reserve,
+        min(251, math.ceil(measured_elapsed_ms) + _CONTROL_TRANSPORT_HEADROOM_MS),
+    )
     args._measured_transport_reserve_ms = next_reserve
     if next_reserve > reserve or (
         accepted_at is not None and accepted_at > command.valid_until_unix_ms
@@ -4897,6 +4931,7 @@ async def _dispatch_motion_or_brake(
             "accepted_at_unix_ms": accepted_at,
             "command_valid_until_unix_ms": command.valid_until_unix_ms,
             "elapsed_monotonic_ms": elapsed_ms,
+            "elapsed_wall_ms": wall_elapsed_ms,
             "reserved_ms": reserve,
             "next_reserved_ms": next_reserve,
             "deadline_extended": False,
@@ -5366,6 +5401,10 @@ async def _apply_local_safety(
     args._last_route_feedforward_lead_m = 0.0
     args._last_applied_velocity_feedforward_ned_mps = planned_velocity_ned_mps
 
+    tracking_segment_index, qualified_route_clearance_m = (
+        _tracking_localization_context_for_goal(args, navigation_goal_id)
+    )
+
     _require_live_navigation_goal(
         navigation_goal_deadline_monotonic,
         asyncio.get_running_loop().time(),
@@ -5381,6 +5420,8 @@ async def _apply_local_safety(
         tracking_recovery_active=tracking_recovery_active,
         decision_trigger=decision_trigger,
         recovery_episode_id=recovery_episode_id,
+        tracking_segment_index=tracking_segment_index,
+        qualified_route_clearance_m=qualified_route_clearance_m,
     )
     if args.local_safety_command is None:
         await _send_position_with_velocity(
@@ -6257,6 +6298,8 @@ async def _apply_local_safety(
             tracking_recovery_active=tracking_recovery_active,
             decision_trigger=decision_trigger,
             recovery_episode_id=recovery_episode_id,
+            tracking_segment_index=tracking_segment_index,
+            qualified_route_clearance_m=qualified_route_clearance_m,
         )
 
 
@@ -6294,6 +6337,32 @@ def _tracking_limits_for_context(
         float(policy["tracking_rejoin_tolerance_m"]),
         segment_index,
     )
+
+
+# 功能：
+#   将当前原路线目标绑定到同一份哈希验证分段策略中的实测净空，供实时定位预算逐段复核。
+# 输入：
+#   args：持有冻结分段策略的执行配置；navigation_goal_id：当前稳定语义目标身份。
+# 输出：
+#   segment_index、clearance_m：原路线分段和实测净空；固定目标或替换路线返回两个 None。
+def _tracking_localization_context_for_goal(
+    args: argparse.Namespace,
+    navigation_goal_id: str | None,
+) -> tuple[int | None, float | None]:
+    prefix = "source-waypoint-"
+    if not isinstance(navigation_goal_id, str) or not navigation_goal_id.startswith(prefix):
+        return None, None
+    try:
+        segment_index = int(navigation_goal_id[len(prefix) :]) - 1
+    except ValueError:
+        return None, None
+    policies = getattr(args, "_tracking_segment_policies", ())
+    if segment_index < 0 or segment_index >= len(policies):
+        return None, None
+    clearance = policies[segment_index].get("minimum_route_clearance_m")
+    if not finite_positive_number(clearance):
+        raise ValueError("ACTIVE_ROUTE_SEGMENT_MEASURED_CLEARANCE_REQUIRED")
+    return segment_index, float(clearance)
 
 
 # 功能：
@@ -8890,18 +8959,24 @@ def _load_tracking_segment_policies(
 
 
 # 功能：
-#   从每段已绑定的实测净空中选出最紧限制，拒绝缺失测量的原生起飞请求。
+#   读取起飞后将实际进入的第一段实测净空；后续每段在进入时分别应用自己的预算。
 # 输入：
 #   args：含冻结分段策略的执行配置。
 # 输出：
-#   clearance_m：所有路线段的最小实测净空，单位米。
+#   clearance_m：第一条实际运动段的实测净空，单位米。
 def _native_route_preflight_clearance(args: argparse.Namespace) -> float:
-    """Native motion needs the measured, track-bound route corridor, not a constant."""
+    """Validate the measured corridor the aircraft will enter immediately.
+
+    A whole-route minimum is not a valid pre-arm gate: it can reject a safe
+    takeoff because of a narrow corridor many stages later, before the vehicle
+    has had an opportunity to improve localization or replan.  Every later
+    segment remains bound to its own signed policy and is checked when active.
+    """
     policies = getattr(args, "_tracking_segment_policies", ())
     values = [p.get("minimum_route_clearance_m") for p in policies]
     if not values or not all(finite_positive_number(v) for v in values):
         raise ValueError("NATIVE_ROUTE_MEASURED_CLEARANCE_REQUIRED_BEFORE_ARM")
-    return min(values)
+    return float(values[0])
 
 
 # 功能：
@@ -9126,6 +9201,10 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         "setpoint_count": len(plan.schedule),
         "rate_hz": args.setpoint_rate_hz,
         "status": "running",
+        # Deterministic independent-route control consumes geometry, depth and
+        # native state directly; model feature tensors are not in its control
+        # path and therefore are not a completion prerequisite.
+        "perception_realtime_features_required": not args.independent_route_control,
         "takeoff_gate": {"status": "not_started"},
         "preflight_connection": {},
         "checkpoints": [],
@@ -9458,6 +9537,11 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                     evidence=timing.setdefault("native_perception_preflight_diagnostics", {}),
                     stable_window_ms=PREFLIGHT_STABLE_WINDOW_MS,
                     require_source_timestamps=True,
+                    require_realtime_features=(
+                        not args.independent_route_control
+                        and (args.require_model_control_authority
+                             or args.simulation_teacher_control)
+                    ),
                 ),
                 abort_check=abort_check,
             )
@@ -9487,6 +9571,11 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                     evidence=timing.setdefault("native_perception_offboard_diagnostics", {}),
                     stable_window_ms=PREFLIGHT_STABLE_WINDOW_MS,
                     require_source_timestamps=True,
+                    require_realtime_features=(
+                        not args.independent_route_control
+                        and (args.require_model_control_authority
+                             or args.simulation_teacher_control)
+                    ),
                 ),
                 abort_check=abort_check,
             )
@@ -10226,6 +10315,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             track_sha256=active_track_sha256,
             completed_at_unix_ms=int(time.time() * 1000),
             receiver=getattr(args, "_perception_health_receiver", None),
+            realtime_features_required=not args.independent_route_control,
         )
         _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
         timing["controlled_land_start_t"] = time.monotonic() - started
@@ -10276,6 +10366,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 track_sha256=active_track_sha256,
                 completed_at_unix_ms=int(time.time() * 1000),
                 receiver=getattr(args, "_perception_health_receiver", None),
+                realtime_features_required=not args.independent_route_control,
             )
             _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
             timing["controlled_land_start_t"] = time.monotonic() - started

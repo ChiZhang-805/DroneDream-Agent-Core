@@ -124,6 +124,115 @@ def test_command_binds_tracking_recovery_mode_and_target() -> None:
 
 
 # 功能：
+#   验证已资格化路线单独承担绝对定位误差，局部深度时效只扣图像/状态相对对时误差。
+# 输入：
+#   无：复现真实飞行中对齐方差 0.05、原生定位方差 0.011 的保守组合。
+# 输出：
+#   None：充足走廊正常运动，暂时欠定位预算时低速衔接，物理过窄仍悬停。
+def test_qualified_route_separates_absolute_localization_from_relative_alignment() -> None:
+    from dronedream_agent_core.hashing import sha256_json
+
+    observation = RuntimeLocalSafetyObservation(
+        sequence=81,
+        observed_at_unix_ms=10_000,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.24,
+        localization_covariance_m2=0.05,
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=2.0, y=0.0, z=1.0),
+    )
+    relative_margin_m = 3.0 * (math.sqrt(0.05) - math.sqrt(0.011))
+    funded = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.76,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert funded.decision.action == "continue"
+    assert funded.observation_budget.uncertainty_margin_m == pytest.approx(relative_margin_m)
+
+    degraded = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.30,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert degraded.decision.action in {"continue", "slow", "replan"}
+    degraded_velocity = degraded.decision.selected_velocity_mps
+    assert math.hypot(degraded_velocity.x, degraded_velocity.y, degraded_velocity.z) <= 0.120001
+    assert degraded.observation_sha256 == sha256_json(observation)
+
+    structurally_narrow = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.08,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert structurally_narrow.decision.action == "hold"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"qualified_route_clearance_m": 0.76},
+        {
+            "qualified_route_clearance_m": 0.76,
+            "current_localization_covariance_m2": 0.011,
+        },
+        {
+            "qualified_route_clearance_m": 0.76,
+            "current_localization_covariance_m2": 0.011,
+            "relative_perception_uncertainty_margin_m": 0.8,
+        },
+    ],
+)
+def test_route_localization_budget_rejects_incomplete_or_impossible_context(overrides) -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=82,
+        observed_at_unix_ms=10_000,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.02,
+        localization_covariance_m2=0.05,
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=1.0, y=0.0, z=1.0),
+    )
+    with pytest.raises(ValueError):
+        evaluate_runtime_local_safety(
+            observation=observation,
+            vehicle=_vehicle(),
+            static_primitives=[],
+            required_clearance_m=0.15,
+            generated_at_unix_ms=10_010,
+            **overrides,
+        )
+
+
+# 功能：
 #   不健康观测触发零运动制动，仍保留惯性风险预测；训练标签只承认真实零速度执行回执。
 # 输入：
 #   无：使用带侧向速度和加速度的失效观测。

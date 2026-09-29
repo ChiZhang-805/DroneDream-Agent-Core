@@ -14,6 +14,11 @@ from dataclasses import asdict, dataclass
 CONTINUOUS_CONTROL_MODE = "normalized-body-velocity"
 LOCAL_CONTROL_PERIOD_SECONDS = 0.05
 LOCAL_CONTROL_MAXIMUM_AGE_SECONDS = 0.25
+# Raw camera/state observations have a separate ceiling from model decisions
+# and actuator leases. It covers measured camera transport plus projection /
+# fusion on supported desktop hardware; adaptive motion admission still
+# shortens it according to clearance, speed, acceleration, uncertainty and yaw.
+LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS = 0.35
 LOCAL_CONTROL_JOINT_P99_TARGET_SECONDS = 0.10
 LOCAL_SETPOINT_PERIOD_SECONDS = 0.02
 # Producer admission reserves the future control period plus transport. Once

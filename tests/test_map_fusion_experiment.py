@@ -10,9 +10,28 @@ import pytest
 
 from dronedream_agent_core.map_fusion_experiment import (
     MapFusionExperimentMixin,
+    map_fusion_failure_is_optional,
     prepare_map_fusion_experiment,
     read_map_fusion_experiment,
 )
+
+
+@pytest.mark.parametrize(
+    ("route", "fallback", "initialized", "expected"),
+    [
+        (True, True, True, True),
+        (False, True, True, False),
+        (True, False, True, False),
+        (True, True, False, False),
+    ],
+)
+def test_fusion_failure_degrades_only_with_initialized_real_fallback(
+        route, fallback, initialized, expected):
+    assert map_fusion_failure_is_optional(
+        independent_route_control=route,
+        gnss_position_fallback=fallback,
+        initialized=initialized,
+    ) is expected
 
 
 # 功能：创建便携的合成资产和独占实验；输入：测试目录；输出：输入文件及配置。

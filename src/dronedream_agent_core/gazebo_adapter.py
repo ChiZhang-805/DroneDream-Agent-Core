@@ -75,11 +75,16 @@ from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin
 from .preflight_render_warmup import warmup_receipt_ready
 from .preview_worker import LatestPreviewWorker
 from .recovery_obstacle_evidence import RecoveryObstacleWitness
-from .runtime_bindings import load_map_runtime_bindings, resolve_vehicle_collision_center_offset
+from .runtime_bindings import (
+    load_map_runtime_bindings,
+    resolve_grounded_vehicle_model_root,
+    resolve_vehicle_collision_center_offset,
+)
 from .runtime_control_io import publish_runtime_json, read_runtime_object
 from .runtime_scheduling import InterpreterPauseMonitor, SimulationSourceIntervals
 from .simulation_camera_profile import prepare_camera_profile, validate_camera_profile_choice
 from .simulation_camera_clock import prepare_native_camera_clock
+from .simulation_runtime_world import materialize_runtime_world_plugins
 from .simulation_dynamic_obstacles import (
     dynamic_observation,
     dynamic_positions,
@@ -3217,9 +3222,11 @@ def run_px4_gazebo_track(
     model_root = tuple(track.coordinate_contract.model_root_world_enu_m)
     if len(model_root) != 3:
         raise SimulationRuntimeError("PX4 model-root contract is invalid")
-    spawn = bindings.vehicle_spawn
     collision_offset = resolve_vehicle_collision_center_offset(selected_vehicle)
-    if model_root != (spawn.x, spawn.y, spawn.z) or (offset_east, offset_north, offset_up) != (
+    grounded_root = resolve_grounded_vehicle_model_root(semantic, selected_vehicle)
+    if model_root != (grounded_root.x, grounded_root.y, grounded_root.z) or (
+        offset_east, offset_north, offset_up
+    ) != (
         collision_offset.x,
         collision_offset.y,
         collision_offset.z,
@@ -3372,7 +3379,17 @@ def run_px4_gazebo_track(
     if simulation_fusion_inputs is not None:
         env["DRONEDREAM_MAP_FUSION_INPUTS"] = str(simulation_fusion_inputs.absolute())
         env["DRONEDREAM_MAP_FUSION_PX4_ROOT"] = str(px4_root.absolute())
-        env["PX4_PARAM_EKF2_GPS_CTRL"] = "4"
+        # Keep every physically available estimator source in the flight
+        # stack.  Visual/map registration is the preferred absolute source,
+        # but an open span can temporarily contain no observable map
+        # geometry.  PX4 must then be allowed to retain its GNSS horizontal
+        # position aid (when the vehicle really has a healthy GNSS sensor)
+        # instead of growing dead-reckoning uncertainty until local safety
+        # stops an otherwise clear route.  Indoors or under denied GNSS this
+        # bitmask grants no synthetic measurement: PX4 still rejects absent
+        # or unhealthy GNSS and the depth/map safety gates remain active.
+        env["DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK"] = "1"
+        env["PX4_PARAM_EKF2_GPS_CTRL"] = "7"
         env["PX4_PARAM_EKF2_HGT_REF"] = "3"
     partition = f"dronedream_agent_{os.getpid()}_{int(time.time())}"
     state = run_dir / "runtime-state"
@@ -3563,6 +3580,14 @@ def run_px4_gazebo_track(
             environment=env,
         )
         env.update(render_cache_deployment["environment"])
+    # Gazebo Harmonic ignores server.config whenever the world already declares
+    # any system plugin. Materialize the final verified plugin set into a run-owned
+    # world so native sensors and the camera relay load on every supported map.
+    render_world, runtime_world_deployment = materialize_runtime_world_plugins(
+        world_sdf=render_world,
+        server_config=Path(env["GZ_SIM_SERVER_CONFIG_PATH"]),
+        output=run_dir / "runtime-world",
+    )
     actuator_output_absolute_maximum = _px4_sitl_actuator_output_absolute_maximum(
         px4_root,
         px4_sitl_model,

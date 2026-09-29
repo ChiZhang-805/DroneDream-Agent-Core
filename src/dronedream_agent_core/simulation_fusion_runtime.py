@@ -17,14 +17,17 @@ def prepare_simulation_fusion(*, run_dir, world_sdf, semantic_path, executor_pat
         hash_plugin_file(required, limit=4 * 1024**2)
     validate_native_camera_clock(runtime / "camera-clock")
     camera = Path(px4_root) / "Tools/simulation/gz/models/OakD-Lite/model.sdf"
-    camera_hash = hash_plugin_file(camera, limit=4 * 1024**2)
+    # Product control uses the PX4-owned camera package exactly as installed.
+    # A derived high-rate overlay is an optimization that must qualify on each
+    # renderer/world combination; it must not be an implicit prerequisite for
+    # localization.  The source is still content-checked before launch.
+    hash_plugin_file(camera, limit=4 * 1024**2)
     path, inputs = prepare_map_fusion_experiment(run_dir, world_sdf, semantic_path)
     return wrapper, {
         "simulation_fusion_inputs": path,
         "native_source_clock_domain": "px4-gz-sitl:" + inputs["run_name"],
         "localization_source_channel": Path(run_dir) / "runtime-state/localization-source.json",
         "local_reference_prearm": True,
-        "batch_static_world_visuals": True,
-        "simulation_camera_profile": "responsive-control",
-        "camera_source_model_sha256": camera_hash,
+        "batch_static_world_visuals": False,
+        "simulation_camera_profile": "native",
     }

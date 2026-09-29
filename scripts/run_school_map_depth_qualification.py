@@ -18,7 +18,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from dronedream_agent_core.collision import validate_route_clearance
+from dronedream_agent_core.collision import (
+    build_tracking_corridor_budget,
+    validate_route_clearance,
+)
 from dronedream_agent_core.contracts import (
     GraphRoute,
     MapAsset,
@@ -200,6 +203,21 @@ def _qualification_route(
     if type(return_to_launch) is not bool or (not return_to_launch and round_trip_repetitions != 1):
         raise ValueError("one-way training cannot repeat a closed route")
     selected = list(outbound.positions_m)
+    # Pair preparation can already emit a complete launch -> goal -> launch route.
+    # Preserve that route verbatim.  Removing its final launch and mirroring the
+    # remaining samples only happens to work for a two-edge route; a real route
+    # containing its own return leg would be flown almost twice.
+    preclosed = (
+        point_count is None
+        and return_to_launch
+        and len(selected) >= 3
+        and outbound.start_node == outbound.goal_node
+        and math.dist(
+            (selected[0].x, selected[0].y, selected[0].z),
+            (selected[-1].x, selected[-1].y, selected[-1].z),
+        )
+        <= 1e-6
+    )
     if point_count is not None:
         if point_count < 2:
             raise ValueError("short qualification needs at least two outbound points")
@@ -207,11 +225,26 @@ def _qualification_route(
     if len(selected) < 2:
         raise ValueError("metric route has fewer than two points")
 
-    outbound_ids = ["qualification-launch"] + [
-        f"qualification-out-{index:03d}" for index in range(1, len(selected))
-    ]
-    one_round_trip_node_ids = [*outbound_ids, *reversed(outbound_ids[:-1])] if return_to_launch else list(outbound_ids)
-    one_round_trip_positions = [*selected, *reversed(selected[:-1])] if return_to_launch else list(selected)
+    if preclosed:
+        route_node_ids = ["qualification-launch"] + [
+            f"qualification-route-{index:03d}" for index in range(1, len(selected) - 1)
+        ] + ["qualification-launch"]
+        one_round_trip_node_ids = route_node_ids
+        one_round_trip_positions = list(selected)
+    else:
+        outbound_ids = ["qualification-launch"] + [
+            f"qualification-out-{index:03d}" for index in range(1, len(selected))
+        ]
+        one_round_trip_node_ids = (
+            [*outbound_ids, *reversed(outbound_ids[:-1])]
+            if return_to_launch
+            else list(outbound_ids)
+        )
+        one_round_trip_positions = (
+            [*selected, *reversed(selected[:-1])]
+            if return_to_launch
+            else list(selected)
+        )
     node_ids = list(one_round_trip_node_ids)
     positions = list(one_round_trip_positions)
     for _ in range(1, round_trip_repetitions):
@@ -224,10 +257,17 @@ def _qualification_route(
         f"qualification-edge-{index:03d}" for index in range(len(positions) - 1)
     ]
     nodes = []
-    for index, (node_id, position) in enumerate(zip(outbound_ids, selected, strict=True)):
+    first_trip_nodes = list(zip(one_round_trip_node_ids, one_round_trip_positions, strict=True))
+    unique_first_trip_nodes = (
+        first_trip_nodes[:-1]
+        if preclosed
+        else list(zip(outbound_ids, selected, strict=True))
+    )
+    pickup_index = (len(one_round_trip_positions) - 1) // 2 if preclosed else len(selected) - 1
+    for index, (node_id, position) in enumerate(unique_first_trip_nodes):
         if index == 0:
             semantic = "launch"
-        elif index == len(selected) - 1 and point_count is None:
+        elif index == pickup_index and point_count is None:
             semantic = "pickup"
         else:
             semantic = "corridor"
@@ -274,7 +314,7 @@ def _qualification_route(
         edges=edges,
         named_entities={
             "qualification-launch": "qualification-launch",
-            "qualification-turn": outbound_ids[-1],
+            "qualification-turn": one_round_trip_node_ids[pickup_index],
         },
     )
     return route, graph
@@ -338,7 +378,15 @@ def main() -> int:
     parser.add_argument("--speed-limit-mps", type=float, default=0.8)
     parser.add_argument("--one-way-training", action="store_true",
                         help="Explicit teacher curriculum ending at the outbound goal; not round-trip qualification")
-    parser.add_argument("--required-clearance-m", type=float, default=0.4)
+    parser.add_argument(
+        "--required-clearance-m",
+        type=float,
+        default=None,
+        help=(
+            "Optional explicit local clearance. By default it is derived from "
+            "the verified route corridor and the shared tracking budget."
+        ),
+    )
     parser.add_argument(
         "--training-data-collection",
         action="store_true",
@@ -470,9 +518,39 @@ def main() -> int:
     )
     parser.add_argument('--experimental-map-fusion', action='store_true',
                         help='Owned source-matched localization experiment; training only, no qualification')
+    parser.add_argument(
+        '--independent-route-control',
+        action='store_true',
+        help=(
+            'Use the production deterministic route controller with the verified '
+            '3D route seeded into the live local world. This mode does not invoke '
+            'or wait for a navigation model.'
+        ),
+    )
+    parser.add_argument(
+        '--runtime-resource-root',
+        type=Path,
+        help=(
+            'Explicit packaged runtime directory containing the executor, '
+            'camera-clock, native-sensors, and depth worker. The source-tree '
+            'runtime is used only when this option is omitted.'
+        ),
+    )
     parser.add_argument('--bounded-hybrid-control', action='store_true',
                         help='Explicit bounded delay bridge; independent controller attribution retained')
     args = parser.parse_args()
+    if args.independent_route_control and (
+        args.training_data_collection
+        or args.experimental_map_fusion
+        or args.local_navigation_provider is not None
+        or args.local_navigation_fallback_provider is not None
+        or args.local_policy_package
+        or args.local_policy_qualification
+        or args.local_policy_simulation_admission
+        or args.bounded_hybrid_control
+        or args.heading_policy != 'route-tangent-relative'
+    ):
+        raise ValueError('INDEPENDENT_ROUTE_CONTROL_REQUIRES_MODEL_FREE_PRODUCT_MODE')
     if args.experimental_map_fusion and (
             not args.training_data_collection or args.simulation_training_channel is None
             or args.native_sensor_runtime is None or args.simulation_camera_profile != 'responsive-control'
@@ -480,11 +558,10 @@ def main() -> int:
         raise ValueError('MAP_FUSION_EXPERIMENT_REQUIRES_NATIVE_RECORDED_TRAINING')
     if not 0.1 <= args.speed_limit_mps <= 1.2:
         raise ValueError("qualification speed must be within [0.1, 1.2] m/s")
-    minimum_requested_clearance_m = 0.12 if args.training_data_collection else 0.35
-    if args.required_clearance_m < minimum_requested_clearance_m:
-        raise ValueError(
-            "School Map requested clearance is below the active campaign bound"
-        )
+    if args.required_clearance_m is not None and not (
+        0.05 <= args.required_clearance_m <= 6.0
+    ):
+        raise ValueError("requested clearance is outside the supported range")
     _validate_training_capture(training=args.training_data_collection,
                                dataset=args.multimodal_dataset_root,
                                learner_channel=args.simulation_training_channel,
@@ -637,7 +714,13 @@ def main() -> int:
     )
     if not clearance.accepted:
         raise RuntimeError("qualification route intersects School Map collision geometry")
-    if clearance.minimum_clearance_m < args.required_clearance_m - 0.03:
+    corridor_budget = build_tracking_corridor_budget(clearance.minimum_clearance_m)
+    required_clearance_m = (
+        corridor_budget["required_local_clearance_m"]
+        if args.required_clearance_m is None
+        else args.required_clearance_m
+    )
+    if clearance.minimum_clearance_m < required_clearance_m - 0.03:
         raise RuntimeError(
             "closed qualification route does not preserve the operational clearance"
         )
@@ -760,12 +843,27 @@ def main() -> int:
             "route_length_m": route.route_length_m,
             "route_point_count": len(route.positions_m),
             "minimum_clearance_m": clearance.minimum_clearance_m,
-            "required_clearance_m": args.required_clearance_m,
+            "required_clearance_m": required_clearance_m,
         },
     )
 
     resource_root = Path(__file__).resolve().parents[1]
-    base_executor = resource_root / 'runtime' / 'px4_offboard_track_executor.py'
+    runtime_root = args.runtime_resource_root or resource_root / 'runtime'
+    base_executor = runtime_root / 'px4_offboard_track_executor.py'
+    checkpoint_executor = runtime_root / 'px4_checkpoint_executor.py'
+    if not checkpoint_executor.is_file():
+        checkpoint_executor = resource_root / 'scripts' / 'px4_checkpoint_executor.py'
+    fusion_arguments: dict[str, object] = {}
+    if args.independent_route_control:
+        from dronedream_agent_core.simulation_fusion_runtime import prepare_simulation_fusion
+
+        base_executor, fusion_arguments = prepare_simulation_fusion(
+            run_dir=args.output_root / 'simulation',
+            world_sdf=args.world_sdf,
+            semantic_path=args.semantic,
+            executor_path=base_executor,
+            px4_root=args.px4_root,
+        )
     if args.experimental_map_fusion:
         from dronedream_agent_core.map_fusion_experiment import prepare_map_fusion_experiment
 
@@ -786,7 +884,7 @@ def main() -> int:
         clearance_path=clearance_path,
         controller_params_path=args.controller_params,
         px4_root=args.px4_root,
-        executor_path=resource_root / "scripts" / "px4_checkpoint_executor.py",
+        executor_path=checkpoint_executor,
         ros_workspace=args.ros_workspace,
         checkpoint_contract_path=checkpoint_path,
         runtime_action_contract_path=action_path,
@@ -842,6 +940,7 @@ def main() -> int:
             and not args.teacher_observation_collection
         ),
         bounded_hybrid_control=args.bounded_hybrid_control,
+        independent_route_control=args.independent_route_control,
         local_navigation_omit_coordinate_candidates=(
             args.teacher_observation_collection
         ),
@@ -849,20 +948,36 @@ def main() -> int:
         learning_image_size=tuple(args.learning_image_size),
         simulation_teacher_control=args.teacher_observation_collection,
         simulation_training_channel=args.simulation_training_channel,
-        batch_static_world_visuals=args.batch_static_world_visuals,
-        simulation_camera_profile=args.simulation_camera_profile,
+        batch_static_world_visuals=bool(
+            fusion_arguments.get('batch_static_world_visuals', args.batch_static_world_visuals)
+        ),
+        simulation_camera_profile=str(
+            fusion_arguments.get('simulation_camera_profile', args.simulation_camera_profile)
+        ),
         preflight_render_warmup=args.preflight_render_warmup,
         preflight_depth_warmup=args.preflight_depth_warmup,
         render_preparation_runtime=args.render_preparation_runtime,
         render_cache_bundle=args.render_cache_bundle,
         render_replica_runtime=args.render_replica_runtime,
         native_sensor_runtime=args.native_sensor_runtime,
-        native_source_clock_domain=args.native_source_clock_domain,
-        local_reference_prearm=args.experimental_map_fusion,
-        localization_source_channel=(
-            args.output_root / "simulation/runtime-state/localization-source.json"
-            if args.live_localization_source else None),
-        camera_source_model_sha256=args.camera_source_model_sha256,
+        native_source_clock_domain=fusion_arguments.get(
+            'native_source_clock_domain', args.native_source_clock_domain
+        ),
+        local_reference_prearm=bool(
+            fusion_arguments.get('local_reference_prearm', args.experimental_map_fusion)
+        ),
+        localization_source_channel=fusion_arguments.get(
+            'localization_source_channel',
+            (
+                args.output_root / "simulation/runtime-state/localization-source.json"
+                if args.live_localization_source
+                else None
+            ),
+        ),
+        simulation_fusion_inputs=fusion_arguments.get('simulation_fusion_inputs'),
+        camera_source_model_sha256=fusion_arguments.get(
+            'camera_source_model_sha256', args.camera_source_model_sha256
+        ),
         heading_policy=args.heading_policy,
         maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
         multimodal_dataset_root=args.multimodal_dataset_root,

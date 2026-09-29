@@ -17,6 +17,7 @@ from .contracts import (
 )
 from .control_timing import LOCAL_DISPATCH_RESERVE_MS
 from .control_uncertainty import localization_uncertainty_margin_m
+from .collision import assess_tracking_corridor_budget
 from .dynamic_safety import predictive_braking_decision, predictive_safety_decision
 from .hashing import sha256_json
 from .motion_envelope import RUNTIME_PREDICTION_HORIZON_SECONDS, prediction_query_radius_m
@@ -178,6 +179,9 @@ def evaluate_runtime_local_safety(
     route_yaw_rate_dps: float = 0.0,
     motion_guard: VerticalMotionGuard | None = None,
     yaw_envelope: YawCommandEnvelope | None = None,
+    qualified_route_clearance_m: float | None = None,
+    current_localization_covariance_m2: float | None = None,
+    relative_perception_uncertainty_margin_m: float | None = None,
 ) -> RuntimeLocalSafetyCommand:
     if not _finite_scalar(command_horizon_seconds) or not 0.05 <= command_horizon_seconds <= 1.0:
         raise ValueError("command horizon must be in [0.05, 1.0] seconds")
@@ -322,6 +326,55 @@ def evaluate_runtime_local_safety(
             raise ValueError("RUNTIME_MOTION_CLEARANCE_BINDING_MISMATCH")
         planner_max_acceleration_mps2 = motion_guard.acceleration_limit(
             planner_max_acceleration_mps2)
+    # Absolute map-position uncertainty and image/state alignment uncertainty
+    # are different budgets.  A qualified route corridor funds the former;
+    # body-relative depth validity only needs the additional displacement that
+    # accumulated while aligning the image with native state.  Without all
+    # three independently measured values we retain the conservative legacy
+    # behavior and spend the complete aligned covariance locally.
+    route_budget_context = (
+        qualified_route_clearance_m,
+        current_localization_covariance_m2,
+        relative_perception_uncertainty_margin_m,
+    )
+    provided_route_budget_values = sum(value is not None for value in route_budget_context)
+    perception_stream_healthy = observation.stream_healthy
+    uncertainty_margin_m = localization_uncertainty_margin_m(
+        observation.localization_covariance_m2
+    )
+    if provided_route_budget_values:
+        if provided_route_budget_values != len(route_budget_context):
+            raise ValueError("ROUTE_LOCALIZATION_BUDGET_CONTEXT_INCOMPLETE")
+        if (
+            not _finite_scalar(relative_perception_uncertainty_margin_m)
+            or relative_perception_uncertainty_margin_m < 0.0
+            or relative_perception_uncertainty_margin_m > uncertainty_margin_m + 1e-9
+        ):
+            raise ValueError("RELATIVE_PERCEPTION_UNCERTAINTY_MARGIN_INVALID")
+        route_budget = assess_tracking_corridor_budget(
+            qualified_route_clearance_m,
+            current_localization_covariance_m2,
+        )
+        if not route_budget["funded"]:
+            # A temporary global-localization deficit is not equivalent to a
+            # blind aircraft.  When the signed route still has enough physical
+            # room for its local-safety and tracking reserves, fresh onboard
+            # depth may bridge the deficit at walking speed.  Geometry checks
+            # below still run on every candidate.  An actually narrow route,
+            # stale perception, or non-onboard source remains a hard hold.
+            structurally_navigable = qualified_route_clearance_m >= (
+                route_budget["required_local_clearance_m"]
+                + route_budget["minimum_tracking_allowance_m"]
+            )
+            if (
+                structurally_navigable
+                and observation.source == "onboard"
+                and observation.stream_healthy
+            ):
+                planner_max_speed_mps = min(planner_max_speed_mps, 0.12)
+            else:
+                perception_stream_healthy = False
+        uncertainty_margin_m = float(relative_perception_uncertainty_margin_m)
     request = LocalPlannerRequest(
         current_position_m=observation.current_position_m,
         current_velocity_mps=observation.current_velocity_mps,
@@ -338,13 +391,12 @@ def evaluate_runtime_local_safety(
         required_clearance_m=required_clearance_m,
         prediction_horizon_seconds=RUNTIME_PREDICTION_HORIZON_SECONDS,
         prediction_step_seconds=prediction_step_seconds,
-        perception_stream_healthy=observation.stream_healthy,
+        perception_stream_healthy=perception_stream_healthy,
         perception_stream_age_seconds=observation.stream_age_seconds,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
     source_ms = min(observation.observed_at_unix_ms,
                     generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000))
-    uncertainty_margin_m = localization_uncertainty_margin_m(observation.localization_covariance_m2)
     ego_speed = math.hypot(observation.current_velocity_mps.x,
                           observation.current_velocity_mps.y, observation.current_velocity_mps.z)
     obstacle_speed = max((math.hypot(o.velocity_mps.x, o.velocity_mps.y, o.velocity_mps.z)

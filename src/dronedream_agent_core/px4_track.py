@@ -20,6 +20,7 @@ from .contracts import (
 from .runtime_bindings import (
     load_map_runtime_bindings,
     resolve_vehicle_collision_center_offset,
+    resolve_grounded_vehicle_model_root,
 )
 
 
@@ -69,10 +70,10 @@ def route_to_px4_track(
     _validate_route_structure(route)
     semantic = _load(semantic_path)
     bindings = load_map_runtime_bindings(semantic)
-    spawn = bindings.vehicle_spawn
     offset = resolve_vehicle_collision_center_offset(vehicle)
     launch = bindings.mission_launch_waypoint
-    model_root = (spawn.x, spawn.y, spawn.z)
+    grounded_root = resolve_grounded_vehicle_model_root(semantic, vehicle)
+    model_root = (grounded_root.x, grounded_root.y, grounded_root.z)
     center_offset = (offset.x, offset.y, offset.z)
     expected_launch = (launch.x, launch.y, launch.z)
     first = route.positions_m[0]

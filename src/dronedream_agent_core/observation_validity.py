@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from .control_timing import LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+from .control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -179,7 +179,7 @@ def observation_validity(
         return result("reject", 0, "invalid-motion-or-uncertainty-bound")
     if margin_kind not in ("checked-trajectory-slack", "swept-free-distance"):
         return result("reject", 0, "invalid-margin-kind")
-    hard_ms = math.floor(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
+    hard_ms = math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
     deadline = min(source + hard_ms, inherited_deadline_unix_ms)
     if deadline <= now_unix_ms:
         return result("context-only", deadline, "source-deadline-exhausted")
@@ -269,5 +269,6 @@ def image_control_deadline(image: Mapping[str, object], *, now_unix_ms: int) -> 
         or not 0 <= source_ns <= received_ns <= now_unix_ms * 1_000_000 + 999_999
     ):
         return 0
-    deadline = source_ns // 1_000_000 + math.floor(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
+    deadline = source_ns // 1_000_000 + math.floor(
+        LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
     return deadline if deadline > now_unix_ms else 0

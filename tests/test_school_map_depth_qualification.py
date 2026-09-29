@@ -66,6 +66,74 @@ def test_repeated_closed_route_has_no_zero_length_join() -> None:
     )
 
 
+def test_preclosed_pair_route_is_not_mirrored_twice() -> None:
+    source = GraphRoute.model_construct(
+        start_node="launch",
+        goal_node="launch",
+        node_ids=["launch", "turn", "launch"],
+        edge_ids=["out", "back"],
+        positions_m=[
+            Vector3(x=0.0, y=0.0, z=1.4),
+            Vector3(x=2.0, y=0.0, z=1.4),
+            Vector3(x=0.0, y=0.0, z=1.4),
+        ],
+        route_length_m=4.0,
+        all_edges_flight_verified=False,
+    )
+
+    route, graph = _qualification_route(
+        source,
+        point_count=None,
+        speed_limit_mps=0.3,
+    )
+
+    assert len(route.positions_m) == 3
+    assert route.positions_m[0] == route.positions_m[-1]
+    assert route.route_length_m == pytest.approx(4.0)
+    assert len(graph.edges) == 2
+
+
+def test_preclosed_pair_route_with_existing_return_leg_is_preserved() -> None:
+    points = [
+        Vector3(x=0.0, y=0.0, z=1.4),
+        Vector3(x=1.0, y=0.0, z=2.0),
+        Vector3(x=2.0, y=1.0, z=2.0),
+        Vector3(x=3.0, y=1.0, z=1.4),
+        Vector3(x=2.0, y=1.0, z=2.0),
+        Vector3(x=1.0, y=0.0, z=2.0),
+        Vector3(x=0.0, y=0.0, z=1.4),
+    ]
+    source = GraphRoute.model_construct(
+        start_node="launch",
+        goal_node="launch",
+        node_ids=["launch", "a", "b", "pickup", "b", "a", "launch"],
+        edge_ids=[f"edge-{index}" for index in range(6)],
+        positions_m=points,
+        route_length_m=sum(
+            math.dist(
+                (first.x, first.y, first.z),
+                (second.x, second.y, second.z),
+            )
+            for first, second in zip(points, points[1:], strict=False)
+        ),
+        all_edges_flight_verified=False,
+    )
+
+    route, graph = _qualification_route(
+        source,
+        point_count=None,
+        speed_limit_mps=0.3,
+    )
+
+    assert route.positions_m == points
+    assert len(route.positions_m) == 7
+    assert len(route.edge_ids) == 6
+    assert route.node_ids[0] == route.node_ids[-1] == "qualification-launch"
+    assert route.route_length_m == pytest.approx(source.route_length_m)
+    assert len(graph.edges) == 6
+    assert graph.named_entities["qualification-turn"] == route.node_ids[3]
+
+
 # 功能：
 #   单程采集课程保留真实终点，不暗中拼接返程或把终点声明为起点。
 # 输入：
@@ -97,6 +165,39 @@ def test_one_way_training_route_keeps_explicit_outbound_goal():
 def test_one_way_training_requires_explicit_single_teacher_run(monkeypatch, flags):
     monkeypatch.setattr(sys, 'argv', ['qualification', *['unused'] * 7, '--one-way-training', *flags])
     with pytest.raises(ValueError, match='single explicit teacher'):
+        main()
+
+
+# 功能：产品独立路线控制不允许与训练模型或混合控制并列，避免验收时漏掉正式地图融合。
+# 输入：命令行隔离器和每种冲突开关。
+# 输出：在读取任何地图文件之前拒绝歧义控制权配置。
+@pytest.mark.parametrize(
+    "conflicting_flags",
+    [
+        ["--training-data-collection", "--multimodal-dataset-root", "unused",
+         "--multimodal-flight-id", "flight"],
+        ["--local-navigation-provider", "kimi"],
+        ["--experimental-map-fusion"],
+        ["--heading-policy", "measured-hold"],
+    ],
+)
+def test_independent_route_qualification_rejects_conflicting_control_modes(
+    monkeypatch, conflicting_flags
+):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "qualification",
+            *["unused"] * 7,
+            "--independent-route-control",
+            *conflicting_flags,
+        ],
+    )
+    with pytest.raises(
+        ValueError,
+        match="INDEPENDENT_ROUTE_CONTROL_REQUIRES_MODEL_FREE_PRODUCT_MODE",
+    ):
         main()
 
 

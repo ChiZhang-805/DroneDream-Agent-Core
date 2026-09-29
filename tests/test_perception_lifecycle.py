@@ -53,6 +53,29 @@ def test_shutdown_expiration_does_not_rewrite_completed_control_evidence(tmp_pat
     assert verify_control_completion({**timing(record), "active_track_sha256": "b" * 64}) is False
 
 
+# 功能：独立路线控制不依赖模型特征张量，但仍必须满足深度流、身份和原生定位条件。
+# 输入：关闭实时特征的健康快照及显式独立控制需求；输出：匹配需求时通过，错配时拒绝。
+def test_independent_route_completion_does_not_require_unused_model_features(tmp_path):
+    path = tmp_path / "health.json"
+    path.write_text(json.dumps({**health(), "realtime_features_ready": False}))
+    record = capture_control_completion(
+        path,
+        track_sha256="a" * 64,
+        completed_at_unix_ms=1010,
+        realtime_features_required=False,
+    )
+    independent = {
+        **timing(record),
+        "perception_realtime_features_required": False,
+    }
+    assert record["accepted"] is True
+    assert verify_control_completion(independent) is True
+    assert verify_control_completion({
+        **independent,
+        "perception_realtime_features_required": True,
+    }) is False
+
+
 # 功能：
 #   逐项注入时效、身份、特征和真值替代错误，确保实际控制结束失败不被停流解释掩盖。
 # 输入：

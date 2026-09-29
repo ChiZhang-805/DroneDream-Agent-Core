@@ -3,6 +3,7 @@ import math
 import pytest
 
 from dronedream_agent_core.control_timing import (
+    LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
     LOCAL_SETPOINT_PERIOD_SECONDS,
     LOCAL_DISPATCH_RESERVE_MS,
     TRAINING_DISPATCH_RESERVE_MS,
@@ -82,8 +83,8 @@ def test_continuous_mode_never_inherits_cloud_cadence_or_lease(period, timeout):
     )
     assert timing.sensor_tick_hz == 20
     assert timing.decision_period_seconds == .05
-    assert timing.maximum_decision_age_seconds == .25
-    assert timing.control_lease_seconds == .25
+    assert timing.maximum_decision_age_seconds == LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+    assert timing.control_lease_seconds == LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
 
 
 # 功能：

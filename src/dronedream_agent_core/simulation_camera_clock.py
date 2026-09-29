@@ -68,7 +68,8 @@ def prepare_native_camera_clock(*, runtime_root: Path, server_config: Path,
     plugin = ET.SubElement(plugins, "plugin", entity_name="*", entity_type="world",
                            filename=str(library.resolve()), name="dronedream::NativeCameraClock")
     for name, value in {"epoch": epoch, "rgb_input": rgb_topic, "depth_input": depth_topic,
-                        "rgb_output": topics["rgb"], "depth_output": topics["depth"]}.items():
+                        "rgb_output": topics["rgb"], "depth_output": topics["depth"],
+                        "diagnostics_path": str((output/"camera-clock.log").resolve())}.items():
         ET.SubElement(plugin, name).text = value
     output.mkdir(parents=True)
     with library.open('xb') as stream:

@@ -385,6 +385,28 @@ def test_tracking_segment_policy_is_hash_bound_and_context_selected(
         executor._load_tracking_segment_policies(policy_path, track=tampered_track)
 
 
+# 功能：验证局部安全目标只取得当前原路线段的实测净空，不借用其他段或固定目标的预算。
+# 输入：无：使用两段不同净空的冻结策略。
+# 输出：None：返回当前段身份与净空，非路线目标不伪造预算。
+def test_tracking_localization_context_selects_current_measured_corridor() -> None:
+    executor = _load_executor()
+    args = SimpleNamespace(
+        _tracking_segment_policies=(
+            {"minimum_route_clearance_m": 0.76},
+            {"minimum_route_clearance_m": 0.49},
+        )
+    )
+    assert executor._tracking_localization_context_for_goal(
+        args, "source-waypoint-0002"
+    ) == (1, pytest.approx(0.49))
+    assert executor._tracking_localization_context_for_goal(args, "takeoff") == (None, None)
+    with pytest.raises(ValueError, match="MEASURED_CLEARANCE_REQUIRED"):
+        executor._tracking_localization_context_for_goal(
+            SimpleNamespace(_tracking_segment_policies=({},)),
+            "source-waypoint-0001",
+        )
+
+
 def test_tracking_segment_policy_rejects_missing_current_control_profile(
     tmp_path: Path,
 ) -> None:

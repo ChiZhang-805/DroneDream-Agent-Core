@@ -44,6 +44,7 @@ class NativePerceptionReadiness:
     minimum_route_clearance_m: float | None = None
     stable_window_ms: int = 100
     require_source_timestamps: bool = False
+    require_realtime_features: bool = True
     last_sequence: int = -1
     independent_frames: int = 0
     first_frame_time: int | None = None
@@ -64,7 +65,8 @@ class NativePerceptionReadiness:
     #   None：不返回业务数据。
     def __post_init__(self) -> None:
         if (type(self.stable_window_ms) is not int or not 100 <= self.stable_window_ms <= 5000
-                or type(self.require_source_timestamps) is not bool):
+                or type(self.require_source_timestamps) is not bool
+                or type(self.require_realtime_features) is not bool):
             raise ValueError("NATIVE_PREFLIGHT_STABILITY_CONFIGURATION_INVALID")
 
     # 功能：
@@ -106,7 +108,8 @@ class NativePerceptionReadiness:
             and payload.get("identity_accepted") is True
             and payload.get("truth_correction_applied") is False
             and payload.get("pose_source") == "native-estimator-fixed-deployment-binding"
-            and payload.get("realtime_features_ready") is True
+            and (not self.require_realtime_features
+                 or payload.get("realtime_features_ready") is True)
             and type(updated) is int and 0 <= updated < 2**63
             and 0 <= now_unix_ms - updated <= NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
             and type(sequence) is int and 0 < sequence < 2**63
@@ -119,7 +122,8 @@ class NativePerceptionReadiness:
                 self.last_issue = codes[0] if codes else "NATIVE_PERCEPTION_STREAM_NOT_HEALTHY"
             elif payload.get("identity_accepted") is not True:
                 self.last_issue = "NATIVE_PERCEPTION_IDENTITY_NOT_READY"
-            elif payload.get("realtime_features_ready") is not True:
+            elif (self.require_realtime_features
+                  and payload.get("realtime_features_ready") is not True):
                 self.last_issue = "NATIVE_PERCEPTION_FEATURES_NOT_READY"
             elif (type(updated) is not int or not 0 <= updated < 2**63
                     or not 0 <= now_unix_ms-updated <= NATIVE_PREFLIGHT_MAXIMUM_AGE_MS):
@@ -223,6 +227,7 @@ def _read_native_health(path: Path) -> dict:
 #   evidence：可选的实时诊断容器，失败和取消也保留统计。
 #   stable_window_ms：连续独立观测所需的毫秒跨度，不改变单份观测有效期。
 #   require_source_timestamps：是否强制检查深度的原始观测时刻。
+#   require_realtime_features：模型/教师接管时要求神经特征；确定性路线控制不要求。
 # 输出：
 #   receipt：含来源时刻、有效期、独立帧数量及跟踪余量的就绪回执。
 async def wait_for_native_perception(
@@ -230,6 +235,7 @@ async def wait_for_native_perception(
     receiver: PerceptionHealthReceiver | None = None,
     evidence: dict | None = None, stable_window_ms: int = 100,
     require_source_timestamps: bool = False,
+    require_realtime_features: bool = True,
 ) -> dict:
     if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 60:
         raise ValueError("NATIVE_PERCEPTION_PREFLIGHT_TIMEOUT_INVALID")
@@ -238,13 +244,15 @@ async def wait_for_native_perception(
     if minimum_route_clearance_m is not None:
         build_tracking_corridor_budget(minimum_route_clearance_m)
     readiness = NativePerceptionReadiness(minimum_route_clearance_m=minimum_route_clearance_m,
-        stable_window_ms=stable_window_ms, require_source_timestamps=require_source_timestamps)
+        stable_window_ms=stable_window_ms, require_source_timestamps=require_source_timestamps,
+        require_realtime_features=require_realtime_features)
     if evidence is not None and type(evidence) is not dict:
         raise ValueError("NATIVE_PREFLIGHT_EVIDENCE_INVALID")
     diagnostics = evidence if evidence is not None else {}
     diagnostics.clear()
     diagnostics.update(status="waiting", stable_window_ms=stable_window_ms,
                        maximum_source_age_ms=NATIVE_PREFLIGHT_MAXIMUM_AGE_MS,
+                       require_realtime_features=require_realtime_features,
                        checks=0, interruption_count=0, issue_counts={})
     last_issue = "NATIVE_PERCEPTION_NOT_RECEIVED"
 

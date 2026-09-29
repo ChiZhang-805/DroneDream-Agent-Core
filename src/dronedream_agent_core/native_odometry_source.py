@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from dronedream_plugin_sdk.protocol import copy_json
 
 from .contracts import QuaternionWxyz, Vector3
+from .control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
 from .hashing import sha256_json
 from .native_pose import _multiply, finite_number
 
@@ -316,13 +317,14 @@ class SourceOdometryHistory:
         clock_domain,
         available_at_monotonic,
         maximum_skew_us=20_000,
-        maximum_receive_age_seconds=0.25,
+        maximum_receive_age_seconds=LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
     ):
         _integer(timestamp_us, 0, 2**64 - 1)
         _integer(maximum_skew_us, 0, 50_000)
         now = _real(available_at_monotonic)
         age = _real(maximum_receive_age_seconds)
-        if now < 0 or not 0 < age <= 0.25 or clock_domain != self.clock_domain:
+        if (now < 0 or not 0 < age <= LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
+                or clock_domain != self.clock_domain):
             raise ValueError("NATIVE_ODOMETRY_ALIGNMENT_CONTRACT_INVALID")
         # A reset empties the preceding segment. Do not extrapolate a new
         # segment backwards across its first source timestamp.

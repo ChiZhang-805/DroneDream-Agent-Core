@@ -20,6 +20,10 @@ class TemporalMapSourceExpiredError(ValueError):
     """An authentic but late observation must not permanently poison a stream."""
 
 
+class TemporalMapObservationPendingError(ValueError):
+    """A valid new frame currently has no geometry; a later frame may recover."""
+
+
 @dataclass(frozen=True)
 class TemporalMapPoseResult:
     fit: MapPoseFit
@@ -125,14 +129,34 @@ class TemporalMapPoseTracker:
                 raise TemporalMapSourceExpiredError("TEMPORAL_MAP_NATIVE_SOURCE_EXPIRED")
             frame = MetricRangeSensorBridge(mount).assemble(scan)
             hits = [ray for ray in frame.range_rays if ray.hit]
+            self._native_identity = identity
+            if not hits:
+                # A clear/no-return frame is not corrupt input.  It contributes
+                # no map correction, must not renew an accepted correction, and
+                # must not permanently poison this source.  Still consume its
+                # source sequence so replaying the same frame cannot manufacture
+                # freshness.  Estimator resets and a long geometry gap retire
+                # history exactly as a later measured frame would.
+                if self._last_source is not None and stamp <= self._last_source:
+                    raise ValueError("TEMPORAL_MAP_SOURCE_NOT_ADVANCING")
+                if self._reset_counter is not None and packet.reset_counter != self._reset_counter:
+                    self._accepted = None
+                    self._pending_retirement_reason = "ESTIMATOR_RESET"
+                elif (self._accepted is not None
+                      and stamp - self._accepted[0] > self._maximum_gap):
+                    self._accepted = None
+                    self._pending_retirement_reason = "SOURCE_GAP"
+                self._last_source, self._reset_counter = stamp, packet.reset_counter
+                raise TemporalMapObservationPendingError("TEMPORAL_MAP_NO_HIT_GEOMETRY")
             result = self.update(
                 [[getattr(ray.endpoint_m, a) for a in "xyz"] for ray in hits], index,
                 sensor_origins_world_m=[[getattr(ray.origin_m, a) for a in "xyz"] for ray in hits],
                 reference_position_world_m=[getattr(position, a) for a in "xyz"],
                 source_timestamp_ns=stamp, reset_counter=packet.reset_counter,
                 map_sha256=map_sha256, binding_sha256=binding_sha256, clock_domain=clock_domain)
-            self._native_identity = identity
             return result
+        except TemporalMapObservationPendingError:
+            raise
         except TemporalMapSourceExpiredError:
             self._accepted = None
             self._pending_retirement_reason = "NATIVE_SOURCE_EXPIRED"

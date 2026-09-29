@@ -6,6 +6,8 @@
 #include <array>
 #include <stdexcept>
 #include <algorithm>
+#include <iostream>
+#include <fstream>
 #include <gz/msgs/image.pb.h>
 #include <gz/plugin/Register.hh>
 #include <gz/sim/System.hh>
@@ -24,6 +26,9 @@ class NativeCameraClock final : public gz::sim::System,
     if (epoch.size() != 64 || !std::all_of(epoch.begin(), epoch.end(), [](char c) {
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
       throw std::runtime_error("NATIVE_CAMERA_CLOCK_EPOCH_INVALID");
+    diagnosticsPath = sdf->Get<std::string>("diagnostics_path", "").first;
+    if (!diagnosticsPath.empty() && (diagnosticsPath.front() != '/' || diagnosticsPath.size() > 1024))
+      throw std::runtime_error("NATIVE_CAMERA_CLOCK_DIAGNOSTICS_INVALID");
     for (std::size_t i = 0; i < 2; ++i) {
       const auto kind = i == 0 ? "rgb" : "depth";
       inputs[i] = sdf->Get<std::string>(std::string(kind)+"_input");
@@ -43,6 +48,7 @@ class NativeCameraClock final : public gz::sim::System,
         throw std::runtime_error("NATIVE_CAMERA_CLOCK_TRANSPORT_FAILED");
     }
     configured = true;
+    Diagnostic("configured");
   }
   // 功能：在 Sensors 的 Update/PostUpdate 渲染前保存同一 simTime 的双钟下界。
   // 输入：本次物理 tick；ECM 不读取也不修改。输出：有界时钟记录，无位姿或控制输出。
@@ -76,9 +82,22 @@ class NativeCameraClock final : public gz::sim::System,
     const std::int64_t sim = stamp.sec()*1000000000LL+stamp.nsec();
     for (const auto &field : image.header().data())
       if (field.key().find("dronedream_scene_") == 0) return;
-    std::lock_guard<std::mutex> guard(mutex);
-    const auto source = clock.Find(sim, Unix(), Steady());
-    if (!source || sim <= lastImages[i]) return;
+    const auto nowUnix = Unix();
+    const auto nowSteady = Steady();
+    int issue = 0;
+    std::optional<CaptureClock::Stamp> source;
+    {
+      std::lock_guard<std::mutex> guard(mutex);
+      issue = clock.FindIssue(sim, nowUnix, nowSteady);
+      source = clock.Find(sim, nowUnix, nowSteady);
+      if (source && sim <= lastImages[i]) return;
+    }
+    if (!source) {
+      if (!source && dropped[i]++ < 8)
+        Diagnostic("drop stream=" + std::to_string(i) + " issue=" + std::to_string(issue) +
+                   " sim_ns=" + std::to_string(sim));
+      return;
+    }
     gz::msgs::Image output(image);
     auto *header = output.mutable_header();
     Field(header, "basis", "native-preupdate");
@@ -86,8 +105,25 @@ class NativeCameraClock final : public gz::sim::System,
     Field(header, "sequence", std::to_string(sim+1));
     Field(header, "simulation_ns", std::to_string(sim));
     Field(header, "source_unix_ns", std::to_string(source->unixNs));
-    if (!clock.Find(sim, Unix(), Steady())) return;
-    if (publishers[i].Publish(output)) lastImages[i] = sim;
+    {
+      std::lock_guard<std::mutex> guard(mutex);
+      if (!clock.Find(sim, Unix(), Steady()) || sim <= lastImages[i]) return;
+      // Reserve this immutable source sequence before the potentially expensive
+      // transport copy so concurrent callbacks cannot publish duplicates.
+      lastImages[i] = sim;
+    }
+    if (publishers[i].Publish(output)) {
+      ++published[i];
+      if (published[i] == 1 || published[i] % 100 == 0)
+        Diagnostic("published stream=" + std::to_string(i) + " sim_ns=" + std::to_string(sim));
+    }
+  }
+  // 功能：把极少量启动/首帧诊断写入本次运行目录，避免 Gazebo 服务进程分离时丢失 stderr。
+  // 输入：不含像素或敏感值的状态行。输出：只追加到产品生成的绝对路径。
+  void Diagnostic(const std::string &message) const {
+    if (diagnosticsPath.empty()) return;
+    std::ofstream stream(diagnosticsPath, std::ios::app);
+    if (stream) stream << "NATIVE_CAMERA_CLOCK " << message << '\n';
   }
   // Node 在时钟/锁销毁前析构，停止订阅；其回调不会持有 ECM 或执行器。
   std::mutex mutex;
@@ -95,6 +131,9 @@ class NativeCameraClock final : public gz::sim::System,
   std::string epoch;
   bool configured = false;
   std::array<std::int64_t, 2> lastImages{{-1, -1}};
+  std::array<std::uint64_t, 2> dropped{{0, 0}};
+  std::array<std::uint64_t, 2> published{{0, 0}};
+  std::string diagnosticsPath;
   std::array<std::string, 2> inputs, outputs;
   std::array<gz::transport::Node::Publisher, 2> publishers;
   gz::transport::Node node;
