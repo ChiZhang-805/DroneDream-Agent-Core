@@ -45,6 +45,19 @@ def test_only_exact_builtin_x500_depth_pairs_claim_existing_qualification() -> N
     catalog = asset_pair_catalog()
     qualified = [item for item in catalog["pairs"] if item["qualification_id"]]
     assert len(qualified) == 8
+    assert {
+        item["map_resource_id"]: item["qualified_map_asset_id"]
+        for item in qualified
+    } == {
+        "dronedream-school-map": "dronedream.school-map.v1",
+        "open-rmf-airport-terminal": "airport-terminal",
+        "open-rmf-battle-royale": "battle-royale",
+        "open-rmf-campus": "campus",
+        "open-rmf-clinic": "clinic",
+        "open-rmf-hotel": "hotel",
+        "open-rmf-office": "office",
+        "open-rmf-triple-h": "triple-h",
+    }
     assert {item["vehicle_resource_id"] for item in qualified} == {"px4-x500-depth"}
     assert all(item["qualified_vehicle_asset_id"] == "dronedream.my-drone.v1" for item in qualified)
     assert all(
