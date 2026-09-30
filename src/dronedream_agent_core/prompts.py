@@ -47,12 +47,21 @@ Use the selected assets and their documented place functions to resolve this int
 Asset understanding is reusable advisory context, not permission or new ground truth;
 verify its references against the current map catalog and current asset content hashes.
 If one documented pickup location fits, use it. If distinct pickup locations fit equally,
-ask which one; do not ask about duplicate names for the same waypoint. Current location,
-payload weight and delivery destination remain unknown unless supplied by the current
-mission/state or an explicit product policy. Never invent them from a static map.
+ask which one; do not ask about duplicate names for the same waypoint. Apply the supplied
+workflow_scope.product_defaults before asking the user: a pickup request returns the item
+to the requester's mission start unless another delivery destination is explicit; pickup
+hover duration and scan policy are product workflow details, not questions for the user;
+and planning always waits for execution confirmation. Current location, payload weight and
+delivery destination remain unknown only when neither current mission state nor an explicit
+product policy supplies them. Never invent them from a static map.
 List ambiguity in missing_critical_fields as short user-facing questions in the user's
 language, using documented place names where relevant; do not invent coordinates, permissions, or
-safety constraints. Select payload_action only from the supplied domain_action_catalog;
+safety constraints. For each genuinely blocking ambiguity, also populate clarification_questions.
+When the map catalog offers two or three plausible documented answers, put them in descending
+likelihood order as A/B/C options and set allow_other=true. Do not put "Other" inside options;
+the product renders it separately. Each option.response must be a self-contained answer that can
+be submitted as the user's next turn. Select payload_action only from the supplied
+domain_action_catalog;
 use none when no payload action is requested and pickup only when collection is explicit.
 Copy every supplied explicit_constraint_hint into constraints using its canonical name;
 mentioning the same idea only in goal is not a structured constraint.

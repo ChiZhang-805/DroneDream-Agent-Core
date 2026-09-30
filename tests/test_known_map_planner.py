@@ -145,6 +145,63 @@ def test_metric_planner_uses_collision_geometry_instead_of_fixed_graph(tmp_path:
     assert route.all_edges_flight_verified is False
 
 
+def test_initial_named_place_plan_projects_wall_label_to_safe_operation_pose(tmp_path: Path):
+    graph = _graph()
+    graph.nodes[0].position_m = Vector3(x=0.31, y=0, z=1)
+    semantic = tmp_path / "wall-label.json"
+    semantic.write_text(json.dumps({"collision_primitives": [{
+        "name": "wall", "semantic": "wall", "center_x": 0,
+        "center_y": 0, "center_z": 1, "size_x": .2,
+        "size_y": 20, "size_z": 3,
+    }]}), encoding="utf-8")
+    planner = KnownMapMetricPlanner(
+        graph=graph,
+        semantic_path=semantic,
+        vehicle_diameter_m=.4,
+        vehicle_height_m=.3,
+        policy=MetricPlannerPolicy(
+            resolution_m=.3,
+            required_clearance_m=.25,
+            preferred_airspace_weight=0,
+            allow_semantic_endpoint_projection=True,
+        ),
+    )
+
+    route = planner.plan(RouteQuery(start_node="start", goal_node="goal"))
+
+    assert route.positions_m[0] != graph.nodes[0].position_m
+    first = route.positions_m[0]
+    assert planner.clearance((first.x, first.y, first.z)) >= .25
+
+
+def test_measured_endpoint_remains_fail_closed_when_projection_is_enabled(tmp_path: Path):
+    graph = _graph()
+    semantic = tmp_path / "wall-measured.json"
+    semantic.write_text(json.dumps({"collision_primitives": [{
+        "name": "wall", "semantic": "wall", "center_x": 0,
+        "center_y": 0, "center_z": 1, "size_x": .2,
+        "size_y": 20, "size_z": 3,
+    }]}), encoding="utf-8")
+    planner = KnownMapMetricPlanner(
+        graph=graph,
+        semantic_path=semantic,
+        vehicle_diameter_m=.4,
+        vehicle_height_m=.3,
+        policy=MetricPlannerPolicy(
+            resolution_m=.3,
+            required_clearance_m=.25,
+            allow_semantic_endpoint_projection=True,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="start violates operational clearance"):
+        planner.plan_positions(
+            RouteQuery(start_node="start", goal_node="goal"),
+            start_position_m=Vector3(x=.31, y=0, z=1),
+            goal_position_m=graph.nodes[1].position_m,
+        )
+
+
 # 功能：
 #   验证起点落在墙内时明确拒绝，而不是将其吸附到安全的旧坐标。
 # 输入：

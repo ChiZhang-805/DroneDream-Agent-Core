@@ -353,10 +353,16 @@ class MissionClarificationRequired(MissionPreparationBlocked):
     #   fields：经过结构化意图验证的疑问。
     # 输出：
     #   self：带有限长度追问信息的准备中断。
-    def __init__(self, fields: list[str]) -> None:
+    def __init__(self, fields: list[str], questions: list[object] | None = None) -> None:
         super().__init__("MISSION_CLARIFICATION_REQUIRED")
         self.fields = list(dict.fromkeys(field.strip()[:240] for field in fields if field.strip()))[
             :16
+        ]
+        self.questions = [
+            question.model_dump(mode="json")
+            if hasattr(question, "model_dump")
+            else question
+            for question in (questions or [])[:4]
         ]
 
 
@@ -713,6 +719,13 @@ def _intent_workflow_scope() -> dict[str, object]:
         "execution_confirmation_required": True,
         "physical_hardware_authority": False,
         "round_trip_supported": True,
+        "product_defaults": {
+            "plan_before_execution": True,
+            "pickup_returns_to_requester_start_unless_another_destination_is_explicit": True,
+            "pickup_hover_seconds": 10,
+            "pickup_scan_policy": "only_when_required_by_the_pickup_workflow",
+            "launch_entity_is_current_simulated_position_when_the_user_does_not_name_a_start": True,
+        },
         "return_entity_semantics": (
             "final landing entity for both one-way and round-trip missions"
         ),
@@ -737,6 +750,39 @@ def _bind_explicit_intent_constraints(
         {**intent.model_dump(mode="json"), "constraints": values}, IntentArtifact
     )
     return bound_intent
+
+
+def _bind_product_intent_defaults(
+    intent: IntentArtifact,
+    request: MissionRequest,
+) -> IntentArtifact:
+    """Apply stable product workflow defaults without fabricating map evidence."""
+
+    values = list(intent.constraints)
+    updates: dict[str, object] = {}
+    if intent.payload_action == "pickup":
+        if not any(value.startswith("pickup_hover_seconds=") for value in values):
+            values.append("pickup_hover_seconds=10")
+        one_way_markers = (
+            "不回来", "不用回来", "留在那里", "在那里降落", "单程",
+            "do not return", "don't return", "leave it there", "land there", "one-way",
+        )
+        if (
+            intent.return_entity == intent.target_entity
+            and intent.start_entity != intent.target_entity
+            and not any(marker in request.message.lower() for marker in one_way_markers)
+        ):
+            updates["return_entity"] = intent.start_entity
+    if (
+        intent.start_entity in {"__auto__", "__unresolved__", "unknown"}
+        and request.start_entity not in {"__auto__", "__unresolved__", "unknown"}
+    ):
+        updates["start_entity"] = request.start_entity
+    updates["constraints"] = list(dict.fromkeys(values))
+    return _artifact_snapshot(
+        {**intent.model_dump(mode="json"), **updates},
+        IntentArtifact,
+    )
 
 
 # 功能：
@@ -2984,6 +3030,7 @@ class MissionOrchestrator:
             )
             intent = _artifact_snapshot(intent, IntentArtifact)
             model_constraints = list(intent.constraints)
+            intent = _bind_product_intent_defaults(intent, request)
             intent = _bind_explicit_intent_constraints(intent, explicit_constraint_hints)
             if intent.constraints != model_constraints:
                 evidence.append(
@@ -3077,7 +3124,10 @@ class MissionOrchestrator:
                         "actuator_authority": False,
                     },
                 )
-                raise MissionClarificationRequired(intent.missing_critical_fields)
+                raise MissionClarificationRequired(
+                    intent.missing_critical_fields,
+                    intent.clarification_questions,
+                )
             raise MissionPreparationBlocked("INTENT_REVIEW_EXHAUSTED")
         assert intent is not None and intent_critique is not None
         try:

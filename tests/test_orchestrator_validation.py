@@ -28,6 +28,7 @@ from dronedream_agent_core.model_harness.model_port import StructuredCallResult
 from dronedream_agent_core.orchestrator import (
     MissionPreparationBlocked,
     _bind_explicit_intent_constraints,
+    _bind_product_intent_defaults,
     _bind_task_graph_action_contracts,
     _decomposition_action_catalog_view,
     _explicit_constraint_hints,
@@ -66,6 +67,83 @@ def _model_result(
             created_at=datetime.now(UTC),
         ),
     )
+
+
+def test_intent_clarification_options_are_ordered_and_bounded() -> None:
+    intent = IntentArtifact(
+        goal="从办公室取餐",
+        start_entity="launch",
+        target_entity="__unresolved__",
+        return_entity="launch",
+        payload_action="pickup",
+        missing_critical_fields=["请选择取餐点"],
+        clarification_questions=[{
+            "question_id": "pickup.location",
+            "prompt": "你希望去哪个取餐点？",
+            "options": [
+                {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+            ],
+            "allow_other": True,
+            "other_label": "其他",
+        }],
+    )
+    assert intent.clarification_questions[0].options[0].option_id == "A"
+
+    with pytest.raises(ValueError, match="ordered A/B/C"):
+        IntentArtifact(
+            goal="从办公室取餐",
+            start_entity="launch",
+            target_entity="__unresolved__",
+            return_entity="launch",
+            payload_action="pickup",
+            missing_critical_fields=["请选择取餐点"],
+            clarification_questions=[{
+                "question_id": "pickup.location",
+                "prompt": "你希望去哪个取餐点？",
+                "options": [
+                    {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+                    {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                ],
+            }],
+        )
+
+
+def test_pickup_product_defaults_return_to_start_and_add_bounded_hover() -> None:
+    intent = IntentArtifact(
+        goal="帮我取一下外卖",
+        start_entity="launch",
+        target_entity="pantry",
+        return_entity="pantry",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="帮我取一下外卖",
+        start_entity="launch",
+    )
+
+    resolved = _bind_product_intent_defaults(intent, request)
+
+    assert resolved.return_entity == "launch"
+    assert "pickup_hover_seconds=10" in resolved.constraints
+
+
+def test_pickup_product_defaults_preserve_explicit_one_way_destination() -> None:
+    intent = IntentArtifact(
+        goal="去餐点取件并在那里降落",
+        start_entity="launch",
+        target_entity="pantry",
+        return_entity="pantry",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="去餐点取件并在那里降落，不用回来",
+        start_entity="launch",
+    )
+
+    assert _bind_product_intent_defaults(intent, request).return_entity == "pantry"
 
 
 def test_dual_review_consensus_uses_the_conservative_rejection_and_keeps_every_record() -> None:

@@ -7,7 +7,8 @@ import math
 from collections.abc import Callable
 
 from dronedream_agent_core.collision import (
-    CONSERVATIVE_VEHICLE_ENVELOPE_SCALE, localization_required_clearance_m,
+    CONSERVATIVE_VEHICLE_ENVELOPE_SCALE,
+    localization_required_clearance_m,
 )
 from dronedream_agent_core.contracts import (
     GraphRoute,
@@ -176,6 +177,10 @@ def _metric_candidate_definition() -> PluginDefinition:
                     clearance_cost_weight=0.22,
                     # 起飞前长路线允许充分求解；飞行中改令仍只有短预算，本地安全控制独立运行。
                     maximum_search_seconds=60.0 if planning_phase == "initial" else 8.0,
+                    # Imported semantic nodes can be wall/door labels.  Only the
+                    # initial named-place plan may project those labels to a nearby
+                    # safe hover pose; runtime replans use measured positions exactly.
+                    allow_semantic_endpoint_projection=planning_phase == "initial",
                 ),
             )
         except (OSError, ValueError, json.JSONDecodeError):

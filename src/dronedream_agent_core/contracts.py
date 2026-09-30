@@ -595,7 +595,9 @@ class RuntimeLocalSafetyCommand(StrictModel):
     # colocated while representing different control intentions.
     navigation_goal_id: str | None = Field(default=None, min_length=1, max_length=160)
     tracking_recovery_active: bool = False
-    navigation_control_authority: Literal["route-fallback", "model-required", "bounded-hybrid"] = "route-fallback"
+    navigation_control_authority: Literal[
+        "route-fallback", "model-required", "bounded-hybrid"
+    ] = "route-fallback"
     hybrid_lease: HybridControlLease | None = None
     model_navigation_authorized: bool = False
     model_call_id: str | None = None
@@ -943,6 +945,33 @@ class MissionAssetPairQualificationBinding(StrictModel):
         return versions
 
 
+class ClarificationOption(StrictModel):
+    """One bounded, directly selectable answer to a planning clarification."""
+
+    option_id: Literal["A", "B", "C"]
+    label: str = Field(min_length=1, max_length=120)
+    response: str = Field(min_length=1, max_length=240)
+
+
+class ClarificationQuestion(StrictModel):
+    """A user-facing question whose likely answers are ordered by relevance."""
+
+    question_id: str = Field(pattern=r"^[a-z][a-z0-9._-]{1,63}$")
+    prompt: str = Field(min_length=3, max_length=240)
+    options: list[ClarificationOption] = Field(default_factory=list, max_length=3)
+    allow_other: bool = True
+    other_label: str = Field(default="其他", min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> ClarificationQuestion:
+        expected = ["A", "B", "C"][: len(self.options)]
+        if [option.option_id for option in self.options] != expected:
+            raise ValueError("clarification options must use ordered A/B/C identifiers")
+        if self.options and len(self.options) < 2:
+            raise ValueError("a selectable clarification requires at least two options")
+        return self
+
+
 class IntentArtifact(StrictModel):
     schema_version: Literal["dronedream.intent.v1"] = "dronedream.intent.v1"
     goal: str = Field(min_length=3, max_length=1_000)
@@ -952,6 +981,10 @@ class IntentArtifact(StrictModel):
     payload_action: DomainActionId
     constraints: list[str] = Field(default_factory=list, max_length=32)
     missing_critical_fields: list[str] = Field(default_factory=list, max_length=16)
+    clarification_questions: list[ClarificationQuestion] = Field(
+        default_factory=list,
+        max_length=4,
+    )
     assumptions: list[str] = Field(default_factory=list, max_length=16)
     environment_mode: Literal[
         "qualified-static-map",
