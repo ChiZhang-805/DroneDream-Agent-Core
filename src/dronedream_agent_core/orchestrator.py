@@ -26,6 +26,10 @@ from .collision import (
     build_tracking_corridor_budget,
 )
 from .context import ContextStore
+from .context_projection import (
+    compact_mission_request_event,
+    intent_model_request_projection,
+)
 from .contracts import (
     ConversationWindow,
     DomainActionCatalog,
@@ -519,6 +523,8 @@ def _compact_context(window: Any) -> dict[str, object]:
                 if isinstance(record, dict)
                 else {},
             }
+        elif event.event_type == "mission.request":
+            payload = compact_mission_request_event(payload)
         recent.append(
             {
                 "sequence": event.sequence,
@@ -2191,6 +2197,7 @@ class MissionOrchestrator:
         results: list[StructuredCallResult[Any]] = []
         response_metering: list[Any] = []
         failures: list[str] = []
+        failure_codes: list[str] = []
         attempted_ports: list[str] = []
         for port_name in candidate_ports:
             if len(results) >= maximum_responses:
@@ -2219,14 +2226,15 @@ class MissionOrchestrator:
                 )
             except ModelInvocationError as error:
                 self._model_call_count += error.attempts_used
-                failure = f"{port_name}:{type(error).__name__}:{str(error)[:360]}"
+                failure = f"{port_name}:{error.reason_code}"
                 failures.append(failure)
+                failure_codes.append(error.reason_code)
                 evidence.append(
                     f"model.{role}.provider-attempts-failed",
                     {
                         "port": port_name,
                         "attempts_used": error.attempts_used,
-                        "issue": str(error)[:360],
+                        "issue": error.reason_code,
                         "physical_attempt_count": self._model_call_count,
                         "physical_attempt_budget": self._model_call_budget,
                     },
@@ -2270,6 +2278,8 @@ class MissionOrchestrator:
                 )
             results.append(candidate_result)
         if len(results) < minimum_responses:
+            if failure_codes and set(failure_codes) == {"MODEL_REQUEST_TOO_LARGE"}:
+                raise MissionPreparationBlocked("MODEL_REQUEST_TOO_LARGE")
             raise MissionPreparationBlocked(
                 "MODEL_CONSENSUS_INSUFFICIENT_RESPONSES:" + ",".join(failures)
             )
@@ -2366,7 +2376,13 @@ class MissionOrchestrator:
         evidence: EvidenceChain,
     ) -> None:
         from .model_harness.progress import report_progress
-        report_progress("tools", f"工具 {receipt.tool_id} 已返回回执，正在记录结果并核对任务约束。", f"Tool {receipt.tool_id} returned a receipt; recording the result and checking task constraints.")
+
+        report_progress(
+            "tools",
+            f"工具 {receipt.tool_id} 已返回回执，正在记录结果并核对任务约束。",
+            f"Tool {receipt.tool_id} returned a receipt; "
+            "recording the result and checking task constraints.",
+        )
         payload = receipt.model_dump(mode="json")
         context_store.append(
             conversation_id, role="tool", event_type=f"tool.{receipt.tool_id}", payload=payload
@@ -2434,7 +2450,9 @@ class MissionOrchestrator:
     #   prepared：绑定当前地图、机型、插件、调用记录与执行前置条件的计划包。
     def _prepare(self, request: MissionRequest, output_dir: Path) -> PreparedMission:
         try:
-            model_request_context = _model_request_context(request)
+            model_request_context = intent_model_request_projection(
+                _model_request_context(request)
+            )
         except ValueError as error:
             raise MissionPreparationBlocked(str(error)) from error
         explicit_constraint_hints = _explicit_constraint_hints(request)
@@ -2739,7 +2757,7 @@ class MissionOrchestrator:
             request.conversation_id,
             role="user",
             event_type="mission.request",
-            payload=request.model_dump(mode="json"),
+            payload=compact_mission_request_event(request.model_dump(mode="json")),
         )
         evidence.append("mission.request", request.model_dump(mode="json"))
         try:

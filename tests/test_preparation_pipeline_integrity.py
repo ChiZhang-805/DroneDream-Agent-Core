@@ -153,6 +153,7 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
     semantic["collision_primitives"] = [
         {
             "name": "fixture-floor",
+            "semantic": "floor",
             "center_x": 1.5,
             "center_y": 0,
             "center_z": -1,

@@ -182,7 +182,7 @@ def _safe_attempt_diagnostic(error: Exception) -> str:
         ][:12]
         # 只补充内建长度校验的整数边界，不转发输入内容或自定义错误正文。
         # 仅返回 too_long 会让模型重复产生同样的超长数组。
-        for detail, entry in zip(details, error.errors()[:12]):
+        for detail, entry in zip(details, error.errors()[:12], strict=True):
             if detail["type"] in {"too_long", "too_short", "string_too_long", "string_too_short"}:
                 context = entry.get("ctx", {})
                 for name in ("max_length", "min_length"):
@@ -565,7 +565,9 @@ class StructuredModelPort:
                         transport_generation=generation,
                     )
             except Exception as exc:  # provider and validation failures share retry policy
-                report_model_progress(getattr(self, "_progress_sink", None), role, attempt, "failed")
+                report_model_progress(
+                    getattr(self, "_progress_sink", None), role, attempt, "failed"
+                )
                 with self._transport_lock:
                     retired = self._transport_closed or generation != self._transport_generation
                 if retired:
@@ -574,12 +576,28 @@ class StructuredModelPort:
                         attempts_used=attempt,
                         reason_code="MODEL_TRANSPORT_RETIRED",
                     ) from exc
-                # 额度耗尽或授权冲突不能通过重复相同请求恢复，交回调用方处理授权。
-                if isinstance(exc, APIStatusError) and exc.status_code in {400, 401, 402, 403, 404, 409, 422}:
+                # 请求过大、额度耗尽或授权冲突不能通过重复相同请求恢复。
+                # 特别是 413：重复发送只会再次超限并浪费调用预算。
+                if isinstance(exc, APIStatusError) and exc.status_code in {
+                    400,
+                    401,
+                    402,
+                    403,
+                    404,
+                    409,
+                    413,
+                    422,
+                }:
+                    reason_code = (
+                        "MODEL_REQUEST_TOO_LARGE"
+                        if exc.status_code == 413
+                        else "MODEL_INVOCATION_FAILED"
+                    )
                     raise ModelInvocationError(
                         f"{self.settings.name}/{role} rejected request with "
                         f"{type(exc).__name__} status={exc.status_code}",
                         attempts_used=attempt,
+                        reason_code=reason_code,
                     ) from exc
                 errors.append(_safe_attempt_diagnostic(exc))
                 if attempt == attempt_limit:
@@ -620,7 +638,13 @@ class StructuredModelPort:
                 result = StructuredCallResult(
                     artifact=artifact, record=record, attempt_failures=tuple(errors)
                 )
-                report_model_progress(getattr(self, "_progress_sink", None), role, attempt, "completed", record.latency_ms)
+                report_model_progress(
+                    getattr(self, "_progress_sink", None),
+                    role,
+                    attempt,
+                    "completed",
+                    record.latency_ms,
+                )
                 from .progress import report_artifact_progress
                 report_artifact_progress(getattr(self, "_progress_sink", None), artifact)
                 return result
