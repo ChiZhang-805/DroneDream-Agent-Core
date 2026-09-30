@@ -1023,6 +1023,72 @@ def test_local_safety_slowdown_advances_after_one_safe_controller_tick(
     )
 
 
+def test_local_safety_recovery_window_rolls_over_without_terminal_landing(
+    tmp_path: Path,
+) -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        decision=SimpleNamespace(
+            action="hold",
+            threat_obstacle_id="temporary-depth-track",
+            minimum_predicted_clearance_m=0.05,
+            selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+            issue_codes=["HOLD_AND_REQUEST_REPLAN"],
+        ),
+        command_position_m=Vector3(x=0.1, y=0.2, z=1.5),
+        observation_sequence=12,
+    )
+    executor._read_local_safety_command = lambda _args: command
+
+    async def ignore_identity_refresh(**_kwargs: Any) -> None:
+        return None
+
+    executor._refresh_px4_identity_telemetry = ignore_identity_refresh
+
+    class Client:
+        def __init__(self) -> None:
+            self.commands: list[Any] = []
+
+        async def set_position_ned(self, setpoint: Any) -> None:
+            self.commands.append(setpoint)
+
+    async def exercise() -> tuple[Client, Any]:
+        client = Client()
+        applied = await executor._apply_local_safety(
+            args=SimpleNamespace(
+                local_safety_target=None,
+                local_safety_command=tmp_path / "command.json",
+                local_safety_repair_timeout_seconds=15.0,
+                local_safety_repair_absolute_timeout_seconds=1e-9,
+                setpoint_rate_hz=1000.0,
+            ),
+            base=SimpleNamespace(
+                Setpoint=lambda **values: SimpleNamespace(**values),
+                VelocitySetpoint=lambda **values: SimpleNamespace(**values),
+            ),
+            client=client,
+            planned_setpoint=SimpleNamespace(
+                north_m=0.0,
+                east_m=0.0,
+                down_m=-1.0,
+                yaw_deg=0.0,
+            ),
+            coordinate_contract=Px4CoordinateContract(
+                model_root_world_enu_m=[0.0, 0.0, 0.0],
+                collision_center_offset_model_m=[0.0, 0.0, 0.2],
+            ),
+            phase_path=tmp_path / "phase.json",
+        )
+        return client, applied
+
+    client, applied = asyncio.run(exercise())
+    assert 1 <= len(client.commands) <= 2
+    assert applied is client.commands[-1]
+    phase = json.loads((tmp_path / "phase.json").read_text(encoding="utf-8"))
+    assert phase["local_control_phase"] == "RECOVERY_RETRY"
+    assert phase["recovery_rollover_reason"] == "absolute-window-elapsed"
+
+
 def test_static_clearance_recovery_freezes_schedule_until_margin_restored(
     tmp_path: Path,
 ) -> None:

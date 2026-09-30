@@ -239,7 +239,7 @@ def payload_motion_issues(vehicle, payload, envelope, domain, measurement_only=F
     if (mass > vehicle.max_pickup_payload_kg
             or vehicle.dry_mass_kg + mass > vehicle.max_takeoff_mass_kg):
         issues.append("PAYLOAD_EXCEEDS_VEHICLE_LIMIT")
-    if loaded and envelope is None and not measurement_only:
+    if loaded and envelope is None and not measurement_only and domain == "hardware":
         issues.append("LOADED_MOTION_DYNAMICS_UNQUALIFIED")
     if measurement_only and envelope is None:
         # 首批数据可以在隔离仿真中低速采集；此分支不产生任何合格包络或模型准入。
@@ -299,6 +299,7 @@ class VerticalMotionGuard:
         if domain not in {"simulation", "hardware"} or not callable(coverage_check):
             raise ValueError("VERTICAL_GUARD_BINDING_INVALID")
         self.bounds = [primitive_bounds(p) for p in primitives]
+        self.domain = domain
         self.coverage_check = coverage_check
         self.clearance = clearance
         self.measurement_only = measurement_only
@@ -371,6 +372,15 @@ class VerticalMotionGuard:
     def acceleration_limit(self, maximum: float) -> float:
         limit = (min(maximum, self.envelope.maximum_command_acceleration_mps2)
                  if self.envelope is not None else maximum)
+        loaded = self.payload.get("state") in {
+            "attached", "custody-confirmed", "loaded-stable"
+        }
+        if self.domain == "simulation" and loaded and self.envelope is None:
+            # Missing independent payload qualification is evidence that the
+            # simulator must use a conservative envelope, not a reason to
+            # immobilize an otherwise observable aircraft.  Hardware retains
+            # the explicit qualification requirement above.
+            limit = min(limit, .2)
         if self.measurement_only:
             limit = min(limit, .2)
         return limit

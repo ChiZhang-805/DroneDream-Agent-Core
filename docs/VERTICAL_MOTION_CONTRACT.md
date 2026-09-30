@@ -42,7 +42,7 @@ evidence/
 
 验收文件必须包含 `schema_version: dronedream.flight-dynamics-qualification.v1`、`status: accepted`、`independent_validation_passed: true`，以及与包络逐字段一致的 `limits`（不含 `evidence_sha256`）。`measurement_sources` 各项只有 `file`、`sha256`、`split`；至少分别有 calibration 与 validation 来源，不能用同一文件内容冒充独立验证。文件名不得越出 evidence 目录；逐文件读取有大小和总量上限。
 
-这些完整性检查**不会自动签发物理资格**。包络应来自通过独立验收的连续物理测量，维护者不得把任意数据配上 accepted 标签来绕过验收。本次没有生成伪造的产品动力学资格文件。没有对应负载测量包络时，已装载运动返回 `LOADED_MOTION_DYNAMICS_UNQUALIFIED`；空载仍沿用已有的机型预测限制，但不据此声称已得到实测制动保证。
+这些完整性检查**不会自动签发物理资格**。包络应来自通过独立验收的连续物理测量，维护者不得把任意数据配上 accepted 标签来绕过验收。本次没有生成伪造的产品动力学资格文件。没有对应负载测量包络时，真机已装载运动返回 `LOADED_MOTION_DYNAMICS_UNQUALIFIED`；Gazebo 仿真则自动降级到 0.12 m/s、0.2 m/s² 的保守包络继续验证任务闭环。空载仍沿用已有的机型预测限制，但不据此声称已得到实测制动保证。
 
 首批数据沿用现有 `--development-payload-collection` 流程：必须是仅仿真准入、本地策略和多模态记录，运行结果明确不授予飞行资格。此模式可以暂缺待测的包络，但质量上限、装载稳定、新鲜遥测、执行器归一化、空间覆盖及碰撞否决仍有效；新增矢量速度上限 0.2 m/s、指令加速度上限 0.2 m/s²。它们是隔离实验的限制，不是实测安全保证。每周期记录 `measurement_only: true`，不能拿采集运行冒充产品验收。`hardware` 不接受此模式，也不接受缺失的动力学包络。
 

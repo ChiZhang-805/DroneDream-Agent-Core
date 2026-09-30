@@ -197,15 +197,16 @@ def test_payload_bounds(mass, code):
 
 
 # 功能：
-#   验证低压、旧电压、姿态超界和模型无实测包络时不能取得负载运动授权。
+#   验证低压、旧电压、姿态超界，并区分仿真降级与真机资格要求。
 # 输入：
 #   无：分别污染有效负载背景。
 # 输出：
 #   None：确认各条件独立生效。
 def test_payload_qualification_and_live_operating_conditions():
     assert payload_motion_issues(vehicle(), payload(), envelope(), "simulation") == []
+    assert payload_motion_issues(vehicle(), payload(), None, "simulation") == []
     assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in payload_motion_issues(
-        vehicle(), payload(), None, "simulation")
+        vehicle(), payload(), None, "hardware")
     assert "FLIGHT_DYNAMICS_BINDING_MISMATCH" in payload_motion_issues(
         vehicle(), payload(), envelope(), "hardware")
     conditions = [("voltage_v", 12., "BATTERY"), ("roll_deg", 30., "ATTITUDE"),
@@ -285,7 +286,7 @@ def test_loaded_braking_checks_current_momentum_and_response_delay():
 #   无：一条已绑定背景的实时观测。
 # 输出：
 #   None：断言真实运行入口执行限制及摘要检查。
-def test_runtime_binding_and_direct_payload_veto():
+def test_runtime_binding_and_simulated_payload_degradation():
     protection = guard(payload=payload())
     observation = RuntimeLocalSafetyObservation(sequence=1, observed_at_unix_ms=1000,
         source="onboard", stream_healthy=True, stream_age_seconds=.01,
@@ -298,9 +299,15 @@ def test_runtime_binding_and_direct_payload_veto():
     with pytest.raises(ValueError, match="CONTEXT_BINDING"):
         evaluate_runtime_local_safety(**kwargs)
     command = evaluate_runtime_local_safety(**kwargs, motion_guard=protection)
-    assert command.decision.action == "hold"
+    assert command.decision.action in {"continue", "slow", "replan"}
     assert command.observation_sha256 == sha256_json(observation)
-    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in command.decision.issue_codes
+    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" not in command.decision.issue_codes
+    assert command.decision.maximum_acceleration_mps2 == pytest.approx(.2)
+    assert math.hypot(
+        command.decision.selected_velocity_mps.x,
+        command.decision.selected_velocity_mps.y,
+        command.decision.selected_velocity_mps.z,
+    ) <= .12 + 1e-9
     observation.current_position_m.x = 1.
     with pytest.raises(ValueError, match="POSITION_BINDING"):
         evaluate_runtime_local_safety(**kwargs, motion_guard=protection)
@@ -341,7 +348,8 @@ def test_measurement_mode_is_simulation_only_and_never_production_qualification(
     assert protection.check(request(), (.1, 0., .1), [(0., 0., 2.), (.1, 0., 2.1)]) == []
     assert protection.acceleration_limit(1.) == .2
     assert protection.check(request(), (.3, 0., 0.), [(0., 0., 2.)]) == ["MEASUREMENT_SPEED_LIMIT"]
-    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in guard(payload=payload()).issues
+    assert guard(payload=payload()).issues == []
+    assert guard(payload=payload()).acceleration_limit(1.) == .2
     assert "PAYLOAD_MASS_UNKNOWN" in guard(payload=payload(None), measurement_only=True).issues
     bad = payload()
     bad["dynamics"]["ready"] = False

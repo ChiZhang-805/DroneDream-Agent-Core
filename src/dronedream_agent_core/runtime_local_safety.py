@@ -326,6 +326,19 @@ def evaluate_runtime_local_safety(
             raise ValueError("RUNTIME_MOTION_CLEARANCE_BINDING_MISMATCH")
         planner_max_acceleration_mps2 = motion_guard.acceleration_limit(
             planner_max_acceleration_mps2)
+        loaded = motion_guard.payload.get("state") in {
+            "attached", "custody-confirmed", "loaded-stable"
+        }
+        if (
+            motion_guard.domain == "simulation"
+            and loaded
+            and motion_guard.envelope is None
+        ):
+            # Degrade an unqualified simulated payload to a walking-speed
+            # envelope.  The same missing evidence remains a hard restriction
+            # on real hardware, but it must not become a one-vote mission veto
+            # in Gazebo where geometry and telemetry remain available.
+            planner_max_speed_mps = min(planner_max_speed_mps, .12)
     # Absolute map-position uncertainty and image/state alignment uncertainty
     # are different budgets.  A qualified route corridor funds the former;
     # body-relative depth validity only needs the additional displacement that

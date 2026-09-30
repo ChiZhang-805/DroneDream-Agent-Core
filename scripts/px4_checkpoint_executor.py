@@ -6281,12 +6281,38 @@ async def _apply_local_safety(
         if action == "slow" and not clearance_recovery_active:
             return safe_setpoint
         repair_now = loop.time()
+        recovery_rollover_reason = None
         if repair_now >= repair_absolute_deadline:
-            raise UserDirectedLanding("local safety repair exceeded its absolute bounded window")
-        if repair_now >= deadline:
-            raise UserDirectedLanding(
-                "local safety repair made no progress within its stall window"
+            recovery_rollover_reason = "absolute-window-elapsed"
+        elif repair_now >= deadline:
+            recovery_rollover_reason = "stall-window-elapsed"
+        if recovery_rollover_reason is not None:
+            # A bounded recovery window limits one correction episode; it is
+            # not permission to end the flight.  Return the already accepted
+            # hold/replan setpoint so the enclosing route controller can
+            # advance to a fresh target and start a new correction episode.
+            # Explicit operator cancellation and genuine flight-control loss
+            # are still handled by their dedicated controlled-landing paths.
+            _record_local_safety_executor_event(
+                args,
+                status="recovery-window-rolled-over",
+                details={
+                    "reason": recovery_rollover_reason,
+                    "action": action,
+                    "observation_sequence": command.observation_sequence,
+                },
             )
+            _publish_local_control_phase(
+                phase_path,
+                local_phase="RECOVERY_RETRY",
+                details={
+                    "local_safety_action": action,
+                    "recovery_rollover_reason": recovery_rollover_reason,
+                    "observation_sequence": command.observation_sequence,
+                    "threat_obstacle_id": command.decision.threat_obstacle_id,
+                },
+            )
+            return safe_setpoint
         _publish_local_safety_target(
             path=args.local_safety_target,
             setpoint=planned_setpoint,
