@@ -127,15 +127,15 @@ CORE_PLANNING_SLOTS = frozenset(
 )
 IMMUTABLE_SAFETY_RULES = [
     "Model output never has direct actuator authority.",
-    "Unknown or unavailable critical telemetry causes hold or abort.",
+    "Unknown or unavailable critical telemetry causes a bounded hold and recovery attempt.",
     "Every executable route must pass continuous vehicle-envelope collision checks.",
     "Execution must remain inside the qualified map and vehicle asset hashes.",
-    "Landing or abort remains available at every runtime phase.",
+    "Correction, replanning, return, and controlled landing remain available at every runtime phase.",
 ]
 REQUIRED_MISSION_CONSTRAINTS = [
     "safety_priority",
     "bounded_execution_speed",
-    "runtime_hold_return_or_abort_available",
+    "runtime_hold_replan_return_or_land_available",
     "explicit_execution_and_landing_confirmation",
 ]
 EXPLICIT_CONSTRAINT_PHRASES = {

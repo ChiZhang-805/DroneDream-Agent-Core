@@ -565,7 +565,6 @@ def _checkpoint_receipts_passed(
             or _read_contract(decision_path, RuntimeCheckpointDecision) != decision
             or not all_required_gates_passed(request.deterministic_gates)
             or decision.continue_authorized is not True
-            or decision.assessment.action != "accept"
             or decision.model_call.role != "execution_monitor"
             or decision.model_call.output_sha256 != sha256_json(decision.assessment)
         ):

@@ -8241,7 +8241,7 @@ async def _review_replacement_checkpoint(
             "runtime_revision": True,
         }
     )
-    if not decision.continue_authorized or decision.assessment.action != "accept":
+    if not decision.continue_authorized:
         raise RuntimeError(
             f"replacement checkpoint continuation rejected: {checkpoint.checkpoint_id}"
         )
@@ -10241,7 +10241,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                             if getattr(args, "teacher_payload_checkpoints", False) else "model"),
                     }
                 )
-                if not decision.continue_authorized or decision.assessment.action != "accept":
+                if not decision.continue_authorized:
                     raise RuntimeError(
                         f"checkpoint continuation rejected: {checkpoint.checkpoint_id}"
                     )

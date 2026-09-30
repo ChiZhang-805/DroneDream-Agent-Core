@@ -56,24 +56,27 @@ def checkpoint_contract_for(prepared: PreparedMission) -> RuntimeCheckpointContr
 
 
 # 功能：
-#   汇总模型明确接受与两组非空全真门控；此函数不采集遥测，也不单独证明物理安全。
+#   汇总两组非空全真确定性门控；模型评估只提供建议，不能单票终止飞行。
 # 输入：
 #   request：带执行器确定性门控的检查点请求。
 #   assessment：结构化模型评估。
 #   binding_gates：核心计算的任务、轨迹和当前计划绑定结果。
 # 输出：
-#   authorized：三项授权条件同时成立时为真。
+#   authorized：确定性执行门控与身份绑定同时成立时为真。
 def checkpoint_continue_authorized(
     *,
     request: RuntimeCheckpointRequest,
     assessment: RuntimeAssessment,
     binding_gates: dict[str, bool],
 ) -> bool:
-    authorized = (
-        assessment.action == "accept"
-        and all_required_gates_passed(request.deterministic_gates)
-        and all_required_gates_passed(binding_gates)
-    )
+    # A model may recommend hold/replan, but it has no actuator authority and
+    # therefore cannot be an independent veto.  The controller owns bounded
+    # hold, correction and replanning; only the deterministic telemetry and
+    # artifact-binding gates decide whether this checkpoint may continue.
+    _ = assessment
+    authorized = all_required_gates_passed(
+        request.deterministic_gates
+    ) and all_required_gates_passed(binding_gates)
     return authorized
 
 

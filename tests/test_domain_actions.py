@@ -129,6 +129,10 @@ def test_first_party_action_packs_merge_without_conflict() -> None:
     assert "survey.grid-capture" in movement_action_ids(catalog)
     assert action_by_id(catalog, "delivery.release-payload").authority == "actuate"
     assert not {"delivery.scan-code", "delivery.verify-recipient"} & action_ids(catalog)
+    assert all(
+        "abort" not in action.allowed_fallbacks
+        for action in catalog.actions
+    )
 
 
 def test_action_pack_conflict_is_rejected() -> None:

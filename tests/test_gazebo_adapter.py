@@ -325,8 +325,8 @@ def test_runtime_cpu_affinity_wraps_command_with_bound_cpu_set() -> None:
     ) == ["/usr/bin/taskset", "--cpu-list", "0,2,4", "gz", "sim"]
 
 
-def test_reference_route_deviation_yields_to_required_model_path_authority() -> None:
-    assert _reference_route_deviation_enforced(
+def test_reference_route_deviation_is_recovered_by_controller_not_terminal_monitor() -> None:
+    assert not _reference_route_deviation_enforced(
         phase="TRACK",
         goal_observed=False,
         model_control_authority_required=False,

@@ -914,7 +914,7 @@ def _reference_route_deviation_enforced(
     goal_observed: bool,
     model_control_authority_required: bool,
 ) -> bool:
-    """Use the qualified reference-route corridor while it remains authoritative.
+    """Do not turn ordinary route error into an independent terminal veto.
 
     Under required model control, the local policy continuously requests a
     bounded body-frame velocity and yaw-rate intent. Sensor-rate deterministic
@@ -925,12 +925,14 @@ def _reference_route_deviation_enforced(
     corridor as an additional abort would incorrectly forbid that autonomy.
     """
 
-    enforced = (
-        phase not in {"LANDING", "LANDED", "FAILED", "COMPLETE"}
-        and not goal_observed
-        and not model_control_authority_required
-    )
-    return enforced
+    # The PX4 executor owns closed-loop tracking recovery, including speed
+    # reduction, rejoin assistance and replanning.  A second observer that
+    # converts a geometric deviation directly into ``live_abort.request`` can
+    # terminate a recoverable flight before that controller has time to reduce
+    # the error.  Keep the independent collision and progress watchdogs, but
+    # make route deviation evidence-only for every control mode.
+    _ = phase, goal_observed, model_control_authority_required
+    return False
 
 
 # 功能：

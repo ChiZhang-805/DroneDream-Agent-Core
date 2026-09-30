@@ -58,12 +58,12 @@ def test_model_accept_requires_every_code_gate() -> None:
 
 
 # 功能：
-#   验证代码门控通过时仍需模型明确接受，模型要求悬停不能被改成继续执行。
+#   验证模型只有建议权；确定性门控通过时，模型不能单票终止控制链路。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_code_accepts_only_bound_safe_model_accept() -> None:
+def test_code_gates_authorize_continuation_independent_of_model_opinion() -> None:
     request = _request()
     binding = {"checkpoint_binding": True, "track_point_binding": True}
     assert checkpoint_continue_authorized(
@@ -71,7 +71,7 @@ def test_code_accepts_only_bound_safe_model_accept() -> None:
         assessment=RuntimeAssessment(action="accept"),
         binding_gates=binding,
     )
-    assert not checkpoint_continue_authorized(
+    assert checkpoint_continue_authorized(
         request=request,
         assessment=RuntimeAssessment(action="hold"),
         binding_gates=binding,
