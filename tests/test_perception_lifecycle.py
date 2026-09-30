@@ -77,6 +77,34 @@ def test_independent_route_completion_does_not_require_unused_model_features(tmp
 
 
 # 功能：
+#   验证异步健康发布器跨越控制结束边界时不会以数十毫秒调度抖动否决已完成任务。
+# 输入：
+#   tmp_path：本次健康文件的独立目录。
+# 输出：
+#   None：健康、身份和定位均有效且总年龄小于半秒时通过。
+def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_path):
+    path = tmp_path / "health.json"
+    path.write_text(json.dumps({
+        **health(),
+        "updated_at_unix_ms": 1000,
+        "stream_age_seconds": .135,
+        "localization_observed_at_unix_ms": 929,
+        "realtime_features_ready": False,
+    }))
+    record = capture_control_completion(
+        path,
+        track_sha256="a" * 64,
+        completed_at_unix_ms=1133,
+        realtime_features_required=False,
+    )
+    assert record["accepted"] is True
+    assert verify_control_completion({
+        **timing(record),
+        "perception_realtime_features_required": False,
+    }) is True
+
+
+# 功能：
 #   逐项注入时效、身份、特征和真值替代错误，确保实际控制结束失败不被停流解释掩盖。
 # 输入：
 #   tmp_path：本次健康文件的独立目录。
@@ -86,10 +114,10 @@ def test_independent_route_completion_does_not_require_unused_model_features(tmp
 @pytest.mark.parametrize("change", [
     {"stream_healthy": False}, {"identity_accepted": False}, {"truth_correction_applied": True},
     {"realtime_features_ready": False}, {"updated_at_unix_ms": 500},
-    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .245},
+    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .495},
     {"stream_age_seconds": float("nan")}, {"stream_age_seconds": -1.},
     {"pose_source": "gazebo-ground-truth"},
-    {"localization_observed_at_unix_ms": 700},
+    {"localization_observed_at_unix_ms": 400},
     {"localization_observed_at_unix_ms": None},
     {"localization_observed_at_unix_ms": True},
     {"localization_observed_at_unix_ms": 1100},

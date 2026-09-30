@@ -115,7 +115,7 @@ def test_completion_channel_does_not_fall_back_or_renew_source(tmp_path):
         publisher.send({**completion_health(),
                         "schema_version": "dronedream.perception-fusion-health.v1"})
         receive(receiver)
-        for completed in (999, 1201, 1500):
+        for completed in (999, 1501, 2000):
             assert not capture_control_completion(path, receiver=receiver,
                 track_sha256="a" * 64, completed_at_unix_ms=completed)["accepted"]
         receiver.close()

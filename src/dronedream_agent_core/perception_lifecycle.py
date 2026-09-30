@@ -21,6 +21,12 @@ from .plugin_files import read_plugin_file
 _HEALTH_BYTES = 262_144
 _RECEIPT_BYTES = _HEALTH_BYTES + 4096
 _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
+# The health publisher is asynchronous to the 10 Hz controller.  A healthy
+# sample can legitimately straddle the controller-to-landing transition by one
+# or two scheduler ticks, especially in a low real-time-factor simulation.  It
+# remains valid evidence when it is both identity-bound and no more than half a
+# second old.  This is an audit freshness window, not a flight-stop threshold.
+_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
 
 
 # 功能：
@@ -61,12 +67,18 @@ def _health_ready(health: dict, *, completion_ms: int,
     localized = health.get("localization_observed_at_unix_ms")
     ready = bool(
         _valid_unix_ms(completion_ms) and _valid_unix_ms(updated)
-        and 0 <= completion_ms - updated <= 250
+        and 0 <= completion_ms - updated <= int(
+            _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS * 1_000
+        )
         # 先比较范围再转浮点，超大 JSON 整数不能在失败收尾时引起 OverflowError。
-        and type(source_age) in (int, float) and 0 <= source_age <= .25
+        and type(source_age) in (int, float)
+        and 0 <= source_age <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
         and math.isfinite(source_age)
-        and source_age + (completion_ms - updated) / 1000 <= .25
-        and _valid_unix_ms(localized) and 0 <= completion_ms - localized <= 250
+        and source_age + (completion_ms - updated) / 1000
+        <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
+        and _valid_unix_ms(localized)
+        and 0 <= completion_ms - localized
+        <= int(_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS * 1_000)
         and health.get("stream_healthy") is True
         and health.get("identity_accepted") is True
         and health.get("truth_correction_applied") is False
