@@ -112,15 +112,20 @@ not yet known: identity verification remains an observable runtime pickup step. 
 pickup request can refer to both a facility anchor and a qualified pickup waypoint, the
 pickup-semantic waypoint is the action-capable target and is not ambiguous.
 The supplied workflow_scope is authoritative: simulation-only operator authorization
-satisfies permission for preparation. workflow_scope does not assert whether this request
-is one-way or round-trip. Infer that only from the current user request. return_entity is
-the final landing entity: it equals target_entity for a one-way request and may equal the
-start entity for an explicit round trip; it must never be the string "none".
+satisfies permission for preparation. Product defaults in workflow_scope are authoritative;
+for a pickup request, accept returning to the mission start unless the user explicitly asks
+for a one-way mission or another delivery destination. Do not demand that the user restate
+that default. return_entity is the final landing entity and must never be the string "none".
 Reject an environment_mode that understates explicit dynamic or unknown-environment
 requirements. Do not convert absent sensor/readiness evidence into a model assumption.
 A staff member mentioned only as the late-bound handoff operator while the aircraft holds at
 a designated pickup point does not by itself require dynamic-obstacle route navigation. Accept
 qualified-static-map when no moving traffic avoidance or unknown-space discovery was requested.
+This stage reviews user intent only. Never reject for route clearance, pickup-volume geometry,
+map qualification, sensor readiness, payload mass or identity, attachment evidence, landing
+evidence, runtime checkpoints, or other downstream verification. Dedicated deterministic tools
+own those checks after intent review. A named map entity may be a facility landmark; its exact
+action pose and clearance are downstream planning concerns, not reasons to exhaust intent review.
 """.strip()
 )
 

@@ -342,6 +342,72 @@ def _intent_repair_feedback(
     return critique.model_dump(mode="json")
 
 
+# 功能：
+#   把意图复核限制在用户语义范围内，丢弃应由地图、载荷和运行时工具处理的越权否决。
+# 输入：
+#   critique：模型给出的自由文本复核结果。
+#   intent：已应用产品默认值和明确约束的候选意图。
+#   request：当前完整用户请求，用于识别明确单程要求。
+# 输出：
+#   normalized：只保留真正可能改变用户任务含义的复核结果。
+#   discarded：被后续确定性工具覆盖的越权问题代码。
+def _normalize_intent_critique_scope(
+    critique: IntentCritique,
+    intent: IntentArtifact,
+    request: MissionRequest,
+) -> tuple[IntentCritique, list[str]]:
+    """Prevent a semantic reviewer from becoming a second safety or route gate.
+
+    Entity existence, route clearance, payload capacity, sensor readiness and execution
+    evidence all have dedicated deterministic gates later in preparation. Letting the
+    intent critic reject those concerns makes a valid clarification loop exhaust before
+    the owning tools can run. The critic may still veto a material mismatch between the
+    user's words and the parsed goal, entities, action or explicit constraints.
+    """
+
+    if critique.accepted:
+        return critique, []
+
+    semantic_codes = {
+        "GOAL_MISMATCH",
+        "START_ENTITY_MISMATCH",
+        "TARGET_ENTITY_MISMATCH",
+        "RETURN_ENTITY_MISMATCH",
+        "PAYLOAD_ACTION_MISMATCH",
+        "USER_CONSTRAINT_MISSING",
+        "USER_REQUEST_CONTRADICTION",
+        "MATERIAL_AMBIGUITY",
+    }
+    one_way_markers = (
+        "不回来", "不用回来", "留在那里", "在那里降落", "单程",
+        "do not return", "don't return", "leave it there", "land there", "one-way",
+    )
+    normalized_codes = []
+    for code in critique.issue_codes:
+        normalized = code.strip().upper()
+        if normalized not in semantic_codes:
+            continue
+        if (
+            normalized == "RETURN_ENTITY_MISMATCH"
+            and intent.payload_action == "pickup"
+            and intent.return_entity == intent.start_entity
+            and not any(marker in request.message.lower() for marker in one_way_markers)
+        ):
+            continue
+        normalized_codes.append(normalized)
+    normalized_codes = list(dict.fromkeys(normalized_codes))[:16]
+    discarded = [
+        code for code in critique.issue_codes if code.strip().upper() not in normalized_codes
+    ]
+    if not normalized_codes:
+        return IntentCritique(accepted=True), discarded
+    return IntentCritique(
+        accepted=False,
+        issue_codes=normalized_codes,
+        repair_instructions=critique.repair_instructions,
+    ), discarded
+
+
 class MissionPreparationBlocked(RuntimeError):
     """A bounded planning stage could not produce a safe executable package."""
 
@@ -3084,7 +3150,21 @@ class MissionOrchestrator:
                     evidence=evidence,
                 )
                 model_calls.extend(_model_records(reviewed))
-                intent_reviews.append(reviewed.artifact)
+                normalized_review, discarded_codes = _normalize_intent_critique_scope(
+                    reviewed.artifact,
+                    intent,
+                    request,
+                )
+                if discarded_codes:
+                    evidence.append(
+                        "intent.critic-scope-normalized",
+                        {
+                            "discarded_issue_codes": discarded_codes,
+                            "retained_issue_codes": normalized_review.issue_codes,
+                            "authority": "intent-semantics-only",
+                        },
+                    )
+                intent_reviews.append(normalized_review)
             intent_critique = IntentCritique(
                 accepted=all(review.accepted for review in intent_reviews),
                 issue_codes=list(

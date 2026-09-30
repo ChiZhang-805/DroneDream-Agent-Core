@@ -38,6 +38,7 @@ from dronedream_agent_core.orchestrator import (
     _intent_workflow_scope,
     _missing_explicit_constraints,
     _model_records,
+    _normalize_intent_critique_scope,
     _recommended_plugin_tools,
     _resolve_consensus_result,
     _route_objective_weights,
@@ -819,6 +820,69 @@ def test_critic_feedback_is_preserved_when_no_deterministic_gate_rejects() -> No
     )
 
     assert _intent_repair_feedback(intent, critique, []) == critique.model_dump(mode="json")
+
+
+def test_intent_critic_cannot_block_a_resolved_pickup_with_downstream_checks() -> None:
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="帮我取一下外卖。补充指令：外卖放在 L1 物资区，去那里取。",
+        start_entity="launch",
+    )
+    intent = _bind_product_intent_defaults(
+        IntentArtifact(
+            goal="从 L1 物资区取外卖并返回",
+            start_entity="launch",
+            target_entity="l1-supplies",
+            return_entity="launch",
+            payload_action="pickup",
+        ),
+        request,
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=[
+            "MISSING_EXPLICIT_CONSTRAINT_HINT_IN_CONSTRAINTS",
+            "RETURN_ENTITY_ROUND_TRIP_MISMATCH",
+            "ENVIRONMENT_MODE_UNDERSTATEMENT",
+            "PICKUP_WAYPOINT_SEMANTIC_MISSING",
+            "MISSING_PAYLOAD_MASS_CONSTRAINT",
+        ],
+        repair_instructions=["Run checks owned by later preparation stages."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(critique, intent, request)
+
+    assert normalized == IntentCritique(accepted=True)
+    assert discarded == critique.issue_codes
+
+
+def test_intent_critic_keeps_a_real_target_semantic_mismatch() -> None:
+    intent = IntentArtifact(
+        goal="去物资区取外卖",
+        start_entity="launch",
+        target_entity="l1-supplies",
+        return_entity="launch",
+        payload_action="pickup",
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=["TARGET_ENTITY_MISMATCH", "MISSING_PAYLOAD_MASS_CONSTRAINT"],
+        repair_instructions=["Use the place selected by the user."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(
+        critique,
+        intent,
+        MissionRequest(
+            conversation_id="conversation-test",
+            message="去休息室取外卖",
+            start_entity="launch",
+        ),
+    )
+
+    assert normalized.accepted is False
+    assert normalized.issue_codes == ["TARGET_ENTITY_MISMATCH"]
+    assert discarded == ["MISSING_PAYLOAD_MASS_CONSTRAINT"]
 
 
 def test_manifest_conditions_recommend_plugins_without_hardcoded_plugin_ids() -> None:
