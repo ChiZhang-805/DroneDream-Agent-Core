@@ -1,4 +1,4 @@
-"""Translate an authorized typed ROS safety event into the executor abort gate."""
+"""Route typed ROS events without turning recoverable degradation into an abort."""
 
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ from .runtime_io import publish_abort
 
 
 class SafetyEventGuard(Node):
-    """Fail closed without giving a native plugin direct actuator authority."""
+    """Reserve the abort gate for physical emergencies, not advisory degradation."""
 
     _ALLOWED_ACTIONS = {"safe_hold_then_land", "emergency_land"}
+    _RECOVERY_ACTIONS = {"hold_correct_and_resume"}
 
     # 功能：
     #   绑定本次任务和中止路径，创建可靠安全事件订阅；节点本身不直接操作电机。
@@ -55,6 +56,14 @@ class SafetyEventGuard(Node):
             return
         if message.contract_id != self._contract_id:
             self.get_logger().error("rejected safety event for a different mission contract")
+            return
+        if int(message.severity) == 2 and message.action in self._RECOVERY_ACTIONS:
+            # The closed-loop executor already holds the latest safe setpoint
+            # and owns correction/replanning.  Record the advisory in ROS logs
+            # but never translate it into the single-use abort file.
+            self.get_logger().warning(
+                "recoverable runtime degradation delegated to controller correction"
+            )
             return
         if int(message.severity) < 3 or message.action not in self._ALLOWED_ACTIONS:
             self.get_logger().error("rejected unrecognized or insufficient-severity safety event")

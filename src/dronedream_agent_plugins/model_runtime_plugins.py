@@ -249,7 +249,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                 plugin_order=order * 10,
                 hooks={"route_model": handler},
                 default_enabled=enabled,
-                failure_mode="fail-closed",
+                failure_mode="isolate",
             )
         )
     for order, (plugin_id, name, description, handler, enabled) in enumerate(
@@ -298,7 +298,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                 plugin_order=order * 10,
                 hooks={"select_consensus": handler},
                 default_enabled=enabled,
-                failure_mode="fail-closed",
+                failure_mode="isolate",
             )
         )
     definitions.append(

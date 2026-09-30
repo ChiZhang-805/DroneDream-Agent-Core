@@ -58,17 +58,19 @@ def test_small_live_localization_deficit_enters_recovery_instead_of_veto():
     )
     assert budget["motion_mode"] == "local-perception-recovery"
     assert budget["local_perception_revalidation_required"] is True
-    assert budget["maximum_speed_mps"] == pytest.approx(.12)
+    assert .05 <= budget["maximum_speed_mps"] < .12
     assert budget["localization_deficit_m"] == pytest.approx(.0279496162784093)
     assert budget["tracking_lag_limit_m"] > budget["tracking_rejoin_tolerance_m"] > 0
 
 
-# 功能：极端失定位不伪装成可继续飞行，交由上层保持、重定位或返航。
-# 输入：超出有界恢复能力的方差。
-# 输出：稳定的业务错误，不授予平移权限。
-def test_extreme_localization_loss_does_not_masquerade_as_recoverable():
-    with pytest.raises(ValueError, match="bounded localization recovery"):
-        build_localization_recovery_budget(.435, localization_covariance_m2=.0535)
+# 功能：较大定位方差只降低速度并启用逐帧本地复核，不再单票终止任务。
+# 输入：历史上会触发路线不确定度硬失败的方差。
+# 输出：恢复预算保留正速度以及明确的本地复核要求。
+def test_extreme_localization_loss_enters_slow_perception_recovery():
+    budget = build_localization_recovery_budget(.435, localization_covariance_m2=.0535)
+    assert budget["motion_mode"] == "local-perception-recovery"
+    assert budget["local_perception_revalidation_required"] is True
+    assert .05 <= budget["maximum_speed_mps"] <= .12
 
 
 # 功能：
@@ -118,7 +120,7 @@ def test_executor_applies_recoverable_preflight_budget_without_route_veto():
         "tracking_budget": budget,
     })
     assert result["motion_mode"] == "local-perception-recovery"
-    assert result["maximum_speed_mps"] == pytest.approx(.12)
+    assert .05 <= result["maximum_speed_mps"] < .12
     assert args._preflight_localization_recovery_active is True
     assert args.tracking_lag_limit_m == pytest.approx(.07572065511159097)
 

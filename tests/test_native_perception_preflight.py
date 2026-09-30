@@ -205,7 +205,7 @@ def test_preflight_reads_actual_progressing_health_file(tmp_path):
 
 
 # 功能：
-#   大实测方差使窄通道余量不足；估计改善后仍需重新积累独立帧才能恢复。
+#   大实测方差进入低速本地感知恢复；后续帧不把已经观测到的最差值抹掉。
 # 输入：
 #   无。
 # 输出：
@@ -217,18 +217,19 @@ def test_route_budget_uses_measured_covariance_not_three_centimetre_assumption()
         timestamp = 1000 + sequence * 60
         packet = {**health(sequence, timestamp), "localization_covariance_m2": .0535,
                   "localization_observed_at_unix_ms": timestamp - 10}
-        assert not gate.observe(packet, now_unix_ms=timestamp)
-        assert gate.last_issue.startswith("NATIVE_ROUTE_UNCERTAINTY_BUDGET_UNFUNDED")
-    assert gate.independent_frames == 0
-    # A genuinely better estimator can recover without restarting the process,
-    # but still requires distinct, fresh, progressing frames.
+        assert gate.observe(packet, now_unix_ms=timestamp) is (sequence == 3)
+        assert gate.last_issue is None
+    assert gate.independent_frames == 3
+    assert gate.tracking_budget["motion_mode"] == "local-perception-recovery"
+    # Better samples do not erase the worst value from the same qualification window.
     for sequence in range(4, 7):
         timestamp = 1000 + sequence * 60
         packet = {**health(sequence, timestamp), "localization_covariance_m2": .001,
                   "localization_observed_at_unix_ms": timestamp - 10}
-        assert gate.observe(packet, now_unix_ms=timestamp) is (sequence == 6)
-    assert gate.tracking_budget["reserved_uncertainty_m"] == pytest.approx(3 * .001**.5)
-    assert gate.tracking_budget["tracking_lag_limit_m"] < .2
+        assert gate.observe(packet, now_unix_ms=timestamp)
+    assert gate.tracking_budget["reserved_uncertainty_m"] == pytest.approx(.03)
+    assert gate.tracking_budget["measured_uncertainty_m"] == pytest.approx(3 * .0535**.5)
+    assert gate.tracking_budget["tracking_lag_limit_m"] <= .25
 
 
 # 功能：复现 Office 短路线的小幅定位预算缺口，验证预检进入低速本地恢复而非超时失败。

@@ -26,7 +26,6 @@ Point = tuple[float, float, float]
 # across route generators and safety plug-ins.
 CONSERVATIVE_VEHICLE_ENVELOPE_SCALE = 1.2
 PREFERRED_TRANSIT_CLEARANCE_M = 0.35
-LOCALIZATION_RECOVERY_MAXIMUM_DEFICIT_M = 0.10
 _MAX_ROUTE_SAMPLES = 250_000
 
 
@@ -111,7 +110,7 @@ def build_tracking_corridor_budget(
 #   minimum_route_clearance_m：当前路线段已测得的机体包络外净空。
 #   localization_covariance_m2：当前原生定位方差上界。
 # 输出：
-#   budget：带恢复模式、定位缺口和速度上限的跟踪预算；缺口过大或物理走廊不足时拒绝。
+#   budget：带恢复模式、定位缺口和速度上限的跟踪预算；物理走廊不足时拒绝。
 def build_localization_recovery_budget(
     minimum_route_clearance_m: float,
     *,
@@ -137,7 +136,12 @@ def build_localization_recovery_budget(
         - assessment["minimum_tracking_allowance_m"]
     )
     deficit = assessment["clearance_deficit_m"]
-    if structural_room <= 0 or deficit > LOCALIZATION_RECOVERY_MAXIMUM_DEFICIT_M:
+    # Global-localization covariance is not a collision observation and must
+    # not become a one-vote mission veto.  When the already validated physical
+    # corridor still has room for local perception plus a tracking allowance,
+    # keep flying slowly and revalidate every frame.  A larger covariance
+    # merely lowers the speed; it does not command a stop or landing.
+    if structural_room <= 0:
         raise ValueError("route cannot support bounded localization recovery")
     # Controller tracking is relative to the same live estimator frame.  Keep
     # the signed planning limit for that relative error; onboard metric depth
@@ -147,7 +151,7 @@ def build_localization_recovery_budget(
         **planned,
         "motion_mode": "local-perception-recovery",
         "local_perception_revalidation_required": True,
-        "maximum_speed_mps": 0.12,
+        "maximum_speed_mps": max(0.05, min(0.12, structural_room * 0.8)),
         "localization_deficit_m": float(deficit),
         "measured_uncertainty_m": float(assessment["reserved_uncertainty_m"]),
     }

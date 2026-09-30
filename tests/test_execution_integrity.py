@@ -321,6 +321,21 @@ def test_completion_port_records_before_validation_and_always_closes(tmp_path, m
         context.close()
 
 
+def test_completion_model_outage_cannot_veto_deterministic_success():
+    artifact = {"deterministic_success": True, "runtime_status": "verified"}
+    completion = execution._deterministic_completion_fallback(
+        artifact=artifact,
+        deterministic_success=True,
+        error=TimeoutError("provider unavailable"),
+    )
+    assert completion.artifact.accepted is True
+    assert completion.artifact.issue_codes == []
+    assert completion.record.provider == "runtime-policy"
+    assert completion.record.model == "deterministic-completion-fallback"
+    assert completion.record.input_sha256 == sha256_json(artifact)
+    assert completion.record.output_sha256 == sha256_json(completion.artifact)
+
+
 class _Worker:
     # 功能：
     #   持有离线协调器清理轨迹与可选故障。
