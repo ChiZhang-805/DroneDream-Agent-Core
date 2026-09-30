@@ -60,7 +60,11 @@ safety constraints. For each genuinely blocking ambiguity, also populate clarifi
 When the map catalog offers two or three plausible documented answers, put them in descending
 likelihood order as A/B/C options and set allow_other=true. Do not put "Other" inside options;
 the product renders it separately. Each option.response must be a self-contained answer that can
-be submitted as the user's next turn. Select payload_action only from the supplied
+be submitted as the user's next turn. Every map-place option must represent exactly one entity,
+must include that entity's immutable entity_id in option.response, and must never group two names
+or two entity IDs into one choice. For example, use "去物资区（l1-supplies）取外卖" rather than
+"物资区（supplies / presupplies）". A pickup option must not point back to the launch entity when
+a distinct documented pickup candidate is available. Select payload_action only from the supplied
 domain_action_catalog;
 use none when no payload action is requested and pickup only when collection is explicit.
 Copy every supplied explicit_constraint_hint into constraints using its canonical name;

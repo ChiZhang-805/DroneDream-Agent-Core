@@ -769,6 +769,79 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
 
 
 # 功能：
+#   把澄清选项确定性地绑定到一个且仅一个地图实体，防止模型把两个地点合并为一个选择。
+# 输入：
+#   intent：模型产生的候选意图；catalog：当前地图实体目录；graph：资格路线图。
+# 输出：
+#   normalized：补入稳定实体标识的意图；issues：无法唯一绑定时的机器可修复问题码。
+def _ground_intent_clarification_options(
+    intent: IntentArtifact,
+    catalog: MapCatalog,
+    graph: MapAsset,
+) -> tuple[IntentArtifact, list[str]]:
+    if not intent.clarification_questions:
+        return intent, []
+
+    try:
+        start_node = resolve_map_entity(intent.start_entity, catalog, graph)
+    except AssetQualificationError:
+        start_node = None
+
+    normalized_questions: list[dict[str, object]] = []
+    issues: list[str] = []
+    seen_nodes: set[str] = set()
+
+    def mentioned(text: str, candidate: str) -> bool:
+        value = candidate.casefold().strip()
+        if len(value) < 2:
+            return False
+        escaped = re.escape(value)
+        if re.fullmatch(r"[a-z0-9._-]+", value):
+            return re.search(rf"(?<![a-z0-9._-]){escaped}(?![a-z0-9._-])", text) is not None
+        return value in text
+
+    for question in intent.clarification_questions:
+        question_data = question.model_dump(mode="json")
+        normalized_options: list[dict[str, object]] = []
+        for option in question.options:
+            text = f"{option.label}\n{option.response}".casefold()
+            candidates: set[str] = set()
+            for entity in catalog.entities:
+                names = [entity.entity_id, *entity.aliases]
+                if any(mentioned(text, name) for name in names):
+                    candidates.add(entity.entity_id)
+            if len(candidates) != 1:
+                issues.append("CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE")
+                normalized_options.append(option.model_dump(mode="json"))
+                continue
+            entity_id = next(iter(candidates))
+            try:
+                node_id = resolve_map_entity(entity_id, catalog, graph)
+            except AssetQualificationError:
+                issues.append("CLARIFICATION_OPTION_ENTITY_UNRESOLVED")
+                normalized_options.append(option.model_dump(mode="json"))
+                continue
+            if node_id in seen_nodes:
+                issues.append("CLARIFICATION_OPTIONS_DUPLICATE_LOCATION")
+            seen_nodes.add(node_id)
+            if intent.payload_action == "pickup" and start_node is not None and node_id == start_node:
+                issues.append("CLARIFICATION_PICKUP_OPTION_IS_LAUNCH")
+            response = option.response
+            if not mentioned(response.casefold(), entity_id):
+                response = f"{response.rstrip('。.! ')}（{entity_id}）。"
+            option_data = option.model_dump(mode="json")
+            option_data["response"] = response
+            normalized_options.append(option_data)
+        question_data["options"] = normalized_options
+        normalized_questions.append(question_data)
+
+    payload = intent.model_dump(mode="json")
+    payload["clarification_questions"] = normalized_questions
+    normalized = IntentArtifact.model_validate(payload)
+    return normalized, list(dict.fromkeys(issues))
+
+
+# 功能：
 #   声明此阶段只获准准备仿真计划；真实执行仍须独立确认，不限制任务只能单程。
 # 输入：
 #   无。
@@ -3104,6 +3177,11 @@ class MissionOrchestrator:
             model_constraints = list(intent.constraints)
             intent = _bind_product_intent_defaults(intent, request)
             intent = _bind_explicit_intent_constraints(intent, explicit_constraint_hints)
+            intent, clarification_grounding_issues = _ground_intent_clarification_options(
+                intent,
+                self.map_catalog,
+                self.map_graph,
+            )
             if intent.constraints != model_constraints:
                 evidence.append(
                     "intent.explicit-constraints-core-bound",
@@ -3122,6 +3200,18 @@ class MissionOrchestrator:
                     "repair_instructions": ["Select payload_action from domain_action_catalog."],
                 }
                 evidence.append("intent.validation-rejected", prior_critique)
+                continue
+            if clarification_grounding_issues:
+                prior_intent = intent.model_dump(mode="json")
+                prior_critique = {
+                    "schema_version": "dronedream.intent-critique.v1",
+                    "accepted": False,
+                    "issue_codes": clarification_grounding_issues,
+                    "repair_instructions": [
+                        "Give each clarification option exactly one current map entity; include its entity_id in option.response, never combine entities, and do not offer the launch point as a pickup destination."
+                    ],
+                }
+                evidence.append("intent.clarification-grounding-rejected", prior_critique)
                 continue
             intent_reviews: list[IntentCritique] = []
             topology_review_count = len(

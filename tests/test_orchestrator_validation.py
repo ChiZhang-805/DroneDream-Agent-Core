@@ -32,6 +32,7 @@ from dronedream_agent_core.orchestrator import (
     _bind_task_graph_action_contracts,
     _decomposition_action_catalog_view,
     _explicit_constraint_hints,
+    _ground_intent_clarification_options,
     _intent_action_catalog_view,
     _intent_map_catalog_view,
     _intent_repair_feedback,
@@ -108,6 +109,52 @@ def test_intent_clarification_options_are_ordered_and_bounded() -> None:
                 ],
             }],
         )
+
+
+def test_clarification_options_bind_one_entity_and_reject_grouped_choice() -> None:
+    graph = _map()
+    catalog = MapCatalog(
+        scene_id="office",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": "office",
+                "aliases": ["办公室", "office"],
+                "position_m": {"x": 0, "y": 0, "z": 3},
+                "semantic": "launch",
+                "source_pointer": "test:office",
+            },
+            {
+                "entity_id": "pickup",
+                "aliases": ["物资区", "supplies"],
+                "position_m": {"x": 10, "y": 0, "z": 1},
+                "semantic": "pickup",
+                "source_pointer": "test:pickup",
+            },
+        ],
+    )
+    intent = IntentArtifact(
+        goal="帮我取外卖",
+        start_entity="office",
+        target_entity="__unresolved__",
+        return_entity="office",
+        payload_action="pickup",
+        missing_critical_fields=["请选择取餐点"],
+        clarification_questions=[{
+            "question_id": "pickup.location",
+            "prompt": "外卖放在哪里？",
+            "options": [
+                {"option_id": "A", "label": "物资区", "response": "去物资区取外卖"},
+                {"option_id": "B", "label": "办公室 / 物资区", "response": "去 office 或 pickup 取外卖"},
+            ],
+        }],
+    )
+
+    grounded, issues = _ground_intent_clarification_options(intent, catalog, graph)
+
+    assert grounded.clarification_questions[0].options[0].response.endswith("（pickup）。")
+    assert "CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE" in issues
 
 
 def test_pickup_product_defaults_return_to_start_and_add_bounded_hover() -> None:
