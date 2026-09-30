@@ -156,10 +156,16 @@ class CheckpointCoordinator:
         self._thread = threading.Thread(
             target=self._run, name="dronedream-checkpoint-coordinator", daemon=True
         )
-        # 先完成可能失败的插件绑定及线程结构初始化，最后才分配需要回收的供应商连接。
-        self.port = StructuredModelPort(
-            provider, max_attempts=3, timeout_seconds=model_timeout_seconds
-        )
+        # 模型监视是建议旁路，不是飞行授权机关。供应商密钥缺失或端口初始化失败
+        # 时保留错误供每个检查点生成可审计的确定性兜底决定，不能阻止执行器启动。
+        self.port: StructuredModelPort | None = None
+        self._port_init_error: Exception | None = None
+        try:
+            self.port = StructuredModelPort(
+                provider, max_attempts=3, timeout_seconds=model_timeout_seconds
+            )
+        except Exception as error:
+            self._port_init_error = error
 
     # 功能：
     #   启动模型监视旁路；已停止的协调器不能重新启动，悬停与低延迟安全仍由执行器负责。
@@ -189,7 +195,8 @@ class CheckpointCoordinator:
             raise ValueError("checkpoint coordinator stop timeout invalid")
         deadline = time.monotonic() + timeout_seconds
         self._stop.set()
-        self.port.close()
+        if self.port is not None:
+            self.port.close()
         if not self._publication_lock.acquire(timeout=timeout_seconds):
             raise TimeoutError("checkpoint publication did not stop")
         try:
@@ -428,6 +435,10 @@ class CheckpointCoordinator:
                         ),
                     }
                 try:
+                    if self.port is None:
+                        raise self._port_init_error or RuntimeError(
+                            "execution monitor model port unavailable"
+                        )
                     result = self.port.call(
                         role="execution_monitor",
                         output_type=RuntimeAssessment,
@@ -501,7 +512,8 @@ class CheckpointCoordinator:
             self.error = exc
         finally:
             try:
-                self.port.close()
+                if self.port is not None:
+                    self.port.close()
             except Exception as error:
                 if self.error is None:
                     self.error = error

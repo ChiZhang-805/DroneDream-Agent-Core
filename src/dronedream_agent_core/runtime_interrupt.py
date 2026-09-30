@@ -1,4 +1,4 @@
-"""Runtime message ingress, structured classification, and fail-closed authorization."""
+"""Runtime message ingress, structured classification, and bounded recovery."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from uuid import uuid4
 from .contracts import (
     MapAsset,
     MapCatalog,
+    ModelCallRecord,
     PreparedMission,
     RuntimeActionExecutionReceipt,
     RuntimeAmendmentDirective,
@@ -504,11 +505,18 @@ class RuntimeInterruptionCoordinator:
         model_attempts, per_attempt_timeout_seconds = _runtime_model_attempt_policy(
             model_timeout_seconds
         )
-        self.port = StructuredModelPort(
-            provider,
-            max_attempts=model_attempts,
-            timeout_seconds=per_attempt_timeout_seconds,
-        )
+        # 运行中自然语言改令是旁路能力。它不可因为供应商配置或网络故障而阻止
+        # 原任务启动；真正收到改令时再形成可审计的“恢复原计划”降级决定。
+        self.port: StructuredModelPort | None = None
+        self._port_init_error: Exception | None = None
+        try:
+            self.port = StructuredModelPort(
+                provider,
+                max_attempts=model_attempts,
+                timeout_seconds=per_attempt_timeout_seconds,
+            )
+        except Exception as error:
+            self._port_init_error = error
         self.extensions = runtime_extension_registry(self.prepared)
         self.receipt_path = control_dir.parent / "plugin-hook-receipts.jsonl"
         self.adoption_timeout_seconds = min(model_timeout_seconds, 30.0)
@@ -707,11 +715,7 @@ class RuntimeInterruptionCoordinator:
                         append_hook_receipts(self.receipt_path, [error.receipt])
                         raise
                     append_hook_receipts(self.receipt_path, prompt_receipts)
-                    result = self.port.call(
-                        role="runtime_message_classifier",
-                        output_type=RuntimeMessageClassification,
-                        instructions=instructions,
-                        input_artifact={
+                    model_input = {
                             "runtime_user_message": message.model_dump(mode="json"),
                             "stable_hold_acknowledgement": acknowledgement.model_dump(mode="json"),
                             "mission_contract": self.prepared.contract.model_dump(mode="json"),
@@ -735,9 +739,73 @@ class RuntimeInterruptionCoordinator:
                                 "The model has no actuator or continuation authority.",
                                 "A destination or motion change requires a new plan revision.",
                             ],
-                        },
-                        context_id=(f"{self.session.conversation_id}::runtime_message_classifier"),
-                    )
+                        }
+                    try:
+                        if self.port is None:
+                            raise self._port_init_error or RuntimeError(
+                                "runtime message model port unavailable"
+                            )
+                        result = self.port.call(
+                            role="runtime_message_classifier",
+                            output_type=RuntimeMessageClassification,
+                            instructions=instructions,
+                            input_artifact=model_input,
+                            context_id=(
+                                f"{self.session.conversation_id}::runtime_message_classifier"
+                            ),
+                        )
+                    except Exception as error:
+                        # Advice outages cannot strand a flying vehicle in hover. Keep the
+                        # requested amendment as evidence, resume the confirmed route and let
+                        # the user retry the amendment without terminating the mission.
+                        classification = RuntimeMessageClassification(
+                            message_kind="informational",
+                            requested_action="resume",
+                            requires_plan_revision=False,
+                            summary=(
+                                "运行改令模型暂不可用；保持已确认任务并继续局部纠偏飞行。"
+                            ),
+                        )
+                        decision = RuntimeInterruptionDecision(
+                            message_sha256=sha256_json(message),
+                            hold_ack_sha256=sha256_json(acknowledgement),
+                            classification=classification,
+                            model_call=ModelCallRecord(
+                                call_id=f"model-{uuid4().hex[:24]}",
+                                role="runtime_message_classifier",
+                                attempt=1,
+                                input_sha256=sha256_json(model_input),
+                                output_sha256=sha256_json(classification),
+                                output_schema=RuntimeMessageClassification.__name__,
+                                provider="runtime-policy",
+                                model="deterministic-resume-fallback",
+                                response_id=type(error).__name__,
+                                latency_ms=0,
+                                created_at=datetime.now(UTC),
+                            ),
+                            authorized_action="resume_original",
+                            authorization_gates={
+                                **identity_gates,
+                                "confirmed_plan_remains_bound": True,
+                            },
+                            decision_reason=(
+                                "模型旁路不可用不构成飞行否决；恢复用户已确认的原任务。"
+                            ),
+                            plugin_hook_receipts=prompt_receipts,
+                        )
+                        if not self._publish_if_active(
+                            self.control_dir / "decisions" / f"{message_id}.json",
+                            decision,
+                            expected_replacement=active_replacement,
+                        ):
+                            return
+                        lifecycle_context.lifecycle.set_execution_state(
+                            conversation_id=self.session.conversation_id,
+                            execution_id=self.session.execution_id,
+                            state="executing",
+                        )
+                        processed.add(message_id)
+                        continue
                     # The flight can terminate while a synchronous provider request is in
                     # progress.  Once shutdown is requested, discard the late classification
                     # instead of spending more time building a replacement for a closed
