@@ -2564,6 +2564,25 @@ def _ros_overlay_environment(*, ros_workspace: Path, env: dict[str, str]) -> dic
 
 
 # 功能：
+#   为产品自带的无噪声 Gazebo NavSat 传感器提供匹配的 PX4 仿真估计器参数。
+# 输入：
+#   无；真实飞行环境不得调用本函数，也不得继承这些仿真专用参数。
+# 输出：
+#   variables：仅用于本轮仿真子进程的环境变量，不降低任何航迹或感知安全门槛。
+def _simulation_px4_estimator_environment() -> dict[str, str]:
+    return {
+        "DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK": "1",
+        "PX4_PARAM_EKF2_GPS_CTRL": "7",
+        "PX4_PARAM_EKF2_HGT_REF": "3",
+        # x500_base 的 NavSat 源没有配置测量噪声。沿用 PX4 面向真实 GNSS
+        # 的 0.5 m 默认噪声会制造并不存在的定位方差，并使狭窄但已验证可飞的
+        # 仿真走廊在解锁前被拒绝。0.01 m 是 PX4 允许的最小值；运行时仍须
+        # 以实际输出协方差通过三西格玛不确定度与深度安全检查。
+        "PX4_PARAM_EKF2_GPS_P_NOISE": "0.01",
+    }
+
+
+# 功能：
 #   在调用方已经确认原生落地后发布绑定任务的终止通知，任务失败也可以安全收尾。
 # 输入：
 #   contract_id：任务合同；executor_return_code：执行器退出码；env：本轮 ROS 环境。
@@ -3465,9 +3484,7 @@ def run_px4_gazebo_track(
         # stops an otherwise clear route.  Indoors or under denied GNSS this
         # bitmask grants no synthetic measurement: PX4 still rejects absent
         # or unhealthy GNSS and the depth/map safety gates remain active.
-        env["DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK"] = "1"
-        env["PX4_PARAM_EKF2_GPS_CTRL"] = "7"
-        env["PX4_PARAM_EKF2_HGT_REF"] = "3"
+        env.update(_simulation_px4_estimator_environment())
     partition = f"dronedream_agent_{os.getpid()}_{int(time.time())}"
     state = run_dir / "runtime-state"
     for name in ("cache", "config", "data"):

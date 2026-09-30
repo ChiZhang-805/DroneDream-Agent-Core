@@ -52,6 +52,7 @@ from dronedream_agent_core.gazebo_adapter import (
     _require_local_policy_runtime,
     _resolve_controlled_vehicle_pose,
     _ros_overlay_environment,
+    _simulation_px4_estimator_environment,
     _runtime_evidence_writer_complete,
     _runtime_snapshot_writer_complete,
     _spawn_clearance_preflight,
@@ -520,6 +521,15 @@ def test_ros_overlay_environment_preserves_native_library_paths(
     assert result["LD_LIBRARY_PATH"] == "/qualified/install/lib"
     assert captured["env"] == {"BASE_TOKEN": "kept"}
     assert captured["command"][-1] == str(setup)
+
+
+def test_simulation_px4_estimator_matches_noiseless_navsat_without_weakening_gates() -> None:
+    assert _simulation_px4_estimator_environment() == {
+        "DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK": "1",
+        "PX4_PARAM_EKF2_GPS_CTRL": "7",
+        "PX4_PARAM_EKF2_HGT_REF": "3",
+        "PX4_PARAM_EKF2_GPS_P_NOISE": "0.01",
+    }
 
 
 def test_wall_timeout_extension_requires_fresh_closed_loop_progress(tmp_path: Path) -> None:
