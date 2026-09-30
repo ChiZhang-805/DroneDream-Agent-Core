@@ -3633,6 +3633,7 @@ class MissionOrchestrator:
             route_alternatives: list[RouteAlternativeCandidate] = []
             alternative_segments: dict[str, list[GraphRoute]] = {}
             alternative_receipts: dict[str, list[ToolReceipt]] = {}
+            alternative_tracks: dict[str, tuple[Px4Track, ToolReceipt]] = {}
             route_fingerprint_indexes: dict[str, int] = {}
             for strategy_tool_id in strategy_tools:
                 candidate_routes: list[GraphRoute] = []
@@ -3739,6 +3740,55 @@ class MissionOrchestrator:
                     candidate_clearance,
                     preferred_transit_clearance_m=required_operational_clearance_m,
                 )
+                alternative_id = (
+                    "route-alternative-"
+                    + sha256_json(
+                        {
+                            "route": candidate_route,
+                            "clearance": candidate_clearance,
+                        }
+                    )[:20]
+                )
+                candidate_track: Px4Track | None = None
+                candidate_track_receipt: ToolReceipt | None = None
+                track_exportable = False
+                try:
+                    track_value, candidate_track_receipt = registry.call_slot(
+                        "flight-control.track-export",
+                        Px4TrackRequest(
+                            route=candidate_route,
+                            waypoint_hold_seconds=self.config.waypoint_hold_seconds,
+                        ),
+                    )
+                except ToolExecutionError as error:
+                    attempt_receipts.append(error.receipt)
+                    self._record_tool(
+                        error.receipt,
+                        conversation_id=request.conversation_id,
+                        context_store=self.context_store,
+                        evidence=evidence,
+                    )
+                    evidence.append(
+                        "planning.route-candidate-track-export-failed",
+                        {
+                            "alternative_id": alternative_id,
+                            "strategy_tool_id": strategy_tool_id,
+                            "issue_codes": error.receipt.issue_codes,
+                        },
+                    )
+                else:
+                    candidate_track = _artifact_snapshot(track_value, Px4Track)
+                    _validate_plugin_track_tightening(
+                        candidate_track, candidate_route, self.vehicle
+                    )
+                    attempt_receipts.append(candidate_track_receipt)
+                    self._record_tool(
+                        candidate_track_receipt,
+                        conversation_id=request.conversation_id,
+                        context_store=self.context_store,
+                        evidence=evidence,
+                    )
+                    track_exportable = True
                 gates = {
                     "continuous_clearance": candidate_clearance.accepted,
                     "clearance_evidence_binding": (
@@ -3750,6 +3800,7 @@ class MissionOrchestrator:
                     "operational_clearance": bool(clearance_assessment["accepted"]),
                     "contract_start": candidate_route.start_node == contract.start_node,
                     "contract_return": candidate_route.goal_node == contract.return_node,
+                    "track_exportable": track_exportable,
                     "all_targets_present": all(
                         target in candidate_route.node_ids
                         for target in semantic_plan.ordered_targets
@@ -3760,15 +3811,6 @@ class MissionOrchestrator:
                     for name, accepted in gates.items()
                     if not accepted
                 ]
-                alternative_id = (
-                    "route-alternative-"
-                    + sha256_json(
-                        {
-                            "route": candidate_route,
-                            "clearance": candidate_clearance,
-                        }
-                    )[:20]
-                )
                 candidate = RouteAlternativeCandidate(
                     alternative_id=alternative_id,
                     strategy_tool_id=strategy_tool_id,
@@ -3799,6 +3841,11 @@ class MissionOrchestrator:
                 route_fingerprint_indexes[route_fingerprint] = len(route_alternatives) - 1
                 alternative_segments[alternative_id] = candidate_routes
                 alternative_receipts[alternative_id] = candidate_receipts
+                if candidate_track is not None and candidate_track_receipt is not None:
+                    alternative_tracks[alternative_id] = (
+                        candidate_track,
+                        candidate_track_receipt,
+                    )
             if not route_alternatives or not any(
                 candidate.feasible for candidate in route_alternatives
             ):
@@ -3851,16 +3898,8 @@ class MissionOrchestrator:
                 clearance.minimum_clearance_m,
                 domain_actions,
             )
-            track_value, track_receipt = self._call_required_slot(
-                "flight-control.track-export",
-                Px4TrackRequest(
-                    route=execution_route,
-                    waypoint_hold_seconds=self.config.waypoint_hold_seconds,
-                ),
-                conversation_id=request.conversation_id,
-                evidence=evidence,
-            )
-            px4_track = _artifact_snapshot(track_value, Px4Track)
+            px4_track, track_receipt = alternative_tracks[selected_alternative.alternative_id]
+            px4_track = _artifact_snapshot(px4_track, Px4Track)
             _validate_plugin_track_tightening(px4_track, execution_route, self.vehicle)
             baseline_track = _artifact_snapshot(px4_track, Px4Track)
             px4_track = self._invoke_extension_pipeline(

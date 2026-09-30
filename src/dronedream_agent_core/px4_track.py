@@ -79,6 +79,10 @@ def route_to_px4_track(
     first = route.positions_m[0]
     if math.dist((first.x, first.y, first.z), expected_launch) > 0.02:
         raise ValueError("route does not begin at the qualified PX4 launch waypoint")
+    if route.goal_node == route.start_node:
+        last = route.positions_m[-1]
+        if math.dist((last.x, last.y, last.z), expected_launch) > 0.02:
+            raise ValueError("return route does not end at the qualified PX4 launch waypoint")
 
     edge_by_id = {edge.edge_id: edge for edge in graph.edges}
     node_by_id = {node.node_id: node for node in graph.nodes}

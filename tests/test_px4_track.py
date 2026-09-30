@@ -313,6 +313,28 @@ def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
     assert [point.speed_limit_mps for point in track.points] == [0.6, 0.6, 0.6]
 
 
+def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:
+    graph = _graph()
+    route = GraphRoute(
+        start_node="roof-launch",
+        goal_node="roof-launch",
+        node_ids=["roof-launch", "dock-a", "roof-launch"],
+        edge_ids=["launch-to-dock", "launch-to-dock"],
+        positions_m=[
+            graph.nodes[0].position_m,
+            graph.nodes[1].position_m,
+            {"x": 12.0, "y": 21.75, "z": 8.0},
+        ],
+        route_length_m=12.0,
+        all_edges_flight_verified=False,
+    )
+    semantic_path = tmp_path / "semantic.json"
+    semantic_path.write_text(json.dumps(_semantic()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not end at the qualified PX4 launch"):
+        route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
+
+
 # 功能：
 #   普通未知边不因几何规划支持而获得默认速度或被默认为可执行。
 # 输入：

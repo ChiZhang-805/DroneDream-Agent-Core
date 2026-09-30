@@ -319,8 +319,23 @@ class KnownMapMetricPlanner:
             raise ValueError("route endpoint is not present in graph")
         if query.require_flight_verified_edges:
             raise ValueError("metric geometry routes are not flight-verified edges")
-        start_point = self._semantic_action_pose(self.nodes[query.start_node].position_m)
-        goal_point = self._semantic_action_pose(self.nodes[query.goal_node].position_m)
+        start_node = self.nodes[query.start_node]
+        goal_node = self.nodes[query.goal_node]
+        # A qualified launch node is an exact vehicle pose, not a semantic area
+        # label.  Projecting it can produce a collision-clear route that no longer
+        # begins or returns at the PX4 launch binding.  Non-launch semantic targets
+        # still use the same deterministic projection in both directions so adjacent
+        # route segments remain continuous.
+        start_point = (
+            start_node.position_m
+            if start_node.semantic == "launch"
+            else self._semantic_action_pose(start_node.position_m)
+        )
+        goal_point = (
+            goal_node.position_m
+            if goal_node.semantic == "launch"
+            else self._semantic_action_pose(goal_node.position_m)
+        )
         return self.plan_positions(
             query,
             start_position_m=start_point,
