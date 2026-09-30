@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 from test_runtime_commands import _load_executor, _two_segment_track
 
-from dronedream_agent_core.collision import build_tracking_corridor_budget
+from dronedream_agent_core.collision import (
+    build_localization_recovery_budget,
+    build_tracking_corridor_budget,
+)
 from dronedream_agent_core.control_uncertainty import (
     finite_positive_number,
     localization_uncertainty_margin_m,
@@ -45,6 +48,29 @@ def test_planning_and_runtime_use_same_measured_uncertainty_scale():
         build_tracking_corridor_budget(.435, localization_covariance_m2=.0535)
 
 
+# 功能：小幅定位预算缺口转为低速本地感知恢复，而非一票否决任务。
+# 输入：复现 Office 首段的实测净空和定位方差。
+# 输出：预算明确要求逐帧本地复核，且保持可用的跟踪门限。
+def test_small_live_localization_deficit_enters_recovery_instead_of_veto():
+    budget = build_localization_recovery_budget(
+        .20775136481581452,
+        localization_covariance_m2=(.112600435167898 / 3) ** 2,
+    )
+    assert budget["motion_mode"] == "local-perception-recovery"
+    assert budget["local_perception_revalidation_required"] is True
+    assert budget["maximum_speed_mps"] == pytest.approx(.12)
+    assert budget["localization_deficit_m"] == pytest.approx(.0279496162784093)
+    assert budget["tracking_lag_limit_m"] > budget["tracking_rejoin_tolerance_m"] > 0
+
+
+# 功能：极端失定位不伪装成可继续飞行，交由上层保持、重定位或返航。
+# 输入：超出有界恢复能力的方差。
+# 输出：稳定的业务错误，不授予平移权限。
+def test_extreme_localization_loss_does_not_masquerade_as_recoverable():
+    with pytest.raises(ValueError, match="bounded localization recovery"):
+        build_localization_recovery_budget(.435, localization_covariance_m2=.0535)
+
+
 # 功能：
 #   验证原生预检将实测余量传入真实执行器，且仅收紧各路段跟踪限制。
 # 输入：
@@ -67,6 +93,34 @@ def test_actual_executor_spends_live_budget_without_increasing_any_tracking_limi
     assert args._tracking_segment_policies[0]["tracking_lag_limit_m"] == pytest.approx(.108)
     assert args._tracking_segment_policies[1]["tracking_lag_limit_m"] == .05
     assert args._tracking_segment_policies[1]["tracking_rejoin_tolerance_m"] == .04
+
+
+# 功能：执行器接受本地感知恢复预算并保留恢复标志，后续每个控制周期据此继续复核。
+# 输入：Office 失败样本对应的恢复预算及已签名分段门限。
+# 输出：不扩大门限、不终止任务，并显式记录低速恢复模式。
+def test_executor_applies_recoverable_preflight_budget_without_route_veto():
+    executor = _load_executor()
+    args = SimpleNamespace(
+        tracking_lag_limit_m=.20,
+        tracking_rejoin_tolerance_m=.18,
+        _tracking_segment_policies=({
+            "minimum_route_clearance_m": .20775136481581452,
+            "tracking_lag_limit_m": .07572065511159097,
+            "tracking_rejoin_tolerance_m": .06814858960043188,
+        },),
+    )
+    budget = build_localization_recovery_budget(
+        .20775136481581452,
+        localization_covariance_m2=(.112600435167898 / 3) ** 2,
+    )
+    result = executor._apply_native_preflight_tracking_budget(args, {
+        "uncertainty_basis": "live-native-localization",
+        "tracking_budget": budget,
+    })
+    assert result["motion_mode"] == "local-perception-recovery"
+    assert result["maximum_speed_mps"] == pytest.approx(.12)
+    assert args._preflight_localization_recovery_active is True
+    assert args.tracking_lag_limit_m == pytest.approx(.07572065511159097)
 
 
 # 功能：验证起飞前只核验即将进入的第一段，远端窄段留待其真正激活时重新评估。

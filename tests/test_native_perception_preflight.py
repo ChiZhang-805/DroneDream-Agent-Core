@@ -231,6 +231,27 @@ def test_route_budget_uses_measured_covariance_not_three_centimetre_assumption()
     assert gate.tracking_budget["tracking_lag_limit_m"] < .2
 
 
+# 功能：复现 Office 短路线的小幅定位预算缺口，验证预检进入低速本地恢复而非超时失败。
+# 输入：三份独立、健康且使用实测 PX4 方差的原生帧。
+# 输出：窗口通过，回执要求机载感知逐帧复核并记录定位缺口。
+def test_office_route_localization_deficit_uses_recoverable_preflight_mode():
+    gate = NativePerceptionReadiness(minimum_route_clearance_m=.20775136481581452)
+    variance = (.112600435167898 / 3) ** 2
+    for sequence in range(1, 4):
+        timestamp = 1000 + sequence * 60
+        packet = {
+            **health(sequence, timestamp),
+            "localization_covariance_m2": variance,
+            "localization_observed_at_unix_ms": timestamp - 10,
+        }
+        assert gate.observe(packet, now_unix_ms=timestamp) is (sequence == 3)
+    assert gate.tracking_budget["motion_mode"] == "local-perception-recovery"
+    assert gate.tracking_budget["local_perception_revalidation_required"] is True
+    assert gate.tracking_budget["localization_deficit_m"] == pytest.approx(
+        .0279496162784093
+    )
+
+
 # 功能：
 #   缺失、非法或过期协方差不能进入路线余量计算，也不能残留上一次预算。
 # 输入：

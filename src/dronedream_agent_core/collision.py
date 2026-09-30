@@ -26,6 +26,7 @@ Point = tuple[float, float, float]
 # across route generators and safety plug-ins.
 CONSERVATIVE_VEHICLE_ENVELOPE_SCALE = 1.2
 PREFERRED_TRANSIT_CLEARANCE_M = 0.35
+LOCALIZATION_RECOVERY_MAXIMUM_DEFICIT_M = 0.10
 _MAX_ROUTE_SAMPLES = 250_000
 
 
@@ -100,6 +101,56 @@ def build_tracking_corridor_budget(
         "tracking_sample_rate_hz": 10.0,
     }
     return budget
+
+
+# 功能：
+#   将短时、有限的全局定位预算缺口转换为机载感知辅助恢复预算，而不是把任务直接判为失败。
+#   该预算不声称全局定位已经恢复；它只在物理走廊仍能容纳本地避障和最小跟踪余量时，
+#   沿用已签名的规划跟踪界限，并要求运行时以低速、本地逐帧复核的方式继续。
+# 输入：
+#   minimum_route_clearance_m：当前路线段已测得的机体包络外净空。
+#   localization_covariance_m2：当前原生定位方差上界。
+# 输出：
+#   budget：带恢复模式、定位缺口和速度上限的跟踪预算；缺口过大或物理走廊不足时拒绝。
+def build_localization_recovery_budget(
+    minimum_route_clearance_m: float,
+    *,
+    localization_covariance_m2: float,
+) -> dict[str, float | str | bool]:
+    assessment = assess_tracking_corridor_budget(
+        minimum_route_clearance_m, localization_covariance_m2
+    )
+    if assessment["funded"]:
+        return {
+            **build_tracking_corridor_budget(
+                minimum_route_clearance_m,
+                localization_covariance_m2=localization_covariance_m2,
+            ),
+            "motion_mode": "nominal",
+            "local_perception_revalidation_required": False,
+            "maximum_speed_mps": 1.0,
+            "localization_deficit_m": 0.0,
+        }
+    structural_room = (
+        minimum_route_clearance_m
+        - assessment["required_local_clearance_m"]
+        - assessment["minimum_tracking_allowance_m"]
+    )
+    deficit = assessment["clearance_deficit_m"]
+    if structural_room <= 0 or deficit > LOCALIZATION_RECOVERY_MAXIMUM_DEFICIT_M:
+        raise ValueError("route cannot support bounded localization recovery")
+    # Controller tracking is relative to the same live estimator frame.  Keep
+    # the signed planning limit for that relative error; onboard metric depth
+    # independently revalidates physical clearance on every control tick.
+    planned = build_tracking_corridor_budget(minimum_route_clearance_m)
+    return {
+        **planned,
+        "motion_mode": "local-perception-recovery",
+        "local_perception_revalidation_required": True,
+        "maximum_speed_mps": 0.12,
+        "localization_deficit_m": float(deficit),
+        "measured_uncertainty_m": float(assessment["reserved_uncertainty_m"]),
+    }
 
 
 # 功能：

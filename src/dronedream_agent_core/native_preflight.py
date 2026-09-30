@@ -8,7 +8,11 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from .collision import assess_tracking_corridor_budget, build_tracking_corridor_budget
+from .collision import (
+    assess_tracking_corridor_budget,
+    build_localization_recovery_budget,
+    build_tracking_corridor_budget,
+)
 from .control_timing import LOCAL_DISPATCH_RESERVE_MS
 from .perception_health_channel import PerceptionHealthReceiver
 from .runtime_control_io import read_runtime_object
@@ -151,10 +155,10 @@ class NativePerceptionReadiness:
                     self.budget_assessment = assess_tracking_corridor_budget(
                         self.minimum_route_clearance_m, variance)
                     # 先验证本次方差，再取窗口最差值；否则 NaN 可能被以前的合法值遮住。
-                    self.tracking_budget = build_tracking_corridor_budget(
+                    self.tracking_budget = build_localization_recovery_budget(
                         self.minimum_route_clearance_m, localization_covariance_m2=variance)
                     self._worst_variance_m2 = max(variance, self._worst_variance_m2 or 0.)
-                    self.tracking_budget = build_tracking_corridor_budget(
+                    self.tracking_budget = build_localization_recovery_budget(
                         self.minimum_route_clearance_m,
                         localization_covariance_m2=self._worst_variance_m2)
                     frame_time = min(observed, frame_time)

@@ -8987,7 +8987,7 @@ def _native_route_preflight_clearance(args: argparse.Namespace) -> float:
 # 输出：
 #   adjustment：调整前后全局容差和涉及段数的记录。
 def _apply_native_preflight_tracking_budget(args: argparse.Namespace, receipt: dict) -> dict:
-    """Spend the live uncertainty allowance by tightening, never enlarging, tracking limits."""
+    """Apply either a funded live budget or a bounded local-perception recovery budget."""
     budget = receipt.get("tracking_budget")
     if not isinstance(budget, dict) or receipt.get("uncertainty_basis") != (
         "live-native-localization"
@@ -9009,12 +9009,25 @@ def _apply_native_preflight_tracking_budget(args: argparse.Namespace, receipt: d
         }
         for policy in args._tracking_segment_policies
     )
+    motion_mode = str(budget.get("motion_mode", "nominal"))
+    if motion_mode not in {"nominal", "local-perception-recovery"}:
+        raise ValueError("NATIVE_ROUTE_RECOVERY_MODE_INVALID")
+    local_revalidation = budget.get("local_perception_revalidation_required", False)
+    if type(local_revalidation) is not bool:
+        raise ValueError("NATIVE_ROUTE_RECOVERY_REQUIREMENT_INVALID")
+    args._preflight_localization_recovery_active = (
+        motion_mode == "local-perception-recovery" and local_revalidation
+    )
     return {
         "prior_lag_limit_m": prior_lag,
         "prior_rejoin_tolerance_m": prior_rejoin,
         "effective_lag_limit_m": args.tracking_lag_limit_m,
         "effective_rejoin_tolerance_m": args.tracking_rejoin_tolerance_m,
         "segment_count": len(args._tracking_segment_policies),
+        "motion_mode": motion_mode,
+        "local_perception_revalidation_required": local_revalidation,
+        "maximum_speed_mps": budget.get("maximum_speed_mps"),
+        "localization_deficit_m": budget.get("localization_deficit_m", 0.0),
     }
 
 
