@@ -78,6 +78,22 @@ def test_code_gates_authorize_continuation_independent_of_model_opinion() -> Non
     )
 
 
+def test_model_transport_failure_falls_back_to_deterministic_continuation() -> None:
+    from dronedream_agent_core.checkpointing import _advisory_unavailable_decision
+
+    decision = _advisory_unavailable_decision(
+        request=_request(),
+        binding_gates={"checkpoint_binding": True},
+        error=TimeoutError("provider unavailable"),
+    )
+
+    assert decision.continue_authorized is True
+    assert decision.assessment.action == "hold"
+    assert decision.assessment.issue_codes == ["MODEL_ADVISORY_UNAVAILABLE"]
+    assert decision.model_call.provider == "runtime-policy"
+    assert decision.model_call.model == "deterministic-continuity-fallback"
+
+
 # 功能：
 #   验证段内部检查点在全局轨迹索引、坐标与任务绑定都有效时可以通过授权条件。
 # 输入：
@@ -182,7 +198,7 @@ def test_stale_model_call_discards_late_checkpoint_decision(tmp_path, monkeypatc
     else:
         assert isinstance(coordinator.error, RuntimeError)
         assert "revision changed" in str(coordinator.error)
-        assert coordinator.abort_file.exists()
+        assert not coordinator.abort_file.exists()
     assert not list(folder.glob("*.decision.json"))
 
 
@@ -317,11 +333,11 @@ def test_checkpoint_rechecks_lifecycle_after_output_guard(
         assert coordinator.error is None and not coordinator.abort_file.exists()
     else:
         assert "revision changed" in str(coordinator.error)
-        assert coordinator.abort_file.exists()
+        assert not coordinator.abort_file.exists()
 
 
 # 功能：
-#   验证发布失败的决定不能提前登记为已发布，错误仍触发中止证据。
+#   验证发布失败的决定不能提前登记为已发布，也不会把旁路故障升级为飞行中止。
 # 输入：
 #   tmp_path：隔离运行目录。
 #   monkeypatch：模拟决定文件写入失败。
@@ -350,7 +366,7 @@ def test_failed_decision_publication_does_not_enter_success_history(tmp_path, mo
     coordinator._run()
     assert isinstance(coordinator.error, OSError)
     assert not coordinator.decisions
-    assert coordinator.abort_file.exists()
+    assert not coordinator.abort_file.exists()
 
 
 # 功能：

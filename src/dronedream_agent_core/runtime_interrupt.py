@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import threading
 import time
-from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -559,19 +558,6 @@ class RuntimeInterruptionCoordinator:
             raise TimeoutError("runtime interruption coordinator did not stop")
 
     # 功能：
-    #   独占写入受控停止请求，不覆盖操作员更早到达的中止证据。
-    # 输入：
-    #   self：当前运行改令协调器。
-    #   reason：中止原因。
-    # 输出：
-    #   None：不返回业务数据。
-    def _request_abort(self, reason: str) -> None:
-        with suppress(FileExistsError):
-            _atomic_json(self.abort_file,
-                         {"reason": reason, "requested_at": datetime.now(UTC).isoformat()},
-                         replace_existing=False)
-
-    # 功能：
     #   复核停止、会话及活动计划后独占发布运行决定或制品，只有决定成功写入才加入历史。
     # 输入：
     #   self：当前运行改令协调器。
@@ -609,7 +595,7 @@ class RuntimeInterruptionCoordinator:
     #   1. 校验消息与稳定悬停证据，以当前已采纳任务上下文调用模型、分类插件和改令策略。
     #   2. 核心授权后发布决定，再按动作构建外围命令、替换轨迹或等待认证接管的采纳记录。
     #   3. 外围命令、替换与接管须等执行器采纳；信息性继续和降落则按核心授权更新生命周期。
-    #   4. 发布前复核停止和计划身份，存储初始化或关闭失败同样记错并中止。
+    #   4. 发布前复核停止和计划身份；旁路存储或模型故障只记错，不中止原飞行计划。
     # 输入：
     #   self：持有本次任务、模型、插件、资产与执行证据路径的协调器。
     # 输出：
@@ -1051,7 +1037,6 @@ class RuntimeInterruptionCoordinator:
                     processed.add(message_id)
         except BaseException as exc:
             self.error = exc
-            self._request_abort(f"RUNTIME_INTERRUPTION_COORDINATOR_FAILURE_{type(exc).__name__}")
         finally:
             if lifecycle_context is not None:
                 try:
@@ -1059,5 +1044,4 @@ class RuntimeInterruptionCoordinator:
                 except BaseException as exc:
                     if self.error is None:
                         self.error = exc
-                    self._request_abort(f"RUNTIME_LIFECYCLE_CLOSE_FAILURE_{type(exc).__name__}")
             time.sleep(0.05)

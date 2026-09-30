@@ -298,7 +298,7 @@ def _validation(
         gates = {
             "lost_link_rule_frozen": any(
                 token in " ".join(contract.immutable_safety_rules).casefold()
-                for token in ("link", "abort", "hold", "返航", "悬停")
+                for token in ("link", "replan", "hold", "return", "land", "返航", "悬停")
             )
         }
     elif layer == "payload":

@@ -175,7 +175,7 @@ def _safety_context(*, value: dict[str, object], **_: Any) -> dict[str, object]:
         **copy_json(value),
         "non_relaxable_context": {
             "model_has_actuator_authority": False,
-            "unknown_critical_state": "hold-or-abort",
+            "unknown_critical_state": "hold-replan-return-or-land",
             "runtime_change_requires_safe_hold": True,
         },
     }
