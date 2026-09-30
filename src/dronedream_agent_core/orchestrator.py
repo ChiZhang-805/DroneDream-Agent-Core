@@ -1368,7 +1368,13 @@ def _validate_task_graph(
             returns = [
                 task
                 for task in graph.nodes
-                if task.action in movement_actions and task.target_node == contract.return_node
+                # A semantic pickup point can share a topology node with the launch
+                # point.  In that case target-based matching also selects the
+                # outbound navigate task and incorrectly requires it to depend on
+                # a payload-stability check that has not happened yet.  The core
+                # action catalog provides an explicit return action, so authorize
+                # only that phase here; its target is still checked independently.
+                if task.action == "return" and task.target_node == contract.return_node
             ]
             if "delivery.verify-loaded-stability" in authorized_actions:
                 stability_tasks = [
