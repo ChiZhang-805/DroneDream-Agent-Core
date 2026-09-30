@@ -262,6 +262,28 @@ def test_hook_configuration_cannot_be_overridden_or_mutated_between_calls(monkey
 
 
 # 功能：
+#   历史计划仅因插件从一票否决改为故障隔离而产生摘要差异时，允许使用更连续的当前策略。
+# 输入：
+#   monkeypatch：将同一插件的当前声明替换为 failure_mode=isolate。
+# 输出：
+#   None：注册表成功重建；除此字段外的快照完整性仍由原有测试覆盖。
+def test_snapshot_accepts_only_fail_closed_to_isolate_recovery_upgrade(monkeypatch):
+    frozen_plugin = definition()
+    snapshot = snapshot_for(frozen_plugin)
+    current_plugin = definition()
+    current_plugin.manifest.placement.failure_mode = "isolate"
+    monkeypatch.setattr(
+        plugin_api,
+        "discover_builtin_plugins",
+        lambda: {current_plugin.manifest.plugin_id: current_plugin},
+    )
+    registry = plugin_api.build_discovered_extension_registry(snapshot)
+    registered = registry.plugins_for_slot("models.snapshot-test")
+    assert len(registered) == 1
+    assert registered[0].failure_mode == "isolate"
+
+
+# 功能：
 #   验证重算目录摘要不能使非法选择来源、嵌套清单或缺少必需能力的快照变得有效。
 # 输入：
 #   corruption：在快照通过初次构造后施加的非法修改。

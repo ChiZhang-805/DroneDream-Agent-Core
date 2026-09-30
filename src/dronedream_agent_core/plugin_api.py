@@ -7,7 +7,6 @@ import importlib
 import inspect
 import os
 import pkgutil
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -478,12 +477,29 @@ def build_discovered_extension_registry(
         entry = selected.get(plugin_id) if selected is not None else None
         if selected is not None and entry is None:
             continue
-        if entry is not None and (
-            entry.version != manifest.version
-            or entry.manifest_sha256 != package_sha256
-            or entry.package_sha256 != package_sha256
-        ):
-            raise ValueError(f"PLUGIN_SNAPSHOT_DRIFT:{plugin_id}")
+        if entry is not None:
+            digest_changed = (
+                entry.manifest_sha256 != package_sha256
+                or entry.package_sha256 != package_sha256
+            )
+            recovery_only_upgrade = False
+            if digest_changed and entry.manifest is not None:
+                frozen = entry.manifest.model_dump(mode="json")
+                current = manifest.model_dump(mode="json")
+                frozen_placement = frozen.get("placement")
+                current_placement = current.get("placement")
+                if (
+                    isinstance(frozen_placement, dict)
+                    and isinstance(current_placement, dict)
+                    and frozen_placement.get("failure_mode") == "fail-closed"
+                    and current_placement.get("failure_mode") == "isolate"
+                ):
+                    frozen_placement["failure_mode"] = "isolate"
+                    recovery_only_upgrade = frozen == current
+            if entry.version != manifest.version or (
+                digest_changed and not recovery_only_upgrade
+            ):
+                raise ValueError(f"PLUGIN_SNAPSHOT_DRIFT:{plugin_id}")
         capability = manifest.capabilities[0]
         placement = manifest.placement
         hooks: dict[str, Callable[..., Any]] = {}
