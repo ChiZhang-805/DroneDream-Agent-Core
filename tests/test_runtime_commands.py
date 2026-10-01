@@ -2526,6 +2526,65 @@ def test_tracking_gate_holds_schedule_until_vehicle_rejoins(
     assert state["advance_threshold_m"] == 0.35
 
 
+def test_tracking_gate_accepts_small_settled_recovery_residual(
+    tmp_path: Path,
+) -> None:
+    executor = _load_executor()
+
+    class Client:
+        async def set_position_ned(self, _setpoint: Any) -> None:
+            return None
+
+        async def sample_position_velocity_ned(self, _timeout_seconds: float) -> Any:
+            return SimpleNamespace(
+                north_m=0.918,
+                east_m=0.0,
+                down_m=-1.0,
+                north_m_s=0.004,
+                east_m_s=0.002,
+                down_m_s=0.0,
+            )
+
+    args = SimpleNamespace(
+        run_dir=tmp_path,
+        local_safety_target=None,
+        local_safety_command=None,
+        local_safety_repair_timeout_seconds=15.0,
+        setpoint_rate_hz=1_000.0,
+        tracking_telemetry_timeout_seconds=0.1,
+        tracking_lag_limit_m=0.076,
+        tracking_rejoin_tolerance_m=0.068,
+    )
+    planned = SimpleNamespace(north_m=1.0, east_m=0.0, down_m=-1.0, yaw_deg=0.0)
+    coordinate_contract = Px4CoordinateContract(
+        model_root_world_enu_m=[0.0, 0.0, 0.0],
+        collision_center_offset_model_m=[0.0, 0.0, 0.2],
+    )
+
+    advanced, error_m = asyncio.run(
+        executor._tracking_gate_tick(
+            args=args,
+            base=SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values)),
+            client=Client(),
+            planned_setpoint=planned,
+            coordinate_contract=coordinate_contract,
+            phase_path=tmp_path / "phase.json",
+            schedule_index=431,
+            sample_now=True,
+            recovery_active=True,
+        )
+    )
+
+    assert advanced is True
+    assert error_m == pytest.approx(0.082)
+    state = json.loads(
+        (tmp_path / "runtime-state" / "closed-loop-tracking.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["advance_threshold_m"] == pytest.approx(0.093)
+
+
 def test_tracking_gate_compares_px4_telemetry_in_route_frame(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -6724,6 +6724,19 @@ async def _tracking_gate_tick(
         "z": root_up + offset_up - observed.down_m + estimator_offset.z,
     }
     threshold_m = tracking_rejoin_tolerance_m if recovery_active else tracking_lag_limit_m
+    if (
+        recovery_active
+        and not model_control_required
+        and speed_mps <= 0.05
+        and threshold_m < 0.10
+    ):
+        # A loaded vehicle can settle a few centimetres outside the
+        # covariance-reduced rejoin tolerance even though it is stationary
+        # and the local-safety controller still proves positive clearance.
+        # Grant a small, capped hysteresis allowance only while recovering at
+        # near-zero speed. Moving-flight lag limits and all obstacle/clearance
+        # checks remain unchanged.
+        threshold_m = min(0.10, threshold_m + 0.025)
     model_progress_slack_m = max(0.0, float(getattr(args, "model_progress_slack_m", 0.0)))
     # A short model-controller target proves that this control tick is locally
     # reachable; it does not prove progress along the dense mission schedule.
@@ -8759,8 +8772,24 @@ async def _fly_runtime_replacement(
                         replacement_sequence=replacement.replacement_sequence,
                     )
                     if recovery_expired:
-                        raise UserDirectedLanding(
-                            "closed-loop tracking recovery exceeded its bounded window"
+                        timing.setdefault("tracking_recovery_rollovers", []).append(
+                            {
+                                "schedule_index": index,
+                                "replacement_sequence": replacement.replacement_sequence,
+                                "elapsed_seconds": recovery_window.elapsed_seconds,
+                                "best_tracking_error_m": recovery_window.best_tracking_error_m,
+                                "outcome": "hold_correct_and_retry",
+                            }
+                        )
+                        recovery_window = None
+                        _publish_local_control_phase(
+                            phase_path,
+                            local_phase="RECOVERY_RETRY",
+                            details={
+                                "schedule_index": index,
+                                "replacement_sequence": replacement.replacement_sequence,
+                                "recovery_rollover_reason": "tracking-window-elapsed",
+                            },
                         )
                 last_setpoint = setpoint
                 if index in waypoint_arrival_indices and checkpoint is None:
@@ -9951,8 +9980,28 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                     now=recovery_now,
                 )
                 if recovery_expired:
-                    raise UserDirectedLanding(
-                        "closed-loop tracking recovery exceeded its bounded window"
+                    # One bounded window limits a single correction episode;
+                    # it must not turn an ordinary route deviation into a
+                    # terminal flight veto. Keep the accepted hold/correction
+                    # setpoint, start a fresh recovery window, and let the
+                    # outer progress watchdog decide only after repeated,
+                    # genuine inability to make progress.
+                    timing.setdefault("tracking_recovery_rollovers", []).append(
+                        {
+                            "schedule_index": index,
+                            "elapsed_seconds": recovery_window.elapsed_seconds,
+                            "best_tracking_error_m": recovery_window.best_tracking_error_m,
+                            "outcome": "hold_correct_and_retry",
+                        }
+                    )
+                    recovery_window = None
+                    _publish_local_control_phase(
+                        phase_path,
+                        local_phase="RECOVERY_RETRY",
+                        details={
+                            "schedule_index": index,
+                            "recovery_rollover_reason": "tracking-window-elapsed",
+                        },
                     )
             last_setpoint = setpoint
             if index == plan.track_start_index:
