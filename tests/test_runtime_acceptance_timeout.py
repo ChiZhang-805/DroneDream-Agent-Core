@@ -33,6 +33,20 @@ def test_outer_runtime_timeout_outlives_child_executor_cap() -> None:
     ) == pytest.approx(module.DEFAULT_RUNTIME_TIMEOUT_SECONDS)
 
 
+# 功能：发布资源不附带源码时，验收必须加载脚本所属仓库，而不能静默运行 Runtime 中的旧 wheel。
+# 输入：隔离的发布资源根；输出：返回当前仓库的完整 Core 与 App 源码目录。
+def test_acceptance_release_resources_use_current_repository_source(tmp_path: Path) -> None:
+    module = _load_runtime_acceptance_module()
+    resources = tmp_path / "resources"
+    resources.mkdir()
+
+    source = module._acceptance_source_root(resources)
+
+    assert source == Path(__file__).resolve().parents[1] / "src"
+    assert (source / "dronedream_agent_core" / "__init__.py").is_file()
+    assert (source / "dronedream_agent_app" / "__init__.py").is_file()
+
+
 @pytest.mark.parametrize("value", [899.0, 43_201.0, float("nan"), float("inf")])
 def test_outer_runtime_timeout_rejects_unbounded_or_unsafe_values(value: float) -> None:
     module = _load_runtime_acceptance_module()

@@ -67,6 +67,22 @@ def _wsl_path(path: Path) -> str:
     return mapped
 
 
+# 功能：
+#   让源码验收始终执行调用脚本所属提交；开发资源可携带冻结源码，发布资源则回退到仓库源码。
+# 输入：
+#   resource_root：本次验收使用的资源根。
+# 输出：
+#   source_root：可导入当前 Core 包的 src 目录；缺失时拒绝混用已安装旧 wheel。
+def _acceptance_source_root(resource_root: Path) -> Path:
+    candidates = (resource_root / "src", Path(__file__).resolve().parents[1] / "src")
+    for candidate in candidates:
+        package = candidate / "dronedream_agent_core" / "__init__.py"
+        app_package = candidate / "dronedream_agent_app" / "__init__.py"
+        if package.is_file() and app_package.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError("CURRENT_ACCEPTANCE_SOURCE_TREE_MISSING")
+
+
 def _secret_lines(provider: str, model: str, api_key: str) -> str:
     settings = {
         "deepseek": ("DEEPSEEK", "https://api.deepseek.com"),
@@ -1386,7 +1402,7 @@ def run(
     ):
         raise RuntimeError("CURRENT_RUNTIME_ASSET_CONTRACT_MISMATCH")
     runtime = resource_root / "runtime"
-    resource_src = resource_root / "src"
+    resource_src = _acceptance_source_root(resource_root)
     checkpoint_executor = runtime / "px4_checkpoint_executor.py"
     if not checkpoint_executor.is_file():
         checkpoint_executor = resource_root / "scripts" / "px4_checkpoint_executor.py"
@@ -1543,12 +1559,10 @@ def run(
     if development_payload_collection:
         command.append("--development-payload-collection")
     command_text = " ".join(shlex.quote(value) for value in command)
-    source_path_export = ""
-    if resource_src.is_dir():
-        source_path_export = (
-            f"export PYTHONPATH={shlex.quote(_wsl_path(resource_src))}"
-            "${PYTHONPATH:+:$PYTHONPATH}\n"
-        )
+    source_path_export = (
+        f"export PYTHONPATH={shlex.quote(_wsl_path(resource_src))}"
+        "${PYTHONPATH:+:$PYTHONPATH}\n"
+    )
     script = (
         "set -eo pipefail\n"
         "source /opt/ros/jazzy/setup.bash\n"
