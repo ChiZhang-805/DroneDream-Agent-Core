@@ -111,12 +111,12 @@ def test_loop_recovers_with_new_position_and_without_training_labels(tmp_path, t
 
 
 # 功能：
-#   验证长期断档、无位置、缺失传输及传输超时均不能成为无限恢复或继续运动。
+#   验证无位置、缺失传输及传输超时仍不能继续运动。
 # 输入：
 #   failure：要注入的失败类型。
 # 输出：
 #   None：明确抛出降落异常，不发送普通控制。
-@pytest.mark.parametrize("failure", ["timeout", "position", "unsupported", "transport", "slow"])
+@pytest.mark.parametrize("failure", ["position", "unsupported", "transport", "slow"])
 def test_gap_failure_remains_fail_closed(failure):
     executor = _load_executor()
     args = SimpleNamespace(require_model_control_authority=True)
@@ -135,14 +135,51 @@ def test_gap_failure_remains_fail_closed(failure):
         client.set_braking_hold = brake
 
     async def scenario():
-        if failure == "timeout":
-            args._heading_gap_started_at = asyncio.get_running_loop().time() - 1.01
         await executor._hold_heading_or_brake(
             args, client, None if failure == "position" else observation(), 45.0)
 
     with pytest.raises(executor.UserDirectedLanding, match="NATIVE_HEADING_"):
         asyncio.run(scenario())
     assert len(calls) == (1 if failure in {"transport", "slow"} else 0)
+
+
+# 功能：
+#   验证长期航向断档会滚动新的刹停恢复窗口，而不是把普通遥测缺口升级为降落。
+# 输入：
+#   无。
+# 输出：
+#   None：零速刹停继续，恢复窗口计数递增，调度仍被暂停。
+def test_heading_gap_timeout_rolls_recovery_window_instead_of_landing():
+    executor = _load_executor()
+    args = SimpleNamespace(require_model_control_authority=True)
+    calls = []
+    events = []
+
+    async def brake():
+        calls.append(True)
+
+    executor._record_local_safety_executor_event = (
+        lambda _, **event: events.append(event)
+    )
+    client = SimpleNamespace(
+        latest_dynamics_telemetry=lambda _: attitude(stale=True),
+        set_braking_hold=brake,
+    )
+
+    async def scenario():
+        args._heading_gap_started_at = asyncio.get_running_loop().time() - 1.01
+        assert await executor._hold_heading_or_brake(
+            args, client, observation(), 45.0
+        ) is None
+
+    asyncio.run(scenario())
+    assert calls == [True]
+    assert args._heading_gap_rollover_count == 1
+    assert args._heading_gap_started_at is not None
+    assert any(
+        event["status"] == "native-heading-recovery-window-rolled-over"
+        for event in events
+    )
 
 
 # 功能：

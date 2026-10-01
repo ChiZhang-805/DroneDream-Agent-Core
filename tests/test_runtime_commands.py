@@ -2173,7 +2173,7 @@ def test_established_local_safety_missing_file_brakes_and_recovers_within_grace(
     assert events[0]["status"] == "command-missing"
 
 
-def test_required_local_safety_staleness_lands_after_bounded_grace(
+def test_required_local_safety_staleness_keeps_braking_across_recovery_windows(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
@@ -2189,7 +2189,18 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
 
     executor._refresh_px4_identity_telemetry = observed_identity
 
-    with pytest.raises(executor.UserDirectedLanding, match="beyond grace"):
+    events: list[dict[str, Any]] = []
+    executor._record_local_safety_executor_event = (
+        lambda _args, **event: events.append(event)
+    )
+
+    class BrakeObserved(Exception):
+        pass
+
+    async def set_position_ned(_setpoint: Any) -> None:
+        raise BrakeObserved()
+
+    with pytest.raises(BrakeObserved):
         asyncio.run(
             executor._apply_local_safety(
                 args=SimpleNamespace(
@@ -2202,7 +2213,7 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
                     setpoint_rate_hz=20.0,
                 ),
                 base=SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values)),
-                client=SimpleNamespace(),
+                client=SimpleNamespace(set_position_ned=set_position_ned),
                 planned_setpoint=SimpleNamespace(
                     north_m=0.0,
                     east_m=0.0,
@@ -2216,6 +2227,10 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
                 phase_path=tmp_path / "phase.json",
             )
         )
+    assert any(
+        event["status"] == "command-stale-recovery-window-rolled-over"
+        for event in events
+    )
 
 
 def test_runtime_stale_default_holds_through_measured_publication_jitter(

@@ -3732,6 +3732,10 @@ def run_px4_gazebo_track(
     processes: list[subprocess.Popen[Any] | None] = []
     depth_worker_process: subprocess.Popen[Any] | None = None
     render_replica_process: subprocess.Popen[Any] | None = None
+    depth_worker_restart_count = 0
+    render_replica_restart_count = 0
+    next_depth_worker_restart_at = 0.0
+    next_render_replica_restart_at = 0.0
     samples: list[tuple[float, float, float, float]] = []
     sample_lock = threading.Lock()
     frame_lock = threading.Lock()
@@ -5364,7 +5368,19 @@ def run_px4_gazebo_track(
                         "phase"
                     ]
                     if _tracking_identity_required(stall_phase):
-                        abort_reason = "EXECUTOR_PROGRESS_STALLED"
+                        _write_json(
+                            run_dir / "executor-progress-recovery.json",
+                            {
+                                "schema_version": "dronedream.executor-progress-recovery.v1",
+                                "runtime_phase": stall_phase,
+                                "outcome": "recovery-window-rolled-over",
+                                "latest_progress_evidence": latest_progress_evidence,
+                                "progress_evidence_revision": progress_evidence_revision,
+                                "schedule_advancement_authorized": False,
+                                "updated_at_unix_ms": int(time.time() * 1_000),
+                            },
+                        )
+                        progress_stall_deadline = loop_now + 180.0
                     else:
                         progress_stall_deadline = None
                 if loop_now >= deadline and abort_reason is None:
@@ -5448,21 +5464,111 @@ def run_px4_gazebo_track(
                                 "updated_at_unix_ms": int(time.time() * 1_000),
                             },
                         )
+                    elif _tracking_identity_required(deadline_phase):
+                        # The child process is still alive and owns a fresh PX4
+                        # control loop. A wall-clock estimate cannot prove that
+                        # a deviated aircraft is unrecoverable, especially at a
+                        # low simulation real-time factor. Keep the independent
+                        # collision monitor active and open another controlled
+                        # recovery slice instead of issuing an external abort.
+                        extension = 60.0
+                        deadline = time.monotonic() + extension
+                        _write_json(
+                            run_dir / "executor-wall-time-extension.json",
+                            {
+                                "schema_version": "dronedream.executor-wall-time-extension.v1",
+                                "latest_schedule_index": progress,
+                                "extension_seconds": extension,
+                                "runtime_phase": deadline_phase,
+                                "reason": "active_closed_loop_recovery_continues",
+                                "updated_at_unix_ms": int(time.time() * 1_000),
+                            },
+                        )
                     else:
                         abort_reason = "EXECUTOR_WALL_TIMEOUT"
                 if (
                     depth_safety_supported
-                    and depth_worker_process is not None
-                    and depth_worker_process.poll() is not None
+                    and (
+                        depth_worker_process is None
+                        or depth_worker_process.poll() is not None
+                    )
+                    and loop_now >= next_depth_worker_restart_at
                     and abort_reason is None
                 ):
-                    abort_reason = "DEPTH_SAFETY_WORKER_EXITED"
+                    depth_worker_restart_count += 1
+                    try:
+                        depth_worker_process = subprocess.Popen(
+                            _with_runtime_cpu_affinity(
+                                depth_worker_command,
+                                plan=runtime_cpu_affinity,
+                                local_model=False,
+                            ),
+                            env=worker_environment,
+                            stdout=depth_worker_log,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            start_new_session=True,
+                        )
+                        processes.append(depth_worker_process)
+                        next_depth_worker_restart_at = loop_now + 1.0
+                        outcome = "restarted"
+                    except OSError as error:
+                        depth_worker_process = None
+                        next_depth_worker_restart_at = loop_now + min(
+                            30.0, float(2 ** min(depth_worker_restart_count, 5))
+                        )
+                        outcome = f"retry-scheduled:{type(error).__name__}"
+                    _write_json(
+                        run_dir / "depth-safety-worker-recovery.json",
+                        {
+                            "schema_version": "dronedream.worker-recovery.v1",
+                            "restart_count": depth_worker_restart_count,
+                            "outcome": outcome,
+                            "schedule_advancement_authorized": False,
+                            "updated_at_unix_ms": int(time.time() * 1_000),
+                        },
+                    )
                 if (
-                    render_replica_process is not None
-                    and render_replica_process.poll() is not None
+                    render_replica_deployment is not None
+                    and (
+                        render_replica_process is None
+                        or render_replica_process.poll() is not None
+                    )
+                    and loop_now >= next_render_replica_restart_at
                     and abort_reason is None
                 ):
-                    abort_reason = "ISOLATED_RENDERER_EXITED"
+                    render_replica_restart_count += 1
+                    try:
+                        render_replica_process = subprocess.Popen(
+                            _with_runtime_cpu_affinity(
+                                render_replica_deployment["command"],
+                                plan=runtime_cpu_affinity,
+                                local_model=False,
+                            ),
+                            env=gazebo_env,
+                            stdout=render_replica_log,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            start_new_session=True,
+                        )
+                        processes.append(render_replica_process)
+                        next_render_replica_restart_at = loop_now + 1.0
+                        outcome = "restarted"
+                    except OSError as error:
+                        render_replica_process = None
+                        next_render_replica_restart_at = loop_now + min(
+                            30.0, float(2 ** min(render_replica_restart_count, 5))
+                        )
+                        outcome = f"retry-scheduled:{type(error).__name__}"
+                    _write_json(
+                        run_dir / "isolated-renderer-recovery.json",
+                        {
+                            "schema_version": "dronedream.worker-recovery.v1",
+                            "restart_count": render_replica_restart_count,
+                            "outcome": outcome,
+                            "updated_at_unix_ms": int(time.time() * 1_000),
+                        },
+                    )
                 with sample_lock:
                     fresh_samples = samples[consumed_samples:]
                     consumed_samples = len(samples)
@@ -5562,40 +5668,10 @@ def run_px4_gazebo_track(
                                     "runtime_phase": phase,
                                 }
                                 _write_json(run_dir / "live-safety-event.json", live_safety_event)
-                    # Landing intentionally leaves the airborne route in the vertical
-                    # direction.  Keep collision monitoring active, but close the
-                    # route-following phase once the final airborne goal is observed.
-                    if (
-                        _reference_route_deviation_enforced(
-                            phase=phase,
-                            goal_observed=goal_observed_runtime,
-                            model_control_authority_required=(
-                                local_navigation_control_authority_required
-                            ),
-                        )
-                        and route_deviation > 1.0
-                        and abort_reason is None
-                    ):
-                        abort_reason = "LIVE_ROUTE_DEVIATION"
-                        live_safety_event = {
-                            "schema_version": "dronedream.live-safety-event.v1",
-                            "reason": abort_reason,
-                            "elapsed_s": elapsed_s,
-                            "vehicle_collision_center_world_enu_m": {
-                                "east_m": center[0],
-                                "north_m": center[1],
-                                "up_m": center[2],
-                            },
-                            "clearance_m": minimum,
-                            "nearest_collision_primitive": minimum_name,
-                            "route_deviation_m": route_deviation,
-                            "goal_departure_observed": goal_departure_observed,
-                            "goal_observed": goal_observed_runtime,
-                            "runtime_phase": phase,
-                            "phase_read": phase_read,
-                            "reference_polyline_world_enu_m": monitored_route,
-                        }
-                        _write_json(run_dir / "live-safety-event.json", live_safety_event)
+                    # Route error is evidence for the closed-loop recovery
+                    # controller, never an independent abort request. Static
+                    # collision monitoring above remains authoritative while
+                    # the executor slows, corrects, or replans toward the goal.
                 if abort_reason and not abort_file.exists():
                     abort_payload: dict[str, object] = {
                         "reason": abort_reason,

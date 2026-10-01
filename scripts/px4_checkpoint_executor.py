@@ -3630,7 +3630,7 @@ def _local_hold_yaw(
 
 
 # 功能：
-#   1. 新鲜航向缺失时仅发送零速、零偏航角速度刹停，最长等待一秒，不复用旧航向。
+#   1. 新鲜航向缺失时仅发送零速、零偏航角速度刹停，按一秒窗口持续重试，不复用旧航向。
 #   2. 恢复后返回空值让调用方重新采样位置和命令；保护动作不作为模型示范标签。
 # 输入：
 #   args：本次航向断档计时及控制状态。
@@ -3648,7 +3648,20 @@ async def _hold_heading_or_brake(
     now = loop.time()
     started = getattr(args, "_heading_gap_started_at", None)
     if started is not None and now - started >= 1.0:
-        raise UserDirectedLanding("NATIVE_HEADING_RECOVERY_TIMEOUT")
+        args._heading_gap_rollover_count = (
+            int(getattr(args, "_heading_gap_rollover_count", 0)) + 1
+        )
+        _record_local_safety_executor_event(
+            args,
+            status="native-heading-recovery-window-rolled-over",
+            details={
+                "completed_window_seconds": now - started,
+                "rollover_count": args._heading_gap_rollover_count,
+                "schedule_advancement_authorized": False,
+                "training_label_authorized": False,
+            },
+        )
+        started = args._heading_gap_started_at = now
     try:
         heading = _local_hold_yaw(args=args, client=client,
             fallback_heading_deg=fallback_heading_deg,
@@ -3682,7 +3695,20 @@ async def _hold_heading_or_brake(
         raise UserDirectedLanding("NATIVE_HEADING_BRAKE_TRANSPORT_FAILED") from error
     now = loop.time()
     if now - started >= 1.0:
-        raise UserDirectedLanding("NATIVE_HEADING_RECOVERY_TIMEOUT")
+        args._heading_gap_rollover_count = (
+            int(getattr(args, "_heading_gap_rollover_count", 0)) + 1
+        )
+        _record_local_safety_executor_event(
+            args,
+            status="native-heading-recovery-window-rolled-over",
+            details={
+                "completed_window_seconds": now - started,
+                "rollover_count": args._heading_gap_rollover_count,
+                "schedule_advancement_authorized": False,
+                "training_label_authorized": False,
+            },
+        )
+        started = args._heading_gap_started_at = now
     if heading is not None:
         # 传输等待也消耗样本寿命，不能把发送前有效、发送后过期的帧算作稳定恢复。
         try:
@@ -4844,8 +4870,18 @@ async def _dispatch_motion_or_brake(
         if gap_started is None:
             gap_started = args._dispatch_input_gap_started_at = now
         grace = min(8.0, float(getattr(args, "local_safety_runtime_stale_grace_seconds", 8.0)))
-        if not math.isfinite(grace) or grace <= 0 or now - gap_started > grace:
-            raise UserDirectedLanding("CONTROL_INPUT_LEASE_GAP_EXCEEDED") from None
+        if not math.isfinite(grace) or grace <= 0:
+            raise ValueError("CONTROL_INPUT_LEASE_GRACE_INVALID") from None
+        if now - gap_started > grace:
+            _record_local_safety_executor_event(
+                args,
+                status="input-lease-recovery-window-rolled-over",
+                details={
+                    "completed_window_seconds": now - gap_started,
+                    "schedule_advancement_authorized": False,
+                },
+            )
+            args._dispatch_input_gap_started_at = now
         observed = await _refresh_px4_identity_telemetry(
             args=args, client=client, coordinate_contract=coordinate_contract
         )
@@ -5513,9 +5549,15 @@ async def _apply_local_safety(
             )
             context_grace_seconds = getattr(args, "local_safety_runtime_stale_grace_seconds", 8.0)
             if loop.time() - context_mismatch_started_at > context_grace_seconds:
-                raise UserDirectedLanding(
-                    "required local safety command did not provide model control authority"
+                _record_local_safety_executor_event(
+                    args,
+                    status="model-authority-recovery-window-rolled-over",
+                    details={
+                        "runtime_grace_seconds": context_grace_seconds,
+                        "schedule_advancement_authorized": False,
+                    },
                 )
+                context_mismatch_started_at = loop.time()
             command = None
         elif command is not None and not _local_safety_command_matches_control_context(
             command=command,
@@ -5543,9 +5585,15 @@ async def _apply_local_safety(
             )
             context_grace_seconds = getattr(args, "local_safety_runtime_stale_grace_seconds", 8.0)
             if loop.time() - context_mismatch_started_at > context_grace_seconds:
-                raise UserDirectedLanding(
-                    "required local safety command context remained mismatched"
+                _record_local_safety_executor_event(
+                    args,
+                    status="control-context-recovery-window-rolled-over",
+                    details={
+                        "runtime_grace_seconds": context_grace_seconds,
+                        "schedule_advancement_authorized": False,
+                    },
                 )
+                context_mismatch_started_at = loop.time()
             command = None
         elif command is not None:
             context_mismatch_started_at = None
@@ -5599,9 +5647,15 @@ async def _apply_local_safety(
                     )
                     if stale is None:
                         if loop.time() - command_unavailable_started_at > runtime_grace_seconds:
-                            raise UserDirectedLanding(
-                                "required local safety command remained unreadable"
+                            _record_local_safety_executor_event(
+                                args,
+                                status="command-unreadable-recovery-window-rolled-over",
+                                details={
+                                    **pair_diagnostic,
+                                    "schedule_advancement_authorized": False,
+                                },
                             )
+                            command_unavailable_started_at = loop.time()
                         if observed is None:
                             raise UserDirectedLanding(
                                 "required local safety command is unreadable without PX4 telemetry"
@@ -5632,9 +5686,16 @@ async def _apply_local_safety(
                         stale_age_seconds > runtime_grace_seconds
                         or loop.time() - command_unavailable_started_at > runtime_grace_seconds
                     ):
-                        raise UserDirectedLanding(
-                            "required local safety command remained stale beyond grace"
+                        _record_local_safety_executor_event(
+                            args,
+                            status="command-stale-recovery-window-rolled-over",
+                            details={
+                                **pair_diagnostic,
+                                "stale_age_seconds": stale_age_seconds,
+                                "schedule_advancement_authorized": False,
+                            },
                         )
+                        command_unavailable_started_at = loop.time()
                     if observed is None:
                         raise UserDirectedLanding(
                             "required local safety command is stale without PX4 telemetry"
@@ -5686,9 +5747,15 @@ async def _apply_local_safety(
                         details=pair_diagnostic,
                     )
                     if missing_elapsed_seconds > runtime_grace_seconds:
-                        raise UserDirectedLanding(
-                            "required local safety command remained missing beyond grace"
+                        _record_local_safety_executor_event(
+                            args,
+                            status="command-missing-recovery-window-rolled-over",
+                            details={
+                                **pair_diagnostic,
+                                "schedule_advancement_authorized": False,
+                            },
                         )
+                        command_unavailable_started_at = loop.time()
                     if observed is None:
                         raise UserDirectedLanding(
                             "required local safety command is missing without PX4 telemetry"
@@ -5737,7 +5804,26 @@ async def _apply_local_safety(
                     )
                     continue
                 if loop.time() >= command_startup_deadline:
-                    raise UserDirectedLanding("required local safety command was not established")
+                    _record_local_safety_executor_event(
+                        args,
+                        status="perception-startup-recovery-window-rolled-over",
+                        details={
+                            "schedule_advancement_authorized": False,
+                            "runtime_grace_seconds": getattr(
+                                args, "local_safety_runtime_stale_grace_seconds", 8.0
+                            ),
+                        },
+                    )
+                    command_startup_deadline = loop.time() + max(
+                        0.1,
+                        float(
+                            getattr(
+                                args,
+                                "local_safety_runtime_stale_grace_seconds",
+                                8.0,
+                            )
+                        ),
+                    )
                 if observed is None:
                     raise UserDirectedLanding(
                         "required local safety command is unavailable without PX4 telemetry"
@@ -6883,8 +6969,19 @@ async def _tracking_gate_tick(
                 now=semantic_now,
             )
             if semantic_progress_expired:
-                raise UserDirectedLanding(
-                    "model-authorized semantic progress stalled after recovery request"
+                _record_local_safety_executor_event(
+                    args,
+                    status="semantic-progress-recovery-window-rolled-over",
+                    details={
+                        "navigation_goal_id": navigation_goal_id,
+                        "recovery_episode_id": semantic_progress_state.get(
+                            "recovery_episode_id"
+                        ),
+                        "recovery_rollover_count": semantic_progress_state.get(
+                            "recovery_rollover_count", 0
+                        ),
+                        "schedule_advancement_authorized": False,
+                    },
                 )
         else:
             position_error_m = max(
@@ -7057,7 +7154,7 @@ def _tracking_sample_interval(args: argparse.Namespace) -> int:
 
 
 # 功能：
-#   跨参考索引跟踪语义目标的实测进展，停滞先请求恢复专家，再在有界时间内保护退出。
+#   跨参考索引跟踪语义目标的实测进展，停滞先请求恢复专家，再滚动新的恢复窗口。
 # 输入：
 #   now：当前单调时刻。
 #   recovery_after_seconds：无有效进展多久后请求恢复。
@@ -7080,14 +7177,16 @@ def _advance_model_semantic_progress_window(
     authorized_schedule_advance: bool = False,
     progress_epsilon_m: float = 0.05,
 ) -> tuple[dict[str, Any], bool]:
-    """Escalate a cross-schedule semantic stall before a bounded landing.
+    """Escalate a cross-schedule semantic stall into repeated recovery windows.
 
     Dense reference points each have their own tracking-recovery window. A
     model can nevertheless authorize centimetre-scale motion without ever
     closing distance to the semantic waypoint, which previously reset the
     per-index window indefinitely. This window follows the stable semantic
     goal across schedule indices, requests the recovery expert first, and only
-    then fails closed if no material physical progress resumes.
+    then opens a fresh recovery episode if no material physical progress resumes.
+    A geometric stall is not itself proof that continued controlled recovery is
+    unsafe, so this helper never converts ordinary tracking error into landing.
     """
 
     if not isinstance(navigation_goal_id, str) or not navigation_goal_id.strip():
@@ -7129,6 +7228,7 @@ def _advance_model_semantic_progress_window(
             "recovery_requested": False,
             "recovery_episode_id": None,
             "recovery_request_count": 0,
+            "recovery_rollover_count": 0,
         }
         return state, False
 
@@ -7139,7 +7239,12 @@ def _advance_model_semantic_progress_window(
         "abort_deadline_monotonic",
     ):
         _control_scalar(state.get(field), f"semantic {field}")
-    for field in ("progress_revision", "authorized_schedule_revision", "recovery_request_count"):
+    for field in (
+        "progress_revision",
+        "authorized_schedule_revision",
+        "recovery_request_count",
+        "recovery_rollover_count",
+    ):
         if type(state.get(field)) is not int or state[field] < 0:
             raise ValueError("semantic progress count is invalid")
     if type(state.get("recovery_requested")) is not bool or now < _control_scalar(
@@ -7184,7 +7289,27 @@ def _advance_model_semantic_progress_window(
                 )[:24]
             )
         state["recovery_requested"] = True
-    return state, now >= float(state["abort_deadline_monotonic"])
+    rolled_over = now >= float(state["abort_deadline_monotonic"])
+    if rolled_over:
+        request_count = int(state.get("recovery_request_count", 0))
+        state["recovery_rollover_count"] = (
+            int(state.get("recovery_rollover_count", 0)) + 1
+        )
+        state["recovery_episode_id"] = (
+            "recovery-"
+            + sha256_json(
+                {
+                    "navigation_goal_id": navigation_goal_id,
+                    "request_count": request_count,
+                    "rollover_count": state["recovery_rollover_count"],
+                    "requested_at_monotonic": now,
+                }
+            )[:24]
+        )
+        state["recovery_requested"] = True
+        state["recovery_deadline_monotonic"] = recovery_deadline
+        state["abort_deadline_monotonic"] = abort_deadline
+    return state, rolled_over
 
 
 # 功能：
@@ -7225,6 +7350,7 @@ def _publish_model_semantic_progress_window(
             "recovery_requested": state["recovery_requested"],
             "recovery_episode_id": state.get("recovery_episode_id"),
             "recovery_request_count": state.get("recovery_request_count", 0),
+            "recovery_rollover_count": state.get("recovery_rollover_count", 0),
             "updated_at": datetime.now(UTC).isoformat(),
             "updated_at_unix_ms": updated_at_unix_ms,
         },
@@ -7714,9 +7840,17 @@ async def _follow_runtime_target(
                     vehicle_height_m=vehicle.body_height_m,
                 )
                 if not clearance.accepted:
-                    raise UserDirectedLanding(
-                        "dynamic follow clearance gate rejected the next command segment"
+                    observations.append(
+                        {
+                            "elapsed_seconds": loop.time() - started,
+                            "target_world_enu_m": target.model_dump(mode="json"),
+                            "rejected_command_world_enu_m": desired.model_dump(mode="json"),
+                            "clearance_sha256": sha256_json(clearance),
+                            "minimum_clearance_m": clearance.minimum_clearance_m,
+                            "outcome": "hold-and-await-next-follow-observation",
+                        }
                     )
+                    desired = current_world
                 current_world = desired
                 current_setpoint = _world_enu_setpoint(
                     base=base,
@@ -8574,7 +8708,14 @@ async def _fly_runtime_replacement(
                     # Recovery is a bounded safety hold, not consumed mission
                     # motion.  Its own deadline below remains authoritative.
                     if recovery_started is None and loop.time() >= deadline:
-                        raise TimeoutError("runtime replacement track timeout")
+                        timing.setdefault("track_budget_rollovers", []).append(
+                            {
+                                "track": "runtime-replacement",
+                                "schedule_index": index,
+                                "outcome": "continue_closed_loop_tracking",
+                            }
+                        )
+                        deadline = loop.time() + args.track_timeout_seconds
                     interruption = _claim_runtime_message(args.runtime_control_dir, runtime_session)
                     if interruption is not None:
                         _atomic_json(
@@ -9810,7 +9951,14 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 # strict bounded window.  Do not let safe recovery consume the
                 # nominal motion budget and abort an otherwise healthy flight.
                 if recovery_started is None and loop.time() >= motion_deadline:
-                    raise TimeoutError("track timeout")
+                    timing.setdefault("track_budget_rollovers", []).append(
+                        {
+                            "track": "prepared-mission",
+                            "schedule_index": index,
+                            "outcome": "continue_closed_loop_tracking",
+                        }
+                    )
+                    motion_deadline = loop.time() + args.track_timeout_seconds
                 if pending_interruption is not None:
                     _atomic_json(
                         phase_path,
