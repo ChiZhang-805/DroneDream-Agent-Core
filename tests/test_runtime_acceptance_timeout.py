@@ -60,6 +60,38 @@ def test_development_runtime_requires_explicit_current_ros_workspace(
 
 
 # 功能：
+#   验证独立验收读取发布控制配置，并拒绝任何近似但未声明的控制模式。
+# 输入：
+#   tmp_path：独立的发布资源目录。
+# 输出：
+#   None：断言缺省、有效配置和损坏配置分别得到确定结果。
+def test_runtime_acceptance_uses_packaged_independent_route_control(tmp_path: Path) -> None:
+    module = _load_runtime_acceptance_module()
+    resources = tmp_path / "resources"
+    runtime = resources / "runtime"
+    runtime.mkdir(parents=True)
+
+    assert module._independent_route_control_enabled(resources) is False
+
+    profile_path = runtime / "control-profile.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.control-profile.v1",
+                "mode": "independent-route-v1",
+                "simulation_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert module._independent_route_control_enabled(resources) is True
+
+    profile_path.write_text(json.dumps({"mode": "model-authority"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="RUNTIME_CONTROL_PROFILE_INVALID"):
+        module._independent_route_control_enabled(resources)
+
+
+# 功能：
 #   验证显式工作区先通过来源与安装校验，只隔离宿主 Git 元数据和 Windows 盘符映射。
 # 输入：
 #   tmp_path、monkeypatch、isolated_source_repository：测试目录、替换工具和当前源码副本。

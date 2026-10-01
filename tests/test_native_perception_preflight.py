@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from dronedream_agent_core.native_preflight import (
+    PREFLIGHT_STABLE_WINDOW_MS,
     NativePerceptionReadiness,
     assert_native_preflight_current,
     wait_for_native_perception,
@@ -146,7 +147,8 @@ def test_unusable_perception_does_not_authorize_arming(field, value):
 # 功能：确定性路线模式不依赖神经特征，但仍要求真实深度、身份和连续来源推进。
 # 输入：关闭特征要求的预检与三份无神经特征健康帧；输出：第三帧通过稳定窗口。
 def test_independent_route_preflight_does_not_require_unused_neural_features():
-    gate = NativePerceptionReadiness(require_realtime_features=False)
+    gate = NativePerceptionReadiness(stable_window_ms=PREFLIGHT_STABLE_WINDOW_MS,
+                                     require_realtime_features=False)
     for sequence, timestamp in ((1, 1000), (2, 1050)):
         packet = {**health(sequence, timestamp), "realtime_features_ready": False}
         assert not gate.observe(packet, now_unix_ms=timestamp)

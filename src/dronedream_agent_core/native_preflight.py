@@ -19,7 +19,14 @@ from .runtime_control_io import read_runtime_object
 from .sensor_diagnostics import sensor_issue_codes
 
 NATIVE_PREFLIGHT_MAXIMUM_AGE_MS = 250
-PREFLIGHT_STABLE_WINDOW_MS = 1000
+# Three independently advancing native frames over 100 ms prove that the
+# producer, fusion worker, and run-scoped transport are all live.  Requiring a
+# full second here made the qualification window four times longer than the
+# source lease; one ordinary Windows/Gazebo scheduling pause could therefore
+# erase the whole window forever even though the next measured frame recovered.
+# The current frame still keeps the strict 250 ms lease below, so this changes
+# continuity qualification rather than extending stale evidence.
+PREFLIGHT_STABLE_WINDOW_MS = 100
 
 
 # 功能：

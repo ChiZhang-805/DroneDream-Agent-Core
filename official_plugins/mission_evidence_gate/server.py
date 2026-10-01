@@ -162,6 +162,9 @@ def serve() -> int:
                         "serverInfo": {"name": "Mission Evidence Gate", "version": "1.0.0"},
                     },
                 )
+            elif method == "ping":
+                # 宿主会定期探测持久 MCP 会话；明确回复空对象，避免把健康插件误判为失联。
+                _response(request_id, {})
             elif method == "tools/list":
                 _response(
                     request_id,
