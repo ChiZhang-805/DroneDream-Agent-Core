@@ -101,6 +101,7 @@ def test_known_noncritical_gap_is_not_blanket_rejection(tmp_path):
 
 
 # 功能：仅填写来源哈希不能让自声明的安全状态成为训练输入；输出：缺原始来源时零准入。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_hash_string_without_source_is_rejected(tmp_path):
     path, payload = collection(tmp_path)
     candidate = json.loads((tmp_path / "candidate.json").read_text("utf-8"))

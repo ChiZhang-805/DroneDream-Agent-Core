@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort, _freeze
 from dronedream_agent_core.model_harness.model_port import ModelInvocationError
+from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort, _freeze
 
 
 # 功能：提供可跨进程启动的确定性模型替身；输入：包和配置；输出：因果历史及受控故障。
@@ -109,8 +109,11 @@ def test_idempotent_close(port):
 
 
 # 功能：在实际子进程中执行原有输入/输出校验，模型采用确定性后端；不连接飞控。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：仅供测试使用的合成夹具或明确异常。
 def real_port_factory(package, **options):
     from test_local_policy_packages import _PilotControlBackend
+
     from dronedream_agent_core.local_policy_port import LocalPolicyPort
     return LocalPolicyPort(package, backend=_PilotControlBackend(), **options)
 
@@ -118,6 +121,7 @@ def real_port_factory(package, **options):
 def test_navigation_validation_runs_in_child(tmp_path):
     from test_local_policy_packages import _write_package
     from test_policy_prepared_input import snapshot
+
     from dronedream_agent_core.perception_runtime import request_text_navigation_decision
     model = _write_package(tmp_path/'model', package_id='test.process.real', continuous_control=True)
     port = ProcessLocalPolicyPort(model, _factory=real_port_factory)
@@ -135,6 +139,8 @@ def test_navigation_validation_runs_in_child(tmp_path):
 
 
 # 功能：公开错误白名单必须精确匹配，不能把附带私有内容的异常正文透传。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_failure_code_allowlist_is_exact():
     from dronedream_agent_core.process_local_policy_port import _failure
     assert _failure(ValueError('LOCAL_POLICY_CONTROL_DEADLINE_INVALID'))[1] == 'LOCAL_POLICY_CONTROL_DEADLINE_INVALID'
@@ -144,8 +150,8 @@ def test_failure_code_allowlist_is_exact():
 # 功能：跨进程诊断只保留受信源码行号，并能穿过协调器的数字指标过滤；不泄露错误正文。
 # 输入：带私密正文的测试异常；输出：公开诊断包含合法行号且不含私密文本。
 def test_source_locations_survive_public_diagnostic_filter():
-    from dronedream_agent_core.process_local_policy_port import _failure
     from dronedream_agent_core.perception_runtime import _failure_diagnostic
+    from dronedream_agent_core.process_local_policy_port import _failure
     namespace = {}
     exec(compile("def fail():\n    raise ValueError('private input')\n",
                  "local_policy_port.py", "exec"), namespace)

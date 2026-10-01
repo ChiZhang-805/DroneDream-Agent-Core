@@ -55,8 +55,9 @@ def test_visual_student_requires_capture_clock_before_launch(field):
 
 # 功能：原生源钟必须通过制品校验；输入：验证器替身；输出：实际调用与错误传播。
 def test_native_source_clock_is_verified_before_launch(monkeypatch, tmp_path):
-    from dronedream_agent_core import simulation_camera_clock
     from unittest.mock import Mock
+
+    from dronedream_agent_core import simulation_camera_clock
 
     verifier = Mock()
     monkeypatch.setattr(simulation_camera_clock, 'validate_native_camera_clock', verifier)
@@ -189,6 +190,8 @@ def test_embedded_local_image_does_not_depend_on_archive_queue(tmp_path, availab
 
 
 # 功能：真实后台归档故障不能污染已认证的内存像素，也不能伪报归档完整。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_failed_archive_can_degrade_but_remains_incomplete(tmp_path, monkeypatch):
     original = worker._atomic_bytes
 

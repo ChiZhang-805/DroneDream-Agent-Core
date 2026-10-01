@@ -2,8 +2,8 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 
 
 # 功能：独立复现官方基础任务和无人机边界任务，检查选项顺序敏感性。
@@ -17,8 +17,8 @@ def main():
         raise FileExistsError(args.output)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    import torch
     import laya
+    import torch
     torch.set_num_threads(4)
     agent = laya.load(str(args.model.resolve()), device="cpu")
     tasks = [

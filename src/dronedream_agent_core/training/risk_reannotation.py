@@ -13,7 +13,9 @@ from .counterfactual_teacher import CounterfactualConfig
 from .dagger_artifacts import write_rows
 from .evidence_files import decode_evidence_rows, read_evidence_dataset
 from .risk_clearance_contract import (
-    LEGACY_CLEARANCE_LABELS, OBSERVED_CLEARANCE_LABELS, observation_clearance_label,
+    LEGACY_CLEARANCE_LABELS,
+    OBSERVED_CLEARANCE_LABELS,
+    observation_clearance_label,
 )
 
 

@@ -9,8 +9,8 @@ import pytest
 
 from dronedream_agent_core.contracts import GraphRoute, Vector3
 from scripts.run_school_map_depth_qualification import (
-    _qualification_route,
     _load_vehicle,
+    _qualification_route,
     _validate_training_capture,
     main,
 )

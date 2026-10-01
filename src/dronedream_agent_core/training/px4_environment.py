@@ -92,10 +92,12 @@ def require_visual_control_source(config) -> None:
         # 地图融合也消费原生源钟；不能等到子进程创建后才发现源/二进制版本不一致。
         validate_native_camera_clock(Path(runtime),
             source_root=Path(__file__).resolve().parents[3]/'native/camera_clock')
-    if ((config.visual_encoder is not None or config.visual_package is not None)
-            and config.render_replica_runtime is None):
-        if runtime is None:
-            raise ValueError("PX4_VISUAL_CONTROL_REQUIRES_SOURCE_CLOCK_RENDERER")
+    if (
+        (config.visual_encoder is not None or config.visual_package is not None)
+        and config.render_replica_runtime is None
+        and runtime is None
+    ):
+        raise ValueError("PX4_VISUAL_CONTROL_REQUIRES_SOURCE_CLOCK_RENDERER")
 
 
 class Px4TrainingConfig(StrictModel):

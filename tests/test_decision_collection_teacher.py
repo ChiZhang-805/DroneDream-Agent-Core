@@ -81,6 +81,7 @@ def fixture():
 
 
 # 功能：静态核验只声明局部路线，不伪造六向距离、动态清空或制动证据；输出：严格断言。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_static_prefix_does_not_invent_sensor_coverage():
     teacher, raw = fixture()
     state, proof, issues = teacher.observe(
@@ -120,6 +121,7 @@ def test_stale_geometry_requests_observation_without_abort():
 
 
 # 功能：地图内容身份不匹配时拒绝跨图计算，而非复用旧地图合格结论；输出：明确错误。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_map_identity_is_required():
     teacher, raw = fixture()
     teacher.map_sha256 = "f" * 64

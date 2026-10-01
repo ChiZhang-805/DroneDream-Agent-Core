@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass

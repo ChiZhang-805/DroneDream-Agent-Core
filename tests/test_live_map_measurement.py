@@ -105,6 +105,8 @@ def test_noise_bounds_require_explicit_finite_positive_values(value):
 
 
 # 功能：允许有限同步误差时必须同时增加位置和姿态不确定性；不改真实采样时刻。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_transport_uncertainty_is_paid_in_covariance():
     tight, record = fixture()
     tolerant, second = fixture()

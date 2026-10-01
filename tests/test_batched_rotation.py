@@ -1,11 +1,12 @@
 import math
+
 import numpy as np
 import pytest
+from test_sensor_bridge import _mount, _scan
 
 from dronedream_agent_core.contracts import QuaternionWxyz, Vector3
 from dronedream_agent_core.quaternion_geometry import rotate_vector, rotate_vectors
 from dronedream_agent_core.sensor_bridge import MetricRangeSensorBridge
-from test_sensor_bridge import _mount, _scan
 
 
 # 功能：
@@ -20,7 +21,7 @@ def test_batch_matches_scalar_without_geometry_drift(scale):
     for _ in range(10):
         raw = rng.normal(size=4)
         raw *= scale / np.linalg.norm(raw)
-        q = QuaternionWxyz(**dict(zip(('w', 'x', 'y', 'z'), raw)))
+        q = QuaternionWxyz(**dict(zip(('w', 'x', 'y', 'z'), raw, strict=True)))
         values = rng.normal(size=(80, 3))
         values[:4] = [[0, 0, 0], [1e200, -1e200, 1e200], [1e-300, 0, 0], [1, 0, 0]]
         before = values.copy()

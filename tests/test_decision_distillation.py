@@ -8,6 +8,7 @@ from scripts.train_decision_student import student_loss
 
 
 # 功能：关闭教师时严格等价监督基线；有教师时梯度只流向学生；输出：原标签不变。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_distillation_is_auxiliary_and_detached():
     logits = torch.zeros((1, 5), requires_grad=True)
     accepted = torch.tensor([[True, False, False, False, False]])
@@ -20,6 +21,7 @@ def test_distillation_is_auxiliary_and_detached():
 
 
 # 功能：拒绝损坏教师概率，不能把 NaN/负值/未归一化结果送入训练；输出：明确异常。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("values", [[float("nan"), 0., 0., 0., 1.],
                                   [-.1, .1, 0., 0., 1.], [.1, .1, .1, .1, .1]])
 def test_invalid_teacher_distribution(values):

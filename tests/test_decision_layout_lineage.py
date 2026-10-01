@@ -34,6 +34,7 @@ def test_bad_collection_split_is_not_defaulted(tmp_path, doc):
 
 
 # 功能：创建带原始证据的测试语料和对应布局收据；输出：仅用于接口测试的文件路径。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def source(root):
     root.mkdir()
     manifest, _ = collection(root)
@@ -75,6 +76,8 @@ def test_duplicate_merge_not_published(tmp_path):
 
 
 # 功能：缺失布局来源不取消物理证据，但不能借地图哈希数量宣称GPU数据齐备。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_missing_lineage_blocks_readiness_not_physics(tmp_path):
     corpus, _ = source(tmp_path / "source")
     result = audit_records(read_records(corpus), corpus.parent)
@@ -114,6 +117,8 @@ def test_variant_cross_split_rejected(tmp_path):
 
 
 # 功能：未知生成器、伪地图、重复条目与篡改收据不能声称独立布局。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 @pytest.mark.parametrize("fault", ["generator", "map", "duplicate", "digest", "escape"])
 def test_lineage_invalid_receipt(tmp_path, fault):
     corpus, receipt = source(tmp_path / "source")

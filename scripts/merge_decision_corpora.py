@@ -95,6 +95,7 @@ def merge(corpora, scene_receipts, output):
 
 
 # 功能：显式成对提供原语料/场景收据，输出不可覆盖；输出：实际合并数量和准入缺口。
+# 输入：命令行参数及调用方明确提供的本地证据。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, action="append", required=True)

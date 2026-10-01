@@ -30,7 +30,11 @@ from .metric_ray_sampling import (
     sample_metric_rays,
 )
 from .metric_scan_native import NATIVE_SCAN_AVAILABLE, prepare_native_scan
-from .navigation_sectors import pack_navigation_sector_block, reduce_navigation_sector_blocks, select_navigation_keys
+from .navigation_sectors import (
+    pack_navigation_sector_block,
+    reduce_navigation_sector_blocks,
+    select_navigation_keys,
+)
 from .occupancy_collision import bounded_occupied_cell_boxes
 from .perception_evidence import FrozenVector3
 

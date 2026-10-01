@@ -52,9 +52,9 @@ from dronedream_agent_core.gazebo_adapter import (
     _require_local_policy_runtime,
     _resolve_controlled_vehicle_pose,
     _ros_overlay_environment,
-    _simulation_px4_estimator_environment,
     _runtime_evidence_writer_complete,
     _runtime_snapshot_writer_complete,
+    _simulation_px4_estimator_environment,
     _spawn_clearance_preflight,
     _terminal_completion_grace_allowed,
     _tracking_corridor_policy,
@@ -855,6 +855,8 @@ def test_live_camera_is_positioned_from_the_real_route() -> None:
 
 
 # 功能：控制优先只降低旁观画面负载，保留相同路线视角和真实图像主题。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_control_priority_live_camera_keeps_view_without_sensor_changes():
     points = [(0., 0., 2.), (12., 8., 5.)]
     original, old_pose = _live_camera_sdf(points)

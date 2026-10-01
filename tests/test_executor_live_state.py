@@ -13,6 +13,9 @@ from test_runtime_commands import _load_executor
 
 from dronedream_agent_core import runtime_phase_channel
 from dronedream_agent_core.executor_snapshots import ACTIVE_SNAPSHOTS, ExecutorSnapshots
+from dronedream_agent_core.local_packet_channel import LatestPacketPublisher
+from dronedream_agent_core.runtime_phase_channel import PHASE_CONTRACT, RuntimePhaseBroadcaster
+from dronedream_agent_core.simulation_phase_monitor import SimulationPhaseMonitor
 
 
 # 功能：
@@ -22,8 +25,6 @@ from dronedream_agent_core.executor_snapshots import ACTIVE_SNAPSHOTS, ExecutorS
 # 输出：
 #   None：载荷最终写出且收尾完整。
 def test_snapshot_writer_recovers_transient_read_lock(tmp_path, monkeypatch):
-    import json
-    from pathlib import Path
     original = Path.replace
     calls = []
 
@@ -46,9 +47,6 @@ def test_snapshot_writer_recovers_transient_read_lock(tmp_path, monkeypatch):
     summary = snapshots.close(timeout_seconds=2)
     assert summary['complete'] and len(calls) == 2
     assert json.loads((tmp_path / 'runtime-phase.json').read_text())['source_time'] == 1000
-from dronedream_agent_core.local_packet_channel import LatestPacketPublisher
-from dronedream_agent_core.runtime_phase_channel import PHASE_CONTRACT, RuntimePhaseBroadcaster
-from dronedream_agent_core.simulation_phase_monitor import SimulationPhaseMonitor
 
 
 # 功能：

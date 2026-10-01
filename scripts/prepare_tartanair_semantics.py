@@ -4,9 +4,9 @@ import base64
 import hashlib
 import io
 import json
-from pathlib import Path
 import urllib.request
 import zipfile
+from pathlib import Path
 
 BLOB = "63b086b83d70787106c0feff8e54965a2fe8403d"
 URL = "https://api.github.com/repos/castacks/tartanairpy/git/blobs/" + BLOB

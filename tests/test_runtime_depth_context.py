@@ -1403,6 +1403,7 @@ def test_dispatch_budget_is_required_and_rejected_call_gets_only_hold_attributio
 # 输入：有效指令及UNIX毫秒边界；输出：仅同一有效调用返回原始摘要。
 def test_hold_snapshot_identity_does_not_grant_motion_authority():
     from types import SimpleNamespace
+
     from test_runtime_commands import _load_depth_worker
 
     worker = _load_depth_worker()

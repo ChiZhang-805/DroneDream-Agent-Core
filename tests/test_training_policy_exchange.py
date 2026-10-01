@@ -420,6 +420,7 @@ def test_transferred_request_mutation_cannot_change_pending_identity(tmp_path, m
 #   None：不返回业务数据。
 def test_reply_uses_frozen_identity_without_rehashing_observation(tmp_path, monkeypatch):
     from dataclasses import FrozenInstanceError
+
     from dronedream_agent_core.training import policy_exchange as module
 
     server = TrainingPolicyExchange(tmp_path / "learner.json")

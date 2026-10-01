@@ -31,8 +31,16 @@ def test_direct_metric_observation_matches_cropped_map_exactly(resolution):
     world.seed_known_static_region([(Vector3(x=0., y=0., z=0.), True),
                                     (Vector3(x=1., y=1., z=1.), False)], source_sha256='a' * 64)
     for _ in range(10):
-        point = Vector3(**dict(zip(('x', 'y', 'z'), (rng.uniform(-10., 10.) for _ in range(3)))))
-        goal = Vector3(**dict(zip(('x', 'y', 'z'), (rng.uniform(-20., 20.) for _ in range(3)))))
+        point = Vector3(**dict(zip(
+            ('x', 'y', 'z'),
+            (rng.uniform(-10., 10.) for _ in range(3)),
+            strict=True,
+        )))
+        goal = Vector3(**dict(zip(
+            ('x', 'y', 'z'),
+            (rng.uniform(-20., 20.) for _ in range(3)),
+            strict=True,
+        )))
         args = dict(current_position_m=point, current_velocity_mps=Vector3(x=.1, y=-.2, z=.3),
                     goal_position_m=goal, required_clearance_m=.4, include_candidate_paths=False)
         clone = world.navigation_clone(center_m=point, radius_m=10.)

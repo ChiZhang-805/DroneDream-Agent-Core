@@ -12,13 +12,13 @@ from uuid import uuid4
 from dronedream_plugin_sdk.protocol import MAX_MESSAGE_BYTES, decode_json
 
 from .contracts import (
+    ModelCallRecord,
     PreparedMission,
     RuntimeAssessment,
     RuntimeCheckpointContract,
     RuntimeCheckpointDecision,
     RuntimeCheckpointRequest,
     RuntimeReplacementTrack,
-    ModelCallRecord,
 )
 from .extensions import ExtensionExecutionError
 from .hashing import sha256_json

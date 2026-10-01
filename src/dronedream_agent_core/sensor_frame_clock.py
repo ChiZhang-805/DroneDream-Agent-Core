@@ -186,10 +186,12 @@ class SensorFrameClock:
     #   None：不返回业务数据。
     def __init__(self, *, expected_scene_epoch: str | None = None,
                  expected_native_epoch: str | None = None):
-        if expected_native_epoch is not None:
-            if (expected_scene_epoch is not None or type(expected_native_epoch) is not str
-                    or not _DIGEST.fullmatch(expected_native_epoch)):
-                raise ValueError("SENSOR_EXPECTED_NATIVE_EPOCH_INVALID")
+        if expected_native_epoch is not None and (
+            expected_scene_epoch is not None
+            or type(expected_native_epoch) is not str
+            or not _DIGEST.fullmatch(expected_native_epoch)
+        ):
+            raise ValueError("SENSOR_EXPECTED_NATIVE_EPOCH_INVALID")
         self.expected_native_epoch = expected_native_epoch
         selected_epoch = expected_native_epoch or expected_scene_epoch
         if expected_scene_epoch is not None and (

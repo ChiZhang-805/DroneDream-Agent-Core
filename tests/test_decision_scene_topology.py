@@ -30,6 +30,7 @@ def test_topology_identity_ignores_geometry_variants_and_numbering():
     assert scene_documents(recipe(cell=3.2), {})[2] == family
     rotated = copy.deepcopy(original)
     # 功能：将格点旋转90度；输入/输出：同一网格的房间编号。
+    # 输入：测试夹具、参数化值或函数签名中的显式参数。
     def rotate(n):
         return (n % 4) * 4 + 3 - n // 4
     rotated["edges"] = sorted(sorted([rotate(a), rotate(b)]) for a, b in original["edges"])
@@ -37,6 +38,7 @@ def test_topology_identity_ignores_geometry_variants_and_numbering():
 
 
 # 功能：断开、重复边、非法坐标/非有限尺度不能产生地图；输出：明确拒绝。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("fault", ["duplicate", "disconnected", "long-edge", "size", "nan", "bool"])
 def test_bad_topology_or_metric_rejected(fault):
     value = recipe()
@@ -75,6 +77,7 @@ def test_receipt_binds_regenerated_map():
 
 
 # 功能：碰撞与视觉逐项使用同一几何；输出：每个障碍同时出现在SDF碰撞和视觉中。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_sdf_and_semantic_share_every_obstacle():
     semantic, _, _ = scene_documents(recipe(), {})
     root = ET.fromstring(make_world(semantic["collision_primitives"]))

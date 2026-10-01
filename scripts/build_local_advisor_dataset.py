@@ -381,7 +381,9 @@ def _source_receipt(
             raise ValueError("ADVISOR_CURRENT_SOURCE_CANNOT_REPLACE_ROUTE")
         if (allow_verified_payload_collection and not allow_verified_fault_recovery
                 and not allow_verified_payload_recovery):
-            from dronedream_agent_core.training.payload_teacher_sources import read_payload_teacher_source
+            from dronedream_agent_core.training.payload_teacher_sources import (
+                read_payload_teacher_source,
+            )
 
             receipt, observations = read_payload_teacher_source(resolved)
             return receipt, observations, None, None, None

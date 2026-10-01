@@ -66,8 +66,8 @@ from dronedream_agent_core.control_timing import (
     validate_model_dispatch_rate,
 )
 from dronedream_agent_core.control_uncertainty import finite_positive_number
-from dronedream_agent_core.executor_finalization import finalize_executor_resources
 from dronedream_agent_core.executor_brake_evidence import ExecutorBrakeApplication
+from dronedream_agent_core.executor_finalization import finalize_executor_resources
 from dronedream_agent_core.executor_snapshots import ACTIVE_SNAPSHOTS, ExecutorSnapshots
 from dronedream_agent_core.flight_command_cleanup import (
     FlightCommandAttempts,

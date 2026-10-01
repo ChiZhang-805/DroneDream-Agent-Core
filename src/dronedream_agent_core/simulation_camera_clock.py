@@ -9,7 +9,8 @@ from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from dronedream_plugin_sdk.protocol import decode_json
-from .plugin_files import read_plugin_file, check_plain_plugin_path
+
+from .plugin_files import check_plain_plugin_path, read_plugin_file
 from .xml_values import parse_xml
 
 CAMERA_CLOCK_FILES = ("camera-clock-runtime.json", "libdronedream-camera-clock.so")

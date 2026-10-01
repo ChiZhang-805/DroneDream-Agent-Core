@@ -10,12 +10,15 @@ from dronedream_agent_core.asset_package_storage import publish_asset_directory
 from dronedream_agent_core.control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
 from dronedream_agent_core.plugin_files import check_plain_plugin_path
 from dronedream_agent_core.training.dagger_artifacts import write_rows
+from dronedream_agent_core.training.demonstration_readiness import demonstration_readiness
 from dronedream_agent_core.training.demonstrations import (
     collect_demonstrations,
     validate_demonstration_splits,
 )
-from dronedream_agent_core.training.mission_groups import MissionGroupManifest, merge_mission_group_manifests
-from dronedream_agent_core.training.demonstration_readiness import demonstration_readiness
+from dronedream_agent_core.training.mission_groups import (
+    MissionGroupManifest,
+    merge_mission_group_manifests,
+)
 
 
 # 功能：

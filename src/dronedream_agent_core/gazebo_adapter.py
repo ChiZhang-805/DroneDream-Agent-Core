@@ -3149,12 +3149,15 @@ def run_px4_gazebo_track(
                           or simulation_training_channel is not None
                           or not local_navigation_control_authority_required),
         )
-    if (simulation_camera_profile != "native" and not camera_training_authorized
-            and not independent_route_control):
-        # 显式、已验证的本地模型仿真试用可比较真实传感器配置；不能外推成
-        # 已验收相机、真机资格或训练权限。来源摘要、光学参数和实际尺寸仍逐项校验。
-        if trial_permit is None or not local_navigation_visual_enabled:
-            raise ValueError("camera stream profile requires a verified visual simulation trial")
+    # 显式、已验证的本地模型仿真试用可比较真实传感器配置；不能外推成
+    # 已验收相机、真机资格或训练权限。来源摘要、光学参数和实际尺寸仍逐项校验。
+    if (
+        simulation_camera_profile != "native"
+        and not camera_training_authorized
+        and not independent_route_control
+        and (trial_permit is None or not local_navigation_visual_enabled)
+    ):
+        raise ValueError("camera stream profile requires a verified visual simulation trial")
     if simulation_fusion_inputs is not None:
         from .map_fusion_experiment import read_map_fusion_experiment
 

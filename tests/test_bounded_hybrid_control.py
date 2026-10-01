@@ -1,12 +1,13 @@
-import pytest
 from types import SimpleNamespace
-from dronedream_agent_core.contracts import HybridControlLease, RuntimeLocalSafetyCommand
 
-from dronedream_agent_core.hybrid_control import BoundedHybridArbiter
-from dronedream_agent_core.hybrid_control import require_hybrid_provider
+import pytest
+
+from dronedream_agent_core.contracts import HybridControlLease, RuntimeLocalSafetyCommand
+from dronedream_agent_core.hybrid_control import BoundedHybridArbiter, require_hybrid_provider
 
 
 # 功能：仿真采集可显式使用已有有界衔接，不扩大云端或无授权教师权限；输出：组合校验。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("provider,channel,authority,teacher,allowed", [
     ("local-policy", None, True, False, True),
     ("simulation-training", "owned-channel", True, False, True),
@@ -243,7 +244,9 @@ def test_executor_distance_and_deadline_are_independent_of_producer():
 def test_executor_sends_only_verified_velocity_and_records_hybrid(tmp_path):
     import asyncio
     import time
+
     from test_runtime_commands import _load_executor
+
     from dronedream_agent_core.contracts import Px4CoordinateContract
     executor = _load_executor()
     now = int(time.time() * 1000)
@@ -291,6 +294,7 @@ def test_executor_sends_only_verified_velocity_and_records_hybrid(tmp_path):
 @pytest.mark.parametrize('lease_start', [1000, 1010])
 def test_bridge_runs_real_safety_solver_and_keeps_vetoes(healthy, covered, lease_start):
     from test_vertical_navigation import guard, vehicle
+
     from dronedream_agent_core.contracts import RuntimeLocalSafetyObservation, Vector3
     from dronedream_agent_core.runtime_local_safety import evaluate_runtime_local_safety
     protection = guard(coverage_check=lambda path, margin: covered)

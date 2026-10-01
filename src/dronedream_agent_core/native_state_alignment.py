@@ -4,7 +4,10 @@ import copy
 import math
 from collections import deque
 
-from .control_feature_contract import FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS, FLIGHT_STATE_MAXIMUM_GAP_MS
+from .control_feature_contract import (
+    FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS,
+    FLIGHT_STATE_MAXIMUM_GAP_MS,
+)
 from .source_clock import source_received_at_unix_ms
 
 _FIELDS = {

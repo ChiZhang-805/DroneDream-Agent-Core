@@ -1,7 +1,10 @@
 """Shared planning/runtime budget arithmetic, including failed native admission."""
 import pytest
 
-from dronedream_agent_core.collision import assess_tracking_corridor_budget, build_tracking_corridor_budget
+from dronedream_agent_core.collision import (
+    assess_tracking_corridor_budget,
+    build_tracking_corridor_budget,
+)
 from dronedream_agent_core.native_preflight import NativePerceptionReadiness
 
 
@@ -35,12 +38,12 @@ def test_invalid_variance_remains_rejected(variance):
 
 
 # 功能：
-#   起飞检查失败时留下本次实际预算，但不得保留已失效的连续合格帧。
+#   全局定位预算不足但物理走廊仍可恢复时，保留诊断并累计本地逐帧复核窗口。
 # 输入：
 #   无。
 # 输出：
 #   无。
-def test_failed_preflight_retains_budget_diagnostic_not_authority():
+def test_recoverable_preflight_retains_budget_diagnostic_and_bounded_window():
     gate = NativePerceptionReadiness(minimum_route_clearance_m=0.2426)
     sample = {'schema_version': 'dronedream.perception-fusion-health.v1',
               'stream_healthy': True, 'identity_accepted': True, 'truth_correction_applied': False,
@@ -48,9 +51,13 @@ def test_failed_preflight_retains_budget_diagnostic_not_authority():
               'latest_sequence': 1, 'updated_at_unix_ms': 1000,
               'localization_observed_at_unix_ms': 1000, 'localization_covariance_m2': 0.0537}
     assert not gate.observe(sample, now_unix_ms=1000)
-    assert gate.independent_frames == 0 and gate.tracking_budget is None
+    assert gate.independent_frames == 1
+    assert gate.tracking_budget is not None
+    assert gate.tracking_budget['motion_mode'] == 'local-perception-recovery'
+    assert gate.tracking_budget['local_perception_revalidation_required'] is True
     assert gate.budget_assessment['funded'] is False
     assert not gate.observe({}, now_unix_ms=1001)
+    assert gate.independent_frames == 0 and gate.tracking_budget is None
     assert gate.budget_assessment is None
 
 

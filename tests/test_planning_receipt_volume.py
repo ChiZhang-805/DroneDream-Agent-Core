@@ -1,12 +1,15 @@
 """Long real planning runs must not overflow the public receipt envelope."""
-import json
 import hashlib
-from datetime import datetime, UTC
+import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-from dronedream_agent_app.mission_service import _output_receipt_references, _plan_notification_summary
+from dronedream_agent_app.mission_service import (
+    _output_receipt_references,
+    _plan_notification_summary,
+)
 from dronedream_agent_core.contracts import EvidenceRecord
 from dronedream_agent_core.hashing import sha256_json
 
@@ -70,8 +73,12 @@ def test_corrupt_chain_cannot_be_aggregated(tmp_path):
 # 输出：
 #   None：断言完整结果保留，通知载荷小且三个渲染器均成功。
 def test_notification_projection_preserves_full_plan():
-    from dronedream_agent_plugins.notification_plugins import _plan_ready, _planning_metrics, _operator_checklist
     from dronedream_agent_core.extensions import ExtensionPlugin, ExtensionRegistry
+    from dronedream_agent_plugins.notification_plugins import (
+        _operator_checklist,
+        _plan_ready,
+        _planning_metrics,
+    )
     summary = dict(goal='取餐返回', contract_id='contract', plan_revision_id='revision',
                    plugin_snapshot_id='snapshot', locale='zh-CN', plugin_catalog_sha256='a'*64,
                    minimum_clearance_m=0.8, model_calls=6, planning_attempts=2,

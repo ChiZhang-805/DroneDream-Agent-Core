@@ -15,10 +15,9 @@ from collections import deque
 from contextlib import contextmanager
 
 from .control_timing import (
-    LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
-    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
     LOCAL_CONTROL_PERIOD_SECONDS,
     LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
 )
 
 _baseline_retention_active = False

@@ -1,7 +1,7 @@
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-import threading
 
 import pytest
 from test_sensor_frame_clock import EPOCH, admit, frame

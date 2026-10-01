@@ -164,6 +164,8 @@ def run_suite(suite_path, output, *, maximum_layouts=20, seconds=120.0):
 
 
 # 功能：启动显式实验套件并输出累计真实数量；不允许覆盖或借此发布生产飞行模型。
+# 输入：命令行参数及调用方明确提供的本地证据。
+# 输出：生成文件、结构化摘要或明确失败状态。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", type=Path, required=True)

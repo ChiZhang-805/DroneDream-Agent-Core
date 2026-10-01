@@ -4,8 +4,10 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+
 from dronedream_agent_core.simulation_camera_clock import (
-    prepare_native_camera_clock, validate_native_camera_clock,
+    prepare_native_camera_clock,
+    validate_native_camera_clock,
 )
 
 

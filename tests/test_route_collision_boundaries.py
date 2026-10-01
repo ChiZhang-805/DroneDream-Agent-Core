@@ -85,8 +85,9 @@ def test_thin_wall_between_samples_cannot_pass_route_clearance(tmp_path):
 # 输出：
 #   无返回值。
 def test_clearance_progress_preserves_result_and_reports_actual_work(tmp_path, monkeypatch):
-    from dronedream_agent_core.model_harness.progress import progress_sink
     import time
+
+    from dronedream_agent_core.model_harness.progress import progress_sink
     path = semantic(tmp_path / "progress-map.json")
     expected = collision.validate_route_clearance(route(), path, vehicle_diameter_m=.01, vehicle_height_m=.01, sample_interval_m=.01)
     ticks = iter(range(0, 1000, 5))

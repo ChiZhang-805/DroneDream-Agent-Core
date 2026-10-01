@@ -5,7 +5,11 @@ import math
 import pytest
 
 from dronedream_agent_core.contracts import LocalPlannerRequest, Vector3
-from dronedream_agent_core.dynamic_safety import _candidate_velocities, _reachable_velocity, predictive_safety_decision
+from dronedream_agent_core.dynamic_safety import (
+    _candidate_velocities,
+    _reachable_velocity,
+    predictive_safety_decision,
+)
 
 
 # 功能：

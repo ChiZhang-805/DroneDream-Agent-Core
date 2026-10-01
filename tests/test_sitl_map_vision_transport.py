@@ -22,6 +22,8 @@ def readback(stamp=1_000_000, reset=71):
 
 
 # 功能：只接受测量器显式计入协方差的有限同步误差，其他身份/位姿检查保持不变。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 @pytest.mark.parametrize('offset', [-8001, -8000, -2047, 2047, 8000, 8001])
 def test_explicit_clock_error_budget(offset):
     value = {**measurement(), 'transport_clock_uncertainty_us': 8000}

@@ -3,7 +3,10 @@
 import pytest
 
 from dronedream_agent_core.contracts import DynamicObstacleObservation, QuaternionWxyz, Vector3
-from dronedream_agent_core.simulation_teacher import teacher_heading_rate, teacher_observation_target
+from dronedream_agent_core.simulation_teacher import (
+    teacher_heading_rate,
+    teacher_observation_target,
+)
 
 
 # 功能：

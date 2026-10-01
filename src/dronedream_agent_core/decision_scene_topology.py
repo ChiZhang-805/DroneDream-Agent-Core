@@ -73,6 +73,7 @@ def topology(size, edges):
         raise ValueError("DECISION_TOPOLOGY_DISCONNECTED")
 
     # 功能：树形结构递归规范化，先验边数与连通性已排除环；输出：与编号无关的结构。
+    # 输入：函数签名中的显式参数及已验证的调用上下文。
     def rooted(node, parent):
         return "(" + "".join(sorted(rooted(n, node) for n in adjacency[node] if n != parent)) + ")"
 

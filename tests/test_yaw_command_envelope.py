@@ -1,12 +1,20 @@
 """Command shaping happens before collision arbitration; not a physical stability proof."""
 
 import pytest
-
-from dronedream_agent_core.contracts import BodyFrameControlIntent, QuaternionWxyz, RuntimeLocalSafetyObservation, Vector3
-from dronedream_agent_core.yaw_command_envelope import YawCommandEnvelope, shape_model_yaw
-from dronedream_agent_core.runtime_local_safety import evaluate_runtime_local_safety
-from dronedream_agent_core.control_execution_evidence import ControlApplicationRecord, YawRateApplication
 from test_runtime_local_safety import _vehicle
+
+from dronedream_agent_core.contracts import (
+    BodyFrameControlIntent,
+    QuaternionWxyz,
+    RuntimeLocalSafetyObservation,
+    Vector3,
+)
+from dronedream_agent_core.control_execution_evidence import (
+    ControlApplicationRecord,
+    YawRateApplication,
+)
+from dronedream_agent_core.runtime_local_safety import evaluate_runtime_local_safety
+from dronedream_agent_core.yaw_command_envelope import YawCommandEnvelope, shape_model_yaw
 
 
 # 功能：

@@ -11,8 +11,8 @@ from dronedream_plugin_sdk.protocol import MAX_JSON_BYTES, decode_json
 
 from .contracts import GraphRoute, RouteClearanceReport, RouteCollision, Vector3
 from .control_uncertainty import (
-    PLANNING_LOCALIZATION_ALLOWANCE_M,
     LOCALIZATION_SIGMA_MULTIPLIER,
+    PLANNING_LOCALIZATION_ALLOWANCE_M,
     finite_positive_number,
     localization_uncertainty_margin_m,
 )
@@ -586,6 +586,7 @@ def validate_route_clearance(
     collisions: list[RouteCollision] = []
     segment_minimum_clearances_m: list[float] = []
     from time import monotonic
+
     from .model_harness.progress import progress_sink, report_progress
     observing = progress_sink.get() is not None
     started = monotonic()

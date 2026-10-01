@@ -62,7 +62,6 @@ from dronedream_agent_core.local_policy_packages import (
     select_local_policy_for_simulation,
 )
 from dronedream_agent_core.local_policy_port import LocalPolicyPort
-from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort
 from dronedream_agent_core.local_safety_channel import LocalSafetyPublisher
 from dronedream_agent_core.local_vision_training import load_local_vision_label_map
 from dronedream_agent_core.local_world_model import MetricVoxelMap
@@ -94,6 +93,7 @@ from dronedream_agent_core.pipeline_timing import (
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 from dronedream_agent_core.plugin_values import plugin_json_text
 from dronedream_agent_core.preferred_airspace import PreferredAirspace
+from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort
 from dronedream_agent_core.realtime_feature_encoders import (
     body_control_intent_for_pilot_control,
     body_to_world_enu,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .collision import assess_tracking_corridor_budget
 from .contracts import (
     BodyFrameControlIntent,
     ControlObservationBudget,
@@ -17,7 +18,6 @@ from .contracts import (
 )
 from .control_timing import LOCAL_DISPATCH_RESERVE_MS
 from .control_uncertainty import localization_uncertainty_margin_m
-from .collision import assess_tracking_corridor_budget
 from .dynamic_safety import predictive_braking_decision, predictive_safety_decision
 from .hashing import sha256_json
 from .motion_envelope import RUNTIME_PREDICTION_HORIZON_SECONDS, prediction_query_radius_m

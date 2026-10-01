@@ -19,8 +19,8 @@ from .contracts import (
 )
 from .runtime_bindings import (
     load_map_runtime_bindings,
-    resolve_vehicle_collision_center_offset,
     resolve_grounded_vehicle_model_root,
+    resolve_vehicle_collision_center_offset,
 )
 
 

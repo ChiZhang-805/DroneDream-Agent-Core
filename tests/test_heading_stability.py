@@ -1,17 +1,25 @@
 """Causality, periodic geometry and regularization boundaries; not flight evidence."""
 
-import math
 import io
+import math
 
 import pytest
 import torch
 
-from dronedream_agent_core.heading_context import encode_heading_context
-from dronedream_agent_core.training.heading_stability import (
-    ARCHITECTURE, StableHeadingPolicy, circular_heading, perturb_context, reflect_context, temporal_delta_loss,
-    load_stable_heading_policy,
+from dronedream_agent_core.heading_context import (
+    HEADING_CONTEXT_SHA256,
+    encode_heading_context,
+    validate_geometry,
 )
-from dronedream_agent_core.heading_context import HEADING_CONTEXT_SHA256, validate_geometry
+from dronedream_agent_core.training.heading_stability import (
+    ARCHITECTURE,
+    StableHeadingPolicy,
+    circular_heading,
+    load_stable_heading_policy,
+    perturb_context,
+    reflect_context,
+    temporal_delta_loss,
+)
 
 GEOMETRY = (.1, .5, 1., -.2, .2, 1., 1., 0.)
 

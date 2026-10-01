@@ -70,6 +70,7 @@ class FrozenVisualEncoder:
     #   None：不返回业务数据。
     def _initialize(self, content, input_names, output_names):
         import onnxruntime as ort
+
         from .artifact_assembly import validate_embedded_graph
 
         validate_embedded_graph(content, input_names=input_names, output_names=output_names)
@@ -84,7 +85,7 @@ class FrozenVisualEncoder:
         if (len(inputs) != 1 or inputs[0].type != "tensor(float)"
                 or len(inputs[0].shape) != 4
                 or any(isinstance(actual, int) and actual != wanted
-                       for actual, wanted in zip(inputs[0].shape, expected))):
+                       for actual, wanted in zip(inputs[0].shape, expected, strict=True))):
             raise ValueError("TRAINING_VISUAL_ENCODER_INPUT_INVALID")
         self.input_contract = VisualInputContract.from_manifest(
             self.manifest, self.sha256

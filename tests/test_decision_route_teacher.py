@@ -16,6 +16,7 @@ from dronedream_agent_core.decision_state_adapter import decision_digest
 
 
 # 功能：生成带折线的v2输入证明，原位置1/2/3保持为测量值；输出：纯合成测试夹具。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def fixture():
     _, proof = input_fixture()
     snapshot = proof["snapshots"][0]
@@ -69,6 +70,8 @@ def test_guidance_uses_route_without_faking_pose():
 
 
 # 功能：接近转角能继续转入下一段，不以无限接近顶点造成停止；偏离路线仍保留误差。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_turn_and_off_route_measurements_are_preserved():
     teacher, _ = fixture()
     target, deviation, remaining = teacher.route_target((4.9, 2.0, 3.0), (5.0, 6.0, 3.0))
@@ -82,6 +85,7 @@ def test_turn_and_off_route_measurements_are_preserved():
 
 
 # 功能：错路线、错目标、输入版本或变更配方均不可重建；输出：拒绝且不改变旧v1兼容。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("fault", ["route", "goal", "algorithm", "schema", "geometry"])
 def test_reconstruction_rejects_contract_changes(fault):
     teacher, proof = fixture()
@@ -104,6 +108,7 @@ def test_reconstruction_rejects_contract_changes(fault):
 
 
 # 功能：新的输入版本必须保留旧正式数据的原算法身份；输出：v1仍独立重放通过。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_legacy_input_reconstruction_unchanged():
     state, proof = input_fixture()
     assert verify_input_evidence(state, proof)[0].model_dump(mode="json") == state

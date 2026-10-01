@@ -1,8 +1,8 @@
 """Validate paired forward RGB-D data without promoting it to control training."""
 import argparse
-from collections import Counter
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 
@@ -130,7 +130,7 @@ def main():
             unique, counts = np.unique(seg, return_counts=True)
             if semantic_classes is not None and not set(map(int, unique)).issubset(set(semantic_classes.values()) | {0}):
                 raise ValueError("SEMANTIC_LABEL_NOT_IN_OFFICIAL_MAPPING")
-            labels.update({int(k): int(v) for k, v in zip(unique, counts)})
+            labels.update({int(k): int(v) for k, v in zip(unique, counts, strict=True)})
             report["pairs"].append({"trajectory": trajectory.name, "split": split,
                 "frame": frame_index, "rgb": image_path.relative_to(root).as_posix(),
                 "depth": depth_path.relative_to(root).as_posix(), "seg": seg_path.relative_to(root).as_posix(),

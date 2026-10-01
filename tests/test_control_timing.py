@@ -4,15 +4,15 @@ import pytest
 
 from dronedream_agent_core.control_timing import (
     LOCAL_CONTROL_MAXIMUM_AGE_SECONDS,
-    LOCAL_SETPOINT_PERIOD_SECONDS,
     LOCAL_DISPATCH_RESERVE_MS,
-    TRAINING_DISPATCH_RESERVE_MS,
+    LOCAL_SETPOINT_PERIOD_SECONDS,
     LOCAL_TRANSPORT_BUDGET_MS,
-    validate_model_dispatch_rate,
+    TRAINING_DISPATCH_RESERVE_MS,
     continuous_control_cadence_bounded,
     continuous_control_evidence_required,
     continuous_timing_is_bounded,
     resolve_control_timing,
+    validate_model_dispatch_rate,
 )
 
 
@@ -21,7 +21,7 @@ from dronedream_agent_core.control_timing import (
 def test_executor_reserve_matches_faster_dispatch_cadence():
     assert LOCAL_SETPOINT_PERIOD_SECONDS == .02
     assert LOCAL_DISPATCH_RESERVE_MS == 40
-    assert LOCAL_DISPATCH_RESERVE_MS == round(LOCAL_SETPOINT_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS
+    assert round(LOCAL_SETPOINT_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS == LOCAL_DISPATCH_RESERVE_MS
     assert TRAINING_DISPATCH_RESERVE_MS == LOCAL_DISPATCH_RESERVE_MS
 
 

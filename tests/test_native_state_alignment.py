@@ -197,6 +197,7 @@ def test_unrelated_source_fault_is_preserved_not_used_to_disable_pairing():
 #   None：断言两个发布包及关闭后的配对统计。
 def test_publisher_integrates_alignment():
     import asyncio
+
     from dronedream_agent_core.native_telemetry_publisher import NativeTelemetryPublisher
 
     # 功能：

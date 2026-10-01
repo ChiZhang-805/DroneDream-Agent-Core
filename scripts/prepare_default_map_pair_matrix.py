@@ -6,11 +6,11 @@ import argparse
 import json
 from pathlib import Path
 
+from dronedream_agent_core.asset_packages import inspect_ddpkg
 from dronedream_agent_core.asset_pair_qualification import (
     AssetPairQualificationError,
     prepare_asset_pair_qualification,
 )
-from dronedream_agent_core.asset_packages import inspect_ddpkg
 
 
 def _parser() -> argparse.ArgumentParser:

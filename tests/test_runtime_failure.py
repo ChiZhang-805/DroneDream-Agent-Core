@@ -34,6 +34,8 @@ def test_known_preflight_failure_is_explained_without_raw_exception(tmp_path, en
 
 
 # 功能：只翻译已确认地图融合失败，不误报成功或泄露追加的原始异常。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 @pytest.mark.parametrize('reason', ['LIVE_MAP_STARTUP_GEOMETRY_INCOMPLETE', 'LIVE_MAP_STREAM_OBSERVATIONS_LOST'])
 @pytest.mark.parametrize('english', [True, False])
 def test_map_failure_is_bounded_and_localized(tmp_path, reason, english):

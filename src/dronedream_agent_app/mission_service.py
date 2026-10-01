@@ -22,11 +22,11 @@ from dronedream_agent_core.contracts import (
     EvidenceRecord,
     MapAsset,
     MissionRequest,
-    VehicleAsset,
     ToolReceipt,
+    VehicleAsset,
 )
-from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.evidence import EvidenceChain
+from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.model_harness.boundary import (
     HARD_MAXIMUM_REPAIR_CYCLES,
     HarnessInputEnvelope,

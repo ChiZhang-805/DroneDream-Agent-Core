@@ -46,13 +46,12 @@ def configuration(monkeypatch):
 #   无：断言不满足则测试失败。
 def test_nested_scope_restores_after_exception(configuration):
     configuration['thresholds'] = (700, 7, 13)
-    with pytest.raises(RuntimeError):
-        with scheduling.sensor_worker_gc_budget() as applied:
-            assert applied == (4096, 7, 13)
-            with scheduling.sensor_worker_gc_budget() as nested:
-                assert nested == applied
-            assert configuration['thresholds'] == applied
-            raise RuntimeError('worker failed')
+    with pytest.raises(RuntimeError), scheduling.sensor_worker_gc_budget() as applied:
+        assert applied == (4096, 7, 13)
+        with scheduling.sensor_worker_gc_budget() as nested:
+            assert nested == applied
+        assert configuration['thresholds'] == applied
+        raise RuntimeError('worker failed')
     assert configuration['thresholds'] == (700, 7, 13)
     assert len(configuration['writes']) == 2
 

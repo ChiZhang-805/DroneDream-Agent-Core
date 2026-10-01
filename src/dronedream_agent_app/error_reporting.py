@@ -9,8 +9,12 @@ from uuid import uuid4
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from dronedream_agent_core.model_harness.model_port import (
+    ModelInvocationError,
+    _safe_attempt_diagnostic,
+)
+
 from .harness_design_service import HarnessDesignServiceError
-from dronedream_agent_core.model_harness.model_port import ModelInvocationError, _safe_attempt_diagnostic
 
 
 # 功能：

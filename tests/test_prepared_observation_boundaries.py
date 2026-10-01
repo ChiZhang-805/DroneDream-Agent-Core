@@ -12,8 +12,8 @@ from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.training import policy_port
 from dronedream_agent_core.training.observations import (
     PreparedTrainingInput,
-    compile_training_observation,
     compile_training_input,
+    compile_training_observation,
     load_policy_observations,
 )
 
@@ -62,6 +62,7 @@ def test_compilation_rejects_nan_clock():
 
 
 # 功能：合并解析不改变输入内容、截止时间和观测，也不共享可变特征；输出：严格相等验证。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_single_parse_preserves_deadline_and_ownership():
     snapshot = current_request()["snapshot"]
     original = sha256_json(snapshot)

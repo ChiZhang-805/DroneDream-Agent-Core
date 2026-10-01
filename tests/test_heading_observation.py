@@ -3,11 +3,14 @@
 import math
 
 import pytest
+from control_fixtures import complete_feature_snapshot
 
 from dronedream_agent_core.contracts import DynamicObstacleObservation, QuaternionWxyz, Vector3
-from dronedream_agent_core.heading_observation import encode_heading_observation, heading_observation_from_snapshot
 from dronedream_agent_core.hashing import sha256_json
-from control_fixtures import complete_feature_snapshot
+from dronedream_agent_core.heading_observation import (
+    encode_heading_observation,
+    heading_observation_from_snapshot,
+)
 from dronedream_agent_core.realtime_feature_encoders import encode_dynamic_targets
 
 IDENTITY = QuaternionWxyz(w=1., x=0., y=0., z=0.)
@@ -148,7 +151,9 @@ def test_snapshot_heading_geometry_and_live_deadline(kind):
 #   None：编译后的几何和八维特征一致，调用方后续修改不会改变已冻结的快照。
 def test_navigation_compiler_preserves_measured_heading_geometry():
     from dataclasses import replace
+
     from test_learning_observation_recorder import request_fixture
+
     from dronedream_agent_core.navigation_snapshot import compile_navigation_snapshot
 
     request, _ = request_fixture()

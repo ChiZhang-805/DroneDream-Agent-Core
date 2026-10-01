@@ -7,13 +7,16 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from test_runtime_manager import _execution_fixture, _manager, _runtime_resources
-from test_runtime_commands import _load_executor
 from test_executed_control_training import teacher_evidence
+from test_runtime_commands import _load_executor
+from test_runtime_manager import _execution_fixture, _manager, _runtime_resources
 
 from dronedream_agent_app.runtime_manager import RuntimeBridgeError
 from dronedream_agent_core.contracts import Vector3
-from dronedream_agent_core.route_control_mode import route_observation_eligible, validate_route_control_mode
+from dronedream_agent_core.route_control_mode import (
+    route_observation_eligible,
+    validate_route_control_mode,
+)
 
 PROFILE = {"schema_version": "dronedream.control-profile.v1",
            "mode": "independent-route-v1", "simulation_only": True}
@@ -46,7 +49,13 @@ def test_executor_rejects_truth_and_wrong_authority():
     _, command, _, _ = teacher_evidence()
     args = SimpleNamespace(independent_route_control=True)
     command = command.model_copy(update={"source": "onboard"})
-    check = lambda c: executor._local_safety_command_matches_required_authority(args=args, command=c)
+
+    def check(candidate):
+        return executor._local_safety_command_matches_required_authority(
+            args=args,
+            command=candidate,
+        )
+
     assert check(command)
     assert not check(command.model_copy(update={"source": "simulation-ground-truth"}))
     assert not check(command.model_copy(update={"navigation_control_authority": "model-required"}))

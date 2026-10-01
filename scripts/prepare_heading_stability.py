@@ -1,17 +1,22 @@
 """Build source-bound, train/validation-only context without future action leakage."""
 
 import argparse
-from bisect import bisect_left
-from collections import defaultdict
 import hashlib
 import json
 import math
+from bisect import bisect_left
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
+from dronedream_agent_core.contracts import (
+    DynamicObstacleObservation,
+    QuaternionWxyz,
+    RuntimeLocalSafetyCommand,
+    Vector3,
+)
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.contracts import DynamicObstacleObservation, QuaternionWxyz, RuntimeLocalSafetyCommand, Vector3
 from dronedream_agent_core.heading_context import HEADING_CONTEXT_SHA256, encode_heading_context
 from dronedream_agent_core.heading_observation import encode_heading_observation
 

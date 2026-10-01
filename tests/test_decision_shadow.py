@@ -1,14 +1,20 @@
 """Stage-decision contracts: unknown facts, probability checks, and no flight authority."""
 
-from dataclasses import replace
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from dronedream_agent_core.decision_shadow import (
-    ACTIONS, StageState, group_split, laya_request, numeric_features, rule_decision,
-    shadow_suggestion, validate_probabilities,
+    ACTIONS,
+    StageState,
+    group_split,
+    laya_request,
+    numeric_features,
+    rule_decision,
+    shadow_suggestion,
+    validate_probabilities,
 )
 
 

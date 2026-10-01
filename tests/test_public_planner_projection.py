@@ -1,6 +1,8 @@
 """Desktop projection regressions: domain actions, budgets and immutable bytes."""
 from types import SimpleNamespace
+
 import pytest
+
 from dronedream_agent_app.mission_service import _public_planner_artifact
 
 

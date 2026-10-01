@@ -1,20 +1,20 @@
 """Availability routing and simulation observation access; no flight side effects."""
 
+from collections import OrderedDict
+from threading import Lock
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+from control_fixtures import complete_feature_snapshot
 
+from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.live_heading_context import LiveHeadingContext
 from dronedream_agent_core.training.heading_availability import AvailabilityHeadingPolicy
 from dronedream_agent_core.training.heading_stability import StableHeadingPolicy
 from dronedream_agent_core.training.px4_environment import Px4GazeboTrainingEnvironment
-from types import SimpleNamespace
-from control_fixtures import complete_feature_snapshot
-from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.live_heading_context import LiveHeadingContext
 from dronedream_agent_core.training.runtime_evidence import ControlReceiptMonitor
-from collections import OrderedDict
-from threading import Lock
 
 
 # 功能：

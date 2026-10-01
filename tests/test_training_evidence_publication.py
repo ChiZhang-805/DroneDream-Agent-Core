@@ -20,6 +20,8 @@ def test_episode_archive_can_request_larger_byte_budget(tmp_path):
 
 
 # 功能：长回合节点预算只在显式归档调用增加，不取消复杂度限制或容许环引用。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_episode_archive_node_budget_is_explicit(tmp_path):
     value = {"frames": [list(range(1000)) for _ in range(1100)]}
     with pytest.raises(ValueError, match="COMPLEXITY"):
@@ -30,6 +32,7 @@ def test_episode_archive_node_budget_is_explicit(tmp_path):
 
 
 # 功能：拒绝布尔、无界或非正预算；输出：没有发布任何文件。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("options", [dict(limit=True), dict(limit=0), dict(limit=17*1024**2),
                                     dict(node_limit=True), dict(node_limit=2_000_001)])
 def test_object_archive_rejects_unbounded_budget(tmp_path, options):

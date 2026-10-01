@@ -8,12 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dronedream_agent_app.harness_design_service import (
-    HarnessDesignService, HarnessRevision, _candidate_from_topology,
-    official_topology_templates, validate_and_compile_harness,
+    HarnessDesignService,
+    HarnessRevision,
+    _candidate_from_topology,
+    official_topology_templates,
+    validate_and_compile_harness,
 )
 from dronedream_agent_app.plugin_manager import PluginManager
-from dronedream_agent_app.storage import AppStore
 from dronedream_agent_app.server import create_app
+from dronedream_agent_app.storage import AppStore
 
 
 # 功能：
@@ -153,6 +156,7 @@ def test_http_errors_have_private_safe_evidence(tmp_path, monkeypatch, known):
 def test_model_errors_preserve_status_without_secrets(tmp_path, monkeypatch):
     import httpx
     from openai import BadRequestError
+
     from dronedream_agent_core.model_harness.model_port import ModelInvocationError
     store = AppStore(tmp_path)
     app = create_app(store=store, token='diagnostic-token')

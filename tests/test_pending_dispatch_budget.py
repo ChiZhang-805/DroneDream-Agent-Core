@@ -4,8 +4,10 @@ from unittest.mock import Mock
 import pytest
 from test_control_source_deadline import pending_coordinator, retained_features
 
-from dronedream_agent_core.runtime_scheduling import pending_dispatch_budget_ready
-from dronedream_agent_core.runtime_scheduling import model_handoff_budget_ready
+from dronedream_agent_core.runtime_scheduling import (
+    model_handoff_budget_ready,
+    pending_dispatch_budget_ready,
+)
 
 
 # 功能：
@@ -67,6 +69,7 @@ def test_idle_dispatch_rejects_invalid_clock(clock):
 #   None：只更新真实状态来源，输入原对象及几何时钟保持不变。
 def test_current_native_state_can_enable_handoff_without_renewing_geometry():
     from control_fixtures import complete_feature_snapshot
+
     from dronedream_agent_core.realtime_feature_encoders import fuse_realtime_features
     base = complete_feature_snapshot(1000)
     older = base.encodings[-1].model_copy(update={'observed_at_unix_ms': 870, 'encoded_at_unix_ms': 1000})

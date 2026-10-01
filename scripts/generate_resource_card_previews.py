@@ -16,7 +16,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
-
 MAP_SOURCES = {
     "airport-terminal": ("airport_terminal", "airport_terminal.png"),
     "open-test-arena": ("battle_royale", "battle_royale.png"),

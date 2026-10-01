@@ -11,6 +11,7 @@ from dronedream_agent_core.decision_state_adapter import decision_digest
 
 
 # 功能：把合成恢复窗口绑定到新的路由与原始导航快照；输出：测试夹具，不是实际仿真。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def fixture():
     row, doc = wait_fixture()
     continuation = doc["continuation"]
@@ -55,6 +56,8 @@ def test_requires_bound_executed_replanned_route():
 
 
 # 功能：拒绝仅规划、借用别的任务、未采用新路线、跳位置或无进展的假成功。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 @pytest.mark.parametrize("fault", ["no-continuation", "old-route", "map", "episode", "split",
                                  "late", "no-snapshot", "changed-path", "jump", "no-progress"])
 def test_replan_rejects_unexecuted_or_unrelated_continuation(fault):

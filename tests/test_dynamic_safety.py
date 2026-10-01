@@ -419,7 +419,9 @@ def test_candidate_budget_filters_before_ranking():
 #   None：断言无可执行候选不会泄漏运动。
 @pytest.mark.parametrize("value", [False, 1, None, "yes"])
 def test_candidate_budget_requires_explicit_boolean(value):
-    check = lambda v, clearance, yaw: value
+    def check(v, clearance, yaw):
+        return value
+
     if value is False:
         decision = predictive_safety_decision(_request(), [], candidate_check=check)
         assert decision.action == "hold"

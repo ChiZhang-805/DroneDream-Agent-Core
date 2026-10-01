@@ -1,10 +1,10 @@
 """Freeze portable experiment tools and provenance, excluding user data/secrets."""
 import argparse
 import hashlib
-from importlib.metadata import version
 import json
-from pathlib import Path
 import zipfile
+from importlib.metadata import version
+from pathlib import Path
 
 
 # 功能：逐块计算文件摘要，不一次加载大型模型。
