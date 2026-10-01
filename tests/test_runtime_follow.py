@@ -213,12 +213,14 @@ def test_dynamic_follow_samples_target_rechecks_clearance_and_writes_evidence(
 
 
 # 功能：
-#   目标航段接近墙体时拒绝继续并保留失败证据，不把采样成功误当作飞行安全。
+#   目标航段接近墙体时保持当前位置并等待下一次观测，不因一次不可行指令终止整个跟随任务。
 # 输入：
 #   tmp_path：测试资产和证据目录。
 # 输出：
 #   None：不返回业务数据。
-def test_dynamic_follow_collision_fails_closed_with_evidence(tmp_path: Path) -> None:
+def test_dynamic_follow_collision_holds_and_keeps_recovering_with_evidence(
+    tmp_path: Path,
+) -> None:
     base, executor = _modules()
     semantic, vehicle = _write_assets(tmp_path, collision_x=0.1)
     args = _args(tmp_path, semantic, vehicle)
@@ -228,27 +230,32 @@ def test_dynamic_follow_collision_fails_closed_with_evidence(tmp_path: Path) -> 
     ]
     initial = base.Setpoint(north_m=0.0, east_m=0.0, down_m=-0.8, yaw_deg=0.0)
 
-    with pytest.raises(executor.UserDirectedLanding, match="clearance gate rejected"):
-        asyncio.run(
-            executor._follow_runtime_target(
-                args=args,
-                base=base,
-                client=client,
-                params=argparse.Namespace(),
-                runtime_session=None,
-                replacement=_replacement(executor, base),
-                initial_setpoint=initial,
-                phase_path=tmp_path / "phase.json",
-                timing={"runtime_interruptions": []},
-            )
+    final = asyncio.run(
+        executor._follow_runtime_target(
+            args=args,
+            base=base,
+            client=client,
+            params=argparse.Namespace(),
+            runtime_session=None,
+            replacement=_replacement(executor, base),
+            initial_setpoint=initial,
+            phase_path=tmp_path / "phase.json",
+            timing={"runtime_interruptions": []},
         )
+    )
 
     evidence_path = (
         args.runtime_control_dir
         / "follow"
         / ("runtime-msg-" + "a" * 32 + ".evidence.json")
     )
-    assert json.loads(evidence_path.read_text(encoding="utf-8"))["status"] == "failed"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["status"] == "complete"
+    assert any(
+        item.get("outcome") == "hold-and-await-next-follow-observation"
+        for item in evidence["observations"]
+    )
+    assert final == initial
 
 
 # 功能：

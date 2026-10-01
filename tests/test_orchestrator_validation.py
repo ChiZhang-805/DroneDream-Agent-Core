@@ -44,6 +44,7 @@ from dronedream_agent_core.orchestrator import (
     _resolve_consensus_result,
     _route_objective_weights,
     _route_operational_clearance_assessment,
+    _route_recovery_clarification,
     _semantic_planning_map_view,
     _validate_explicit_payload_capacity,
     _validate_semantic_plan,
@@ -79,16 +80,18 @@ def test_intent_clarification_options_are_ordered_and_bounded() -> None:
         return_entity="launch",
         payload_action="pickup",
         missing_critical_fields=["请选择取餐点"],
-        clarification_questions=[{
-            "question_id": "pickup.location",
-            "prompt": "你希望去哪个取餐点？",
-            "options": [
-                {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
-                {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
-            ],
-            "allow_other": True,
-            "other_label": "其他",
-        }],
+        clarification_questions=[
+            {
+                "question_id": "pickup.location",
+                "prompt": "你希望去哪个取餐点？",
+                "options": [
+                    {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                    {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+                ],
+                "allow_other": True,
+                "other_label": "其他",
+            }
+        ],
     )
     assert intent.clarification_questions[0].options[0].option_id == "A"
 
@@ -100,14 +103,16 @@ def test_intent_clarification_options_are_ordered_and_bounded() -> None:
             return_entity="launch",
             payload_action="pickup",
             missing_critical_fields=["请选择取餐点"],
-            clarification_questions=[{
-                "question_id": "pickup.location",
-                "prompt": "你希望去哪个取餐点？",
-                "options": [
-                    {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
-                    {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
-                ],
-            }],
+            clarification_questions=[
+                {
+                    "question_id": "pickup.location",
+                    "prompt": "你希望去哪个取餐点？",
+                    "options": [
+                        {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+                        {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                    ],
+                }
+            ],
         )
 
 
@@ -141,20 +146,151 @@ def test_clarification_options_bind_one_entity_and_reject_grouped_choice() -> No
         return_entity="office",
         payload_action="pickup",
         missing_critical_fields=["请选择取餐点"],
-        clarification_questions=[{
-            "question_id": "pickup.location",
-            "prompt": "外卖放在哪里？",
-            "options": [
-                {"option_id": "A", "label": "物资区", "response": "去物资区取外卖"},
-                {"option_id": "B", "label": "办公室 / 物资区", "response": "去 office 或 pickup 取外卖"},
-            ],
-        }],
+        clarification_questions=[
+            {
+                "question_id": "pickup.location",
+                "prompt": "外卖放在哪里？",
+                "options": [
+                    {"option_id": "A", "label": "物资区", "response": "去物资区取外卖"},
+                    {
+                        "option_id": "B",
+                        "label": "办公室 / 物资区",
+                        "response": "去 office 或 pickup 取外卖",
+                    },
+                ],
+            }
+        ],
     )
 
     grounded, issues = _ground_intent_clarification_options(intent, catalog, graph)
 
     assert grounded.clarification_questions[0].options[0].response.endswith("（pickup）。")
     assert "CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE" in issues
+
+
+def test_route_exhaustion_offers_only_round_trip_reachable_map_entities() -> None:
+    graph = MapAsset.model_validate(
+        {
+            "asset_id": "office-map",
+            "name": "Office Map",
+            "nodes": [
+                {
+                    "node_id": "office",
+                    "label": "Office",
+                    "position_m": {"x": 0, "y": 0, "z": 1},
+                    "semantic": "launch",
+                },
+                {
+                    "node_id": "blocked",
+                    "label": "Blocked",
+                    "position_m": {"x": 3, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "pantry",
+                    "label": "Pantry",
+                    "position_m": {"x": 5, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "supplies",
+                    "label": "Supplies",
+                    "position_m": {"x": 7, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "isolated",
+                    "label": "Isolated",
+                    "position_m": {"x": 9, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "office-blocked",
+                    "from_node": "office",
+                    "to_node": "blocked",
+                    "distance_m": 3,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+                {
+                    "edge_id": "office-pantry",
+                    "from_node": "office",
+                    "to_node": "pantry",
+                    "distance_m": 5,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+                {
+                    "edge_id": "office-supplies",
+                    "from_node": "office",
+                    "to_node": "supplies",
+                    "distance_m": 7,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+            ],
+            "named_entities": {
+                "office": "office",
+                "blocked": "blocked",
+                "pantry": "pantry",
+                "supplies": "supplies",
+                "isolated": "isolated",
+            },
+        }
+    )
+    catalog = MapCatalog(
+        scene_id="office",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": node_id,
+                "aliases": aliases,
+                "position_m": position,
+                "semantic": semantic,
+                "source_pointer": f"test:{node_id}",
+            }
+            for node_id, aliases, position, semantic in [
+                ("office", ["办公室", "office"], {"x": 0, "y": 0, "z": 1}, "launch"),
+                ("blocked", ["封闭取餐点", "blocked"], {"x": 3, "y": 0, "z": 1}, "pickup"),
+                ("pantry", ["茶水间", "pantry"], {"x": 5, "y": 0, "z": 1}, "pickup"),
+                ("supplies", ["物资区", "supplies"], {"x": 7, "y": 0, "z": 1}, "pickup"),
+                ("isolated", ["隔离区", "isolated"], {"x": 9, "y": 0, "z": 1}, "pickup"),
+            ]
+        ],
+    )
+    contract = _contract().model_copy(
+        update={
+            "map_asset_id": "office-map",
+            "target_node": "blocked",
+        }
+    )
+    intent = IntentArtifact(
+        goal="帮我取一下外卖",
+        start_entity="office",
+        target_entity="blocked",
+        return_entity="office",
+        payload_action="pickup",
+    )
+
+    fields, questions = _route_recovery_clarification(
+        MissionRequest(conversation_id="thread-route-recovery", message="帮我取一下外卖"),
+        intent,
+        contract,
+        catalog,
+        graph,
+    )
+
+    assert fields == ["当前目的地没有满足飞行条件的路线，请选择另一个地图地点"]
+    assert [option["option_id"] for option in questions[0]["options"]] == ["A", "B"]
+    assert [option["label"] for option in questions[0]["options"]] == [
+        "茶水间 (pantry)",
+        "物资区 (supplies)",
+    ]
+    assert "blocked" not in str(questions)
+    assert "isolated" not in str(questions)
 
 
 def test_pickup_product_defaults_return_to_start_and_add_bounded_hover() -> None:
@@ -228,9 +364,7 @@ def test_non_review_consensus_dissent_fails_closed_instead_of_discarding_a_call(
     )
 
     with pytest.raises(MissionPreparationBlocked, match="MODEL_CONSENSUS_DISSENT_UNRESOLVED"):
-        _resolve_consensus_result(
-            [first, second], require_identical=False, record_dissent=True
-        )
+        _resolve_consensus_result([first, second], require_identical=False, record_dissent=True)
 
 
 def test_semantic_planning_map_view_removes_raw_geometry_and_irrelevant_entities() -> None:
@@ -298,8 +432,7 @@ def test_semantic_planning_map_view_removes_raw_geometry_and_irrelevant_entities
     assert "minimum_clearance_m" not in route
     assert "all_edges_flight_verified" not in route
     assert all(
-        "minimum_clearance_m" not in candidate
-        and "all_edges_flight_verified" not in candidate
+        "minimum_clearance_m" not in candidate and "all_edges_flight_verified" not in candidate
         for candidate in route["candidate_summaries"]
     )
 
@@ -702,9 +835,7 @@ def test_decomposition_view_and_binding_keep_runtime_evidence_core_owned() -> No
 
 def test_task_graph_requires_exact_catalog_evidence_not_a_negated_substring() -> None:
     graph = _task_graph(include_stale_gate=False)
-    graph.nodes[0] = graph.nodes[0].model_copy(
-        update={"success_evidence": ["not airborne"]}
-    )
+    graph.nodes[0] = graph.nodes[0].model_copy(update={"success_evidence": ["not airborne"]})
     catalog = DomainActionCatalog(
         catalog_id="core.test",
         domain_ids=["core.flight"],
