@@ -1,16 +1,19 @@
 import copy
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from dronedream_agent_app.asset_interpretation import AssetInterpretationService, AssetUnderstanding
+from dronedream_agent_app import interpretation_reuse
+from dronedream_agent_app.asset_interpretation import (
+    INTERPRETATION_PROMPT,
+    AssetInterpretationService,
+    AssetUnderstanding,
+)
 from dronedream_agent_app.custom_models import ModelConnection
 from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_app import interpretation_reuse
-from dronedream_agent_app.asset_interpretation import INTERPRETATION_PROMPT
-import hashlib
-import json
 
 
 @pytest.fixture
@@ -45,10 +48,16 @@ def test_global_change_or_account_change_does_not_reuse_local_explanations(case,
     service, options, calls = case
     service.interpret(**options)
     options["source"]["content_sha256"] = "b" * 64
-    if change == "coordinate": options["source"]["facts"]["coordinate_frame"] = "changed"
-    if change == "topology": options["source"]["facts"]["edges"].append({"edge_id": "bc", "from_node": "b", "to_node": "c"})
-    if change == "owner": options["scope"] = {"owner_account_id": "another"}
-    if change == "force": options["force"] = True
+    if change == "coordinate":
+        options["source"]["facts"]["coordinate_frame"] = "changed"
+    if change == "topology":
+        options["source"]["facts"]["edges"].append(
+            {"edge_id": "bc", "from_node": "b", "to_node": "c"}
+        )
+    if change == "owner":
+        options["scope"] = {"owner_account_id": "another"}
+    if change == "force":
+        options["force"] = True
     result = service.interpret(**options)
     assert result["reuse_mode"] == "full"
     assert calls[-1]["input_artifact"]["required_source_ids"] == ["a", "b", "c"]

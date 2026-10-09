@@ -1,6 +1,5 @@
 """Portable installed-session wiring, independent of development paths."""
 
-from pathlib import Path
 
 import pytest
 
@@ -28,6 +27,8 @@ def inputs(tmp_path, monkeypatch):
 
 
 # 功能：验证每次绑定真实资产/源钟，且路径可移植；输出不得包含路线作为测量或授予资格。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_portable_owned_runtime(tmp_path, monkeypatch):
     args = inputs(tmp_path, monkeypatch)
     wrapper, options = fusion.prepare_simulation_fusion(**args)
@@ -37,12 +38,18 @@ def test_portable_owned_runtime(tmp_path, monkeypatch):
     assert options["native_source_clock_domain"] == "px4-gz-sitl:" + config["run_name"]
     assert options["localization_source_channel"] == args["run_dir"] / "runtime-state/localization-source.json"
     assert options["simulation_camera_profile"] == "responsive-control"
+    assert options["batch_static_world_visuals"] is False
+    assert options["camera_source_model_sha256"] == fusion.hash_plugin_file(
+        args["px4_root"] / "Tools/simulation/gz/models/OakD-Lite/model.sdf",
+        limit=4 * 1024**2,
+    )
     assert not any("route" in key for key in config)
     with pytest.raises(FileExistsError):
         fusion.prepare_simulation_fusion(**args)
 
 
 # 功能：缺少任一执行器不得发布貌似可运行的输入；输出：在启动前报错。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("name", ["px4_offboard_track_executor.py", "px4_map_fusion_experiment_executor.py"])
 def test_missing_executor_does_not_publish(tmp_path, monkeypatch, name):
     args = inputs(tmp_path, monkeypatch)
@@ -53,6 +60,7 @@ def test_missing_executor_does_not_publish(tmp_path, monkeypatch, name):
 
 
 # 功能：原生钟未通过校验时不得进入准备阶段；输出：保留原异常，不回退假时间。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_clock_failure_is_fatal(tmp_path, monkeypatch):
     args = inputs(tmp_path, monkeypatch)
     def invalid(path):

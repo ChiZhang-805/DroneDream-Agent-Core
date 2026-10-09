@@ -18,7 +18,10 @@ from dronedream_agent_core.contracts import (
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.map_pose_transport import map_pose_transport_candidate
 from dronedream_agent_core.native_odometry_source import source_pose_in_map
-from dronedream_agent_core.temporal_map_pose import TemporalMapPoseTracker
+from dronedream_agent_core.temporal_map_pose import (
+    TemporalMapObservationPendingError,
+    TemporalMapPoseTracker,
+)
 
 
 # 功能：建立原始 MAVLink→地图系扫描的完整解析夹具，不给定位器独立真值。
@@ -133,6 +136,26 @@ def test_expired_frame_cannot_hide_changed_map_identity():
     _, valid = inputs()
     with pytest.raises(ValueError, match="TRACKER_INVALIDATED"):
         tracker.update_native(**valid)
+
+
+# 功能：无命中是可恢复观测缺失，不得永久损坏地图来源或复用同一帧刷新定位。
+# 输入：一帧全无命中及随后时间递增的正常帧；输出：先 Pending、后冷启动恢复。
+def test_no_hit_native_frame_is_consumed_and_later_geometry_recovers():
+    tracker, args = inputs()
+    for sample in args["scan"].samples:
+        sample.hit = False
+    with pytest.raises(TemporalMapObservationPendingError, match="NO_HIT_GEOMETRY"):
+        tracker.update_native(**args)
+
+    _, valid = inputs()
+    valid["packet"] = replace(valid["packet"], timestamp_us=1_050_000,
+                              received_monotonic_seconds=10.1)
+    valid["scan"].observed_at_monotonic_seconds = 10.1
+    valid["image_timestamp_ns"] = 1_050_000_000
+    valid["now_monotonic"] = 10.15
+    result = tracker.update_native(**valid)
+    assert result.fit.usable_candidate
+    assert not result.history_used
 
 
 # 功能：拒绝同一时钟下切换发布实体或相机标定，以免继承另一无人机的修正历史。

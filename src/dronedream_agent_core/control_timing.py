@@ -14,18 +14,30 @@ from dataclasses import asdict, dataclass
 CONTINUOUS_CONTROL_MODE = "normalized-body-velocity"
 LOCAL_CONTROL_PERIOD_SECONDS = 0.05
 LOCAL_CONTROL_MAXIMUM_AGE_SECONDS = 0.25
+# Raw camera/state observations have a separate ceiling from model decisions
+# and actuator leases. It covers measured camera transport plus projection /
+# fusion on supported desktop hardware; adaptive motion admission still
+# shortens it according to clearance, speed, acceleration, uncertainty and yaw.
+LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS = 0.35
+# Metric range images are asynchronous environment observations, not vehicle
+# state or actuator commands.  The full School Map renderer can deliver a
+# valid, source-stamped depth frame in 0.35--0.45 s while native PX4 state
+# continues at control cadence.  Give only the range stream the planner's
+# existing 0.5 s freshness window; state alignment and command leases retain
+# the stricter limits above.
+LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS = 0.5
 LOCAL_CONTROL_JOINT_P99_TARGET_SECONDS = 0.10
-LOCAL_SETPOINT_PERIOD_SECONDS = 0.02
+LOCAL_SETPOINT_PERIOD_SECONDS = 0.05
 # Producer admission reserves the future control period plus transport. Once
 # the executor has reached its dispatch tick, only transport remains; do not
 # count that same scheduling wait twice. Pre-send and actual-acceptance checks
 # still enforce the original input deadline, without renewing any lease.
 LOCAL_TRANSPORT_BUDGET_MS = 20
-# Model decisions remain 20 Hz; the executor polls ready commands at 50 Hz.
-# Training replies use the same ready-result handoff and validated 50 Hz
-# executor as local inference. Preparation is charged before the reply; using
-# the 20 Hz inference period here double-counted scheduling rather than adding
-# transport protection. Actual dispatch/acceptance still check source expiry.
+# Model decisions and executor dispatch both run at 20 Hz.  PX4 requires an
+# Offboard stream above 2 Hz, while 20 Hz leaves tenfold margin and avoids
+# flooding MAVSDK's shared callback/command queue during long indoor missions.
+# Preparation is charged before the reply; actual dispatch and acceptance still
+# check the original source expiry without renewing a lease.
 LOCAL_DISPATCH_RESERVE_MS = round(LOCAL_SETPOINT_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS
 TRAINING_DISPATCH_RESERVE_MS = LOCAL_DISPATCH_RESERVE_MS
 

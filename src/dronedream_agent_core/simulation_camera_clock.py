@@ -9,7 +9,8 @@ from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from dronedream_plugin_sdk.protocol import decode_json
-from .plugin_files import read_plugin_file, check_plain_plugin_path
+
+from .plugin_files import check_plain_plugin_path, read_plugin_file
 from .xml_values import parse_xml
 
 CAMERA_CLOCK_FILES = ("camera-clock-runtime.json", "libdronedream-camera-clock.so")
@@ -68,7 +69,8 @@ def prepare_native_camera_clock(*, runtime_root: Path, server_config: Path,
     plugin = ET.SubElement(plugins, "plugin", entity_name="*", entity_type="world",
                            filename=str(library.resolve()), name="dronedream::NativeCameraClock")
     for name, value in {"epoch": epoch, "rgb_input": rgb_topic, "depth_input": depth_topic,
-                        "rgb_output": topics["rgb"], "depth_output": topics["depth"]}.items():
+                        "rgb_output": topics["rgb"], "depth_output": topics["depth"],
+                        "diagnostics_path": str((output/"camera-clock.log").resolve())}.items():
         ET.SubElement(plugin, name).text = value
     output.mkdir(parents=True)
     with library.open('xb') as stream:

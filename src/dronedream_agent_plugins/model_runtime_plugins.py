@@ -52,7 +52,11 @@ def _resilient_router(
     routing = {
         "role": role,
         "candidates": list(dict.fromkeys(fallbacks)),
-        "fail_closed": role in {"execution_monitor", "completion_verifier"},
+        # Runtime model roles are advisory.  Losing one model endpoint must not
+        # become a single-vote stop for an otherwise healthy deterministic
+        # controller or prevent deterministic completion evidence from being
+        # recorded.
+        "fail_closed": False,
     }
     return routing
 
@@ -77,7 +81,7 @@ def _privacy_first_router(
         if requested_port in available_ports
         else (["primary"] if "primary" in available_ports else [])
     )
-    routing = {"role": role, "candidates": candidates, "fail_closed": True}
+    routing = {"role": role, "candidates": candidates, "fail_closed": False}
     return routing
 
 
@@ -245,7 +249,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                 plugin_order=order * 10,
                 hooks={"route_model": handler},
                 default_enabled=enabled,
-                failure_mode="fail-closed",
+                failure_mode="isolate",
             )
         )
     for order, (plugin_id, name, description, handler, enabled) in enumerate(
@@ -294,7 +298,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                 plugin_order=order * 10,
                 hooks={"select_consensus": handler},
                 default_enabled=enabled,
-                failure_mode="fail-closed",
+                failure_mode="isolate",
             )
         )
     definitions.append(

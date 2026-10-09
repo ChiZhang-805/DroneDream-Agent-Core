@@ -195,11 +195,10 @@ def test_expired_before_dispatch_sends_nothing_and_late_acceptance_is_preserved(
     command = RuntimeLocalSafetyCommand.model_validate(inputs["command_records"][0]["command"])
     args = SimpleNamespace(run_dir=tmp_path, _control_application_writer=SimpleNamespace(
         submit=lambda path, row: rows.append(row)))
-    with pytest.raises(executor.UserDirectedLanding, match="EXCEEDED_INPUT_DEADLINE"):
-        executor._record_model_control_application(
-            args, command, velocity_ned_mps=(.2, .1, -.05), yaw_deg=20.,
-            accepted_at_unix_ms=accepted,
-        )
+    assert not executor._record_model_control_application(
+        args, command, velocity_ned_mps=(.2, .1, -.05), yaw_deg=20.,
+        accepted_at_unix_ms=accepted,
+    )
     assert rows[0]["accepted_at_unix_ms"] == 1201
 
 
@@ -218,7 +217,7 @@ def test_teacher_is_not_exempt_from_actual_transport_deadline():
 
 
 @pytest.mark.parametrize("position_control", [False, True])
-def test_unsent_expired_input_brakes_then_requires_new_dispatch(position_control, tmp_path):
+def test_unsent_expired_input_brakes_and_rolls_recovery_window(position_control, tmp_path):
     executor = _load_executor()
     _, inputs = evidence()
     command = RuntimeLocalSafetyCommand.model_validate(inputs["command_records"][0]["command"])
@@ -266,15 +265,20 @@ def test_unsent_expired_input_brakes_then_requires_new_dispatch(position_control
     assert calls[-1][1].north_m == .1  # Never return to the old braking point.
     assert args._dispatch_input_gap_started_at == 10.
     elapsed[0] = 18.01
-    with pytest.raises(executor.UserDirectedLanding, match="LEASE_GAP_EXCEEDED"):
-        asyncio.run(executor._dispatch_motion_or_brake(**kwargs))
-    assert len(calls) == 2
+    # A prolonged missing lease remains a zero-velocity protective brake.  It
+    # opens a fresh bounded recovery window instead of converting temporary
+    # input loss into an irreversible landing decision.
+    assert asyncio.run(executor._dispatch_motion_or_brake(**kwargs)) is None
+    assert len(calls) == 3 and calls[-1][0] == "combined"
+    assert args._dispatch_input_gap_started_at == 18.01
+    assert any(row.get("status") == "input-lease-recovery-window-rolled-over"
+               for row in rows)
     # A genuinely dispatchable later command ends the gap; arrival alone did not.
     now[0] = 1.3
     fresh = command.model_copy(update={"valid_until_unix_ms":1400})
     assert asyncio.run(executor._dispatch_motion_or_brake(**{**kwargs, 'command':fresh})) == 1300
     assert args._dispatch_input_gap_started_at is None
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_dispatch_adapter_errors_are_not_reclassified_as_unsent_expiry(tmp_path):
@@ -292,6 +296,58 @@ def test_dispatch_adapter_errors_are_not_reclassified_as_unsent_expiry(tmp_path)
             client=SimpleNamespace(set_velocity_ned=failed_send),
             setpoint=SimpleNamespace(yaw_deg=12.), velocity_ned_mps=(.2,0.,0.), command=command,
             coordinate_contract=None, phase_path=tmp_path/'phase.json'))
+
+
+def test_late_dispatch_brakes_and_waits_for_fresh_input_without_landing(tmp_path):
+    """One slow adapter return must hold the node, not terminate the mission."""
+
+    executor = _load_executor()
+    _, inputs = evidence()
+    command = RuntimeLocalSafetyCommand.model_validate(inputs["command_records"][0]["command"])
+    wall, calls, events, evidence_rows = [1.1], [], [], []
+    executor.time = SimpleNamespace(time=lambda: wall[0])
+
+    async def motion(value):
+        calls.append(("motion", value))
+        wall[0] = 1.201
+
+    async def brake(position, velocity):
+        calls.append(("brake", position, velocity))
+
+    async def telemetry(**_):
+        return SimpleNamespace(north_m=.3, east_m=.1, down_m=-2.,
+            north_m_s=.2, east_m_s=.0, down_m_s=.0)
+
+    executor._refresh_px4_identity_telemetry = telemetry
+    executor._record_local_safety_executor_event = lambda _a, **row: events.append(row)
+    executor._publish_local_control_phase = lambda *_a, **_kw: None
+    args = SimpleNamespace(run_dir=tmp_path, setpoint_rate_hz=20.,
+        local_safety_runtime_stale_grace_seconds=8.,
+        _control_application_writer=SimpleNamespace(
+            submit=lambda path, row: evidence_rows.append((path.name, row))))
+    result = asyncio.run(executor._dispatch_motion_or_brake(
+        args=args,
+        base=SimpleNamespace(Setpoint=lambda **v: SimpleNamespace(**v),
+            VelocitySetpoint=lambda **v: SimpleNamespace(**v)),
+        client=SimpleNamespace(set_velocity_ned=motion, set_position_velocity_ned=brake,
+            latest_dynamics_telemetry=lambda _: {"sources": {"attitude": {
+                "yaw_deg": 17., "sample_age_seconds": .01}}}),
+        setpoint=SimpleNamespace(north_m=1., east_m=2., down_m=-2., yaw_deg=20.),
+        velocity_ned_mps=(.2, .1, 0.), command=command,
+        coordinate_contract=Px4CoordinateContract(model_root_world_enu_m=[0., 0., 0.],
+            collision_center_offset_model_m=[0., 0., .2]),
+        phase_path=tmp_path / "phase.json",
+    ))
+
+    assert result is None
+    assert [call[0] for call in calls] == ["motion", "brake"]
+    assert calls[1][2].north_m_s == calls[1][2].east_m_s == calls[1][2].down_m_s == 0.
+    assert args._dispatch_input_gap_started_at is not None
+    assert getattr(args, "_model_authorized_control_applied_count", 0) == 0
+    assert args._executor_brake_application_count == 1
+    assert any(row[0] == "control-applications.jsonl"
+               and row[1]["accepted_at_unix_ms"] == 1201 for row in evidence_rows)
+    assert any(event["status"] == "late-control-acceptance-braked" for event in events)
 
 
 @pytest.mark.parametrize("action", ["continue", "slow"])
@@ -348,10 +404,10 @@ def test_phase_disk_latency_cannot_spend_motion_transport_lease(tmp_path, action
 
 @pytest.mark.parametrize("writer_enabled", [False, True])
 @pytest.mark.parametrize("action", ["continue", "slow", "replan"])
-def test_late_acceptance_is_enforced_without_optional_evidence_writer(
+def test_late_acceptance_is_preserved_without_authorizing_progress(
     tmp_path, writer_enabled, action,
 ):
-    """A diagnostics switch must never disable the post-dispatch safety check."""
+    """Evidence configuration cannot turn a late physical send into authority."""
     executor = _load_executor()
     _, inputs = evidence()
     data = inputs["command_records"][0]["command"]
@@ -362,9 +418,8 @@ def test_late_acceptance_is_enforced_without_optional_evidence_writer(
                            _dispatch_input_hold_setpoint="previous hold")
     if writer_enabled:
         args._control_application_writer = SimpleNamespace(submit=lambda _, row: rows.append(row))
-    with pytest.raises(executor.UserDirectedLanding, match="EXCEEDED_INPUT_DEADLINE"):
-        executor._record_model_control_application(args, command,
-            velocity_ned_mps=(.2, .1, -.05), yaw_deg=20., accepted_at_unix_ms=1201)
+    assert not executor._record_model_control_application(args, command,
+        velocity_ned_mps=(.2, .1, -.05), yaw_deg=20., accepted_at_unix_ms=1201)
     assert args._dispatch_input_gap_started_at == 10.
     assert args._dispatch_input_hold_setpoint == "previous hold"
     assert getattr(args, "_model_authorized_control_applied_count", 0) == 0
@@ -429,10 +484,9 @@ def test_safety_position_replan_preserves_late_receipt_and_never_falls_back(tmp_
     command = RuntimeLocalSafetyCommand.model_validate(payload)
     args = SimpleNamespace(run_dir=tmp_path, _control_application_writer=SimpleNamespace(
         submit=lambda path, row: rows.append(row)))
-    with pytest.raises(executor.UserDirectedLanding, match="EXCEEDED_INPUT_DEADLINE"):
-        executor._record_model_control_application(args, command,
-            velocity_ned_mps=(.1, .2, 0.), yaw_deg=20., transport="position-velocity-ned",
-            position_ned_m=(1., 2., -3.), accepted_at_unix_ms=accepted)
+    assert not executor._record_model_control_application(args, command,
+        velocity_ned_mps=(.1, .2, 0.), yaw_deg=20., transport="position-velocity-ned",
+        position_ned_m=(1., 2., -3.), accepted_at_unix_ms=accepted)
     assert rows[0]["accepted_at_unix_ms"] == accepted
     inputs["command_records"][0]["command"] = command.model_dump(mode="json")
     result = verify_control_applications(rows, **inputs)

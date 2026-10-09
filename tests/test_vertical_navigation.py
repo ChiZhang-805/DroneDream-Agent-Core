@@ -197,15 +197,16 @@ def test_payload_bounds(mass, code):
 
 
 # 功能：
-#   验证低压、旧电压、姿态超界和模型无实测包络时不能取得负载运动授权。
+#   验证低压、旧电压、姿态超界，并区分仿真降级与真机资格要求。
 # 输入：
 #   无：分别污染有效负载背景。
 # 输出：
 #   None：确认各条件独立生效。
 def test_payload_qualification_and_live_operating_conditions():
     assert payload_motion_issues(vehicle(), payload(), envelope(), "simulation") == []
+    assert payload_motion_issues(vehicle(), payload(), None, "simulation") == []
     assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in payload_motion_issues(
-        vehicle(), payload(), None, "simulation")
+        vehicle(), payload(), None, "hardware")
     assert "FLIGHT_DYNAMICS_BINDING_MISMATCH" in payload_motion_issues(
         vehicle(), payload(), envelope(), "hardware")
     conditions = [("voltage_v", 12., "BATTERY"), ("roll_deg", 30., "ATTITUDE"),
@@ -255,6 +256,112 @@ def test_canopy_and_upward_inertia_do_not_use_endpoint_only():
 
 
 # 功能：
+#   当前测量位置已经高于门檐迟滞上限时，只允许单调下降并完整回到合格高度，避免原地锁死。
+# 输入：
+#   无：人工保留一个低于当前位置的旧顶部上限，并比较下降、平移和上升候选。
+# 输出：
+#   None：下降脱离通过，其余仍被顶部过渡约束拒绝。
+def test_ceiling_transition_allows_only_complete_monotonic_descent_recovery():
+    transition = CeilingTransition(.4)
+    assert transition.update(2.5, 1.0) == 2.5
+    protection = guard(
+        position=(0.0, 0.0, 2.6),
+        source_seconds=1.1,
+        transition=transition,
+    )
+
+    assert protection.ceiling == 2.5
+    assert protection.check(
+        request(),
+        (0.0, 0.0, -0.2),
+        [(0.0, 0.0, 2.6), (0.0, 0.0, 2.5), (0.0, 0.0, 2.4)],
+    ) == []
+    assert protection.check(
+        request(),
+        (0.2, 0.0, 0.0),
+        [(0.0, 0.0, 2.6), (0.2, 0.0, 2.6)],
+    ) == ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+    assert protection.check(
+        request(),
+        (0.0, 0.0, -0.2),
+        [(0.0, 0.0, 2.6), (0.0, 0.0, 2.4), (0.0, 0.0, 2.55)],
+    ) == ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+
+
+# 功能：
+#   验证低频深度帧留下旧顶部上限时，已验证静态路线仍能沿覆盖空间向目标收敛。
+# 输入：
+#   无：人工保留低顶部上限，并提供足够路线净空和上方目标。
+# 输出：
+#   None：收敛候选通过，远离目标、越过目标或带动态障碍的候选仍被拒绝。
+def test_qualified_route_releases_stale_ceiling_only_while_converging():
+    transition = CeilingTransition(.4)
+    assert transition.update(2.5, 1.0) == 2.5
+    protection = guard(
+        position=(0.0, 0.0, 2.6),
+        source_seconds=1.1,
+        transition=transition,
+        qualified_route_clearance_m=.24,
+    )
+    upward_target = request(target_position_m=Vector3(x=0., y=1., z=2.8))
+
+    assert protection.check(
+        upward_target,
+        (0.0, .2, .1),
+        [(0.0, 0.0, 2.6), (0.0, .1, 2.65)],
+    ) == []
+    assert protection.check(
+        upward_target,
+        (0.0, -.2, .1),
+        [(0.0, 0.0, 2.6), (0.0, -.1, 2.65)],
+    ) == ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+    assert protection.check(
+        upward_target,
+        (0.0, .2, .5),
+        [(0.0, 0.0, 2.6), (0.0, .1, 2.85)],
+    ) == ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+
+    from dronedream_agent_core.contracts import DynamicObstacleObservation
+    obstacle = DynamicObstacleObservation(
+        obstacle_id="person", position_m=Vector3(x=1., y=1., z=2.6),
+        velocity_mps=Vector3(x=0., y=0., z=0.), radius_m=.3, height_m=1.7,
+        confidence=1., age_seconds=.01,
+    )
+    assert protection.check(
+        request(target_position_m=Vector3(x=0., y=1., z=2.8), dynamic_obstacles=[obstacle]),
+        (0.0, .2, .1),
+        [(0.0, 0.0, 2.6), (0.0, .1, 2.65)],
+    ) == ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+
+
+# 功能：
+#   已验证净空不能替代当前路径覆盖证据，也不能接受小于所需净空的路线。
+# 输入：
+#   无：分别提供覆盖失败与净空不足的候选。
+# 输出：
+#   None：两种候选均保持顶部过渡拒绝。
+def test_qualified_route_ceiling_release_requires_coverage_and_clearance():
+    transition = CeilingTransition(.4)
+    transition.update(2.5, 1.0)
+    state = request(target_position_m=Vector3(x=0., y=1., z=2.8))
+    path = [(0.0, 0.0, 2.6), (0.0, .1, 2.65)]
+    uncovered = guard(
+        position=(0.0, 0.0, 2.6), source_seconds=1.1, transition=transition,
+        qualified_route_clearance_m=.24, coverage_check=lambda _path, _margin: False,
+    )
+    assert uncovered.check(state, (0.0, .2, .1), path) == [
+        "CEILING_OR_EXIT_TRANSITION_LIMIT"
+    ]
+    insufficient = guard(
+        position=(0.0, 0.0, 2.6), source_seconds=1.2, transition=transition,
+        qualified_route_clearance_m=.1,
+    )
+    assert insufficient.check(state, (0.0, .2, .1), path) == [
+        "CEILING_OR_EXIT_TRANSITION_LIMIT"
+    ]
+
+
+# 功能：
 #   比较相同当前速度下的强弱制动包络；短预测终点不能代替停止距离。
 # 输入：
 #   无：远端两米处不可通行的合成覆盖边界。
@@ -285,7 +392,7 @@ def test_loaded_braking_checks_current_momentum_and_response_delay():
 #   无：一条已绑定背景的实时观测。
 # 输出：
 #   None：断言真实运行入口执行限制及摘要检查。
-def test_runtime_binding_and_direct_payload_veto():
+def test_runtime_binding_and_simulated_payload_degradation():
     protection = guard(payload=payload())
     observation = RuntimeLocalSafetyObservation(sequence=1, observed_at_unix_ms=1000,
         source="onboard", stream_healthy=True, stream_age_seconds=.01,
@@ -298,9 +405,15 @@ def test_runtime_binding_and_direct_payload_veto():
     with pytest.raises(ValueError, match="CONTEXT_BINDING"):
         evaluate_runtime_local_safety(**kwargs)
     command = evaluate_runtime_local_safety(**kwargs, motion_guard=protection)
-    assert command.decision.action == "hold"
+    assert command.decision.action in {"continue", "slow", "replan"}
     assert command.observation_sha256 == sha256_json(observation)
-    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in command.decision.issue_codes
+    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" not in command.decision.issue_codes
+    assert command.decision.maximum_acceleration_mps2 == pytest.approx(.2)
+    assert math.hypot(
+        command.decision.selected_velocity_mps.x,
+        command.decision.selected_velocity_mps.y,
+        command.decision.selected_velocity_mps.z,
+    ) <= .12 + 1e-9
     observation.current_position_m.x = 1.
     with pytest.raises(ValueError, match="POSITION_BINDING"):
         evaluate_runtime_local_safety(**kwargs, motion_guard=protection)
@@ -341,7 +454,8 @@ def test_measurement_mode_is_simulation_only_and_never_production_qualification(
     assert protection.check(request(), (.1, 0., .1), [(0., 0., 2.), (.1, 0., 2.1)]) == []
     assert protection.acceleration_limit(1.) == .2
     assert protection.check(request(), (.3, 0., 0.), [(0., 0., 2.)]) == ["MEASUREMENT_SPEED_LIMIT"]
-    assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" in guard(payload=payload()).issues
+    assert guard(payload=payload()).issues == []
+    assert guard(payload=payload()).acceleration_limit(1.) == .2
     assert "PAYLOAD_MASS_UNKNOWN" in guard(payload=payload(None), measurement_only=True).issues
     bad = payload()
     bad["dynamics"]["ready"] = False

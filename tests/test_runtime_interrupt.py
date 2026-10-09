@@ -346,18 +346,18 @@ def test_bad_directive_cannot_weaken_a_safety_landing(action):
 
 
 # 功能：
-#   验证协调器后到的中止原因不能覆盖操作员记录，并只回收自己创建的暂存。
+#   验证建议协调器没有写入飞行中止文件的能力，操作员记录保持原样。
 # 输入：
 #   tmp_path：已有操作员中止记录的隔离目录。
 # 输出：
 #   None：不返回业务数据。
-def test_abort_preserves_operator_evidence_and_cleans_staging(tmp_path):
+def test_advisory_coordinator_cannot_overwrite_operator_abort(tmp_path):
     from dronedream_agent_core.runtime_interrupt import RuntimeInterruptionCoordinator, _atomic_json
 
     coordinator = object.__new__(RuntimeInterruptionCoordinator)
     coordinator.abort_file = tmp_path / "abort.json"
     _atomic_json(coordinator.abort_file, {"reason": "operator"})
     before = coordinator.abort_file.read_bytes()
-    coordinator._request_abort("sidecar error")
+    assert not hasattr(coordinator, "_request_abort")
     assert coordinator.abort_file.read_bytes() == before
     assert not list(tmp_path.glob(".*.tmp"))

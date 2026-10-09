@@ -25,6 +25,10 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.hashing import sha256_json
 
+from .control_timing import (
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 from .depth_projection import DepthProjectionCalibration
 from .quaternion_geometry import rotate_vector as _rotate_vector
 from .rgb_input_quality import RGB_QUALITY_SEMANTICS
@@ -533,7 +537,7 @@ def oakd_lite_depth_runtime_contract(
     vehicle_id: str,
     calibration: DepthProjectionCalibration,
     required_for_motion: bool = True,
-    maximum_sample_age_seconds: float = 0.35,
+    maximum_sample_age_seconds: float = LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
 ) -> RuntimeSensorContract:
     if type(required_for_motion) is not bool:
         raise ValueError("required for motion must be boolean")
@@ -560,7 +564,7 @@ def oakd_lite_depth_runtime_contract(
         intrinsics_sha256=sha256_json(projection),
         extrinsics_sha256=sha256_json(extrinsics),
         maximum_sample_age_seconds=maximum_sample_age_seconds,
-        maximum_transport_latency_seconds=0.25,
+        maximum_transport_latency_seconds=LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
         minimum_quality=0.05,
         minimum_coverage=0.05,
         required_for_motion=required_for_motion,
@@ -621,7 +625,7 @@ def oakd_lite_forward_rgb_runtime_contract(
         intrinsics_sha256=sha256_json(intrinsics),
         extrinsics_sha256=sha256_json(extrinsics),
         maximum_sample_age_seconds=maximum_sample_age_seconds,
-        maximum_transport_latency_seconds=0.25,
+        maximum_transport_latency_seconds=LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
         minimum_quality=0.01,
         minimum_coverage=1.0,
         required_for_motion=required_for_motion,

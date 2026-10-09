@@ -4,11 +4,11 @@ import json
 
 import numpy as np
 import pytest
+from test_local_pose_alignment import scene
 
 from dronedream_agent_core.local_map_alignment import fit_map_translation
 from dronedream_agent_core.local_pose_alignment import fit_map_pose
 from dronedream_agent_core.localization_truth_audit import _numeric_array
-from test_local_pose_alignment import scene
 
 
 # 功能：真实几何求解结果在序列化前后均可严格消费，避免 NumPy 标量触发类型合同错误。

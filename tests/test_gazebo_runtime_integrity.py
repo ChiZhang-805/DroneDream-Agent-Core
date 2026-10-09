@@ -349,6 +349,18 @@ def test_landing_contact_requires_top_surface_support():
     assert not adapter._landing_contact_from_above(
         {**floor, "roll_rad": 0.1}, (0.0, 0.0, 0.19), 0.2, 0.1
     )
+    stair_tread = {**floor, "name": "teaching-stair-2-b-3"}
+    assert adapter._is_tolerated_landing_contact(
+        phase="LANDING",
+        primitive_name=stair_tread["name"],
+        clearance_m=-0.00296,
+    )
+    assert adapter._landing_contact_from_above(
+        stair_tread,
+        (0.0, 0.0, 0.19704),
+        0.2,
+        0.1,
+    )
 
 
 # 功能：

@@ -38,7 +38,7 @@ def test_brake_records_every_actual_acceptance(tmp_path):
 
     executor._send_position_with_velocity = send
     point = SimpleNamespace(north_m=1., east_m=2., down_m=-3., yaw_deg=45.)
-    for reason in ("command-stale", "command-stale", "input-lease-unavailable"):
+    for reason in ("command-stale", "late-control-acceptance", "input-lease-unavailable"):
         asyncio.run(executor._send_executor_brake(args=args, base=None, client=None,
                                                   setpoint=point, reason=reason))
     assert [r[1]["sequence"] for r in rows] == [1,2,3]

@@ -181,11 +181,13 @@ def verify_native_label(row, document):
             )
         ):
             raise ValueError("DECISION_ACTUAL_VELOCITY_MISMATCH")
-        if actual.transport == "position-velocity-ned":
-            # PX4估计器原点不等于地图原点；悬停以执行器实际测得的NED锚点绑定。
-            # 回执契约已逐轴核对实际设定值。不能只交换ENU轴就冒充坐标标定。
-            if actual.measured_hold_anchor is None:
-                raise ValueError("DECISION_MEASURED_HOLD_ANCHOR_REQUIRED")
+        # PX4估计器原点不等于地图原点；悬停以执行器实际测得的NED锚点绑定。
+        # 回执契约已逐轴核对实际设定值。不能只交换ENU轴就冒充坐标标定。
+        if (
+            actual.transport == "position-velocity-ned"
+            and actual.measured_hold_anchor is None
+        ):
+            raise ValueError("DECISION_MEASURED_HOLD_ANCHOR_REQUIRED")
     times = [a.accepted_at_unix_ms for a in applications]
     if (
         times[0] - start > 100

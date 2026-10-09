@@ -186,15 +186,41 @@ $previousSourceDateEpoch = [Environment]::GetEnvironmentVariable(
     "SOURCE_DATE_EPOCH",
     [EnvironmentVariableTarget]::Process
 )
+$linuxWheelBuildTemp = Join-Path $runtimeResources "linux-wheel-build-temp"
 try {
     # Runtime qualification is bound to the exact manifest hash.  A fixed
     # archive timestamp makes rebuilding the same runtime bytes reproducible,
     # so an installer rebuild cannot invalidate an otherwise identical flight
     # qualification merely because it ran at a different wall-clock time.
     $env:SOURCE_DATE_EPOCH = "946684800"
-    & $python -m pip wheel --no-deps --wheel-dir $runtimeWheels $repoRoot
+
+    # The Runtime executes inside the Linux DroneDreamRuntime distribution.
+    # Building this wheel with the Windows release interpreter produces a
+    # win_amd64 wheel that pip correctly refuses inside WSL, leaving every
+    # fresh installation stuck at RUNTIME_PROVISION_REQUIRED.  Build the core
+    # with the target Runtime interpreter, just as the development stager does,
+    # and keep temporary compiler output inside the owned generated tree.
+    function Convert-ToRuntimeBuildPath([string]$path) {
+        $resolved = [System.IO.Path]::GetFullPath($path)
+        if ($resolved -notmatch '^([A-Za-z]):[\\/](.*)$') {
+            throw "Runtime wheel inputs must be local Windows drive paths."
+        }
+        return '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
+    }
+    Assert-PlainBuildPath -RepositoryRoot $repoRoot -Path $linuxWheelBuildTemp
+    [System.IO.Directory]::CreateDirectory($linuxWheelBuildTemp) | Out-Null
+    & wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800 `
+        ("TMPDIR=" + (Convert-ToRuntimeBuildPath $linuxWheelBuildTemp)) `
+        /home/dronedream/.local/share/dronedream-autonomy/v0.1.0/venv/bin/python `
+        -m pip wheel --no-cache-dir --no-build-isolation --no-deps `
+        --wheel-dir (Convert-ToRuntimeBuildPath $runtimeWheels) `
+        (Convert-ToRuntimeBuildPath $repoRoot)
     if ($LASTEXITCODE -ne 0) { throw "Autonomy Linux core wheel build failed" }
 } finally {
+    if (Test-Path -LiteralPath $linuxWheelBuildTemp) {
+        Assert-PlainBuildTree -RepositoryRoot $repoRoot -Path $linuxWheelBuildTemp
+        [System.IO.Directory]::Delete($linuxWheelBuildTemp, $true)
+    }
     if ([string]::IsNullOrWhiteSpace($previousSourceDateEpoch)) {
         Remove-Item Env:\SOURCE_DATE_EPOCH -ErrorAction SilentlyContinue
     } else {

@@ -8,7 +8,10 @@ from control_fixtures import complete_feature_snapshot
 from test_adaptive_sensor_admission import coordinator, schedule
 
 from dronedream_agent_core.causal_control import (
-    CausalControlHistory, CONTROL_STATE_WIDTH, CONTROL_REALTIME_WIDTH)
+    CONTROL_REALTIME_WIDTH,
+    CONTROL_STATE_WIDTH,
+    CausalControlHistory,
+)
 from dronedream_agent_core.policy_observation_buffer import PolicyObservationBuffer
 from dronedream_agent_core.temporal_evidence import TemporalEvidence
 

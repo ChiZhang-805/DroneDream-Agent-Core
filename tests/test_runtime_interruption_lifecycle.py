@@ -171,7 +171,7 @@ def test_interruption_failed_decision_publish_does_not_enter_history(tmp_path, m
     coordinator._run()
     assert isinstance(coordinator.error, OSError)
     assert coordinator.decisions == []
-    assert coordinator.abort_file.exists() and states[-1] == "store-closed"
+    assert not coordinator.abort_file.exists() and states[-1] == "store-closed"
 
 
 # 功能：
@@ -202,7 +202,7 @@ def test_interruption_store_failure_is_reported(tmp_path, monkeypatch, phase):
         monkeypatch.setattr(context, "ContextStore", lambda path: SimpleNamespace(close=fail))
     coordinator._run()
     assert isinstance(coordinator.error, OSError)
-    assert coordinator.abort_file.exists()
+    assert not coordinator.abort_file.exists()
 
 
 # 功能：
@@ -282,7 +282,7 @@ def test_interruption_publication_rechecks_session_and_revision(tmp_path, monkey
         assert coordinator.error is None
     else:
         assert "ACTIVE_REVISION_CHANGED" in str(coordinator.error)
-        assert coordinator.abort_file.exists()
+        assert not coordinator.abort_file.exists()
 
 
 # 功能：

@@ -87,7 +87,7 @@ def test_newest_value_is_coalesced_without_catchup_or_duplicate_processing():
 #   None：不返回业务数据。
 @pytest.mark.parametrize("changes", [
     {"sample_monotonic": None}, {"sample_monotonic": .77},
-    {"sample_monotonic": .9, "now_monotonic": 1.151},
+    {"sample_monotonic": .9, "now_monotonic": 1.251},
     {"sample_monotonic": 1.021}, {"sample_monotonic": math.nan},
     {"processed_sample_monotonic": .95}, {"fault_active": True},
     {"now_monotonic": math.inf}, {"now_monotonic": True},
@@ -110,8 +110,8 @@ def test_failed_alignment_attempt_is_bounded_but_can_retry_without_redating():
     scheduler.record_attempt(now_monotonic=original["now_monotonic"])
     assert not scheduler.eligible(**{**original, "now_monotonic": 1.03})
     assert scheduler.eligible(**{**original, "now_monotonic": 1.071})
-    # Waking never extends the original 250 ms input lease.
-    assert not scheduler.eligible(**{**original, "now_monotonic": 1.201})
+    # Waking never extends the original 350 ms sensor-observation lease.
+    assert not scheduler.eligible(**{**original, "now_monotonic": 1.301})
 
 
 # 功能：
@@ -166,7 +166,7 @@ def test_local_input_can_remove_camera_phase_lag_without_changing_control_period
                                  "sample_monotonic": .957})  # No catch-up burst.
     assert not local.eligible(**{**incoming, "now_monotonic": 1.062,
                                  "processed_sample_monotonic": .956})  # No replay.
-    assert not local.eligible(**{**incoming, "now_monotonic": 1.207})  # Still expires.
+    assert not local.eligible(**{**incoming, "now_monotonic": 1.307})  # Still expires.
     assert not local.eligible(**{**incoming, "now_monotonic": 1.062, "fault_active": True})
     assert sensor_input_maximum_rate_hz(maintenance_rate_hz=maintenance_rate,
                                         continuous_local_control=False) == 20.

@@ -4,20 +4,24 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
-from dataclasses import asdict
-from dataclasses import replace
 import hashlib
 import itertools
 import json
 import math
-from pathlib import Path
 import platform
 import statistics
 import time
+from collections import Counter, defaultdict
+from dataclasses import asdict, replace
+from pathlib import Path
 
 from dronedream_agent_core.decision_shadow import (
-    ACTIONS, StageState, group_split, laya_request, numeric_features, rule_decision,
+    ACTIONS,
+    StageState,
+    group_split,
+    laya_request,
+    numeric_features,
+    rule_decision,
     shadow_suggestion,
 )
 
@@ -253,8 +257,8 @@ def main():
         import os
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        import torch
         import laya
+        import torch
         torch.set_num_threads(4)
         started = time.perf_counter()
         agent = laya.load(str(args.laya_model.resolve()), device="cpu")

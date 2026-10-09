@@ -102,6 +102,7 @@ def wait_fixture():
 
 
 # 功能：确认等待与保护性刹车分别记账，并要求独立后续真实推进；输出：仅等待标签通过。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_stage_wait_keeps_control_sources_separate():
     row, doc = wait_fixture()
     original = copy.deepcopy(doc)

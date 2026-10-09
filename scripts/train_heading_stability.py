@@ -4,8 +4,8 @@ import argparse
 import hashlib
 import io
 import json
-from pathlib import Path
 import time
+from pathlib import Path
 
 import numpy as np
 import onnx
@@ -15,7 +15,11 @@ import torch
 from dronedream_agent_core.heading_context import HEADING_CONTEXT_SHA256
 from dronedream_agent_core.training.heading_refinement import heading_training_weights
 from dronedream_agent_core.training.heading_stability import (
-    ARCHITECTURE, StableHeadingPolicy, perturb_context, reflect_context, temporal_delta_loss,
+    ARCHITECTURE,
+    StableHeadingPolicy,
+    perturb_context,
+    reflect_context,
+    temporal_delta_loss,
 )
 
 

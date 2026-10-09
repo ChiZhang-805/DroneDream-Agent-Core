@@ -61,7 +61,7 @@ def test_expired_budget_does_not_become_an_obstacle_cause():
 #   age_ms：原始观测已过去的毫秒数。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize('age_ms', [60, 100, 230, 251])
+@pytest.mark.parametrize('age_ms', [60, 100, 230, 251, 351])
 def test_cause_uses_actual_observation_budget(age_ms):
     request = request_with_budget_obstacle()
 
@@ -82,7 +82,7 @@ def test_cause_uses_actual_observation_budget(age_ms):
         return allowed
 
     decision = predictive_safety_decision(request, [], candidate_check=current)
-    if age_ms < 180:
+    if age_ms <= 350:
         assert decision.avoidance_obstacle_id == 'budget-obstacle'
         assert decision.action != 'hold'
         velocity = decision.selected_velocity_mps

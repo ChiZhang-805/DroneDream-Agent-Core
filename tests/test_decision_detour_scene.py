@@ -26,6 +26,7 @@ def fixture(seed=0):
 
 
 # 功能：多个布局都必须存在不穿挡板的真实替代路径；输出：旧路碰撞、新路净空且正式计数0。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("seed", range(20))
 def test_detour_geometry_and_routes(seed):
     recipe, extra, doc = fixture(seed)
@@ -43,6 +44,7 @@ def test_detour_geometry_and_routes(seed):
 
 
 # 功能：树边阻断没有替代路径，不能假装每个地图都能重规划；输出：None。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_tree_cannot_detour_without_a_loop():
     recipe, _, _ = fixture()
     edge = recipe["edges"][0]
@@ -50,6 +52,7 @@ def test_tree_cannot_detour_without_a_loop():
 
 
 # 功能：变换房间编号不能把相同布局放进不同集合；输出：保守图桶一致。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_graph_family_is_invariant_under_rotation():
     _, _, doc = fixture()
 

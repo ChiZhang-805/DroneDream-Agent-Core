@@ -14,6 +14,7 @@ import secrets
 import socket
 import struct
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -422,12 +423,11 @@ class TrainingPolicyExchange:
         if self._stream is not None:
             try:
                 if reason is not None and self._request is not None:
-                    try:
+                    with suppress(OSError, TimeoutError):
                         _send(self._stream, {"status": "deferred",
                             "request_sha256": self._request.request_sha256, "reason": reason},
                             self._secret, deadline=self._deadline)
-                    except (OSError, TimeoutError):
-                        pass  # 超期仍关闭，不续租，也不伪造已送达的拒绝回执。
+                        # 超期仍关闭，不续租，也不伪造已送达的拒绝回执。
             finally:
                 self._stream.close()
                 self._stream = self._request = None

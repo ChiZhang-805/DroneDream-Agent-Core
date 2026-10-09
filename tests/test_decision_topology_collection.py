@@ -31,6 +31,7 @@ def configure(monkeypatch, tmp_path):
 
 
 # 功能：保证连续审计失败不会被下一次成功采集清零；输出：第二轮结束批次。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_consecutive_audit_errors_stop(monkeypatch, tmp_path):
     source = configure(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -53,6 +54,7 @@ def test_consecutive_audit_errors_stop(monkeypatch, tmp_path):
 
 
 # 功能：无安全收尾不得启动下一轮；输出：仅一次实验且资格不放行。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_no_safe_terminal_state_stops_immediately(monkeypatch, tmp_path):
     source = configure(monkeypatch, tmp_path)
     monkeypatch.setattr(batch, "collect", lambda *a, **kw: {"safely_closed": False})
@@ -63,6 +65,7 @@ def test_no_safe_terminal_state_stops_immediately(monkeypatch, tmp_path):
 
 
 # 功能：空产出不能无限继续，也不能伪造正式数据；输出：三轮无正式窗口自动结束。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_empty_runs_stop_and_valid_counts_sum(monkeypatch, tmp_path):
     source = configure(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -84,6 +87,7 @@ def test_empty_runs_stop_and_valid_counts_sum(monkeypatch, tmp_path):
 
 
 # 功能：不能把旧回合当作新实验产出；输出：归属不符保留为错误且不授予标签。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_episode_outside_attempt_is_rejected(monkeypatch, tmp_path):
     source = configure(monkeypatch, tmp_path)
     monkeypatch.setattr(

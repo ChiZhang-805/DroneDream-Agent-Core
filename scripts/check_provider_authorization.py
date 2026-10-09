@@ -13,7 +13,7 @@ def main():
         print("authorization accepted; model_count", len(result.data), flush=True)
     except Exception as error:
         print("authorization_error", type(error).__name__, getattr(error, "status_code", None), flush=True)
-        raise SystemExit(1)
+        raise SystemExit(1) from error
     finally:
         port.close()
 

@@ -98,7 +98,7 @@ public:
         create_subscription<dronedream_agent_msgs::msg::MissionObservation>(
         get_parameter("observation_topic").as_string(), rclcpp::SensorDataQoS(),
         [this](const dronedream_agent_msgs::msg::MissionObservation::SharedPtr message) {
-          if (failed_closed_ || stopping_ || !rclcpp::ok()) {
+          if (stopping_ || !rclcpp::ok()) {
             return;
           }
           const auto monotonic_time = std::chrono::steady_clock::now().time_since_epoch();
@@ -113,8 +113,8 @@ public:
             static_cast<double>(message->battery_percent)};
           for (const auto & plugin : plugins_) {
             if (!plugin->observe(observation)) {
-              fail_closed(plugin, "OBSERVATION_REJECTED");
-              return;
+              request_recovery(plugin, "OBSERVATION_REJECTED");
+              continue;
             }
             deadline_miss_started_at_.erase(plugin->id());
           }
@@ -159,7 +159,6 @@ public:
   CallbackReturn on_activate(const rclcpp_lifecycle::State &) override
   {
     stopping_ = false;
-    failed_closed_ = false;
     deadline_miss_started_at_.clear();
     for (const auto & plugin : plugins_) {
       if (!plugin->activate() || !plugin->health().healthy) {
@@ -180,7 +179,7 @@ public:
         const auto report = plugin->health();
         if (!report.healthy && !report.deadline_missed) {
           deadline_miss_started_at_.erase(plugin->id());
-          fail_closed(
+          request_recovery(
             plugin, "WATCHDOG_HEALTH_OR_DEADLINE_FAILURE",
             report.observation_age_ms, report.deadline_ms, report.deadline_missed);
           return;
@@ -209,15 +208,14 @@ public:
           const auto continuously_missed_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(now - miss->second).count());
           // Crossing the scheduling envelope first enters a bounded debounce
-          // window.  A newly accepted observation erases the window in the
-          // subscription callback; only a continuously stale stream reaches
-          // the irreversible land gate.  This keeps fail-closed behavior while
-          // refusing to turn one delayed Windows/WSL scheduling slice into a
-          // false emergency.
+          // window. A persistent stale stream requests controller recovery;
+          // it is not an independent landing vote. The flight controller keeps
+          // publishing the last safe setpoint, reduces speed and resumes when
+          // observations recover.
           if (continuously_missed_ms < persistent_miss_ms) {
             continue;
           }
-          fail_closed(
+          request_recovery(
             plugin, "WATCHDOG_HEALTH_OR_DEADLINE_FAILURE",
             report.observation_age_ms, effective_deadline_ms + persistent_miss_ms,
             report.deadline_missed);
@@ -290,7 +288,7 @@ private:
   }
 
   // 功能：
-  //   一次性发出固定内核识别的中止事件并停用策略插件；飞机悬停及降落由执行器完成。
+  //   发布可恢复的降级事件；不让一个插件或一次观测延迟单票终止任务。
   // 输入：
   //   plugin：触发失败的策略插件。
   //   issue：拒绝原因。
@@ -298,16 +296,12 @@ private:
   //   deadline_ms：包含经确认宽限的最大等待时限。
   //   deadline_missed：是否属于观测超时。
   // 输出：
-  //   void：发布安全事件并锁定 failed_closed_，不虚构物理悬停成功。
-  void fail_closed(
+  //   void：发布恢复建议并保留插件、订阅和看门狗继续工作。
+  void request_recovery(
     const std::shared_ptr<Plugin> & plugin, const std::string & issue,
     const std::uint64_t observation_age_ms = 0, const std::uint64_t deadline_ms = 0,
     const bool deadline_missed = false)
   {
-    if (failed_closed_) {
-      return;
-    }
-    failed_closed_ = true;
     const auto receipt = plugin->hold(issue);
     if (safety_publisher_) {
       dronedream_agent_msgs::msg::SafetyEvent event;
@@ -316,19 +310,18 @@ private:
       event.observation_sequence = plugin->evidence().observation_sequence;
       event.observation_age_ms = observation_age_ms;
       event.deadline_ms = deadline_ms;
-      event.severity = 3;
-      event.action = "safe_hold_then_land";
+      event.severity = 2;
+      event.action = "hold_correct_and_resume";
       event.issue_codes = receipt.issue_codes;
       if (deadline_missed) {
         event.issue_codes.push_back("MISSION_OBSERVATION_DEADLINE_MISSED");
       }
       safety_publisher_->publish(event);
     }
-    deactivate_all();
-    watchdog_.reset();
-    RCLCPP_FATAL(
+    deadline_miss_started_at_.erase(plugin->id());
+    RCLCPP_WARN(
       get_logger(),
-      "runtime plugin watchdog forced fail-closed hold: %s observation_age_ms=%llu "
+      "runtime plugin watchdog requested recoverable hold/correction: %s observation_age_ms=%llu "
       "deadline_ms=%llu observation_sequence=%llu",
       issue.c_str(), static_cast<unsigned long long>(observation_age_ms),
       static_cast<unsigned long long>(deadline_ms),
@@ -345,7 +338,6 @@ private:
   rclcpp::Publisher<dronedream_agent_msgs::msg::SafetyEvent>::SharedPtr safety_publisher_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point>
     deadline_miss_started_at_;
-  bool failed_closed_{false};
   bool stopping_{false};
 };
 

@@ -321,6 +321,55 @@ def test_completion_port_records_before_validation_and_always_closes(tmp_path, m
         context.close()
 
 
+def test_completion_model_outage_cannot_veto_deterministic_success():
+    artifact = {"deterministic_success": True, "runtime_status": "verified"}
+    completion = execution._deterministic_completion_fallback(
+        artifact=artifact,
+        deterministic_success=True,
+        error=TimeoutError("provider unavailable"),
+    )
+    assert completion.artifact.accepted is True
+    assert completion.artifact.issue_codes == []
+    assert completion.record.provider == "runtime-policy"
+    assert completion.record.model == "deterministic-completion-fallback"
+    assert completion.record.input_sha256 == sha256_json(artifact)
+    assert completion.record.output_sha256 == sha256_json(completion.artifact)
+
+
+# 功能：完成模型是咨询者；它不能否决固定运行门控的成功，也不能接受固定门控的失败。
+# 输入：分别与固定结果相矛盾的结构化模型结论。
+# 输出：返回摘要绑定的确定性结论，并把原始矛盾输出留在证据链中。
+@pytest.mark.parametrize(
+    ("deterministic_success", "advisory_accepts"),
+    [(True, False), (False, True)],
+)
+def test_completion_model_cannot_override_deterministic_gates(
+    tmp_path, deterministic_success, advisory_accepts
+):
+    artifact = {"deterministic_success": deterministic_success}
+    advisory = CompletionAssessment(
+        accepted=advisory_accepts,
+        issue_codes=([] if advisory_accepts else ["ADVISORY_FALSE_NEGATIVE"]),
+    )
+    completion = StructuredCallResult(
+        artifact=advisory,
+        record=_record(advisory, "completion_verifier", artifact),
+    )
+    chain = EvidenceChain(tmp_path / "completion-authority.jsonl")
+
+    effective = execution._enforce_deterministic_completion_authority(
+        completion=completion,
+        artifact=artifact,
+        deterministic_success=deterministic_success,
+        chain=chain,
+    )
+
+    assert effective.artifact.accepted is deterministic_success
+    assert effective.record.provider == "runtime-policy"
+    assert effective.record.output_sha256 == sha256_json(effective.artifact)
+    assert chain.read()[-1].event_type == "runtime.completion_verifier.deterministic-override"
+
+
 class _Worker:
     # 功能：
     #   持有离线协调器清理轨迹与可选故障。

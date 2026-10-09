@@ -244,6 +244,7 @@ def _dynamic_interval_clearance(start, end, *, start_time, end_time, velocity, r
 #   request：机体状态、目标或模型控制提议与上限。
 #   vertical_biases：候选竖直方向偏置比例。
 #   include_level_flight：竖直保护器启用时加入保持高度的候选，不增加无授权目标。
+#   preferred_speed_mps：本周期期望收敛到的速度；request.max_speed_mps 仍表示必须容纳当前惯性的物理硬上限。
 # 输出：
 #   velocities：去重后处于速度包络内的候选速度。
 def _candidate_velocities(
@@ -251,7 +252,18 @@ def _candidate_velocities(
     *,
     vertical_biases: tuple[float, ...] = (0.0,),
     include_level_flight: bool = False,
+    preferred_speed_mps: float | None = None,
 ) -> list[Point]:
+    if preferred_speed_mps is None:
+        preferred_speed_mps = request.max_speed_mps
+    if (
+        type(preferred_speed_mps) not in (int, float)
+        or not math.isfinite(preferred_speed_mps)
+        or preferred_speed_mps <= 0.0
+        or preferred_speed_mps > request.max_speed_mps
+    ):
+        raise ValueError("LOCAL_SAFETY_PREFERRED_SPEED_INVALID")
+    preferred_speed_mps = float(preferred_speed_mps)
     position = _point(request.current_position_m)
     target = _point(request.target_position_m)
     to_target = _subtract(target, position)
@@ -265,16 +277,16 @@ def _candidate_velocities(
     )
     if requested_velocity is not None and _magnitude(requested_velocity) > 1e-9:
         heading = math.atan2(requested_velocity[1], requested_velocity[0])
-        desired_speed = min(request.max_speed_mps, _magnitude(requested_velocity))
+        desired_speed = min(preferred_speed_mps, _magnitude(requested_velocity))
         desired_vertical = requested_velocity[2]
     else:
-        desired_speed = min(request.max_speed_mps, target_distance)
+        desired_speed = min(preferred_speed_mps, target_distance)
         desired_vertical = desired_speed * to_target[2] / target_distance
     candidates: list[Point] = []
     # 环绕方向的采样不是原意图的减速版本：例如纯爬升会被额外加入水平速度。
     # 保留完整三维方向的分级减速，使窄通道内可以只放慢，而不被迫横移或制动。
     # 与探索候选一样，先施加加速度／加加速度约束，之后仍经过全部几何与时效检查。
-    nominal = _limit_magnitude(requested_velocity, request.max_speed_mps) if requested_velocity is not None else tuple(
+    nominal = _limit_magnitude(requested_velocity, preferred_speed_mps) if requested_velocity is not None else tuple(
         component * desired_speed / target_distance for component in to_target)
     for ratio in (1.0, 0.7, 0.4):
         candidates.append(_reachable_velocity(request, tuple(component * ratio for component in nominal)))
@@ -291,14 +303,14 @@ def _candidate_velocities(
                         horizontal_speed * math.cos(angle),
                         horizontal_speed * math.sin(angle),
                         max(
-                            -request.max_speed_mps,
+                            -preferred_speed_mps,
                             min(
-                                request.max_speed_mps,
+                                preferred_speed_mps,
                                 desired_vertical + vertical_bias * desired_speed,
                             ),
                         ),
                     ),
-                    request.max_speed_mps,
+                    preferred_speed_mps,
                 )
                 candidates.append(_reachable_velocity(request, requested))
     candidates.append(_reachable_velocity(request, (0.0, 0.0, 0.0)))
@@ -307,7 +319,7 @@ def _candidate_velocities(
     velocities = [
         velocity
         for velocity in dict.fromkeys(candidates)
-        if _magnitude(velocity) <= request.max_speed_mps
+        if _magnitude(velocity) <= request.max_speed_mps + 1e-9
     ]
     return velocities
 
@@ -619,16 +631,30 @@ def predictive_braking_decision(
 #   static_primitives：当前完整静态基元集合。
 #   motion_check：可选的整段运动覆盖、竖直过渡及负载资格检查，不修改候选动作。
 #   candidate_check：可选的速度、净空和偏航时效否决；只筛除动作，不能扩大运动权限。
+#   preferred_speed_mps：期望的任务速度，用于在物理硬包络内平滑减速，不能超过 request.max_speed_mps。
 # 输出：
 #   decision：动作、速度、来源归因及可追踪的预测证据。
 def predictive_safety_decision(
     request: LocalPlannerRequest,
     static_primitives: list[dict[str, Any]],
-    *, motion_check: Callable | None = None, candidate_check: Callable | None = None,
+    *,
+    motion_check: Callable | None = None,
+    candidate_check: Callable | None = None,
+    preferred_speed_mps: float | None = None,
 ) -> PredictiveSafetyDecision:
     request, static_primitives = _owned_inputs(request, static_primitives)
     if candidate_check is not None and not callable(candidate_check):
         raise ValueError("LOCAL_SAFETY_CANDIDATE_CHECK_INVALID")
+    if preferred_speed_mps is None:
+        preferred_speed_mps = request.max_speed_mps
+    if (
+        type(preferred_speed_mps) not in (int, float)
+        or not math.isfinite(preferred_speed_mps)
+        or preferred_speed_mps <= 0.0
+        or preferred_speed_mps > request.max_speed_mps
+    ):
+        raise ValueError("LOCAL_SAFETY_PREFERRED_SPEED_INVALID")
+    preferred_speed_mps = float(preferred_speed_mps)
 
     # 功能：
     #   核对候选实际会输出的偏航与速度是否还有执行时间，只接纳明确布尔许可。
@@ -672,14 +698,87 @@ def predictive_safety_decision(
     target_delta = _subtract(target, position)
     target_distance = max(_magnitude(target_delta), 1e-9)
     target_unit = tuple(component / target_distance for component in target_delta)
-    desired_speed = min(request.max_speed_mps, target_distance)
+    desired_speed = min(preferred_speed_mps, target_distance)
+    origin_clearance, origin_threat = _point_clearance(
+        position,
+        elapsed=0.0,
+        request=request,
+        static_primitives=static_primitives,
+    )
+
+    # 功能：
+    #   识别从静态保守包围体轻微穿入状态向外单调脱离的低速轨迹，避免原地保持造成永久死锁。
+    # 输入：
+    #   path：不含当前点的候选预测点；primitives：本次验证使用的静态几何。
+    # 输出：
+    #   recovery：恢复种类和末端净空；不满足低速、无动态物体、逐点改善及完整脱离时为 None。
+    def static_clearance_recovery(
+        path: list[Point], primitives: list[dict[str, Any]]
+    ) -> tuple[str, float] | None:
+        if (
+            origin_threat is None
+            or not origin_threat.startswith("static:")
+            or request.dynamic_obstacles
+            or _magnitude(current) > 0.25
+            or not path
+        ):
+            return None
+        samples = [
+            _point_clearance(
+                point,
+                elapsed=(index + 1) * request.prediction_step_seconds,
+                request=request,
+                static_primitives=primitives,
+            )
+            for index, point in enumerate(path)
+        ]
+        if any(
+            threat is not None and not threat.startswith("static:")
+            for _, threat in samples
+        ):
+            return None
+        point_clearances = [origin_clearance, *(clearance for clearance, _ in samples)]
+        # Numerical broad-phase bounds may vary by a few millimetres between
+        # adjacent samples.  They may not, however, authorize motion deeper
+        # into the primitive or finish before the qualified margin is restored.
+        monotonic = all(
+            right >= left - 0.005
+            for left, right in zip(
+                point_clearances[:-1], point_clearances[1:], strict=True
+            )
+        )
+        exit_clearance = point_clearances[-1]
+        if not monotonic:
+            return None
+        if origin_clearance > 0.0:
+            return (
+                ("margin", exit_clearance)
+                if exit_clearance >= request.required_clearance_m + 0.02
+                else None
+            )
+        maximum_recoverable_penetration_m = min(
+            0.25,
+            request.vehicle_radius_m * 0.75,
+            request.vehicle_height_m * 0.75,
+        )
+        if (
+            origin_clearance < -maximum_recoverable_penetration_m
+            or exit_clearance < request.required_clearance_m + 0.02
+        ):
+            return None
+        return "penetration", exit_clearance
+
     requested_nominal = (
         _point(request.requested_velocity_mps)
         if request.requested_velocity_mps is not None
         else tuple(component * desired_speed for component in target_unit)
     )
     nominal_velocity = _reachable_velocity(request, requested_nominal)
-    if _magnitude(nominal_velocity) > request.max_speed_mps:
+    # Reachability arithmetic may land a few ulps above an exactly requested
+    # limit (for example 0.12000000000000001 for a 0.12 m/s recovery cap).
+    # That is not physical overspeed and must not alternate a valid forward
+    # command with a braking hold. Material overspeed remains rejected.
+    if _magnitude(nominal_velocity) > request.max_speed_mps + 1e-9:
         decision = _braking_hold(
             request,
             static_primitives,
@@ -698,16 +797,59 @@ def predictive_safety_decision(
     nominal_motion_issues = (motion_check(request, nominal_velocity, [position, *nominal_path])
                              if motion_check is not None else [])
     nominal_budget_current = current_candidate(nominal_velocity, nominal_clearance, request.requested_yaw_rate_dps)
+    nominal_recovery = (
+        static_clearance_recovery(nominal_path, static_primitives)
+        if nominal_clearance < request.required_clearance_m
+        else None
+    )
+    nominal_static_egress = bool(
+        nominal_recovery is not None
+        and nominal_recovery[0] in {"penetration", "margin"}
+        and set(nominal_motion_issues).issubset({"SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"})
+    )
+    if nominal_static_egress:
+        # 零速度会把飞机永久留在保守包围体内。原路线动作已经通过完整静态几何证明为
+        # 低速、无动态目标、逐点增加净空并在预测时域内恢复全部余量，因此直接采用；
+        # 不再枚举并重复检查几十个等价三维候选，以免计算本身耗尽恢复租期。
+        decision = PredictiveSafetyDecision(
+            action="slow",
+            selected_velocity_mps=Vector3(
+                x=nominal_velocity[0],
+                y=nominal_velocity[1],
+                z=nominal_velocity[2],
+            ),
+            selected_yaw_rate_dps=request.requested_yaw_rate_dps,
+            maximum_acceleration_mps2=request.max_acceleration_mps2,
+            maximum_jerk_mps3=request.max_jerk_mps3,
+            control_source=nominal_control_source,
+            predicted_path_m=[Vector3(x=x, y=y, z=z) for x, y, z in nominal_path],
+            minimum_predicted_clearance_m=nominal_clearance,
+            recovery_exit_clearance_m=nominal_recovery[1],
+            time_to_minimum_clearance_seconds=nominal_time,
+            threat_obstacle_id=nominal_threat,
+            evaluated_candidate_count=1,
+            issue_codes=[
+                "STATIC_PENETRATION_RECOVERY"
+                if nominal_recovery[0] == "penetration"
+                else "STATIC_CLEARANCE_RECOVERY"
+            ],
+        )
+        return decision
     if not nominal_budget_current:
         nominal_motion_issues = [*nominal_motion_issues, "CANDIDATE_TIME_BUDGET_EXHAUSTED"]
-    if nominal_clearance >= request.required_clearance_m + 0.08 and not nominal_motion_issues:
-        # The active model proposal (or explicitly authorized route fallback)
-        # owns nominal motion. In a clearly safe
-        # corridor, evaluating dozens of alternative 3-D velocities cannot
-        # change the only authorized result (continue), but it can consume a
-        # substantial fraction of the short-lived command lease. Preserve the
-        # full candidate search near any safety margin or predicted obstacle;
-        # take this fast path only with an explicit 8 cm clearance buffer.
+    nominal_route_motion_is_sufficient = bool(
+        request.requested_velocity_mps is None
+        and not request.dynamic_obstacles
+        and nominal_clearance >= request.required_clearance_m
+    )
+    if (
+        nominal_clearance >= request.required_clearance_m + 0.08
+        or nominal_route_motion_is_sufficient
+    ) and not nominal_motion_issues:
+        # 无动态目标时，确定性路线的原动作只要已经通过完整净空、扫掠覆盖与时效检查，
+        # 就无需为了寻找“更优”动作再次枚举几十个三维候选。靠近栏杆时重复覆盖检查
+        # 可能耗尽短控制租期，反而把安全的纠偏飞行变成永久悬停。模型动作和存在动态
+        # 目标的周期仍要求 8 cm 额外余量，否则进入完整候选搜索。
         decision = PredictiveSafetyDecision(
             action="continue",
             selected_velocity_mps=Vector3(
@@ -745,14 +887,14 @@ def predictive_safety_decision(
         if (unconstrained_clearance > nominal_clearance
                 and current_candidate(nominal_velocity, unconstrained_clearance, request.requested_yaw_rate_dps)):
             avoidance_obstacle_id = nominal_threat
-    origin_clearance, origin_threat = _point_clearance(
-        position,
-        elapsed=0.0,
-        request=request,
-        static_primitives=static_primitives,
+    evaluations: list[
+        tuple[float, Point, list[Point], float, float, str | None, str | None, float | None]
+    ] = []
+    candidates = _candidate_velocities(
+        request,
+        include_level_flight=motion_check is not None,
+        preferred_speed_mps=preferred_speed_mps,
     )
-    evaluations: list[tuple[float, Point, list[Point], float, float, str | None, bool]] = []
-    candidates = _candidate_velocities(request, include_level_flight=motion_check is not None)
     search_primitives = _candidate_search_primitives(request, static_primitives)
 
     # 功能：
@@ -766,11 +908,7 @@ def predictive_safety_decision(
         for velocity, prediction in zip(candidate_set, predictions, strict=True):
             path, clearance, minimum_time, threat = prediction
             candidate_yaw = request.requested_yaw_rate_dps if math.dist(velocity, nominal_velocity) <= 1e-9 else 0.
-            if not current_candidate(velocity, clearance, candidate_yaw):
-                continue
-            if motion_check is not None and motion_check(request, velocity, [position, *path]):
-                continue
-            recovering_static_clearance = False
+            recovery = None
             if clearance < request.required_clearance_m:
                 # A vehicle can begin a controller cycle inside the preferred
                 # margin without being in collision (for example immediately
@@ -792,11 +930,53 @@ def predictive_safety_decision(
                     and not request.dynamic_obstacles
                     and clearance > 0.0
                     and clearance >= max(0.001, origin_clearance - 0.005)
-                    and end_clearance >= request.required_clearance_m
+                    and end_clearance >= request.required_clearance_m + 0.02
                     and (end_threat is None or end_threat.startswith("static:"))
                 )
-                if not recovering_static_clearance:
+                recovery = (
+                    ("margin", end_clearance)
+                    if recovering_static_clearance
+                    else static_clearance_recovery(path, search_primitives)
+                )
+                if recovery is None:
                     continue
+            motion_issues = (
+                motion_check(request, velocity, [position, *path])
+                if motion_check is not None
+                else []
+            )
+            # A shallow overlap with known static geometry can make the depth
+            # coverage test reject every escape ray because the vehicle starts
+            # inside that geometry.  Holding there preserves the overlap.  The
+            # static-egress proof above is narrower: complete static
+            # geometry, no dynamic object, low speed, monotonic egress, and a
+            # fully restored margin.  Permit only that proof to replace the
+            # circular "unobserved swept space" rejection; every other motion
+            # guard issue remains authoritative.
+            if motion_issues and not (
+                recovery is not None
+                and recovery[0] in {"penetration", "margin"}
+                and set(motion_issues) == {"SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"}
+            ):
+                continue
+            budget_clearance = recovery[1] if recovery is not None else clearance
+            candidate_budget_current = current_candidate(
+                velocity, budget_clearance, candidate_yaw
+            )
+            # A shallow static penetration is already an abnormal state in
+            # which zero velocity preserves or worsens contact.  The recovery
+            # proof above is intentionally much narrower than ordinary route
+            # motion: low measured speed, no dynamic object, monotonic
+            # clearance improvement and a complete exit within the horizon.
+            # Keep that unique egress candidate even when the ordinary route
+            # observation lease cannot fund another full candidate cycle.  The
+            # runtime wrapper grants only a fresh, short recovery lease after
+            # rechecking these same conditions.
+            bounded_static_egress = bool(
+                recovery is not None and recovery[0] in {"penetration", "margin"}
+            )
+            if not candidate_budget_current and not bounded_static_egress:
+                continue
             progress = sum(velocity[index] * target_unit[index] for index in range(3))
             smoothness = _magnitude(_subtract(velocity, current))
             clearance_reward = min(
@@ -811,7 +991,8 @@ def predictive_safety_decision(
                     clearance,
                     minimum_time,
                     threat,
-                    recovering_static_clearance,
+                    recovery[0] if recovery is not None else None,
+                    recovery[1] if recovery is not None else None,
                 )
             )
 
@@ -824,6 +1005,7 @@ def predictive_safety_decision(
         expanded = _candidate_velocities(
             request,
             vertical_biases=(0.35, -0.35),
+            preferred_speed_mps=preferred_speed_mps,
         )
         existing = set(candidates)
         expanded = [velocity for velocity in expanded if velocity not in existing]
@@ -841,7 +1023,16 @@ def predictive_safety_decision(
         )
         return decision
 
-    _score, velocity, path, clearance, minimum_time, threat, recovering_clearance = max(
+    (
+        _score,
+        velocity,
+        path,
+        clearance,
+        minimum_time,
+        threat,
+        recovery_kind,
+        recovery_exit_clearance,
+    ) = max(
         evaluations, key=lambda item: item[0]
     )
     # Re-evaluate the selected path with the full semantic geometry.  The
@@ -856,30 +1047,32 @@ def predictive_safety_decision(
     final_motion_issues = (motion_check(request, velocity, [position, *path])
                            if motion_check is not None else [])
     final_yaw = request.requested_yaw_rate_dps if math.dist(velocity, nominal_velocity) <= 1e-9 else 0.
-    if not current_candidate(velocity, clearance, final_yaw):
+    full_recovery = (
+        static_clearance_recovery(path, static_primitives)
+        if clearance < request.required_clearance_m
+        else None
+    )
+    final_budget_clearance = full_recovery[1] if full_recovery is not None else clearance
+    final_budget_current = current_candidate(
+        velocity, final_budget_clearance, final_yaw
+    )
+    bounded_static_egress = bool(
+        full_recovery is not None and full_recovery[0] in {"penetration", "margin"}
+    )
+    if (
+        bounded_static_egress
+        and set(final_motion_issues) == {"SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"}
+    ):
+        final_motion_issues = []
+    if not final_budget_current and not bounded_static_egress:
         final_motion_issues = [*final_motion_issues, "CANDIDATE_TIME_BUDGET_EXHAUSTED"]
     if final_motion_issues:
         return _braking_hold(request, static_primitives, candidate_count=len(candidates),
                              issue_codes=final_motion_issues[:32])
-    if clearance < request.required_clearance_m and recovering_clearance:
-        end_clearance, end_threat = _point_clearance(
-            path[-1],
-            elapsed=request.prediction_horizon_seconds,
-            request=request,
-            static_primitives=static_primitives,
-        )
-        recovering_clearance = bool(
-            origin_clearance > 0.0
-            and origin_clearance < request.required_clearance_m
-            and origin_threat is not None
-            and origin_threat.startswith("static:")
-            and not request.dynamic_obstacles
-            and clearance > 0.0
-            and clearance >= max(0.001, origin_clearance - 0.005)
-            and end_clearance >= request.required_clearance_m
-            and (end_threat is None or end_threat.startswith("static:"))
-        )
-    if clearance < request.required_clearance_m and not recovering_clearance:
+    if clearance < request.required_clearance_m:
+        recovery_kind = full_recovery[0] if full_recovery is not None else None
+        recovery_exit_clearance = full_recovery[1] if full_recovery is not None else None
+    if clearance < request.required_clearance_m and recovery_kind is None:
         # A future primitive type with an incorrect enclosing bound must fail
         # closed instead of leaking an unsafe candidate through the fast path.
         decision = _braking_hold(
@@ -897,7 +1090,7 @@ def predictive_safety_decision(
     cosine = forward / max(speed, 1e-9)
     near_required_margin = clearance < request.required_clearance_m + 0.08
     dynamic_threat = threat is not None and not threat.startswith("static:")
-    if recovering_clearance:
+    if recovery_kind is not None:
         action = "slow"
     elif speed < 0.05 and (nominal_path_hazard or dynamic_threat):
         decision = _braking_hold(
@@ -943,13 +1136,18 @@ def predictive_safety_decision(
         ),
         predicted_path_m=[Vector3(x=x, y=y, z=z) for x, y, z in path],
         minimum_predicted_clearance_m=clearance,
+        recovery_exit_clearance_m=recovery_exit_clearance,
         time_to_minimum_clearance_seconds=minimum_time,
         threat_obstacle_id=threat,
         avoidance_obstacle_id=avoidance_obstacle_id,
         evaluated_candidate_count=len(candidates),
         issue_codes=(
-            ["STATIC_CLEARANCE_RECOVERY"]
-            if recovering_clearance
+            [
+                "STATIC_PENETRATION_RECOVERY"
+                if recovery_kind == "penetration"
+                else "STATIC_CLEARANCE_RECOVERY"
+            ]
+            if recovery_kind is not None
             else ([*nominal_motion_issues[:28], f"LOCAL_SAFETY_{action.upper()}"]
                   if nominal_motion_issues or action != "continue" else [])
         ),

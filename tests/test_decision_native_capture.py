@@ -59,6 +59,7 @@ def test_capture_missing_evidence_quarantined(fault):
 
 
 # 功能：倒序/重复实际回执使窗口永久隔离但不抛出控制线程异常；输出：False。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_duplicate_receipt_does_not_throw_in_control_callback():
     recorder, outcome = capture()
     command = RuntimeLocalSafetyCommand.model_validate(outcome["commands"][0])

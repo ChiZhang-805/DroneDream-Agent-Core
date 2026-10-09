@@ -188,3 +188,19 @@ def test_builder_preflights_before_reset_and_supports_components_only() -> None:
     assert source.index("if ($StageOnly)") < source.index('run build\n')
     assert "ReuseOfficialPluginBundle" not in source
     assert source.index("build-official-plugins.ps1") < source.index("core_build_receipt.py")
+
+
+# 功能：
+#   防止 Windows 发布脚本再次把只能在 Windows 安装的 wheel 放入 Linux Runtime。
+# 输入：
+#   无：只读当前构建脚本。
+# 输出：
+#   None：断言失败时测试报错。
+def test_release_builder_builds_core_wheel_with_linux_runtime_interpreter() -> None:
+    source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
+
+    assert "wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800" in source
+    assert "/venv/bin/python `" in source
+    assert "--no-build-isolation --no-deps" in source
+    assert "Convert-ToRuntimeBuildPath $runtimeWheels" in source
+    assert "& $python -m pip wheel --no-deps --wheel-dir $runtimeWheels $repoRoot" not in source

@@ -15,7 +15,11 @@ from dataclasses import replace
 from .contracts import RuntimeLocalSafetyCommand
 from .control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
 from .hashing import sha256_json
-from .navigation_snapshot import NavigationSnapshotRequest, compile_navigation_snapshot, freeze_navigation_frame
+from .navigation_snapshot import (
+    NavigationSnapshotRequest,
+    compile_navigation_snapshot,
+    freeze_navigation_frame,
+)
 from .plugin_values import plugin_json_value
 from .realtime_feature_encoders import RealtimeFeatureSnapshot
 

@@ -80,8 +80,50 @@ def test_grant_or_quota_rejection_is_not_retried(status, monkeypatch) -> None:
 
     monkeypatch.setattr(port, "_responses_call", reject)
     with pytest.raises(ModelInvocationError) as caught:
-        port.call(role="intent_parser", output_type=IntentArtifact, instructions="Return intent", input_artifact={"message": "takeout"})
+        port.call(
+            role="intent_parser",
+            output_type=IntentArtifact,
+            instructions="Return intent",
+            input_artifact={"message": "takeout"},
+        )
     assert caught.value.attempts_used == 1
+    assert caught.value.__cause__ is error
+    assert len(calls) == 1
+
+
+# 功能：
+#   验证供应商拒绝过大的请求时立即停止，不重复发送同一份超限正文。
+# 输入：
+#   monkeypatch：替换真实供应商请求的测试装置。
+# 输出：
+#   无；重试次数或稳定原因码不正确时测试失败。
+def test_request_too_large_is_not_retried(monkeypatch) -> None:
+    import httpx
+    from openai import APIStatusError
+
+    port = _port()
+    calls = []
+    response = httpx.Response(
+        413,
+        request=httpx.Request("POST", "https://example.invalid/v1"),
+    )
+    error = APIStatusError("request too large", response=response, body=None)
+
+    def reject(**kwargs):
+        calls.append(kwargs)
+        raise error
+
+    monkeypatch.setattr(port, "_responses_call", reject)
+    with pytest.raises(ModelInvocationError) as caught:
+        port.call(
+            role="intent_parser",
+            output_type=IntentArtifact,
+            instructions="Return intent",
+            input_artifact={"message": "takeout"},
+        )
+
+    assert caught.value.attempts_used == 1
+    assert caught.value.reason_code == "MODEL_REQUEST_TOO_LARGE"
     assert caught.value.__cause__ is error
     assert len(calls) == 1
 

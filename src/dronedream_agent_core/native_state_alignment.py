@@ -4,7 +4,10 @@ import copy
 import math
 from collections import deque
 
-from .control_feature_contract import FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS, FLIGHT_STATE_MAXIMUM_GAP_MS
+from .control_feature_contract import (
+    FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS,
+    FLIGHT_STATE_MAXIMUM_GAP_MS,
+)
 from .source_clock import source_received_at_unix_ms
 
 _FIELDS = {
@@ -67,7 +70,7 @@ class NativeReceiveAligner:
         return True
 
     # 功能：
-    #   1. 从真实接收样本中选取最新的时间一致组合，维持 50 ms 偏差和 250 ms 有效期。
+    #   1. 从真实接收样本中选取最新的时间一致组合，维持 75 ms 偏差和 250 ms 有效期。
     #   2. 不插值、不预测、不修改原接收时刻或设备时钟；缺样、错误和时钟倒退交给原消费者拒绝。
     # 输入：
     #   observed：独占的位置速度快照。

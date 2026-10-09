@@ -69,7 +69,7 @@ ASSET_FIELDS = ("route", "semantic", "world_sdf", "vehicle_sdf", "vehicle", "con
 # Owned numeric-container snapshots reduced measured preparation to 34 ms.
 # Keep that predictive reserve for unselected startup and the reward-step API. Streaming
 # imitation instead attempts preparation against the actual remaining deadline,
-# then discards an output if it lacks the shared 50 Hz executor dispatch reserve.
+# then discards an output if it lacks the shared 20 Hz executor dispatch reserve.
 # A prediction of preparation time never substitutes for final admission.
 TRAINING_REPLY_PREPARATION_RESERVE_MS = 50
 # 仅旧请求可丢弃并等待新帧；超长租约、身份不符和损坏内容必须继续上抛。
@@ -92,10 +92,12 @@ def require_visual_control_source(config) -> None:
         # 地图融合也消费原生源钟；不能等到子进程创建后才发现源/二进制版本不一致。
         validate_native_camera_clock(Path(runtime),
             source_root=Path(__file__).resolve().parents[3]/'native/camera_clock')
-    if ((config.visual_encoder is not None or config.visual_package is not None)
-            and config.render_replica_runtime is None):
-        if runtime is None:
-            raise ValueError("PX4_VISUAL_CONTROL_REQUIRES_SOURCE_CLOCK_RENDERER")
+    if (
+        (config.visual_encoder is not None or config.visual_package is not None)
+        and config.render_replica_runtime is None
+        and runtime is None
+    ):
+        raise ValueError("PX4_VISUAL_CONTROL_REQUIRES_SOURCE_CLOCK_RENDERER")
 
 
 class Px4TrainingConfig(StrictModel):

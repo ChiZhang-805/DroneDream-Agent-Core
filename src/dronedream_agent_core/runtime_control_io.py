@@ -13,7 +13,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from dronedream_plugin_sdk.protocol import MAX_MESSAGE_BYTES, decode_json, encode_json
+from dronedream_plugin_sdk.protocol import (
+    MAX_JSON_NODES,
+    MAX_MESSAGE_BYTES,
+    decode_json,
+    encode_json,
+)
 
 from .plugin_files import check_plain_plugin_path, read_plugin_file
 from .plugin_values import plugin_json_value
@@ -56,12 +61,18 @@ def transfer_runtime_file(source: Path, destination: Path) -> None:
 # 输入：
 #   path：运行记录的明确本地路径。
 #   maximum_bytes：该种记录的字节上限；大型替换轨迹由宿主单独设置。
+#   node_limit：该种证据的 JSON 节点上限；默认仍保持普通消息限制。
 # 输出：
 #   value：通过普通文件和有限 JSON 检查的证据字典。
-def read_runtime_object(path: Path, *, maximum_bytes: int = MAX_MESSAGE_BYTES) -> dict:
-    encode_json(0, limit=maximum_bytes)
+def read_runtime_object(
+    path: Path,
+    *,
+    maximum_bytes: int = MAX_MESSAGE_BYTES,
+    node_limit: int = MAX_JSON_NODES,
+) -> dict:
+    encode_json(0, limit=maximum_bytes, node_limit=node_limit)
     payload = read_plugin_file(path, limit=maximum_bytes)
-    value = decode_json(payload, limit=maximum_bytes)
+    value = decode_json(payload, limit=maximum_bytes, node_limit=node_limit)
     if not isinstance(value, dict):
         raise ValueError("RUNTIME_CONTROL_EVIDENCE_NOT_OBJECT")
     return value

@@ -192,4 +192,5 @@ def test_only_gazebo_and_render_replica_use_render_environment():
                 outputs = [kw.value.id for kw in call.keywords if kw.arg == "stdout"
                            and isinstance(kw.value, ast.Name)]
                 uses.extend(outputs)
-    assert sorted(uses) == ["gazebo_log", "render_replica_log"]
+    # 渲染副本允许在受控恢复路径中重启；每一次仍只能使用同一受限渲染环境。
+    assert sorted(set(uses)) == ["gazebo_log", "render_replica_log"]

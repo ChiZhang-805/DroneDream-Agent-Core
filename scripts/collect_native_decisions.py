@@ -435,6 +435,7 @@ def collect(config, seconds, scene, *, split="train", route_guidance=False):
         last_witness_ms = int(time.time() * 1000) - 100
 
         # 功能：等待新观测时只归档标签通道；输出：更新标签游标，不访问/改写控制提案。
+        # 输入：函数签名中的显式参数及已验证的调用上下文。
         def drain():
             nonlocal last_witness_ms
             last_witness_ms = drain_label_witnesses(

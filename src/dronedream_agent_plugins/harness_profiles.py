@@ -327,7 +327,7 @@ def plugin_definitions() -> list[PluginDefinition]:
             "应急响应",
             "面向时间敏感但仍需安全门禁的任务，缩短规划路径并保持高频检查与安全悬停。",
             ["latency", "clearance", "communications", "safe-hold"],
-            ["route-clearance", "link-margin", "segment-checkpoints", "abort-options"],
+            ["route-clearance", "link-margin", "segment-checkpoints", "recovery-options"],
             "rapid-safe-response",
             [
                 "workflow.fast-preview",

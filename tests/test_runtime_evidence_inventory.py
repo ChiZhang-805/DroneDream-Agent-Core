@@ -215,6 +215,7 @@ def test_wsl_windows_receipts_are_portable_without_basename_matching(drive):
 
 
 # 功能：跨平台兼容不接受别回合、别盘符、点段、同名文件及重复别名；输出：严格拒绝。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("foreign", [
     "/mnt/q/runs/run-2/control.jsonl", "/mnt/c/runs/run-1/control.jsonl",
     "/mnt/q/runs/run-2/../run-1/control.jsonl", "control.jsonl",
@@ -227,6 +228,7 @@ def test_cross_platform_path_does_not_erase_ownership(foreign):
 
 
 # 功能：同一文件两种写法不能计作两份独立证据；输出：回执/清单中的重复均拒绝。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_cross_platform_duplicate_alias_rejected():
     windows, linux = "Q:/runs/control.jsonl", "/mnt/q/runs/control.jsonl"
     summary = receipt({windows: 3})

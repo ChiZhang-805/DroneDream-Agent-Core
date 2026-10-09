@@ -23,14 +23,14 @@ from ..local_expert_harness import requested_navigation_expert
 from ..local_policy_port import compile_local_policy_features
 from ..local_policy_training import LocalPolicyObservation, LocalPolicyTrainingSample
 from ..pilot_control_mapping import PilotControlLimits
-from ..precision_heading_input import current_precision_heading_input
-from ..simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from ..plugin_files import (
     check_plain_plugin_path,
     hash_plugin_file,
     portable_plugin_path,
     read_plugin_file,
 )
+from ..precision_heading_input import current_precision_heading_input
+from ..simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from .evidence_files import (
     MAX_TRAINING_DATASET_BYTES,
     MAX_TRAINING_ROWS,

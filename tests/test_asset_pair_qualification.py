@@ -255,7 +255,18 @@ def _fixtures(
         },
         "collision_primitives": [
             {
+                "name": "launch-floor",
+                "semantic": "floor",
+                "center_x": 0.0,
+                "center_y": 0.0,
+                "center_z": -0.05,
+                "size_x": 20.0,
+                "size_y": 20.0,
+                "size_z": 0.1,
+            },
+            {
                 "name": "distant-wall",
+                "semantic": "wall",
                 "center_x": 100.0,
                 "center_y": 100.0,
                 "center_z": 2.0,

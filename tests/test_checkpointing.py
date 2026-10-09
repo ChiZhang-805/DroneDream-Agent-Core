@@ -58,12 +58,12 @@ def test_model_accept_requires_every_code_gate() -> None:
 
 
 # 功能：
-#   验证代码门控通过时仍需模型明确接受，模型要求悬停不能被改成继续执行。
+#   验证模型只有建议权；确定性门控通过时，模型不能单票终止控制链路。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_code_accepts_only_bound_safe_model_accept() -> None:
+def test_code_gates_authorize_continuation_independent_of_model_opinion() -> None:
     request = _request()
     binding = {"checkpoint_binding": True, "track_point_binding": True}
     assert checkpoint_continue_authorized(
@@ -71,11 +71,27 @@ def test_code_accepts_only_bound_safe_model_accept() -> None:
         assessment=RuntimeAssessment(action="accept"),
         binding_gates=binding,
     )
-    assert not checkpoint_continue_authorized(
+    assert checkpoint_continue_authorized(
         request=request,
         assessment=RuntimeAssessment(action="hold"),
         binding_gates=binding,
     )
+
+
+def test_model_transport_failure_falls_back_to_deterministic_continuation() -> None:
+    from dronedream_agent_core.checkpointing import _advisory_unavailable_decision
+
+    decision = _advisory_unavailable_decision(
+        request=_request(),
+        binding_gates={"checkpoint_binding": True},
+        error=TimeoutError("provider unavailable"),
+    )
+
+    assert decision.continue_authorized is True
+    assert decision.assessment.action == "hold"
+    assert decision.assessment.issue_codes == ["MODEL_ADVISORY_UNAVAILABLE"]
+    assert decision.model_call.provider == "runtime-policy"
+    assert decision.model_call.model == "deterministic-continuity-fallback"
 
 
 # 功能：
@@ -182,7 +198,7 @@ def test_stale_model_call_discards_late_checkpoint_decision(tmp_path, monkeypatc
     else:
         assert isinstance(coordinator.error, RuntimeError)
         assert "revision changed" in str(coordinator.error)
-        assert coordinator.abort_file.exists()
+        assert not coordinator.abort_file.exists()
     assert not list(folder.glob("*.decision.json"))
 
 
@@ -317,11 +333,11 @@ def test_checkpoint_rechecks_lifecycle_after_output_guard(
         assert coordinator.error is None and not coordinator.abort_file.exists()
     else:
         assert "revision changed" in str(coordinator.error)
-        assert coordinator.abort_file.exists()
+        assert not coordinator.abort_file.exists()
 
 
 # 功能：
-#   验证发布失败的决定不能提前登记为已发布，错误仍触发中止证据。
+#   验证发布失败的决定不能提前登记为已发布，也不会把旁路故障升级为飞行中止。
 # 输入：
 #   tmp_path：隔离运行目录。
 #   monkeypatch：模拟决定文件写入失败。
@@ -350,7 +366,7 @@ def test_failed_decision_publication_does_not_enter_success_history(tmp_path, mo
     coordinator._run()
     assert isinstance(coordinator.error, OSError)
     assert not coordinator.decisions
-    assert coordinator.abort_file.exists()
+    assert not coordinator.abort_file.exists()
 
 
 # 功能：

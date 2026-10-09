@@ -26,7 +26,12 @@ from .collision import (
     build_tracking_corridor_budget,
 )
 from .context import ContextStore
+from .context_projection import (
+    compact_mission_request_event,
+    intent_model_request_projection,
+)
 from .contracts import (
+    CatalogEntity,
     ConversationWindow,
     DomainActionCatalog,
     FlightPlan,
@@ -123,15 +128,18 @@ CORE_PLANNING_SLOTS = frozenset(
 )
 IMMUTABLE_SAFETY_RULES = [
     "Model output never has direct actuator authority.",
-    "Unknown or unavailable critical telemetry causes hold or abort.",
+    "Unknown or unavailable critical telemetry causes a bounded hold and recovery attempt.",
     "Every executable route must pass continuous vehicle-envelope collision checks.",
     "Execution must remain inside the qualified map and vehicle asset hashes.",
-    "Landing or abort remains available at every runtime phase.",
+    (
+        "Correction, replanning, return, and controlled landing remain available "
+        "at every runtime phase."
+    ),
 ]
 REQUIRED_MISSION_CONSTRAINTS = [
     "safety_priority",
     "bounded_execution_speed",
-    "runtime_hold_return_or_abort_available",
+    "runtime_hold_replan_return_or_land_available",
     "explicit_execution_and_landing_confirmation",
 ]
 EXPLICIT_CONSTRAINT_PHRASES = {
@@ -338,6 +346,80 @@ def _intent_repair_feedback(
     return critique.model_dump(mode="json")
 
 
+# 功能：
+#   把意图复核限制在用户语义范围内，丢弃应由地图、载荷和运行时工具处理的越权否决。
+# 输入：
+#   critique：模型给出的自由文本复核结果。
+#   intent：已应用产品默认值和明确约束的候选意图。
+#   request：当前完整用户请求，用于识别明确单程要求。
+# 输出：
+#   normalized：只保留真正可能改变用户任务含义的复核结果。
+#   discarded：被后续确定性工具覆盖的越权问题代码。
+def _normalize_intent_critique_scope(
+    critique: IntentCritique,
+    intent: IntentArtifact,
+    request: MissionRequest,
+) -> tuple[IntentCritique, list[str]]:
+    """Prevent a semantic reviewer from becoming a second safety or route gate.
+
+    Entity existence, route clearance, payload capacity, sensor readiness and execution
+    evidence all have dedicated deterministic gates later in preparation. Letting the
+    intent critic reject those concerns makes a valid clarification loop exhaust before
+    the owning tools can run. The critic may still veto a material mismatch between the
+    user's words and the parsed goal, entities, action or explicit constraints.
+    """
+
+    if critique.accepted:
+        return critique, []
+
+    semantic_codes = {
+        "GOAL_MISMATCH",
+        "START_ENTITY_MISMATCH",
+        "TARGET_ENTITY_MISMATCH",
+        "RETURN_ENTITY_MISMATCH",
+        "PAYLOAD_ACTION_MISMATCH",
+        "USER_CONSTRAINT_MISSING",
+        "USER_REQUEST_CONTRADICTION",
+        "MATERIAL_AMBIGUITY",
+    }
+    one_way_markers = (
+        "不回来",
+        "不用回来",
+        "留在那里",
+        "在那里降落",
+        "单程",
+        "do not return",
+        "don't return",
+        "leave it there",
+        "land there",
+        "one-way",
+    )
+    normalized_codes = []
+    for code in critique.issue_codes:
+        normalized = code.strip().upper()
+        if normalized not in semantic_codes:
+            continue
+        if (
+            normalized == "RETURN_ENTITY_MISMATCH"
+            and intent.payload_action == "pickup"
+            and intent.return_entity == intent.start_entity
+            and not any(marker in request.message.lower() for marker in one_way_markers)
+        ):
+            continue
+        normalized_codes.append(normalized)
+    normalized_codes = list(dict.fromkeys(normalized_codes))[:16]
+    discarded = [
+        code for code in critique.issue_codes if code.strip().upper() not in normalized_codes
+    ]
+    if not normalized_codes:
+        return IntentCritique(accepted=True), discarded
+    return IntentCritique(
+        accepted=False,
+        issue_codes=normalized_codes,
+        repair_instructions=critique.repair_instructions,
+    ), discarded
+
+
 class MissionPreparationBlocked(RuntimeError):
     """A bounded planning stage could not produce a safe executable package."""
 
@@ -349,10 +431,14 @@ class MissionClarificationRequired(MissionPreparationBlocked):
     #   fields：经过结构化意图验证的疑问。
     # 输出：
     #   self：带有限长度追问信息的准备中断。
-    def __init__(self, fields: list[str]) -> None:
+    def __init__(self, fields: list[str], questions: list[object] | None = None) -> None:
         super().__init__("MISSION_CLARIFICATION_REQUIRED")
         self.fields = list(dict.fromkeys(field.strip()[:240] for field in fields if field.strip()))[
             :16
+        ]
+        self.questions = [
+            question.model_dump(mode="json") if hasattr(question, "model_dump") else question
+            for question in (questions or [])[:4]
         ]
 
 
@@ -519,6 +605,8 @@ def _compact_context(window: Any) -> dict[str, object]:
                 if isinstance(record, dict)
                 else {},
             }
+        elif event.event_type == "mission.request":
+            payload = compact_mission_request_event(payload)
         recent.append(
             {
                 "sequence": event.sequence,
@@ -691,6 +779,179 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
 
 
 # 功能：
+#   把澄清选项确定性地绑定到一个且仅一个地图实体，防止模型把两个地点合并为一个选择。
+# 输入：
+#   intent：模型产生的候选意图；catalog：当前地图实体目录；graph：资格路线图。
+# 输出：
+#   normalized：补入稳定实体标识的意图；issues：无法唯一绑定时的机器可修复问题码。
+def _ground_intent_clarification_options(
+    intent: IntentArtifact,
+    catalog: MapCatalog,
+    graph: MapAsset,
+) -> tuple[IntentArtifact, list[str]]:
+    if not intent.clarification_questions:
+        return intent, []
+
+    try:
+        start_node = resolve_map_entity(intent.start_entity, catalog, graph)
+    except AssetQualificationError:
+        start_node = None
+
+    normalized_questions: list[dict[str, object]] = []
+    issues: list[str] = []
+    seen_nodes: set[str] = set()
+
+    def mentioned(text: str, candidate: str) -> bool:
+        value = candidate.casefold().strip()
+        if len(value) < 2:
+            return False
+        escaped = re.escape(value)
+        if re.fullmatch(r"[a-z0-9._-]+", value):
+            return re.search(rf"(?<![a-z0-9._-]){escaped}(?![a-z0-9._-])", text) is not None
+        return value in text
+
+    for question in intent.clarification_questions:
+        question_data = question.model_dump(mode="json")
+        normalized_options: list[dict[str, object]] = []
+        for option in question.options:
+            text = f"{option.label}\n{option.response}".casefold()
+            candidates: set[str] = set()
+            for entity in catalog.entities:
+                names = [entity.entity_id, *entity.aliases]
+                if any(mentioned(text, name) for name in names):
+                    candidates.add(entity.entity_id)
+            if len(candidates) != 1:
+                issues.append("CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE")
+                normalized_options.append(option.model_dump(mode="json"))
+                continue
+            entity_id = next(iter(candidates))
+            try:
+                node_id = resolve_map_entity(entity_id, catalog, graph)
+            except AssetQualificationError:
+                issues.append("CLARIFICATION_OPTION_ENTITY_UNRESOLVED")
+                normalized_options.append(option.model_dump(mode="json"))
+                continue
+            if node_id in seen_nodes:
+                issues.append("CLARIFICATION_OPTIONS_DUPLICATE_LOCATION")
+            seen_nodes.add(node_id)
+            if (
+                intent.payload_action == "pickup"
+                and start_node is not None
+                and node_id == start_node
+            ):
+                issues.append("CLARIFICATION_PICKUP_OPTION_IS_LAUNCH")
+            response = option.response
+            if not mentioned(response.casefold(), entity_id):
+                response = f"{response.rstrip('。.! ')}（{entity_id}）。"
+            option_data = option.model_dump(mode="json")
+            option_data["response"] = response
+            normalized_options.append(option_data)
+        question_data["options"] = normalized_options
+        normalized_questions.append(question_data)
+
+    payload = intent.model_dump(mode="json")
+    payload["clarification_questions"] = normalized_questions
+    normalized = IntentArtifact.model_validate(payload)
+    return normalized, list(dict.fromkeys(issues))
+
+
+# 功能：
+#   在当前目标的所有候选路线均不可执行时，从现有地图拓扑中生成可往返的替代目的地追问。
+# 输入：
+#   request：提供用户语言；intent：保留任务动作；contract：提供已冻结起点、目标和返程点；
+#   catalog：地图实体目录；graph：有向或双向地图拓扑。
+# 输出：
+#   fields：面向用户的缺失信息；questions：按任务语义和实体标识稳定排序的二至三个选项。
+def _route_recovery_clarification(
+    request: MissionRequest,
+    intent: IntentArtifact,
+    contract: MissionContract,
+    catalog: MapCatalog,
+    graph: MapAsset,
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Turn route exhaustion into a bounded replanning choice when alternatives exist."""
+
+    adjacency: dict[str, set[str]] = {node.node_id: set() for node in graph.nodes}
+    for edge in graph.edges:
+        adjacency[edge.from_node].add(edge.to_node)
+        if edge.bidirectional:
+            adjacency[edge.to_node].add(edge.from_node)
+
+    def reachable(start: str, goal: str) -> bool:
+        if start == goal:
+            return True
+        visited = {start}
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            for neighbor in adjacency.get(current, set()):
+                if neighbor == goal:
+                    return True
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    pending.append(neighbor)
+        return False
+
+    def display_label(entity: CatalogEntity) -> str:
+        aliases = list(entity.aliases)
+        if request.locale == "zh-CN":
+            localized = [alias for alias in aliases if re.search(r"[\u3400-\u9fff]", alias)]
+        else:
+            localized = [alias for alias in aliases if alias.isascii()]
+        return (localized or aliases)[0]
+
+    candidates: list[tuple[int, str, str]] = []
+    excluded_nodes = {contract.start_node, contract.target_node, contract.return_node}
+    for entity in catalog.entities:
+        try:
+            node_id = resolve_map_entity(entity.entity_id, catalog, graph)
+        except AssetQualificationError:
+            continue
+        if node_id in excluded_nodes:
+            continue
+        if not reachable(contract.start_node, node_id) or not reachable(
+            node_id, contract.return_node
+        ):
+            continue
+        semantic_priority = 0 if entity.semantic == intent.payload_action else 1
+        candidates.append((semantic_priority, entity.entity_id, display_label(entity)))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+
+    if request.locale == "zh-CN":
+        field = "当前目的地没有满足飞行条件的路线，请选择另一个地图地点"
+        prompt = "当前路线无法安全通过。要改去哪个地图地点？"
+        other_label = "其他地点"
+        response_template = "将目的地改为{label}（{entity_id}）并重新规划。"
+    else:
+        field = "Choose another mapped destination because no flyable route reaches the current one"
+        prompt = (
+            "No flyable route reaches the current destination. Where should the mission go instead?"
+        )
+        other_label = "Another location"
+        response_template = "Change the destination to {label} ({entity_id}) and replan."
+
+    options = [
+        {
+            "option_id": option_id,
+            "label": f"{label} ({entity_id})",
+            "response": response_template.format(label=label, entity_id=entity_id),
+        }
+        for option_id, (_, entity_id, label) in zip(("A", "B", "C"), candidates[:3], strict=False)
+    ]
+    if len(options) < 2:
+        return [field], []
+    return [field], [
+        {
+            "question_id": "target_entity",
+            "prompt": prompt,
+            "options": options,
+            "allow_other": True,
+            "other_label": other_label,
+        }
+    ]
+
+
+# 功能：
 #   声明此阶段只获准准备仿真计划；真实执行仍须独立确认，不限制任务只能单程。
 # 输入：
 #   无。
@@ -707,6 +968,13 @@ def _intent_workflow_scope() -> dict[str, object]:
         "execution_confirmation_required": True,
         "physical_hardware_authority": False,
         "round_trip_supported": True,
+        "product_defaults": {
+            "plan_before_execution": True,
+            "pickup_returns_to_requester_start_unless_another_destination_is_explicit": True,
+            "pickup_hover_seconds": 10,
+            "pickup_scan_policy": "only_when_required_by_the_pickup_workflow",
+            "launch_entity_is_current_simulated_position_when_the_user_does_not_name_a_start": True,
+        },
         "return_entity_semantics": (
             "final landing entity for both one-way and round-trip missions"
         ),
@@ -731,6 +999,48 @@ def _bind_explicit_intent_constraints(
         {**intent.model_dump(mode="json"), "constraints": values}, IntentArtifact
     )
     return bound_intent
+
+
+def _bind_product_intent_defaults(
+    intent: IntentArtifact,
+    request: MissionRequest,
+) -> IntentArtifact:
+    """Apply stable product workflow defaults without fabricating map evidence."""
+
+    values = list(intent.constraints)
+    updates: dict[str, object] = {}
+    if intent.payload_action == "pickup":
+        if not any(value.startswith("pickup_hover_seconds=") for value in values):
+            values.append("pickup_hover_seconds=10")
+        one_way_markers = (
+            "不回来",
+            "不用回来",
+            "留在那里",
+            "在那里降落",
+            "单程",
+            "do not return",
+            "don't return",
+            "leave it there",
+            "land there",
+            "one-way",
+        )
+        if (
+            intent.return_entity == intent.target_entity
+            and intent.start_entity != intent.target_entity
+            and not any(marker in request.message.lower() for marker in one_way_markers)
+        ):
+            updates["return_entity"] = intent.start_entity
+    if intent.start_entity in {
+        "__auto__",
+        "__unresolved__",
+        "unknown",
+    } and request.start_entity not in {"__auto__", "__unresolved__", "unknown"}:
+        updates["start_entity"] = request.start_entity
+    updates["constraints"] = list(dict.fromkeys(values))
+    return _artifact_snapshot(
+        {**intent.model_dump(mode="json"), **updates},
+        IntentArtifact,
+    )
 
 
 # 功能：
@@ -1215,8 +1525,10 @@ def _validate_task_graph(
         verification_task_ids = {
             task.task_id for task in graph.nodes if task.action in verification_actions
         }
-        if any(task_id not in ancestors or by_id[task_id].target_node != pickup.target_node
-               for task_id in verification_task_ids):
+        if any(
+            task_id not in ancestors or by_id[task_id].target_node != pickup.target_node
+            for task_id in verification_task_ids
+        ):
             raise MissionPreparationBlocked(
                 "TASK_GRAPH_PICKUP_VERIFICATION_LOCATION_OR_ORDER_INVALID"
             )
@@ -1229,9 +1541,13 @@ def _validate_task_graph(
             }
             if not precontact_task_ids:
                 raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PRECONTACT_HOLD")
-            if any(not any(precontact_id in _task_ancestors(graph, verification_id)
-                           for precontact_id in precontact_task_ids)
-                   for verification_id in verification_task_ids):
+            if any(
+                not any(
+                    precontact_id in _task_ancestors(graph, verification_id)
+                    for precontact_id in precontact_task_ids
+                )
+                for verification_id in verification_task_ids
+            ):
                 raise MissionPreparationBlocked("TASK_GRAPH_PRECONTACT_ORDER_INVALID")
         if "delivery.confirm-custody" in authorized_actions:
             custody_tasks = [
@@ -1250,7 +1566,13 @@ def _validate_task_graph(
             returns = [
                 task
                 for task in graph.nodes
-                if task.action in movement_actions and task.target_node == contract.return_node
+                # A semantic pickup point can share a topology node with the launch
+                # point.  In that case target-based matching also selects the
+                # outbound navigate task and incorrectly requires it to depend on
+                # a payload-stability check that has not happened yet.  The core
+                # action catalog provides an explicit return action, so authorize
+                # only that phase here; its target is still checked independently.
+                if task.action == "return" and task.target_node == contract.return_node
             ]
             if "delivery.verify-loaded-stability" in authorized_actions:
                 stability_tasks = [
@@ -1506,7 +1828,8 @@ def _route_operational_clearance_assessment(
 
     if clearance.minimum_clearance_m > 0 and math.isfinite(clearance.minimum_clearance_m):
         assessment["localization_requirement"] = assess_tracking_corridor_budget(
-            clearance.minimum_clearance_m)
+            clearance.minimum_clearance_m
+        )
     return assessment
 
 
@@ -2191,6 +2514,7 @@ class MissionOrchestrator:
         results: list[StructuredCallResult[Any]] = []
         response_metering: list[Any] = []
         failures: list[str] = []
+        failure_codes: list[str] = []
         attempted_ports: list[str] = []
         for port_name in candidate_ports:
             if len(results) >= maximum_responses:
@@ -2219,14 +2543,15 @@ class MissionOrchestrator:
                 )
             except ModelInvocationError as error:
                 self._model_call_count += error.attempts_used
-                failure = f"{port_name}:{type(error).__name__}:{str(error)[:360]}"
+                failure = f"{port_name}:{error.reason_code}"
                 failures.append(failure)
+                failure_codes.append(error.reason_code)
                 evidence.append(
                     f"model.{role}.provider-attempts-failed",
                     {
                         "port": port_name,
                         "attempts_used": error.attempts_used,
-                        "issue": str(error)[:360],
+                        "issue": error.reason_code,
                         "physical_attempt_count": self._model_call_count,
                         "physical_attempt_budget": self._model_call_budget,
                     },
@@ -2270,6 +2595,8 @@ class MissionOrchestrator:
                 )
             results.append(candidate_result)
         if len(results) < minimum_responses:
+            if failure_codes and set(failure_codes) == {"MODEL_REQUEST_TOO_LARGE"}:
+                raise MissionPreparationBlocked("MODEL_REQUEST_TOO_LARGE")
             raise MissionPreparationBlocked(
                 "MODEL_CONSENSUS_INSUFFICIENT_RESPONSES:" + ",".join(failures)
             )
@@ -2366,7 +2693,13 @@ class MissionOrchestrator:
         evidence: EvidenceChain,
     ) -> None:
         from .model_harness.progress import report_progress
-        report_progress("tools", f"工具 {receipt.tool_id} 已返回回执，正在记录结果并核对任务约束。", f"Tool {receipt.tool_id} returned a receipt; recording the result and checking task constraints.")
+
+        report_progress(
+            "tools",
+            f"工具 {receipt.tool_id} 已返回回执，正在记录结果并核对任务约束。",
+            f"Tool {receipt.tool_id} returned a receipt; "
+            "recording the result and checking task constraints.",
+        )
         payload = receipt.model_dump(mode="json")
         context_store.append(
             conversation_id, role="tool", event_type=f"tool.{receipt.tool_id}", payload=payload
@@ -2434,7 +2767,7 @@ class MissionOrchestrator:
     #   prepared：绑定当前地图、机型、插件、调用记录与执行前置条件的计划包。
     def _prepare(self, request: MissionRequest, output_dir: Path) -> PreparedMission:
         try:
-            model_request_context = _model_request_context(request)
+            model_request_context = intent_model_request_projection(_model_request_context(request))
         except ValueError as error:
             raise MissionPreparationBlocked(str(error)) from error
         explicit_constraint_hints = _explicit_constraint_hints(request)
@@ -2445,9 +2778,7 @@ class MissionOrchestrator:
             raise MissionPreparationBlocked("PREPARATION_SEMANTIC_CATALOG_MISMATCH")
         # 坐标基准或碰撞中心缺失不能等到多轮付费规划后才在导出步骤发现。
         try:
-            load_map_runtime_bindings(
-                read_map_semantic_object(self.semantic_path)
-            )
+            load_map_runtime_bindings(read_map_semantic_object(self.semantic_path))
             resolve_vehicle_collision_center_offset(self.vehicle)
         except ValueError as error:
             raise MissionPreparationBlocked(str(error)) from error
@@ -2739,7 +3070,7 @@ class MissionOrchestrator:
             request.conversation_id,
             role="user",
             event_type="mission.request",
-            payload=request.model_dump(mode="json"),
+            payload=compact_mission_request_event(request.model_dump(mode="json")),
         )
         evidence.append("mission.request", request.model_dump(mode="json"))
         try:
@@ -2966,7 +3297,13 @@ class MissionOrchestrator:
             )
             intent = _artifact_snapshot(intent, IntentArtifact)
             model_constraints = list(intent.constraints)
+            intent = _bind_product_intent_defaults(intent, request)
             intent = _bind_explicit_intent_constraints(intent, explicit_constraint_hints)
+            intent, clarification_grounding_issues = _ground_intent_clarification_options(
+                intent,
+                self.map_catalog,
+                self.map_graph,
+            )
             if intent.constraints != model_constraints:
                 evidence.append(
                     "intent.explicit-constraints-core-bound",
@@ -2985,6 +3322,22 @@ class MissionOrchestrator:
                     "repair_instructions": ["Select payload_action from domain_action_catalog."],
                 }
                 evidence.append("intent.validation-rejected", prior_critique)
+                continue
+            if clarification_grounding_issues:
+                prior_intent = intent.model_dump(mode="json")
+                prior_critique = {
+                    "schema_version": "dronedream.intent-critique.v1",
+                    "accepted": False,
+                    "issue_codes": clarification_grounding_issues,
+                    "repair_instructions": [
+                        (
+                            "Give each clarification option exactly one current map entity; "
+                            "include its entity_id in option.response, never combine entities, "
+                            "and do not offer the launch point as a pickup destination."
+                        )
+                    ],
+                }
+                evidence.append("intent.clarification-grounding-rejected", prior_critique)
                 continue
             intent_reviews: list[IntentCritique] = []
             topology_review_count = len(
@@ -3019,7 +3372,21 @@ class MissionOrchestrator:
                     evidence=evidence,
                 )
                 model_calls.extend(_model_records(reviewed))
-                intent_reviews.append(reviewed.artifact)
+                normalized_review, discarded_codes = _normalize_intent_critique_scope(
+                    reviewed.artifact,
+                    intent,
+                    request,
+                )
+                if discarded_codes:
+                    evidence.append(
+                        "intent.critic-scope-normalized",
+                        {
+                            "discarded_issue_codes": discarded_codes,
+                            "retained_issue_codes": normalized_review.issue_codes,
+                            "authority": "intent-semantics-only",
+                        },
+                    )
+                intent_reviews.append(normalized_review)
             intent_critique = IntentCritique(
                 accepted=all(review.accepted for review in intent_reviews),
                 issue_codes=list(
@@ -3059,7 +3426,10 @@ class MissionOrchestrator:
                         "actuator_authority": False,
                     },
                 )
-                raise MissionClarificationRequired(intent.missing_critical_fields)
+                raise MissionClarificationRequired(
+                    intent.missing_critical_fields,
+                    intent.clarification_questions,
+                )
             raise MissionPreparationBlocked("INTENT_REVIEW_EXHAUSTED")
         assert intent is not None and intent_critique is not None
         try:
@@ -3485,6 +3855,7 @@ class MissionOrchestrator:
             route_alternatives: list[RouteAlternativeCandidate] = []
             alternative_segments: dict[str, list[GraphRoute]] = {}
             alternative_receipts: dict[str, list[ToolReceipt]] = {}
+            alternative_tracks: dict[str, tuple[Px4Track, ToolReceipt]] = {}
             route_fingerprint_indexes: dict[str, int] = {}
             for strategy_tool_id in strategy_tools:
                 candidate_routes: list[GraphRoute] = []
@@ -3591,6 +3962,55 @@ class MissionOrchestrator:
                     candidate_clearance,
                     preferred_transit_clearance_m=required_operational_clearance_m,
                 )
+                alternative_id = (
+                    "route-alternative-"
+                    + sha256_json(
+                        {
+                            "route": candidate_route,
+                            "clearance": candidate_clearance,
+                        }
+                    )[:20]
+                )
+                candidate_track: Px4Track | None = None
+                candidate_track_receipt: ToolReceipt | None = None
+                track_exportable = False
+                try:
+                    track_value, candidate_track_receipt = registry.call_slot(
+                        "flight-control.track-export",
+                        Px4TrackRequest(
+                            route=candidate_route,
+                            waypoint_hold_seconds=self.config.waypoint_hold_seconds,
+                        ),
+                    )
+                except ToolExecutionError as error:
+                    attempt_receipts.append(error.receipt)
+                    self._record_tool(
+                        error.receipt,
+                        conversation_id=request.conversation_id,
+                        context_store=self.context_store,
+                        evidence=evidence,
+                    )
+                    evidence.append(
+                        "planning.route-candidate-track-export-failed",
+                        {
+                            "alternative_id": alternative_id,
+                            "strategy_tool_id": strategy_tool_id,
+                            "issue_codes": error.receipt.issue_codes,
+                        },
+                    )
+                else:
+                    candidate_track = _artifact_snapshot(track_value, Px4Track)
+                    _validate_plugin_track_tightening(
+                        candidate_track, candidate_route, self.vehicle
+                    )
+                    attempt_receipts.append(candidate_track_receipt)
+                    self._record_tool(
+                        candidate_track_receipt,
+                        conversation_id=request.conversation_id,
+                        context_store=self.context_store,
+                        evidence=evidence,
+                    )
+                    track_exportable = True
                 gates = {
                     "continuous_clearance": candidate_clearance.accepted,
                     "clearance_evidence_binding": (
@@ -3602,6 +4022,7 @@ class MissionOrchestrator:
                     "operational_clearance": bool(clearance_assessment["accepted"]),
                     "contract_start": candidate_route.start_node == contract.start_node,
                     "contract_return": candidate_route.goal_node == contract.return_node,
+                    "track_exportable": track_exportable,
                     "all_targets_present": all(
                         target in candidate_route.node_ids
                         for target in semantic_plan.ordered_targets
@@ -3612,15 +4033,6 @@ class MissionOrchestrator:
                     for name, accepted in gates.items()
                     if not accepted
                 ]
-                alternative_id = (
-                    "route-alternative-"
-                    + sha256_json(
-                        {
-                            "route": candidate_route,
-                            "clearance": candidate_clearance,
-                        }
-                    )[:20]
-                )
                 candidate = RouteAlternativeCandidate(
                     alternative_id=alternative_id,
                     strategy_tool_id=strategy_tool_id,
@@ -3651,10 +4063,37 @@ class MissionOrchestrator:
                 route_fingerprint_indexes[route_fingerprint] = len(route_alternatives) - 1
                 alternative_segments[alternative_id] = candidate_routes
                 alternative_receipts[alternative_id] = candidate_receipts
+                if candidate_track is not None and candidate_track_receipt is not None:
+                    alternative_tracks[alternative_id] = (
+                        candidate_track,
+                        candidate_track_receipt,
+                    )
             if not route_alternatives or not any(
                 candidate.feasible for candidate in route_alternatives
             ):
-                raise MissionPreparationBlocked("ROUTE_ALTERNATIVE_NO_FEASIBLE_CANDIDATE")
+                fields, questions = _route_recovery_clarification(
+                    request,
+                    intent,
+                    contract,
+                    self.map_catalog,
+                    self.map_graph,
+                )
+                evidence.append(
+                    "planning.route-recovery-clarification",
+                    {
+                        "fields": fields,
+                        "questions": questions,
+                        "rejected_alternatives": [
+                            {
+                                "alternative_id": candidate.alternative_id,
+                                "issue_codes": candidate.issue_codes,
+                            }
+                            for candidate in route_alternatives
+                        ],
+                        "actuator_authority": False,
+                    },
+                )
+                raise MissionClarificationRequired(fields, questions)
             alternative_set = RouteAlternativeSet(
                 contract_id=contract.contract_id,
                 candidates=route_alternatives,
@@ -3703,16 +4142,8 @@ class MissionOrchestrator:
                 clearance.minimum_clearance_m,
                 domain_actions,
             )
-            track_value, track_receipt = self._call_required_slot(
-                "flight-control.track-export",
-                Px4TrackRequest(
-                    route=execution_route,
-                    waypoint_hold_seconds=self.config.waypoint_hold_seconds,
-                ),
-                conversation_id=request.conversation_id,
-                evidence=evidence,
-            )
-            px4_track = _artifact_snapshot(track_value, Px4Track)
+            px4_track, track_receipt = alternative_tracks[selected_alternative.alternative_id]
+            px4_track = _artifact_snapshot(px4_track, Px4Track)
             _validate_plugin_track_tightening(px4_track, execution_route, self.vehicle)
             baseline_track = _artifact_snapshot(px4_track, Px4Track)
             px4_track = self._invoke_extension_pipeline(

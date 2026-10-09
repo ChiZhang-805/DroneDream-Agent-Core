@@ -193,11 +193,10 @@ def test_model_body_yaw_rate_is_integrated_and_bounded_at_control_rate() -> None
     assert first.yaw_deg == pytest.approx(1.0)
     assert second.yaw_deg == pytest.approx(1.0)
     assert getattr(args, "_model_body_control_yaw_deg", None) is None
-    with pytest.raises(executor.UserDirectedLanding, match="EXCEEDED_INPUT_DEADLINE"):
-        executor._record_model_control_application(
-            args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
-            accepted_at_unix_ms=1501,
-        )
+    assert not executor._record_model_control_application(
+        args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
+        accepted_at_unix_ms=1501,
+    )
     assert getattr(args, "_model_body_control_yaw_deg", None) is None
     executor._record_model_control_application(
         args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
@@ -383,6 +382,28 @@ def test_tracking_segment_policy_is_hash_bound_and_context_selected(
     )
     with pytest.raises(ValueError, match="not bound"):
         executor._load_tracking_segment_policies(policy_path, track=tampered_track)
+
+
+# 功能：验证局部安全目标只取得当前原路线段的实测净空，不借用其他段或固定目标的预算。
+# 输入：无：使用两段不同净空的冻结策略。
+# 输出：None：返回当前段身份与净空，非路线目标不伪造预算。
+def test_tracking_localization_context_selects_current_measured_corridor() -> None:
+    executor = _load_executor()
+    args = SimpleNamespace(
+        _tracking_segment_policies=(
+            {"minimum_route_clearance_m": 0.76},
+            {"minimum_route_clearance_m": 0.49},
+        )
+    )
+    assert executor._tracking_localization_context_for_goal(
+        args, "source-waypoint-0002"
+    ) == (1, pytest.approx(0.49))
+    assert executor._tracking_localization_context_for_goal(args, "takeoff") == (None, None)
+    with pytest.raises(ValueError, match="MEASURED_CLEARANCE_REQUIRED"):
+        executor._tracking_localization_context_for_goal(
+            SimpleNamespace(_tracking_segment_policies=({},)),
+            "source-waypoint-0001",
+        )
 
 
 def test_tracking_segment_policy_rejects_missing_current_control_profile(
@@ -870,6 +891,29 @@ def test_tracking_recovery_window_never_extends_absolute_deadline() -> None:
     assert expired is True
 
 
+# 功能：
+#   验证恢复超时回执读取字典字段，避免飞行中把字典误当对象访问而触发异常降落。
+# 输入：
+#   无：使用与恢复窗口相同形状的最小状态。
+# 输出：
+#   None：不返回业务数据。
+def test_tracking_recovery_rollover_details_accept_dictionary_state() -> None:
+    executor = _load_executor()
+
+    details = executor._tracking_recovery_rollover_details(
+        {
+            "started_at_monotonic": 10.0,
+            "best_tracking_error_m": 0.125,
+        },
+        now=12.5,
+    )
+
+    assert details == {
+        "elapsed_seconds": pytest.approx(2.5),
+        "best_tracking_error_m": pytest.approx(0.125),
+    }
+
+
 def test_atomic_json_retries_a_transient_windows_reader_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -999,6 +1043,72 @@ def test_local_safety_slowdown_advances_after_one_safe_controller_tick(
         json.loads((tmp_path / "phase.json").read_text(encoding="utf-8"))["local_safety_action"]
         == "slow"
     )
+
+
+def test_local_safety_recovery_window_rolls_over_without_terminal_landing(
+    tmp_path: Path,
+) -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        decision=SimpleNamespace(
+            action="hold",
+            threat_obstacle_id="temporary-depth-track",
+            minimum_predicted_clearance_m=0.05,
+            selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+            issue_codes=["HOLD_AND_REQUEST_REPLAN"],
+        ),
+        command_position_m=Vector3(x=0.1, y=0.2, z=1.5),
+        observation_sequence=12,
+    )
+    executor._read_local_safety_command = lambda _args: command
+
+    async def ignore_identity_refresh(**_kwargs: Any) -> None:
+        return None
+
+    executor._refresh_px4_identity_telemetry = ignore_identity_refresh
+
+    class Client:
+        def __init__(self) -> None:
+            self.commands: list[Any] = []
+
+        async def set_position_ned(self, setpoint: Any) -> None:
+            self.commands.append(setpoint)
+
+    async def exercise() -> tuple[Client, Any]:
+        client = Client()
+        applied = await executor._apply_local_safety(
+            args=SimpleNamespace(
+                local_safety_target=None,
+                local_safety_command=tmp_path / "command.json",
+                local_safety_repair_timeout_seconds=15.0,
+                local_safety_repair_absolute_timeout_seconds=1e-9,
+                setpoint_rate_hz=1000.0,
+            ),
+            base=SimpleNamespace(
+                Setpoint=lambda **values: SimpleNamespace(**values),
+                VelocitySetpoint=lambda **values: SimpleNamespace(**values),
+            ),
+            client=client,
+            planned_setpoint=SimpleNamespace(
+                north_m=0.0,
+                east_m=0.0,
+                down_m=-1.0,
+                yaw_deg=0.0,
+            ),
+            coordinate_contract=Px4CoordinateContract(
+                model_root_world_enu_m=[0.0, 0.0, 0.0],
+                collision_center_offset_model_m=[0.0, 0.0, 0.2],
+            ),
+            phase_path=tmp_path / "phase.json",
+        )
+        return client, applied
+
+    client, applied = asyncio.run(exercise())
+    assert 1 <= len(client.commands) <= 2
+    assert applied is client.commands[-1]
+    phase = json.loads((tmp_path / "phase.json").read_text(encoding="utf-8"))
+    assert phase["local_control_phase"] == "RECOVERY_RETRY"
+    assert phase["recovery_rollover_reason"] == "absolute-window-elapsed"
 
 
 def test_static_clearance_recovery_freezes_schedule_until_margin_restored(
@@ -1422,6 +1532,279 @@ def test_stationary_route_hold_requires_low_speed_and_finite_complete_state() ->
     )
 
 
+# 功能：短时低帧率空窗可在签名静态走廊内桥接，不能把其他异常降级为运动许可。
+# 输入：纯感知时效保持命令、健康帧时刻、PX4 状态和路线净空；输出：有界窗口内允许桥接。
+def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        navigation_control_authority="route-fallback",
+        source="onboard",
+        decision=SimpleNamespace(
+            action="hold",
+            issue_codes=[
+                "PERCEPTION_STREAM_UNHEALTHY",
+                "PERCEPTION_STREAM_STALE",
+                "HOLD_UNTIL_FRESH_LOCAL_WORLD",
+            ],
+        ),
+    )
+    args = SimpleNamespace(
+        independent_route_control=True,
+        _last_fresh_local_safety_monotonic=10.0,
+    )
+    observed = SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0)
+
+    assert executor._bounded_static_corridor_perception_bridge_allowed(
+        args=args,
+        command=command,
+        observed=observed,
+        tracking_recovery_active=True,
+        action_checkpoint_goal=False,
+        qualified_route_clearance_m=0.395,
+        now=11.2,
+    )
+
+    for overrides in (
+        {"now": 14.01},
+        {"action_checkpoint_goal": True},
+        {"qualified_route_clearance_m": None},
+        {"observed": None},
+    ):
+        values = {
+            "args": args,
+            "command": command,
+            "observed": observed,
+            "tracking_recovery_active": True,
+            "action_checkpoint_goal": False,
+            "qualified_route_clearance_m": 0.395,
+            "now": 11.2,
+        }
+        values.update(overrides)
+        assert not executor._bounded_static_corridor_perception_bridge_allowed(**values)
+
+    # 动作检查点在真实飞行中仍拒绝桥接；显式 Gazebo 身份只授权低速接近，
+    # 真正载荷动作仍由检查点的新鲜感知确认独立把关。
+    args.gazebo_vehicle_model_name = "x500_depth_0"
+    assert executor._bounded_static_corridor_perception_bridge_allowed(
+        args=args,
+        command=command,
+        observed=observed,
+        tracking_recovery_active=True,
+        action_checkpoint_goal=True,
+        qualified_route_clearance_m=0.395,
+        now=11.2,
+    )
+    del args.gazebo_vehicle_model_name
+
+    # Ordinary route progress uses the same bounded bridge. It must not first
+    # manufacture a tracking-error episode merely because a camera frame was
+    # delayed.
+    assert executor._bounded_static_corridor_perception_bridge_allowed(
+        args=args,
+        command=command,
+        observed=observed,
+        tracking_recovery_active=False,
+        action_checkpoint_goal=False,
+        qualified_route_clearance_m=0.395,
+        now=11.2,
+    )
+
+
+# 功能：已完成碰撞预测但错过发令预算的帧可由当前 PX4 状态和静态几何短暂接续。
+# 输入：仅含处理预算耗尽原因的保持指令；输出：短窗允许，其他时效原因拒绝。
+def test_static_corridor_bridge_accepts_only_processing_budget_exhaustion() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        navigation_control_authority="route-fallback",
+        source="onboard",
+        decision=SimpleNamespace(
+            action="hold",
+            issue_codes=[
+                "OBSERVATION_CONTROL_BUDGET_EXHAUSTED",
+                "OBSERVATION_PROCESSING_OR_RESPONSE_BUDGET_EXHAUSTED",
+                "CANDIDATE_TIME_BUDGET_EXHAUSTED",
+                "NO_SAFE_LOCAL_VELOCITY",
+                "HOLD_AND_REQUEST_REPLAN",
+            ],
+        ),
+    )
+    values = dict(
+        args=SimpleNamespace(
+            independent_route_control=True,
+            _last_fresh_local_safety_monotonic=10.0,
+        ),
+        command=command,
+        observed=SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0),
+        tracking_recovery_active=False,
+        action_checkpoint_goal=False,
+        qualified_route_clearance_m=0.395,
+        now=11.2,
+    )
+    assert executor._bounded_static_corridor_perception_bridge_allowed(**values)
+    command.decision.issue_codes[1] = "OBSERVATION_NO_TEMPORAL_CLEARANCE_MARGIN"
+    assert not executor._bounded_static_corridor_perception_bridge_allowed(**values)
+
+
+# 功能：
+#   验证异步局部安全结果之间可沿同一签名静态走廊连续控制，而非按毫秒租期反复刹停。
+# 输入：
+#   最近健康继续裁决、当前 PX4 状态、相同语义目标和路线净空。
+# 输出：
+    #   短暂计算空窗返回独立副本；真实动作点、目标变化、异常裁决或超时全部拒绝，
+    #   显式仿真身份允许低速接近动作点。
+def test_static_corridor_control_continuity_uses_only_recent_clean_same_goal_seed() -> None:
+    executor = _load_executor()
+    seed = _safety_command_fixture(
+        navigation_control_authority="route-fallback",
+        navigation_goal_id="source-waypoint-0001",
+        source="onboard",
+        decision=SimpleNamespace(
+            action="continue",
+            issue_codes=[],
+            selected_velocity_mps=Vector3(x=0.3, y=0.0, z=0.0),
+        ),
+    )
+    args = SimpleNamespace(
+        independent_route_control=True,
+        _last_fresh_local_safety_monotonic=10.0,
+        _last_fresh_local_safety_command=seed,
+    )
+    values = dict(
+        args=args,
+        observed=SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0),
+        navigation_goal_id="source-waypoint-0001",
+        action_checkpoint_goal=False,
+        qualified_route_clearance_m=0.395,
+        now=11.0,
+    )
+
+    accepted = executor._bounded_static_corridor_control_continuity_seed(**values)
+    assert accepted == seed
+    assert accepted is not seed
+
+    for overrides in (
+        {"now": 14.01},
+        {"action_checkpoint_goal": True},
+        {"navigation_goal_id": "source-waypoint-0002"},
+        {"qualified_route_clearance_m": None},
+        {"observed": None},
+    ):
+        attempt = dict(values)
+        attempt.update(overrides)
+        assert executor._bounded_static_corridor_control_continuity_seed(**attempt) is None
+
+    args.gazebo_vehicle_model_name = "x500_depth_0"
+    checkpoint_attempt = dict(values)
+    checkpoint_attempt["action_checkpoint_goal"] = True
+    accepted_checkpoint = executor._bounded_static_corridor_control_continuity_seed(
+        **checkpoint_attempt
+    )
+    assert accepted_checkpoint == seed
+    assert accepted_checkpoint is not seed
+    del args.gazebo_vehicle_model_name
+
+    args._hybrid_rejection_reason = "model-contract-mismatch"
+    assert executor._bounded_static_corridor_control_continuity_seed(**values) is None
+    args._hybrid_rejection_reason = None
+    seed.decision.issue_codes = ["DYNAMIC_TRACK_EVIDENCE_UNRELIABLE"]
+    assert executor._bounded_static_corridor_control_continuity_seed(**values) is None
+
+
+# 功能：动态障碍或定位异常与单纯相机帧老化不同，任何附加异常都必须阻止静态走廊桥接。
+# 输入：含动态证据异常的保持命令；输出：拒绝桥接并保留悬停语义。
+def test_static_corridor_perception_bridge_rejects_non_perception_issue() -> None:
+    executor = _load_executor()
+    command = _safety_command_fixture(
+        navigation_control_authority="route-fallback",
+        source="onboard",
+        decision=SimpleNamespace(
+            action="hold",
+            issue_codes=[
+                "PERCEPTION_STREAM_STALE",
+                "DYNAMIC_TRACK_EVIDENCE_UNRELIABLE",
+                "HOLD_UNTIL_FRESH_LOCAL_WORLD",
+            ],
+        ),
+    )
+
+    assert not executor._bounded_static_corridor_perception_bridge_allowed(
+        args=SimpleNamespace(
+            independent_route_control=True,
+            _last_fresh_local_safety_monotonic=10.0,
+        ),
+        command=command,
+        observed=SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0),
+        tracking_recovery_active=True,
+        action_checkpoint_goal=False,
+        qualified_route_clearance_m=0.395,
+        now=11.0,
+    )
+
+
+# 功能：验证短时感知桥接使用当前实测位置到目标的机体包络净空，而非只复用原路线报告。
+# 输入：机型、坐标合同、定位对齐量和一次可控的净空计算。
+# 输出：计算路线从实测世界点出发；拒绝报告不授权桥接运动。
+def test_static_corridor_bridge_revalidates_actual_segment(monkeypatch, tmp_path) -> None:
+    executor = _load_executor()
+    captured = []
+
+    def clearance(route, semantic_path, **kwargs):
+        captured.append((route, semantic_path, kwargs))
+        return SimpleNamespace(accepted=True, minimum_clearance_m=0.21)
+
+    monkeypatch.setattr(executor, "validate_route_clearance", clearance)
+    vehicle = executor.VehicleAsset(
+        asset_id="test-vehicle",
+        name="Test Vehicle",
+        dry_mass_kg=1.0,
+        max_takeoff_mass_kg=2.0,
+        body_radius_m=0.2,
+        body_height_m=0.3,
+        max_speed_mps=2.0,
+        max_acceleration_mps2=3.0,
+        qualified_range_m=100.0,
+        reserve_battery_percent=20.0,
+        max_pickup_payload_kg=0.2,
+        sensors=["depth"],
+    )
+    args = SimpleNamespace(
+        semantic=tmp_path / "semantic.json",
+        _runtime_vehicle_asset=vehicle,
+        _last_estimator_to_world_position_offset_m=Vector3(x=0.1, y=-0.2, z=0.3),
+    )
+    contract = Px4CoordinateContract(
+        model_root_world_enu_m=[10.0, 20.0, 30.0],
+        collision_center_offset_model_m=[0.4, -0.2, 0.5],
+    )
+    target = Vector3(x=12.0, y=22.0, z=33.0)
+
+    report = executor._static_corridor_bridge_clearance(
+        args=args,
+        observed=SimpleNamespace(north_m=1.0, east_m=2.0, down_m=-1.0),
+        target_world=target,
+        coordinate_contract=contract,
+    )
+
+    assert report.minimum_clearance_m == 0.21
+    route, semantic_path, kwargs = captured[0]
+    assert route.positions_m[0] == Vector3(x=12.5, y=20.6, z=31.8)
+    assert route.positions_m[1] == target
+    assert semantic_path == args.semantic
+    assert kwargs["vehicle_diameter_m"] == 0.4
+    assert kwargs["vehicle_height_m"] == 0.3
+    monkeypatch.setattr(
+        executor,
+        "validate_route_clearance",
+        lambda *args, **kwargs: SimpleNamespace(accepted=False),
+    )
+    assert executor._static_corridor_bridge_clearance(
+        args=args,
+        observed=SimpleNamespace(north_m=1.0, east_m=2.0, down_m=-1.0),
+        target_world=target,
+        coordinate_contract=contract,
+    ) is None
+
+
 def test_controlled_landing_holds_xy_until_near_ground_handoff(monkeypatch) -> None:
     executor = _load_executor()
     monkeypatch.setattr(executor, "_CONTROLLED_LANDING_DESCENT_RATE_MPS", 20.0)
@@ -1572,6 +1955,7 @@ def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> N
         minimum_clearance_m=0.07,
         stall_timeout_seconds=15.0,
         state=None,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["stall_deadline"] == 15.0
     assert state["progress_revision"] == 0
@@ -1582,10 +1966,11 @@ def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> N
         minimum_clearance_m=0.07,
         stall_timeout_seconds=15.0,
         state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["stall_deadline"] == 29.0
     assert state["progress_revision"] == 1
-    assert state["last_progress_evidence"] == "vehicle-moved-along-local-repair"
+    assert state["last_progress_evidence"] == "vehicle-closed-on-local-repair-target"
 
     state = executor._advance_local_repair_progress(
         now=28.0,
@@ -1593,6 +1978,7 @@ def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> N
         minimum_clearance_m=0.071,
         stall_timeout_seconds=15.0,
         state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["stall_deadline"] == 29.0
     assert state["progress_revision"] == 1
@@ -1603,6 +1989,7 @@ def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> N
         minimum_clearance_m=0.076,
         stall_timeout_seconds=15.0,
         state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["stall_deadline"] == 43.5
     assert state["progress_revision"] == 2
@@ -1617,6 +2004,7 @@ def test_local_repair_counts_recovery_from_a_recent_clearance_trough() -> None:
         minimum_clearance_m=0.17,
         stall_timeout_seconds=15.0,
         state=None,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     state = executor._advance_local_repair_progress(
         now=8.0,
@@ -1624,6 +2012,7 @@ def test_local_repair_counts_recovery_from_a_recent_clearance_trough() -> None:
         minimum_clearance_m=0.04,
         stall_timeout_seconds=15.0,
         state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["progress_revision"] == 0
     assert state["clearance_progress_anchor_m"] == pytest.approx(0.04)
@@ -1635,12 +2024,43 @@ def test_local_repair_counts_recovery_from_a_recent_clearance_trough() -> None:
         minimum_clearance_m=0.13,
         stall_timeout_seconds=15.0,
         state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
     )
     assert state["stall_deadline"] == pytest.approx(29.0)
     assert state["progress_revision"] == 1
     assert state["last_progress_evidence"] == "predicted-clearance-increased"
     assert state["best_minimum_clearance_m"] == pytest.approx(0.17)
 
+
+# 功能：
+#   验证悬停噪声或背离目标的往返漂移不会被计为局部修复进展。
+# 输入：
+#   无：构造超过旧位移阈值、但与固定恢复目标距离不减的观测。
+# 输出：
+#   None：停滞期限和进展版本保持不变。
+def test_local_repair_does_not_count_arbitrary_drift_as_progress() -> None:
+    executor = _load_executor()
+    state = executor._advance_local_repair_progress(
+        now=0.0,
+        observed=SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0),
+        minimum_clearance_m=-0.03,
+        stall_timeout_seconds=15.0,
+        state=None,
+        target_position_ned_m=(1.0, 0.0, -1.0),
+    )
+
+    state = executor._advance_local_repair_progress(
+        now=14.0,
+        observed=SimpleNamespace(north_m=-0.04, east_m=0.04, down_m=-0.95),
+        minimum_clearance_m=-0.031,
+        stall_timeout_seconds=15.0,
+        state=state,
+        target_position_ned_m=(1.0, 0.0, -1.0),
+    )
+
+    assert state["stall_deadline"] == 15.0
+    assert state["progress_revision"] == 0
+    assert state["last_progress_evidence"] == "repair-started"
 
 def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -> None:
     executor = _load_executor()
@@ -2085,7 +2505,7 @@ def test_established_local_safety_missing_file_brakes_and_recovers_within_grace(
     assert events[0]["status"] == "command-missing"
 
 
-def test_required_local_safety_staleness_lands_after_bounded_grace(
+def test_required_local_safety_staleness_keeps_braking_across_recovery_windows(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
@@ -2101,7 +2521,18 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
 
     executor._refresh_px4_identity_telemetry = observed_identity
 
-    with pytest.raises(executor.UserDirectedLanding, match="beyond grace"):
+    events: list[dict[str, Any]] = []
+    executor._record_local_safety_executor_event = (
+        lambda _args, **event: events.append(event)
+    )
+
+    class BrakeObserved(Exception):
+        pass
+
+    async def set_position_ned(_setpoint: Any) -> None:
+        raise BrakeObserved()
+
+    with pytest.raises(BrakeObserved):
         asyncio.run(
             executor._apply_local_safety(
                 args=SimpleNamespace(
@@ -2114,7 +2545,7 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
                     setpoint_rate_hz=20.0,
                 ),
                 base=SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values)),
-                client=SimpleNamespace(),
+                client=SimpleNamespace(set_position_ned=set_position_ned),
                 planned_setpoint=SimpleNamespace(
                     north_m=0.0,
                     east_m=0.0,
@@ -2128,6 +2559,10 @@ def test_required_local_safety_staleness_lands_after_bounded_grace(
                 phase_path=tmp_path / "phase.json",
             )
         )
+    assert any(
+        event["status"] == "command-stale-recovery-window-rolled-over"
+        for event in events
+    )
 
 
 def test_runtime_stale_default_holds_through_measured_publication_jitter(
@@ -2253,7 +2688,7 @@ def test_local_safety_refreshes_px4_identity_telemetry_during_holds(
     assert payload["dynamics"]["ready_for_payload_inference"] is True
 
 
-def test_identity_telemetry_restarts_stalled_stream_and_requires_fresh_sample(
+def test_identity_telemetry_waits_for_active_stream_and_requires_fresh_sample(
     tmp_path: Path,
 ) -> None:
     executor = _load_executor()
@@ -2262,9 +2697,10 @@ def test_identity_telemetry_restarts_stalled_stream_and_requires_fresh_sample(
         def __init__(self) -> None:
             self.sample_count = 0
             self.restart_count = 0
+            self.sample_timeouts = []
 
         async def sample_position_velocity_ned(self, timeout_seconds: float) -> Any:
-            assert timeout_seconds == 0.01
+            self.sample_timeouts.append(timeout_seconds)
             self.sample_count += 1
             if self.sample_count == 1:
                 raise TimeoutError("stalled stream")
@@ -2279,6 +2715,9 @@ def test_identity_telemetry_restarts_stalled_stream_and_requires_fresh_sample(
 
         async def restart_position_velocity_ned_stream(self) -> None:
             self.restart_count += 1
+
+        def position_velocity_stream_needs_restart(self) -> bool:
+            return False
 
     client = Client()
     observed = asyncio.run(
@@ -2297,7 +2736,9 @@ def test_identity_telemetry_restarts_stalled_stream_and_requires_fresh_sample(
     )
 
     assert observed.north_m == 2.0
-    assert client.restart_count == 1
+    assert client.restart_count == 0
+    assert client.sample_timeouts[0] == 0.01
+    assert 0.01 < client.sample_timeouts[1] <= 0.2
     recovery = json.loads(
         (tmp_path / "runtime-state" / "px4-telemetry-recovery.json").read_text(encoding="utf-8")
     )
@@ -2349,6 +2790,239 @@ def test_identity_telemetry_fails_closed_after_bounded_recovery_window(
     assert recovery["recovered_outage_count"] == 0
     assert recovery["failed_outage_count"] == 1
     assert recovery["last_status"] == "failed"
+
+
+def test_identity_telemetry_replaces_live_but_stalled_stream_after_grace(
+    tmp_path: Path,
+) -> None:
+    """A live collector that stops delivering must not consume the whole recovery window."""
+
+    executor = _load_executor()
+
+    class Client:
+        def __init__(self) -> None:
+            self.sample_count = 0
+            self.restart_count = 0
+
+        async def sample_position_velocity_ned(self, _timeout_seconds: float) -> Any:
+            self.sample_count += 1
+            if self.sample_count < 3:
+                raise TimeoutError("live task has no fresh gRPC sample")
+            return SimpleNamespace(
+                north_m=4.0,
+                east_m=5.0,
+                down_m=-1.5,
+                north_m_s=0.0,
+                east_m_s=0.0,
+                down_m_s=0.0,
+            )
+
+        async def restart_position_velocity_ned_stream(self) -> None:
+            self.restart_count += 1
+
+        def position_velocity_stream_needs_restart(self) -> bool:
+            return False
+
+    client = Client()
+    observed = asyncio.run(
+        executor._refresh_px4_identity_telemetry(
+            args=SimpleNamespace(
+                tracking_telemetry_timeout_seconds=0.01,
+                tracking_telemetry_recovery_timeout_seconds=0.2,
+                run_dir=tmp_path,
+            ),
+            client=client,
+            coordinate_contract=Px4CoordinateContract(
+                model_root_world_enu_m=[0.0, 0.0, 0.0],
+                collision_center_offset_model_m=[0.0, 0.0, 0.2],
+            ),
+        )
+    )
+
+    assert observed.north_m == 4.0
+    assert client.sample_count == 3
+    assert client.restart_count == 1
+    recovery = json.loads(
+        (tmp_path / "runtime-state" / "px4-telemetry-recovery.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert recovery["last_status"] == "recovered"
+    assert recovery["events"][-1]["stream_restarted"] is True
+
+
+# 功能：
+#   验证 50 Hz 稠密参考共享 0.5 Hz 局部规划目标，同时航点和检查点仍是不可跨越的硬边界。
+# 输入：
+#   无；使用固定索引、频率和边界集合。
+# 输出：
+#   None：不返回业务数据。
+def test_grouped_control_target_reuses_bounded_lookahead_without_crossing_barriers():
+    executor = _load_executor()
+    barriers = {5, 117, 229}
+
+    assert executor._grouped_control_target_index(
+        schedule_index=0,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices=barriers,
+    ) == 5
+    assert executor._grouped_control_target_index(
+        schedule_index=1,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices=barriers,
+    ) == 5
+    assert executor._grouped_control_target_index(
+        schedule_index=6,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices=barriers,
+    ) == 99
+    assert executor._grouped_control_target_index(
+        schedule_index=10,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices=barriers,
+    ) == 99
+    assert executor._grouped_control_target_index(
+        schedule_index=299,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices=barriers,
+    ) == 299
+
+    # The end of takeoff is also a hard direction-change boundary even though
+    # it is not one of the source-route waypoint arrivals.
+    assert executor._grouped_control_target_index(
+        schedule_index=115,
+        schedule_length=300,
+        setpoint_rate_hz=50.0,
+        barrier_indices={128, 299},
+    ) == 128
+
+
+# 功能：
+#   非法分组索引和越界屏障必须在发出任何控制前被拒绝。
+# 输入：
+#   无；构造越界索引及屏障。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"schedule_index": -1, "schedule_length": 10, "barrier_indices": set()},
+        {"schedule_index": 0, "schedule_length": 0, "barrier_indices": set()},
+        {"schedule_index": 0, "schedule_length": 10, "barrier_indices": {10}},
+    ],
+)
+def test_grouped_control_target_rejects_invalid_indices(values):
+    executor = _load_executor()
+
+    with pytest.raises(ValueError, match="grouped control target"):
+        executor._grouped_control_target_index(setpoint_rate_hz=50.0, **values)
+
+
+# 功能：
+#   验证运动相位边界覆盖移动转悬停、悬停转移动和转弯，但不把同向加速误判为边界。
+# 输入：
+#   无；构造含同向变速、悬停和直角转弯的稠密参考序列。
+# 输出：
+#   None：不返回业务数据。
+def test_schedule_motion_barriers_preserve_hold_and_turn_phases():
+    executor = _load_executor()
+    schedule = [
+        SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0),
+        SimpleNamespace(north_m=0.1, east_m=0.0, down_m=-1.0),
+        SimpleNamespace(north_m=0.3, east_m=0.0, down_m=-1.0),
+        SimpleNamespace(north_m=0.3, east_m=0.0, down_m=-1.0),
+        SimpleNamespace(north_m=0.3, east_m=0.0, down_m=-1.0),
+        SimpleNamespace(north_m=0.3, east_m=0.2, down_m=-1.0),
+        SimpleNamespace(north_m=0.3, east_m=0.4, down_m=-1.0),
+        SimpleNamespace(north_m=0.1, east_m=0.4, down_m=-1.0),
+    ]
+
+    assert executor._schedule_motion_barrier_indices(schedule) == {0, 2, 4, 6, 7}
+    assert executor._grouped_control_target_index(
+        schedule_index=3,
+        schedule_length=len(schedule),
+        setpoint_rate_hz=50.0,
+        barrier_indices=executor._schedule_motion_barrier_indices(schedule),
+    ) == 4
+
+
+# 功能：
+#   非有限坐标不得进入运动相位分析，避免错误边界静默污染真实控制目标。
+# 输入：
+#   无；构造含无穷坐标的参考点。
+# 输出：
+#   None：不返回业务数据。
+def test_schedule_motion_barriers_reject_nonfinite_coordinates():
+    executor = _load_executor()
+
+    with pytest.raises(ValueError, match="not finite"):
+        executor._schedule_motion_barrier_indices(
+            [SimpleNamespace(north_m=math.inf, east_m=0.0, down_m=-1.0)]
+        )
+
+
+# 功能：
+#   验证稠密参考结算只跳过飞行器已实测越过的点，并保留组末硬边界供下一轮执行。
+# 输入：
+#   无；构造朝同一语义航点前进的五个 NED 参考点。
+# 输出：
+#   None：不返回业务数据。
+def test_measured_dense_schedule_catch_up_preserves_group_boundary():
+    executor = _load_executor()
+    schedule = [
+        SimpleNamespace(north_m=float(north), east_m=0.0, down_m=0.0)
+        for north in range(5)
+    ]
+    coordinate_contract = Px4CoordinateContract(
+        model_root_world_enu_m=[0.0, 0.0, 0.0],
+        collision_center_offset_model_m=[0.0, 0.0, 0.2],
+    )
+
+    assert executor._measured_dense_schedule_catch_up_index(
+        schedule=schedule,
+        current_index=0,
+        maximum_index=4,
+        coordinate_contract=coordinate_contract,
+        navigation_goal_position_m=Vector3(x=0.0, y=10.0, z=0.2),
+        measured_goal_distance_m=7.2,
+    ) == 2
+
+
+# 功能：
+#   非法实测距离或反向索引范围必须被拒绝，不能产生未经证据支持的参考跳跃。
+# 输入：
+#   无；构造负距离和反向索引。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize(
+    "current_index,maximum_index,measured_goal_distance_m",
+    [(2, 1, 1.0), (0, 1, -0.1), (0, 1, math.nan)],
+)
+def test_measured_dense_schedule_catch_up_rejects_invalid_inputs(
+    current_index,
+    maximum_index,
+    measured_goal_distance_m,
+):
+    executor = _load_executor()
+    schedule = [SimpleNamespace(north_m=0.0, east_m=0.0, down_m=0.0)] * 3
+
+    with pytest.raises(ValueError, match="measured dense schedule catch-up"):
+        executor._measured_dense_schedule_catch_up_index(
+            schedule=schedule,
+            current_index=current_index,
+            maximum_index=maximum_index,
+            coordinate_contract=Px4CoordinateContract(
+                model_root_world_enu_m=[0.0, 0.0, 0.0],
+                collision_center_offset_model_m=[0.0, 0.0, 0.2],
+            ),
+            navigation_goal_position_m=Vector3(x=0.0, y=1.0, z=0.2),
+            measured_goal_distance_m=measured_goal_distance_m,
+        )
 
 
 def test_tracking_gate_holds_schedule_until_vehicle_rejoins(
@@ -2436,6 +3110,65 @@ def test_tracking_gate_holds_schedule_until_vehicle_rejoins(
     )
     assert state["state"] == "tracking"
     assert state["advance_threshold_m"] == 0.35
+
+
+def test_tracking_gate_accepts_small_settled_recovery_residual(
+    tmp_path: Path,
+) -> None:
+    executor = _load_executor()
+
+    class Client:
+        async def set_position_ned(self, _setpoint: Any) -> None:
+            return None
+
+        async def sample_position_velocity_ned(self, _timeout_seconds: float) -> Any:
+            return SimpleNamespace(
+                north_m=0.918,
+                east_m=0.0,
+                down_m=-1.0,
+                north_m_s=0.004,
+                east_m_s=0.002,
+                down_m_s=0.0,
+            )
+
+    args = SimpleNamespace(
+        run_dir=tmp_path,
+        local_safety_target=None,
+        local_safety_command=None,
+        local_safety_repair_timeout_seconds=15.0,
+        setpoint_rate_hz=1_000.0,
+        tracking_telemetry_timeout_seconds=0.1,
+        tracking_lag_limit_m=0.076,
+        tracking_rejoin_tolerance_m=0.068,
+    )
+    planned = SimpleNamespace(north_m=1.0, east_m=0.0, down_m=-1.0, yaw_deg=0.0)
+    coordinate_contract = Px4CoordinateContract(
+        model_root_world_enu_m=[0.0, 0.0, 0.0],
+        collision_center_offset_model_m=[0.0, 0.0, 0.2],
+    )
+
+    advanced, error_m = asyncio.run(
+        executor._tracking_gate_tick(
+            args=args,
+            base=SimpleNamespace(Setpoint=lambda **values: SimpleNamespace(**values)),
+            client=Client(),
+            planned_setpoint=planned,
+            coordinate_contract=coordinate_contract,
+            phase_path=tmp_path / "phase.json",
+            schedule_index=431,
+            sample_now=True,
+            recovery_active=True,
+        )
+    )
+
+    assert advanced is True
+    assert error_m == pytest.approx(0.082)
+    state = json.loads(
+        (tmp_path / "runtime-state" / "closed-loop-tracking.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["advance_threshold_m"] == pytest.approx(0.093)
 
 
 def test_tracking_gate_compares_px4_telemetry_in_route_frame(
@@ -2813,6 +3546,67 @@ def test_tracking_gate_separates_along_lag_hold_from_cross_track_recovery(
     assert applied_contexts == [False, True]
 
 
+def test_tracking_recovery_targets_current_reference_not_grouped_lookahead(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executor = _load_executor()
+    applied_targets: list[float] = []
+
+    async def apply_local_safety(**kwargs: Any) -> Any:
+        args = kwargs["args"]
+        applied_targets.append(float(kwargs["planned_setpoint"].north_m))
+        args._last_model_control_required = False
+        args._last_model_control_authorized = False
+        args._last_estimator_to_world_position_offset_m = Vector3(x=0.0, y=0.0, z=0.0)
+        return kwargs["planned_setpoint"]
+
+    monkeypatch.setattr(executor, "_apply_local_safety", apply_local_safety)
+
+    class Client:
+        async def sample_position_velocity_ned(self, _timeout_seconds: float) -> Any:
+            return SimpleNamespace(
+                north_m=1.0,
+                east_m=0.2,
+                down_m=-1.0,
+                north_m_s=0.0,
+                east_m_s=0.0,
+                down_m_s=0.0,
+            )
+
+    args = SimpleNamespace(
+        run_dir=tmp_path,
+        tracking_telemetry_timeout_seconds=0.1,
+        tracking_lag_limit_m=0.15,
+        tracking_rejoin_tolerance_m=0.10,
+    )
+    planned = SimpleNamespace(north_m=1.0, east_m=0.0, down_m=-1.0, yaw_deg=0.0)
+    lookahead = SimpleNamespace(north_m=2.0, east_m=0.0, down_m=-1.0, yaw_deg=0.0)
+    contract = Px4CoordinateContract(
+        model_root_world_enu_m=[0.0, 0.0, 0.0],
+        collision_center_offset_model_m=[0.0, 0.0, 0.2],
+    )
+
+    asyncio.run(
+        executor._tracking_gate_tick(
+            args=args,
+            base=SimpleNamespace(),
+            client=Client(),
+            planned_setpoint=planned,
+            control_setpoint=lookahead,
+            coordinate_contract=contract,
+            phase_path=tmp_path / "phase.json",
+            schedule_index=14,
+            sample_now=True,
+            recovery_active=True,
+            local_recovery_control_active=True,
+            planned_velocity_ned_mps=(0.15, 0.0, 0.0),
+        )
+    )
+
+    assert applied_targets == [1.0]
+
+
 def test_schedule_velocity_feedforward_is_bounded_and_zero_during_recovery() -> None:
     executor = _load_executor()
     current = SimpleNamespace(north_m=0.0, east_m=0.0, down_m=-1.0)
@@ -2968,6 +3762,35 @@ def test_required_model_authority_rejects_route_compatibility_command() -> None:
     assert executor._local_safety_command_matches_required_authority(
         args=SimpleNamespace(require_model_control_authority=False),
         command=route_command,
+    )
+
+
+# 功能：验证独立航线控制只接受固定部署坐标，Gazebo 见证偏移不能进入执行器。
+# 输入：分别携带零偏移和非零偏移的本地安全命令；输出：仅零偏移命令匹配权限合同。
+def test_independent_route_control_rejects_truth_fitted_offset() -> None:
+    executor = _load_executor()
+    args = SimpleNamespace(
+        independent_route_control=True,
+        bounded_hybrid_control=False,
+        require_model_control_authority=False,
+    )
+
+    def command(offset: Vector3) -> SimpleNamespace:
+        return SimpleNamespace(
+            navigation_control_authority="route-fallback",
+            model_navigation_authorized=False,
+            requested_control_intent=None,
+            source="onboard",
+            estimator_to_world_position_offset_m=offset,
+        )
+
+    assert executor._local_safety_command_matches_required_authority(
+        args=args,
+        command=command(Vector3(x=0.0, y=0.0, z=0.0)),
+    )
+    assert not executor._local_safety_command_matches_required_authority(
+        args=args,
+        command=command(Vector3(x=0.0, y=0.0, z=0.01)),
     )
 
 

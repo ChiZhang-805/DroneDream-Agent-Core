@@ -5,8 +5,9 @@ from unittest.mock import patch
 
 import pytest
 from control_fixtures import complete_feature_snapshot
-from test_local_policy_packages import _snapshot, _write_package, _PilotControlBackend
 from test_local_control_harness_integrity import call
+from test_local_policy_packages import _PilotControlBackend, _snapshot, _write_package
+
 import dronedream_agent_core.local_policy_port as policy
 from dronedream_agent_core.hashing import sha256_json
 
@@ -22,10 +23,14 @@ def snapshot(distance=1.):
 
 
 # 功能：来源超期仍拒绝控制，同时保留数值成本证据；不把观测期限改写为现在。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_expired_budget_keeps_numeric_diagnostics(port):
-    with patch.object(policy.time, 'monotonic', return_value=1.1):
-        with pytest.raises(TimeoutError) as caught:
-            port._check_call_budget(1., control_deadline_monotonic=1.08)
+    with (
+        patch.object(policy.time, 'monotonic', return_value=1.1),
+        pytest.raises(TimeoutError) as caught,
+    ):
+        port._check_call_budget(1., control_deadline_monotonic=1.08)
     metrics = caught.value.diagnostic_metrics
     assert metrics['total-latency-ms'] == pytest.approx(100.)
     assert metrics['source-budget-at-entry-ms'] == pytest.approx(80.)

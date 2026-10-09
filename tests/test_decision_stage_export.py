@@ -11,7 +11,9 @@ def test_displacement_slice_includes_lease_origin_and_handback():
     original = rows.copy()
     actual = bounded_displacement_witnesses(rows, commands, 200, 405)
     assert actual == rows[6:22]
-    assert rows == original and all(a is b for a, b in zip(actual, rows[6:22]))
+    assert rows == original and all(
+        a is b for a, b in zip(actual, rows[6:22], strict=True)
+    )
 
 
 # 功能：原始缺口和缺失边界必须保留以供后续拒收，不补充不存在的见证。
@@ -22,6 +24,7 @@ def test_displacement_slice_never_fills_missing_boundary_or_gap():
 
 
 # 功能：端点精确重合只出现一次，重复命令租期不重复见证；输出：严格连续原序列。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_exact_boundary_no_duplicate_witness():
     rows = [dict(observed_at_unix_ms=t) for t in range(0, 501, 100)]
     assert bounded_displacement_witnesses(rows, [], 100, 400) == rows[1:5]

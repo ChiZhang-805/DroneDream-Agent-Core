@@ -4,9 +4,9 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
 import stat
 import zipfile
+from pathlib import Path, PurePosixPath
 
 REPOSITORY = "theairlabcmu/tartanair2"
 REVISION = "0d2d145e973832742a2aaa04b7d2ebffc8d82817"

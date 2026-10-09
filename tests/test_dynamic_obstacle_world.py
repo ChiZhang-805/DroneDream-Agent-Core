@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_dynamic_obstacle_world import build_world
-from scripts.build_dynamic_obstacle_world import _challenge_model, _motion
+from scripts.build_dynamic_obstacle_world import _challenge_model, _motion, build_world
 from scripts.run_school_map_depth_qualification import (
     _load_dynamic_obstacle_challenge,
 )

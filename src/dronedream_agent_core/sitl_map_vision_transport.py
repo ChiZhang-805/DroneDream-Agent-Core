@@ -15,8 +15,14 @@ from .external_vision_clock import (
     validate_external_vision_pose_readback,
     validate_external_vision_time_readback,
 )
-from .live_map_measurement_stream import run_map_measurement_stream
 from .live_map_measurement import MapMeasurementPending
+from .live_map_measurement_stream import run_map_measurement_stream
+
+
+# Reply count is not convergence evidence.  A short handshake only proves that
+# the dedicated link is bidirectional; every measurement is subsequently
+# checked against PX4's actual timestamp, reset counter and pose readback.
+MINIMUM_TIMESYNC_HANDSHAKES = 10
 
 
 # 功能：处理有界真实同步请求，拒绝其他实体和重复源钟，不挤占主控制循环。
@@ -138,14 +144,14 @@ async def run_sitl_map_vision_transport(*, source, read_latest, command, clock_d
                     if clock_issue is not None:
                         raise RuntimeError(clock_issue)
                     drain_timesync(link, clock, evidence)
-                    if evidence['timesync_replies'] >= 650:
+                    if evidence['timesync_replies'] >= MINIMUM_TIMESYNC_HANDSHAKES:
                         exchanged.set()
                     await asyncio.sleep(.001)
             finally:
                 exchanged.set()
 
         sync_task = asyncio.create_task(synchronize())
-        await asyncio.wait_for(exchanged.wait(), 25.)
+        await asyncio.wait_for(exchanged.wait(), 10.)
         if sync_task.done():
             await sync_task
             if stop.is_set():

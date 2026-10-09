@@ -179,6 +179,7 @@ def prepare(
 
 
 # 功能：限定在调用方明确指定的新实验目录产生文件；输出：冻结配置路径而非飞行成功。
+# 输入：命令行参数及调用方明确提供的本地证据。
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-config", type=Path, required=True)

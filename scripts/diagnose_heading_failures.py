@@ -1,9 +1,9 @@
 """Trace fixed validation failures to original observations and transport receipts."""
 
 import argparse
-from bisect import bisect_left
 import hashlib
 import json
+from bisect import bisect_left
 from pathlib import Path
 
 import numpy as np

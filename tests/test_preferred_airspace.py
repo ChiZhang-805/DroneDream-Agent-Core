@@ -96,6 +96,34 @@ def test_runtime_collision_envelope_also_removes_preferred_space():
     assert space.band_at((0, 0, 6)) is None
 
 
+def test_large_outdoor_domain_uses_bounded_adaptive_preference_resolution():
+    space = PreferredAirspace(
+        {
+            "coordinate_frame": "ENU",
+            "collision_primitives": [box(sx=300.0, sy=300.0)],
+        },
+        {"map": "large-campus"},
+        .2,
+        .4,
+    )
+    assert space.preferences.resolution_m == 1.0
+    assert space.band_at((0.0, 0.0, 6.0)) is not None
+
+
+def test_explicit_over_budget_preference_resolution_is_rejected():
+    with pytest.raises(ValueError, match="AIRSPACE_COLUMN_BUDGET_EXCEEDED"):
+        PreferredAirspace(
+            {
+                "coordinate_frame": "ENU",
+                "collision_primitives": [box(sx=300.0, sy=300.0)],
+            },
+            {"map": "large-campus"},
+            .2,
+            .4,
+            AirspacePreferences(resolution_m=.5),
+        )
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, True, -1])
 def test_invalid_preferences_rejected(value):
     with pytest.raises(ValueError):

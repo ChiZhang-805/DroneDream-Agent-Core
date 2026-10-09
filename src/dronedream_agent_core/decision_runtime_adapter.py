@@ -6,6 +6,14 @@ import math
 from .decision_state_adapter import DecisionStateV2, decision_digest
 
 
+_SUPPORTED_FLIGHT_ENCODER_CONTRACTS = frozenset({
+    # Historical 50 ms receive-alignment contract retained for archived evidence.
+    "48f9536199319c760afc8e208826a2d349eea2d5b49f2de1437d481b4f831ad9",
+    # Current 75 ms contract for independently scheduled 25 Hz MAVSDK streams.
+    "1596dd7a2df1099281ecd4b700e4c2976938dfa561f8c9bf363bde7bf1917ecd",
+})
+
+
 # 功能：用单位四元数将 ENU 相对向量转换到机体 FRD，明确对接现有 FLU 机体契约。
 # 输入：世界向量、world_from_body_FLU 四元数；输出：前/右/下米向量，拒绝非单位姿态。
 def enu_to_frd(vector: dict, quaternion: list[float]) -> dict:
@@ -44,8 +52,8 @@ def state_from_navigation_snapshot(snapshot: dict, *, mission_id: str, sequence:
         raise ValueError("DECISION_DUPLICATE_ENCODER")
     # 转换器只解释这一版 FLU 四元数定义；未知编码不能猜测方向。
     flight = by_role.get("flight-state-encoder")
-    if flight and flight.get("feature_contract_sha256") != (
-            "48f9536199319c760afc8e208826a2d349eea2d5b49f2de1437d481b4f831ad9"):
+    if flight and flight.get("feature_contract_sha256") not in (
+            _SUPPORTED_FLIGHT_ENCODER_CONTRACTS):
         raise ValueError("DECISION_FLIGHT_ENCODER_CONTRACT_UNSUPPORTED")
 
     # 功能：保留采集原时间和原时效；输入：编码角色；输出：源戳或未知。

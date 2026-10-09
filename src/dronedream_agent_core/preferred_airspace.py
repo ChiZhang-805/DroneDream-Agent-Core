@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict, defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .collision import primitive_bounds
@@ -13,6 +13,14 @@ from .hashing import sha256_json
 Point = tuple[float, float, float]
 Bounds = tuple[Point, Point]
 VERSION = "dronedream.preferred-airspace.v1"
+
+
+def _column_count(domain: tuple[tuple[float, float], tuple[float, float]], step: float) -> int:
+    """Return the conservative XY column count without allocating the grid."""
+
+    first = tuple(math.floor(value / step) for value in domain[0])
+    last = tuple(math.ceil(value / step) - 1 for value in domain[1])
+    return math.prod(last[index] - first[index] + 1 for index in range(2))
 
 
 @dataclass(frozen=True)
@@ -82,13 +90,8 @@ class PreferredAirspace:
         if any(type(v) not in (int, float) or not math.isfinite(v) or not 0 < v <= 6
                for v in (radius_m, height_m)):
             raise ValueError("AIRSPACE_ENVELOPE_INVALID")
-        self.preferences = preferences or AirspacePreferences()
         self.radius = radius_m
         self.half_height = height_m / 2
-        self.binding = {"sources": binding, "semantic_sha256": sha256_json(semantic),
-                        "radius_m": radius_m, "height_m": height_m,
-                        "preferences": asdict(self.preferences), "schema_version": VERSION}
-        self.sha256 = sha256_json(self.binding)
         primitives = semantic.get("collision_primitives", [])
         runtime = semantic.get("runtime_collision_primitives", [])
         if (not isinstance(primitives, list) or not isinstance(runtime, list)
@@ -105,6 +108,26 @@ class PreferredAirspace:
             self.domain = (tuple(min(b[0][i] for b in terrain) for i in range(2)),
                            tuple(max(b[1][i] for b in terrain) for i in range(2)))
         self._terrain = terrain
+        selected_preferences = preferences or AirspacePreferences()
+        if self.domain is not None and preferences is None:
+            # Large outdoor maps must not fail merely because their soft
+            # preference field covers more ground than an indoor map. The
+            # field is advisory, so select the finest bounded resolution that
+            # fits the existing column budget; collision and live-sensor
+            # checks retain their independent full precision.
+            while (
+                _column_count(self.domain, selected_preferences.resolution_m) > 200_000
+                and selected_preferences.resolution_m < 2.0
+            ):
+                selected_preferences = replace(
+                    selected_preferences,
+                    resolution_m=min(2.0, selected_preferences.resolution_m * 2.0),
+                )
+        self.preferences = selected_preferences
+        self.binding = {"sources": binding, "semantic_sha256": sha256_json(semantic),
+                        "radius_m": radius_m, "height_m": height_m,
+                        "preferences": asdict(self.preferences), "schema_version": VERSION}
+        self.sha256 = sha256_json(self.binding)
         if self.domain is None:
             return
         step = self.preferences.resolution_m

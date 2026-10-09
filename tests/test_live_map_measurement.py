@@ -86,6 +86,17 @@ def test_computation_expiry_does_not_restamp_source():
         source.measure(record, source_now_ns=lambda: 1_050_000_000, monotonic_now=lambda: 10.05)
 
 
+# 功能：合法但无深度命中的帧只能表示本帧无地图修正，不能变成永久定位故障。
+# 输入：全无命中的真实协议记录；输出：可重试 Pending，来源实例保持可恢复。
+def test_no_hit_geometry_is_pending_not_source_corruption():
+    source, record = fixture()
+    for sample in record["scan"]["samples"]:
+        sample["hit"] = False
+    with pytest.raises(MapMeasurementPending, match="NO_HIT_GEOMETRY"):
+        source.measure(record, source_now_ns=lambda: 1_050_000_000,
+                       monotonic_now=lambda: 10.05)
+
+
 # 功能：缺失、非法与零误差配置不能得到看似确定的位置；输入：非法界；输出：配置拒绝。
 @pytest.mark.parametrize('value', [True, 0., -1., float('nan'), float('inf'), '0.01'])
 def test_noise_bounds_require_explicit_finite_positive_values(value):
@@ -94,6 +105,8 @@ def test_noise_bounds_require_explicit_finite_positive_values(value):
 
 
 # 功能：允许有限同步误差时必须同时增加位置和姿态不确定性；不改真实采样时刻。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_transport_uncertainty_is_paid_in_covariance():
     tight, record = fixture()
     tolerant, second = fixture()

@@ -49,6 +49,39 @@ def test_executor_target_roundtrip_and_persistent_goal(tmp_path):
     assert target["target_position_m"] == {"x": 3., "y": 2., "z": 1.3}
 
 
+# 功能：验证活动路线段的实测净空与目标身份一起跨越执行器/工作器协议边界。
+# 输入：tmp_path：独立目标文件目录。
+# 输出：None：合法绑定可读，错段、半份上下文和非物理净空全部拒绝。
+def test_route_localization_budget_target_is_complete_and_goal_bound(tmp_path):
+    executor = _load_executor()
+    path = tmp_path / "route-target.json"
+    executor._publish_local_safety_target(
+        path=path,
+        setpoint=SimpleNamespace(north_m=2., east_m=3., down_m=-1.),
+        coordinate_contract=Px4CoordinateContract(
+            model_root_world_enu_m=[0., 0., 0.],
+            collision_center_offset_model_m=[0., 0., .3],
+        ),
+        navigation_goal_id="source-waypoint-0002",
+        tracking_segment_index=1,
+        qualified_route_clearance_m=0.76,
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    actual = worker._read_control_target(path, now_unix_ms=payload["updated_at_unix_ms"])
+    assert actual["tracking_segment_index"] == 1
+    assert actual["qualified_route_clearance_m"] == pytest.approx(0.76)
+
+    for updates in (
+        {"tracking_segment_index": 0},
+        {"qualified_route_clearance_m": None},
+        {"qualified_route_clearance_m": True},
+    ):
+        corrupted = {**payload, **updates}
+        path.write_text(json.dumps(corrupted), encoding="utf-8")
+        with pytest.raises(ValueError):
+            worker._read_control_target(path, now_unix_ms=payload["updated_at_unix_ms"])
+
+
 # 功能：
 #   验证目标中的假布尔、坏向量和未来时间不能通过隐式转换获得控制权限。
 # 输入：

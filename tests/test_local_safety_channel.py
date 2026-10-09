@@ -176,7 +176,12 @@ def test_executor_channel_has_same_deadline_and_never_falls_back_to_files(tmp_pa
         assert executor._read_local_safety_command(args) is not None
         executor.time = SimpleNamespace(time=lambda: 1.180)
         assert executor._read_local_safety_command(args) is not None
-        executor.time = SimpleNamespace(time=lambda: 1.181)
+        # Reading no longer spends the transport reserve a second time. The
+        # dispatch path still checks this unchanged deadline immediately
+        # before I/O, so a command remains usable until its actual expiry.
+        executor.time = SimpleNamespace(time=lambda: 1.199)
+        assert executor._read_local_safety_command(args) is not None
+        executor.time = SimpleNamespace(time=lambda: 1.2)
         assert executor._read_local_safety_command(args) is None
         executor.time = SimpleNamespace(time=lambda: 1.3)
         assert executor._read_local_safety_command(args) is None

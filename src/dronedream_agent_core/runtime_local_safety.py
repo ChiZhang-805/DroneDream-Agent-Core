@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .collision import assess_tracking_corridor_budget
 from .contracts import (
     BodyFrameControlIntent,
     ControlObservationBudget,
@@ -178,6 +179,9 @@ def evaluate_runtime_local_safety(
     route_yaw_rate_dps: float = 0.0,
     motion_guard: VerticalMotionGuard | None = None,
     yaw_envelope: YawCommandEnvelope | None = None,
+    qualified_route_clearance_m: float | None = None,
+    current_localization_covariance_m2: float | None = None,
+    relative_perception_uncertainty_margin_m: float | None = None,
 ) -> RuntimeLocalSafetyCommand:
     if not _finite_scalar(command_horizon_seconds) or not 0.05 <= command_horizon_seconds <= 1.0:
         raise ValueError("command horizon must be in [0.05, 1.0] seconds")
@@ -302,11 +306,16 @@ def evaluate_runtime_local_safety(
     if tracking_recovery_active:
         planner_max_speed_mps = min(
             planner_max_speed_mps,
-            0.2,
-            # A 0.45 proportional cap remains below 0.1 m/s at the 0.2 m
-            # position gate, while avoiding an unnecessarily long crawl just
-            # outside that gate under the contract's bounded settle timeout.
-            max(0.04, target_distance_m * 0.45),
+            0.35,
+            # Recovery must catch a moving route clock instead of becoming a
+            # permanent slower mode. Keep the original 0.45 gain inside the
+            # final 0.2 m, then add catch-up authority only outside that
+            # settle zone so terminal convergence remains below 0.1 m/s.
+            max(
+                0.04,
+                target_distance_m * 0.45
+                + max(0.0, target_distance_m - 0.2),
+            ),
         )
     if (observation.motion_context_sha256
             != (motion_guard.sha256 if motion_guard is not None else None)):
@@ -322,6 +331,98 @@ def evaluate_runtime_local_safety(
             raise ValueError("RUNTIME_MOTION_CLEARANCE_BINDING_MISMATCH")
         planner_max_acceleration_mps2 = motion_guard.acceleration_limit(
             planner_max_acceleration_mps2)
+        loaded = motion_guard.payload.get("state") in {
+            "attached", "custody-confirmed", "loaded-stable"
+        }
+        if (
+            motion_guard.domain == "simulation"
+            and loaded
+            and motion_guard.envelope is None
+        ):
+            # Degrade an unqualified simulated payload to a walking-speed
+            # envelope.  The same missing evidence remains a hard restriction
+            # on real hardware, but it must not become a one-vote mission veto
+            # in Gazebo where geometry and telemetry remain available.
+            planner_max_speed_mps = min(planner_max_speed_mps, .12)
+    # Absolute map-position uncertainty and image/state alignment uncertainty
+    # are different budgets.  A qualified route corridor funds the former;
+    # body-relative depth validity only needs the additional displacement that
+    # accumulated while aligning the image with native state.  Without all
+    # three independently measured values we retain the conservative legacy
+    # behavior and spend the complete aligned covariance locally.
+    route_budget_context = (
+        qualified_route_clearance_m,
+        current_localization_covariance_m2,
+        relative_perception_uncertainty_margin_m,
+    )
+    provided_route_budget_values = sum(value is not None for value in route_budget_context)
+    perception_stream_healthy = observation.stream_healthy
+    uncertainty_margin_m = localization_uncertainty_margin_m(
+        observation.localization_covariance_m2
+    )
+    if provided_route_budget_values:
+        if provided_route_budget_values != len(route_budget_context):
+            raise ValueError("ROUTE_LOCALIZATION_BUDGET_CONTEXT_INCOMPLETE")
+        if (
+            not _finite_scalar(relative_perception_uncertainty_margin_m)
+            or relative_perception_uncertainty_margin_m < 0.0
+            or relative_perception_uncertainty_margin_m > uncertainty_margin_m + 1e-9
+        ):
+            raise ValueError("RELATIVE_PERCEPTION_UNCERTAINTY_MARGIN_INVALID")
+        route_budget = assess_tracking_corridor_budget(
+            qualified_route_clearance_m,
+            current_localization_covariance_m2,
+        )
+        if not route_budget["funded"]:
+            # A temporary global-localization deficit is not equivalent to a
+            # blind aircraft.  When the signed route still has enough physical
+            # room for its local-safety and tracking reserves, fresh onboard
+            # depth may bridge the deficit at walking speed.  Geometry checks
+            # below still run on every candidate.  An actually narrow route,
+            # stale perception, or non-onboard source remains a hard hold.
+            structurally_navigable = qualified_route_clearance_m >= (
+                route_budget["required_local_clearance_m"]
+                + route_budget["minimum_tracking_allowance_m"]
+            )
+            if (
+                structurally_navigable
+                and observation.source == "onboard"
+                and observation.stream_healthy
+            ):
+                # Absolute-map covariance may temporarily exceed a narrow
+                # route budget even while signed static geometry, fresh body-
+                # relative depth and PX4 tracking all agree.  Continue at a
+                # clearance-scaled speed that can still satisfy the route's
+                # duration contract; a fixed 0.12 m/s ceiling made long but
+                # valid missions mathematically unable to finish before their
+                # own qualified timeout.
+                local_bridge_speed_mps = min(
+                    0.35,
+                    max(0.12, float(qualified_route_clearance_m) * 0.8),
+                )
+                planner_max_speed_mps = min(
+                    planner_max_speed_mps,
+                    local_bridge_speed_mps,
+                )
+            else:
+                perception_stream_healthy = False
+        uncertainty_margin_m = float(relative_perception_uncertainty_margin_m)
+    preferred_planner_speed_mps = planner_max_speed_mps
+    measured_speed_mps = math.hypot(
+        observation.current_velocity_mps.x,
+        observation.current_velocity_mps.y,
+        observation.current_velocity_mps.z,
+    )
+    # A cruise-to-recovery transition cannot erase measured momentum in one
+    # control tick.  Keep the current physical speed in the hard envelope while
+    # the candidate generator targets the tighter preferred speed.  This emits
+    # bounded deceleration instead of a zero-feed-forward hold that can drift
+    # farther from the route.  Actual hardware overspeed still exceeds the
+    # vehicle limit and therefore retains the independent braking path.
+    planner_max_speed_mps = min(
+        vehicle.max_speed_mps,
+        max(preferred_planner_speed_mps, measured_speed_mps),
+    )
     request = LocalPlannerRequest(
         current_position_m=observation.current_position_m,
         current_velocity_mps=observation.current_velocity_mps,
@@ -338,13 +439,12 @@ def evaluate_runtime_local_safety(
         required_clearance_m=required_clearance_m,
         prediction_horizon_seconds=RUNTIME_PREDICTION_HORIZON_SECONDS,
         prediction_step_seconds=prediction_step_seconds,
-        perception_stream_healthy=observation.stream_healthy,
+        perception_stream_healthy=perception_stream_healthy,
         perception_stream_age_seconds=observation.stream_age_seconds,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
     source_ms = min(observation.observed_at_unix_ms,
                     generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000))
-    uncertainty_margin_m = localization_uncertainty_margin_m(observation.localization_covariance_m2)
     ego_speed = math.hypot(observation.current_velocity_mps.x,
                           observation.current_velocity_mps.y, observation.current_velocity_mps.z)
     obstacle_speed = max((math.hypot(o.velocity_mps.x, o.velocity_mps.y, o.velocity_mps.z)
@@ -390,13 +490,23 @@ def evaluate_runtime_local_safety(
 
     # 已知负载资格不满足时无需枚举几十个必败候选，直接走同一条保留惯性证据的制动路径。
     if motion_guard is None:
-        decision = predictive_safety_decision(request, static_primitives, candidate_check=candidate_current)
+        decision = predictive_safety_decision(
+            request,
+            static_primitives,
+            candidate_check=candidate_current,
+            preferred_speed_mps=preferred_planner_speed_mps,
+        )
     elif motion_guard.issues:
         decision = predictive_braking_decision(request, static_primitives,
                                                issue_codes=motion_guard.issues)
     else:
-        decision = predictive_safety_decision(request, static_primitives,
-                                              motion_check=motion_guard.check, candidate_check=candidate_current)
+        decision = predictive_safety_decision(
+            request,
+            static_primitives,
+            motion_check=motion_guard.check,
+            candidate_check=candidate_current,
+            preferred_speed_mps=preferred_planner_speed_mps,
+        )
     adaptive_deadline_ms = None
     observation_budget = None
     if (decision.action == "hold" and first_rejected_budget is not None
@@ -419,22 +529,59 @@ def evaluate_runtime_local_safety(
         # nearest range or "free reach" (neither proves a free swept volume).
         # This is a temporal-error veto in addition to that forecast. It does
         # not promote the planner's max acceleration to guaranteed braking.
-        clearance_margin_m = max(0.0, decision.minimum_predicted_clearance_m - required_clearance_m)
+        validity_clearance_m = (
+            decision.recovery_exit_clearance_m
+            if decision.recovery_exit_clearance_m is not None
+            else decision.minimum_predicted_clearance_m
+        )
+        clearance_margin_m = max(0.0, validity_clearance_m - required_clearance_m)
         velocity = decision.selected_velocity_mps
         validity = candidate_validity((velocity.x, velocity.y, velocity.z),
-            decision.minimum_predicted_clearance_m, decision.selected_yaw_rate_dps)
-        observation_budget = ControlObservationBudget(
-            source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
-            control_deadline_unix_ms=validity.control_deadline_unix_ms,
-            disposition=validity.disposition,
-            reason=validity.reason,
-            clearance_margin_m=clearance_margin_m,
-            uncertainty_margin_m=uncertainty_margin_m,
-            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+            validity_clearance_m, decision.selected_yaw_rate_dps)
+        bounded_static_egress = bool(
+            validity.disposition != "control-eligible"
+            and decision.action == "slow"
+            and decision.issue_codes
+            in (["STATIC_PENETRATION_RECOVERY"], ["STATIC_CLEARANCE_RECOVERY"])
+            and decision.recovery_exit_clearance_m is not None
+            and decision.recovery_exit_clearance_m >= required_clearance_m + 0.02
+            and observation.stream_healthy
+            and observation.stream_age_seconds <= request.maximum_perception_age_seconds
+            and not observation.dynamic_obstacles
+            and measured_speed_mps <= 0.25
         )
+        if bounded_static_egress:
+            # Holding inside conservative static geometry is not a safer
+            # fallback.  The planner already proved a low-speed, monotonic
+            # escape against the complete geometry.  Give only that action a
+            # short local recovery lease; it cannot authorize ordinary route
+            # progress, dynamic-obstacle motion, or a stale perception stream.
+            recovery_deadline_ms = generated_at_unix_ms + min(
+                validity_milliseconds, 250
+            )
+            observation_budget = ControlObservationBudget(
+                source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
+                control_deadline_unix_ms=recovery_deadline_ms,
+                disposition="control-eligible",
+                reason="bounded-static-clearance-egress",
+                clearance_margin_m=clearance_margin_m,
+                uncertainty_margin_m=uncertainty_margin_m,
+                downstream_reserve_ms=0,
+            )
+            adaptive_deadline_ms = recovery_deadline_ms
+        else:
+            observation_budget = ControlObservationBudget(
+                source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
+                control_deadline_unix_ms=validity.control_deadline_unix_ms,
+                disposition=validity.disposition,
+                reason=validity.reason,
+                clearance_margin_m=clearance_margin_m,
+                uncertainty_margin_m=uncertainty_margin_m,
+                downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+            )
         if validity.disposition == "control-eligible":
             adaptive_deadline_ms = validity.control_deadline_unix_ms
-        else:
+        elif not bounded_static_egress:
             # Expired evidence cannot justify forward motion. Retain geometry
             # and its threat forecast when issuing the independent brake; do
             # not erase obstacles or claim this emergency action is risk-free.

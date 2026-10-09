@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import threading
 import time
-from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from dronedream_plugin_sdk.protocol import MAX_MESSAGE_BYTES, decode_json
 
 from .contracts import (
+    ModelCallRecord,
     PreparedMission,
     RuntimeAssessment,
     RuntimeCheckpointContract,
@@ -56,25 +58,66 @@ def checkpoint_contract_for(prepared: PreparedMission) -> RuntimeCheckpointContr
 
 
 # 功能：
-#   汇总模型明确接受与两组非空全真门控；此函数不采集遥测，也不单独证明物理安全。
+#   汇总两组非空全真确定性门控；模型评估只提供建议，不能单票终止飞行。
 # 输入：
 #   request：带执行器确定性门控的检查点请求。
 #   assessment：结构化模型评估。
 #   binding_gates：核心计算的任务、轨迹和当前计划绑定结果。
 # 输出：
-#   authorized：三项授权条件同时成立时为真。
+#   authorized：确定性执行门控与身份绑定同时成立时为真。
 def checkpoint_continue_authorized(
     *,
     request: RuntimeCheckpointRequest,
     assessment: RuntimeAssessment,
     binding_gates: dict[str, bool],
 ) -> bool:
-    authorized = (
-        assessment.action == "accept"
-        and all_required_gates_passed(request.deterministic_gates)
-        and all_required_gates_passed(binding_gates)
-    )
+    # A model may recommend hold/replan, but it has no actuator authority and
+    # therefore cannot be an independent veto.  The controller owns bounded
+    # hold, correction and replanning; only the deterministic telemetry and
+    # artifact-binding gates decide whether this checkpoint may continue.
+    _ = assessment
+    authorized = all_required_gates_passed(
+        request.deterministic_gates
+    ) and all_required_gates_passed(binding_gates)
     return authorized
+
+
+def _advisory_unavailable_decision(
+    *,
+    request: RuntimeCheckpointRequest,
+    binding_gates: dict[str, bool],
+    error: Exception,
+) -> RuntimeCheckpointDecision:
+    """Keep deterministic flight control authoritative when advice is unavailable."""
+    assessment = RuntimeAssessment(
+        action="hold",
+        issue_codes=["MODEL_ADVISORY_UNAVAILABLE"],
+        repair_hint=(
+            "模型建议暂不可用；继续依据遥测门控执行局部纠偏、重规划或受控返航。"
+        ),
+    )
+    return RuntimeCheckpointDecision(
+        request_sha256=sha256_json(request),
+        assessment=assessment,
+        model_call=ModelCallRecord(
+            call_id=f"model-{uuid4().hex[:24]}",
+            role="execution_monitor",
+            attempt=1,
+            input_sha256=sha256_json(request),
+            output_sha256=sha256_json(assessment),
+            output_schema=RuntimeAssessment.__name__,
+            provider="runtime-policy",
+            model="deterministic-continuity-fallback",
+            response_id=type(error).__name__,
+            latency_ms=0,
+            created_at=datetime.now(UTC),
+        ),
+        continue_authorized=checkpoint_continue_authorized(
+            request=request,
+            assessment=assessment,
+            binding_gates=binding_gates,
+        ),
+    )
 
 
 class CheckpointCoordinator:
@@ -113,10 +156,16 @@ class CheckpointCoordinator:
         self._thread = threading.Thread(
             target=self._run, name="dronedream-checkpoint-coordinator", daemon=True
         )
-        # 先完成可能失败的插件绑定及线程结构初始化，最后才分配需要回收的供应商连接。
-        self.port = StructuredModelPort(
-            provider, max_attempts=3, timeout_seconds=model_timeout_seconds
-        )
+        # 模型监视是建议旁路，不是飞行授权机关。供应商密钥缺失或端口初始化失败
+        # 时保留错误供每个检查点生成可审计的确定性兜底决定，不能阻止执行器启动。
+        self.port: StructuredModelPort | None = None
+        self._port_init_error: Exception | None = None
+        try:
+            self.port = StructuredModelPort(
+                provider, max_attempts=3, timeout_seconds=model_timeout_seconds
+            )
+        except Exception as error:
+            self._port_init_error = error
 
     # 功能：
     #   启动模型监视旁路；已停止的协调器不能重新启动，悬停与低延迟安全仍由执行器负责。
@@ -146,7 +195,8 @@ class CheckpointCoordinator:
             raise ValueError("checkpoint coordinator stop timeout invalid")
         deadline = time.monotonic() + timeout_seconds
         self._stop.set()
-        self.port.close()
+        if self.port is not None:
+            self.port.close()
         if not self._publication_lock.acquire(timeout=timeout_seconds):
             raise TimeoutError("checkpoint publication did not stop")
         try:
@@ -158,21 +208,6 @@ class CheckpointCoordinator:
         self._thread.join(max(0.0, deadline - time.monotonic()))
         if self._thread.is_alive():
             raise TimeoutError("checkpoint coordinator did not stop")
-
-    # 功能：
-    #   独占发布有界中止原因，已有操作员或安全中止记录优先保留。
-    # 输入：
-    #   self：当前协调器。
-    #   reason：需要截断为最多 240 字符的中止原因。
-    # 输出：
-    #   None：不返回业务数据。
-    def _request_abort(self, reason: str) -> None:
-        with suppress(FileExistsError):
-            _atomic_json(
-                self.abort_file,
-                {"reason": reason[:240], "world_paused": False},
-                replace_existing=False,
-            )
 
     # 功能：
     #   在停止同步锁内复核活动计划并发布决定，只有写入成功才记录历史；磁盘换计划仍由执行器复核。
@@ -207,7 +242,7 @@ class CheckpointCoordinator:
     # 功能：
     #   1. 读取有界检查点请求，绑定当前已采纳计划、全局轨迹点和 PX4 局部坐标。
     #   2. 调用异常检测、提示增强与结构化模型，再校验输出；停止或换计划使迟到结果失效。
-    #   3. 核心门控和模型接受共同决定是否继续；失败写中止证据，退出回收连接。
+    #   3. 确定性门控决定是否继续；模型失败只形成建议缺失证据，不写飞行中止请求。
     #   4. 模型不直接驱动执行器；严格拒绝把整数或文本当作安全门控布尔值。
     # 输入：
     #   self：持有任务、插件、模型端口及执行目录的协调器。
@@ -372,11 +407,7 @@ class CheckpointCoordinator:
                     append_hook_receipts(self.receipt_path, [error.receipt])
                     raise
                 append_hook_receipts(self.receipt_path, checkpoint_receipts)
-                result = self.port.call(
-                    role="execution_monitor",
-                    output_type=RuntimeAssessment,
-                    instructions=instructions,
-                    input_artifact={
+                model_input = {
                         "mission_contract": self.prepared.contract.model_dump(mode="json"),
                         "task_graph": active_task_graph.model_dump(mode="json"),
                         "segment_summary": {
@@ -402,9 +433,38 @@ class CheckpointCoordinator:
                             "all deterministic gates must be true; model output has no "
                             "actuator authority"
                         ),
-                    },
-                    context_id=(f"{self.prepared.contract.conversation_id}::execution_monitor"),
-                )
+                    }
+                try:
+                    if self.port is None:
+                        raise self._port_init_error or RuntimeError(
+                            "execution monitor model port unavailable"
+                        )
+                    result = self.port.call(
+                        role="execution_monitor",
+                        output_type=RuntimeAssessment,
+                        instructions=instructions,
+                        input_artifact=model_input,
+                        context_id=(
+                            f"{self.prepared.contract.conversation_id}::execution_monitor"
+                        ),
+                    )
+                except Exception as error:
+                    decision = _advisory_unavailable_decision(
+                        request=request,
+                        binding_gates=binding_gates,
+                        error=error,
+                    )
+                    if not self._publish_decision(
+                        decision_path,
+                        decision,
+                        control_dir=control_dir,
+                        replacement=replacement,
+                    ):
+                        return
+                    processed.add(checkpoint_id)
+                    if not decision.continue_authorized:
+                        return
+                    continue
                 # Provider latency can outlive this episode. A late acceptance
                 # must not write a new continuation decision after shutdown.
                 if self._stop.is_set():
@@ -447,20 +507,15 @@ class CheckpointCoordinator:
                     return
                 processed.add(checkpoint_id)
                 if not decision.continue_authorized:
-                    self._request_abort(
-                        f"MODEL_CHECKPOINT_{checkpoint.checkpoint_id}_"
-                        f"{result.artifact.action.upper()}"
-                    )
                     return
         except Exception as exc:
             self.error = exc
-            self._request_abort(f"MODEL_CHECKPOINT_COORDINATOR_FAILURE_{type(exc).__name__}")
         finally:
             try:
-                self.port.close()
+                if self.port is not None:
+                    self.port.close()
             except Exception as error:
                 if self.error is None:
                     self.error = error
-                self._request_abort("MODEL_CHECKPOINT_TRANSPORT_CLEANUP_FAILURE")
             # Let filesystem observers consume the last atomic decision before exit.
             time.sleep(0.05)

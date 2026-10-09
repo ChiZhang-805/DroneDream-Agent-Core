@@ -57,27 +57,46 @@ MAX_WAYPOINT_HOLD_SECONDS = 30.0
 MAX_ABORT_REQUEST_BYTES = 4096
 CLEANUP_COMMAND_TIMEOUT_SECONDS = 5.0
 ABORT_POLL_INTERVAL_SECONDS = 0.05
-MAVSDK_PREFLIGHT_CONNECT_TIMEOUT_SECONDS = 10.0
-MAVSDK_PREFLIGHT_MAX_ATTEMPTS = 3
+# ``connect`` also starts the owned MAVSDK server and refreshes the
+# request-bound Gazebo payload snapshot.  On a cold simulator that work can
+# legitimately exceed ten seconds even though PX4 becomes ready shortly
+# afterwards.  Keep it inside the existing 180-second aggregate preflight
+# deadline, but give one owned server enough time to finish so repeated server
+# teardown does not race the next attempt's gRPC stream.
+MAVSDK_PREFLIGHT_CONNECT_TIMEOUT_SECONDS = 60.0
+MAVSDK_PREFLIGHT_MAX_ATTEMPTS = 5
 DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS = {
-    "position_velocity": 3.0,
-    "imu": 3.0,
-    "attitude": 3.0,
+    # A native-camera render spike can pause callbacks for roughly 2.5 s.  A
+    # three-second watchdog repeatedly tore down healthy gRPC subscriptions at
+    # that boundary and eventually filled MAVSDK's callback queue.  Eight
+    # seconds still detects a genuinely wedged stream quickly while leaving a
+    # wide margin above the measured render pause.  Consumers retain their own
+    # sub-second freshness limits and hold position while these streams recover.
+    "position_velocity": 8.0,
+    "imu": 8.0,
+    "attitude": 8.0,
     # Battery is a slow energy signal.  It remains recorded and monitored, but
     # must not churn its MAVSDK subscription or revoke millisecond-scale payload
     # stabilization authority merely because it updates more slowly than IMU,
     # attitude, and actuator output.
     "battery": 10.0,
-    "actuator_output": 3.0,
-    "odometry": 3.0,
+    "actuator_output": 8.0,
+    "odometry": 8.0,
 }
 DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ = {
-    "position_velocity": 50.0,
-    "imu": 50.0,
-    "attitude": 50.0,
-    "battery": 2.0,
-    "actuator_output": 10.0,
-    "odometry": 50.0,
+    # Setpoint publication remains independent of telemetry. The controller
+    # consumes one latest-value state at 20 Hz. A long acceptance run showed
+    # that the former aggregate 107 Hz callback load eventually exhausted the
+    # MAVSDK transport after pickup. Keep the three aligned sources at 25 Hz
+    # so their 40 ms period retains margin inside the 75 ms state-alignment
+    # contract, while decimating advisory streams to 91 Hz aggregate.
+    # Freshness limits still reject stale data.
+    "position_velocity": 25.0,
+    "imu": 25.0,
+    "attitude": 25.0,
+    "battery": 1.0,
+    "actuator_output": 5.0,
+    "odometry": 10.0,
 }
 ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM_ENV = "PX4_ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM"
 PX4_OFFBOARD_LOSS_TIMEOUT_SECONDS = 1.0
@@ -1052,6 +1071,7 @@ class MavsdkOffboardClient:
         self._position_velocity_condition: asyncio.Condition | None = None
         self._position_velocity_sample: tuple[PositionVelocityNed, float] | None = None
         self._position_velocity_error: BaseException | None = None
+        self._position_velocity_terminal_error: BaseException | None = None
         self._position_velocity_task: asyncio.Task[None] | None = None
         self._dynamics_samples: dict[str, tuple[dict[str, Any], float]] = {}
         self._dynamics_received_at_unix_ms: dict[str, int] = {}
@@ -1094,6 +1114,7 @@ class MavsdkOffboardClient:
         self._position_velocity_condition = asyncio.Condition()
         self._position_velocity_sample = None
         self._position_velocity_error = None
+        self._position_velocity_terminal_error = None
         self._position_velocity_task = asyncio.create_task(
             self._collect_position_velocity_ned(),
             name="px4-position-velocity-telemetry",
@@ -1120,8 +1141,8 @@ class MavsdkOffboardClient:
                 )
 
     # 功能：
-    #   1. 持续接收真实位置速度，临时停流后关闭旧订阅、退避并建立唯一替代订阅。
-    #   2. 恢复前撤销旧值，坏物理值终止采集；重订阅不赋予运动或重新起飞权限。
+    #   1. 持续接收真实位置速度，不在采集器内用短超时取消正常的 gRPC 订阅。
+    #   2. 自然断流可退避重连，坏物理值才记为终止错误；恢复不赋予运动权限。
     # 输入：
     #   self：持有唯一位置速度订阅及通知条件的客户端。
     # 输出：
@@ -1143,9 +1164,8 @@ class MavsdkOffboardClient:
         retry_delay = .1
         while True:
             try:
-                async for telemetry in self._guarded_dynamics_stream(
-                    "position_velocity", self._require_system().telemetry.position_velocity_ned()
-                ):
+                stream = self._require_system().telemetry.position_velocity_ned()
+                async for telemetry in self._long_lived_position_velocity_stream(stream):
                     position, velocity = telemetry.position, telemetry.velocity
                     sample = PositionVelocityNed(
                         north_m=_native_number(position.north_m, "north_m"),
@@ -1162,25 +1182,77 @@ class MavsdkOffboardClient:
                     async with condition:
                         self._position_velocity_sample = (sample, time.monotonic())
                         self._position_velocity_error = None
+                        self._position_velocity_terminal_error = None
                         getattr(self, "_dynamics_errors", {}).pop("position_velocity", None)
                         condition.notify_all()
                     retry_delay = .1
+                raise RuntimeError("PX4 position_velocity telemetry stream ended")
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                recoverable = (
+                    isinstance(error, (TimeoutError, ConnectionError))
+                    or any(isinstance(item, StopAsyncIteration) for item in _exception_chain(error))
+                    or str(error) == "PX4 position_velocity telemetry stream ended"
+                    or _is_recoverable_mavsdk_preflight_transport_error(error)
+                )
                 async with condition:
                     # 旧缓存在恢复期间不可读，恢复必须取得真正的新样本。
                     self._position_velocity_error = error
                     self._position_velocity_sample = None
+                    self._position_velocity_terminal_error = None if recoverable else error
                     condition.notify_all()
-                recoverable = not isinstance(error, TelemetrySubscriptionCloseFailed) and (
-                    isinstance(error, (TimeoutError, ConnectionError))
-                    or any(isinstance(item, StopAsyncIteration) for item in _exception_chain(error))
-                    or _is_recoverable_mavsdk_preflight_transport_error(error))
                 if not recoverable:
                     return  # 非法物理值及编程错误不能靠重订阅隐瞒。
                 retry_delay = await self._restart_dynamics_stream_after_error(
                     "position_velocity", error, retry_delay)
+
+    # 功能：
+    #   独占读取位置速度长连接；普通回调间隙不取消订阅，持续停流超过有界阈值才回收。
+    # 输入：
+    #   stream：MAVSDK 提供的唯一位置速度异步流。
+    # 输出：
+    #   sample：逐次交付的真实位置速度消息；流自然结束时报告可恢复错误。
+    async def _long_lived_position_velocity_stream(self, stream: Any) -> Any:
+        """Keep the flight-critical position subscription alive across callback gaps.
+
+        A short timeout around every controller read cancels pending gRPC work
+        and manufactures competing subscriptions.  The collector instead owns
+        one read for eight seconds, safely above measured render pauses.  Only
+        a sustained stall replaces that single subscription; consumers still
+        enforce their much shorter freshness contracts and hold meanwhile.
+        """
+
+        iterator = stream.__aiter__()
+        try:
+            while True:
+                try:
+                    yield await asyncio.wait_for(
+                        anext(iterator),
+                        timeout=DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS["position_velocity"],
+                    )
+                except StopAsyncIteration as error:
+                    raise RuntimeError(
+                        "PX4 position_velocity telemetry stream ended"
+                    ) from error
+                except TimeoutError as error:
+                    raise TimeoutError(
+                        "PX4 position_velocity telemetry stream produced no fresh sample"
+                    ) from error
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if callable(close):
+                try:
+                    await asyncio.wait_for(
+                        close(),
+                        timeout=CLEANUP_COMMAND_TIMEOUT_SECONDS,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    raise TelemetrySubscriptionCloseFailed(
+                        "PX4 previous telemetry subscription did not close"
+                    ) from error
 
     # 功能：
     #   按原始时刻接收独立遥测快照，重复包不续期，倒退或同刻冲突不能覆盖有效来源。
@@ -1269,14 +1341,20 @@ class MavsdkOffboardClient:
         return delay
 
     # 功能：
-    #   为一条原生异步订阅限制样本等待，并在退出时关闭该订阅。
+    #   为非位置原生订阅限制连续停流时间，并在退出时关闭该订阅。
     # 输入：
     #   source：决定停流时限的来源名称。
     #   stream：MAVSDK 提供的单个异步流。
     # 输出：
     #   sample：逐次交付的真实遥测消息，不生成缺失样本。
     async def _guarded_dynamics_stream(self, source: str, stream: Any) -> Any:
-        """Yield one subscription while rejecting a connected-but-stalled stream."""
+        """Yield one owned auxiliary subscription and replace a true stall.
+
+        The position/velocity life line uses its separate long-lived reader.
+        Auxiliary sensors may need a bounded restart to re-align independent
+        callback streams after a real stop, but each collector closes its old
+        iterator before opening one replacement.
+        """
 
         timeout_seconds = DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS.get(source)
         if timeout_seconds is None:
@@ -1719,15 +1797,29 @@ class MavsdkOffboardClient:
         if telemetry_task is not None:
             telemetry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await telemetry_task
+                await asyncio.wait_for(
+                    telemetry_task,
+                    timeout=CLEANUP_COMMAND_TIMEOUT_SECONDS,
+                )
         async with self._position_velocity_condition:
             self._position_velocity_sample = None
             self._position_velocity_error = None
+            self._position_velocity_terminal_error = None
             self._position_velocity_condition.notify_all()
         self._position_velocity_task = asyncio.create_task(
             self._collect_position_velocity_ned(),
             name="px4-position-velocity-telemetry",
         )
+
+    # 功能：
+    #   判断唯一位置速度采集任务是否已经终止，避免把普通短时无样本误判为需要重订阅。
+    # 输入：
+    #   self：持有位置速度采集任务的客户端。
+    # 输出：
+    #   needs_restart：仅无任务或任务已结束时为 True。
+    def position_velocity_stream_needs_restart(self) -> bool:
+        telemetry_task = self._position_velocity_task
+        return telemetry_task is None or telemetry_task.done()
 
     # 功能：
     #   取得本客户端已建立的飞控连接，禁止未连接实例发送命令。
@@ -1872,7 +1964,7 @@ class MavsdkOffboardClient:
             return await prepare_local_offboard(read_armed=read_armed,
                 publish_hold=publish_hold, enter_mode=enter_mode, leave_mode=self.stop_offboard,
                 verify_mode_and_health=verify, evidence=handshake,
-                timeout_seconds=min(60., remaining))
+                timeout_seconds=min(180., remaining))
 
     # 功能：
     #   有界等待飞控解锁回执；回执丢失时不能推断飞控没有解锁。
@@ -2618,13 +2710,22 @@ class MavsdkOffboardClient:
             raise RuntimeError("Gazebo payload preflight detached state is not confirmed")
         if (not observation.get("state_service")
                 and now - receipt["observed_at_unix_ms"] > 60_000):
-            raise RuntimeError("Gazebo payload preflight receipt is stale or belongs to another runtime")
+            raise RuntimeError(
+                "Gazebo payload preflight receipt is stale or belongs to another runtime"
+            )
         observer = self._ensure_payload_observer(observation.get("output_topic"))
         if observation.get("state_service"):
             service = observation["state_service"]
             expected_prefix = f"/world/{receipt['world']}/model/"
-            if (not isinstance(service, str) or not service.startswith(expected_prefix)
-                    or re.fullmatch(r"/world/[^/\s]+/model/[^/\s]+/attachment_state", service) is None):
+            if (
+                not isinstance(service, str)
+                or not service.startswith(expected_prefix)
+                or re.fullmatch(
+                    r"/world/[^/\s]+/model/[^/\s]+/attachment_state",
+                    service,
+                )
+                is None
+            ):
                 raise RuntimeError("Gazebo payload state service belongs to another runtime")
             observer["state_service"] = service
             # 旧回执只用于绑定查询入口；启动耗时较长时重新读真实状态，不能给旧事件刷新时间。
@@ -2647,8 +2748,12 @@ class MavsdkOffboardClient:
             service=observer["state_service"], env=dict(os.environ), timeout=2.5)
         if not observer["alive"]:
             raise RuntimeError("Gazebo payload observer closed during query")
-        observer.update(detached=snapshot["detached"], error=None,
-                        observed_at_unix_ms=snapshot["observed_at_unix_ms"], source=snapshot["source"])
+        observer.update(
+            detached=snapshot["detached"],
+            error=None,
+            observed_at_unix_ms=snapshot["observed_at_unix_ms"],
+            source=snapshot["source"],
+        )
         observer["sequence"] += 1
         return snapshot
 
@@ -3062,10 +3167,15 @@ class MavsdkOffboardClient:
         deadline = time.monotonic() + timeout_seconds
         while True:
             async with condition:
-                if self._position_velocity_error is not None:
+                terminal_error = getattr(
+                    self,
+                    "_position_velocity_terminal_error",
+                    None,
+                )
+                if terminal_error is not None:
                     raise RuntimeError(
                         "PX4 position/velocity telemetry collector failed"
-                    ) from self._position_velocity_error
+                    ) from terminal_error
                 latest = self._position_velocity_sample
                 now = time.monotonic()
                 if latest is not None and 0 <= now - latest[1] <= timeout_seconds:
@@ -5332,7 +5442,7 @@ def _is_recoverable_mavsdk_preflight_transport_error(error: BaseException) -> bo
 #   abort_check：外部停止检查。
 #   log_path：本次运行日志。
 #   evidence：逐次记录阶段和结果的证据容器。
-#   maximum_attempts：最多允许的连接次数，范围一到三。
+#   maximum_attempts：最多允许的连接次数，范围一到五；所有尝试共享同一准备期限。
 # 输出：
 #   health：真实就绪遥测；无法恢复时抛出原异常或超时。
 async def connect_preflight_with_recovery(
@@ -5361,8 +5471,8 @@ async def connect_preflight_with_recovery(
     """
 
     readiness_timeout_seconds = _timeout_budget(readiness_timeout_seconds)
-    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 3:
-        raise ValueError("MAVSDK preflight attempts must be an integer within [1, 3]")
+    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 5:
+        raise ValueError("MAVSDK preflight attempts must be an integer within [1, 5]")
     if type(local_mode_preparation_only) is not bool:
         raise ValueError('PREFLIGHT_LOCAL_PREPARATION_FLAG_INVALID')
     readiness_reader = (getattr(client, 'wait_until_local_position_ready', None)

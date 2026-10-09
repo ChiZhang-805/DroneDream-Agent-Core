@@ -15,6 +15,7 @@ from scripts import collect_native_decisions as collector
 
 
 # 功能：单个大附件失败不能导致其它原始记录或失败报告丢失；输出：保留文件且资格阻断。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_archive_failure_keeps_other_evidence(tmp_path):
     report = {}
     assert not collector.persist_collection_evidence(
@@ -33,6 +34,7 @@ def test_witness_cursor_tracks_received_source_time():
     calls = []
 
     # 功能：模拟第一轮仅收到旧帧、第二轮补到原始新帧；输出：不修改任何时间戳。
+    # 输入：测试夹具、参数化值或函数签名中的显式参数。
     def window(start, end):
         calls.append((start, end))
         return [first] if len(calls) == 1 else [first, late, final]
@@ -182,6 +184,7 @@ def test_label_drain_records_failure_without_aborting_control():
 
 
 # 功能：只需输入时不读无关回执账本，副本不能污染待执行请求；输出：无I/O且身份仍受校验。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_navigation_snapshot_does_not_scan_control_receipts():
     env = object.__new__(Px4GazeboTrainingEnvironment)
     env._pending = {"snapshot": {"snapshot_sha256": "a" * 64, "nested": {"x": 1}}}
@@ -214,6 +217,7 @@ def test_transient_wait_preserves_overall_collection_budget(monkeypatch):
 
 
 # 功能：总预算已结束不继续调用，非新帧等待类超时不能被吞掉；输出：None或原异常。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_wait_budget_and_unrelated_failure(monkeypatch):
     monkeypatch.setattr(collector.time, "monotonic", lambda: 5.0)
     assert collector.await_fresh_observation(None, 5.0, {}) is None
@@ -227,6 +231,7 @@ def test_wait_budget_and_unrelated_failure(monkeypatch):
 
 
 # 功能：只在原始输入仍绑定同一任务时接受滚动目标；输出：通过或准确拒绝缺证据。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_local_target_requires_source_snapshot():
     state, command, snapshot, goal = local_target_fixture()
     verify_command_goal(command, state, goal, snapshot)

@@ -2,9 +2,10 @@
 import argparse
 import json
 import math
-from pathlib import Path
 import statistics
 import time
+from pathlib import Path
+
 from audit_tartanair_sample import decode_depth, digest, portable_path, verify_files
 
 
@@ -69,7 +70,7 @@ def main():
         if any(portable_path(pair[key]).as_posix() not in verified for key in ("rgb", "depth")):
             raise ValueError("QUALITY_REFERENCES_UNVERIFIED_FILE")
     results = []
-    for previous, current in zip(pairs, pairs[1:]):
+    for previous, current in zip(pairs, pairs[1:], strict=False):
         if previous["trajectory"] != current["trajectory"]:
             continue
         images = [cv2.imread(str(root / portable_path(p["rgb"]))) for p in (previous, current)]

@@ -60,6 +60,7 @@ def test_native_label_binding(fault):
 
 
 # 功能：构造带原始命令/传输回执/连续独立见证的测试结果；输出：合成夹具而非正式数据。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def native_fixture():
     from dronedream_agent_core.contracts import (
         BodyFrameControlIntent,

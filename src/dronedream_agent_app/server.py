@@ -1308,13 +1308,18 @@ def create_app(
                 role="assistant",
                 kind="text",
                 content=text,
-                metadata={"clarification_required": True, "actuator_authority": False},
+                metadata={
+                    "clarification_required": True,
+                    "clarification_questions": error.questions,
+                    "actuator_authority": False,
+                },
             )
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": "MISSION_CLARIFICATION_REQUIRED",
                     "fields": error.fields,
+                    **({"questions": error.questions} if error.questions else {}),
                 },
             ) from error
         except MissionPreparationBlocked as error:

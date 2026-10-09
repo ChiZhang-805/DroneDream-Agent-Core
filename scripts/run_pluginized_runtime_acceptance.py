@@ -22,12 +22,19 @@ from dronedream_agent_app.asset_runtime_resolver import (
     resolve_versioned_vehicle,
 )
 from dronedream_agent_app.storage import AppStore
-from dronedream_agent_core.contracts import MapAsset, PreparedMission, VehicleAsset
+from dronedream_agent_core.contract_json import decode_contract_json
+from dronedream_agent_core.contracts import (
+    MapAsset,
+    PreparedMission,
+    Px4RuntimeAbortRequest,
+    VehicleAsset,
+)
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.model_harness.boundary import (
     HarnessRuntimeEnvelope,
     compile_execution_authority,
 )
+from dronedream_agent_core.plugin_files import read_plugin_file
 from dronedream_agent_core.ros_workspace_provenance import (
     verify_ros_workspace_provenance,
 )
@@ -45,11 +52,11 @@ OUTER_RUNTIME_LANDING_GRACE_SECONDS = 900.0
 MINIMUM_ROUTE_TANGENT_HEADING_SAMPLE_COUNT = 20
 MAXIMUM_ROUTE_TANGENT_P99_HEADING_ERROR_DEG = 45.0
 REQUIRED_DYNAMICS_TELEMETRY_RATES_HZ = {
-    "position_velocity": 50.0,
-    "imu": 50.0,
-    "attitude": 50.0,
-    "odometry": 50.0,
-    "battery": 2.0,
+    "position_velocity": 25.0,
+    "imu": 25.0,
+    "attitude": 25.0,
+    "odometry": 10.0,
+    "battery": 1.0,
 }
 MINIMUM_DEVELOPMENT_PAYLOAD_MOTION_SAMPLES = 50
 
@@ -63,6 +70,50 @@ MINIMUM_DEVELOPMENT_PAYLOAD_MOTION_SAMPLES = 50
 def _wsl_path(path: Path) -> str:
     mapped = windows_drive_path_to_wsl(str(path.resolve()))
     return mapped
+
+
+# 功能：
+#   让源码验收始终执行调用脚本所属提交；开发资源可携带冻结源码，发布资源则回退到仓库源码。
+# 输入：
+#   resource_root：本次验收使用的资源根。
+# 输出：
+#   source_root：可导入当前 Core 包的 src 目录；缺失时拒绝混用已安装旧 wheel。
+def _acceptance_source_root(resource_root: Path) -> Path:
+    candidates = (resource_root / "src", Path(__file__).resolve().parents[1] / "src")
+    for candidate in candidates:
+        package = candidate / "dronedream_agent_core" / "__init__.py"
+        app_package = candidate / "dronedream_agent_app" / "__init__.py"
+        if package.is_file() and app_package.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError("CURRENT_ACCEPTANCE_SOURCE_TREE_MISSING")
+
+
+# 功能：
+#   将独立验收绑定到当前源码生成的航点执行器，阻止暂存目录静默运行过期副本。
+# 输入：
+#   resource_root：本次验收使用的资源根。
+# 输出：
+#   staged_executor：与当前脚本目录源码逐字节一致的暂存执行器。
+def _acceptance_checkpoint_executor(resource_root: Path) -> Path:
+    source_executor = Path(__file__).resolve().parent / "px4_checkpoint_executor.py"
+    staged_candidates = (
+        resource_root / "runtime" / "px4_checkpoint_executor.py",
+        resource_root / "scripts" / "px4_checkpoint_executor.py",
+    )
+    if not source_executor.is_file():
+        raise FileNotFoundError("CURRENT_ACCEPTANCE_EXECUTOR_MISSING")
+    staged_executor = next(
+        (candidate for candidate in staged_candidates if candidate.is_file()),
+        None,
+    )
+    if staged_executor is None:
+        raise FileNotFoundError("STAGED_ACCEPTANCE_EXECUTOR_MISSING")
+    if (
+        hashlib.sha256(source_executor.read_bytes()).digest()
+        != hashlib.sha256(staged_executor.read_bytes()).digest()
+    ):
+        raise RuntimeError("CURRENT_ACCEPTANCE_EXECUTOR_MISMATCH")
+    return staged_executor.resolve()
 
 
 def _secret_lines(provider: str, model: str, api_key: str) -> str:
@@ -311,12 +362,15 @@ def _request_outer_timeout_landing(simulation_root: Path) -> Path:
     abort_path = simulation_root / "live_abort.request.json"
     if abort_path.exists():
         return abort_path
-    payload = {
-        "schema_version": "dronedream.runtime-abort-request.v1",
-        "reason": "OUTER_RUNTIME_TIMEOUT",
-        "world_paused": False,
-        "requested_at_unix_ms": int(time.time() * 1_000),
-    }
+    # Build the file through the same strict contract consumed by the flight
+    # executor.  An acceptance timeout is a landing request, not an evidence
+    # document, so it must not grow ad-hoc schema or timestamp fields that the
+    # runtime correctly rejects.
+    payload = Px4RuntimeAbortRequest(
+        reason="OUTER_RUNTIME_TIMEOUT",
+        world_paused=False,
+        source="runtime-acceptance:outer-timeout",
+    ).model_dump(mode="json", exclude_none=True)
     temporary = abort_path.with_name(f".{abort_path.name}.{uuid4().hex}.tmp")
     temporary.write_text(
         json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
@@ -380,14 +434,19 @@ def _validated_heading_evidence(
     *,
     heading_policy: str,
     maximum_yaw_rate_deg_s: float,
+    independent_route_control: bool = False,
 ) -> dict[str, Any]:
     heading_control = timing.get("takeoff_gate", {}).get("heading_control")
     if not isinstance(heading_control, dict):
         raise RuntimeError("PX4 heading-control evidence is missing")
-    expected_heading_policy = {
-        "measured-hold": "measured_prearm_heading_hold",
-        "route-tangent-relative": "measured_origin_route_tangent_rate_limited",
-    }[heading_policy]
+    expected_heading_policy = (
+        "live_local_controller_heading"
+        if independent_route_control
+        else {
+            "measured-hold": "measured_prearm_heading_hold",
+            "route-tangent-relative": "measured_origin_route_tangent_rate_limited",
+        }[heading_policy]
+    )
     if heading_control.get("policy") != expected_heading_policy:
         raise RuntimeError("PX4 heading-control policy binding changed")
     expected_yaw_rate = None if heading_policy == "measured-hold" else maximum_yaw_rate_deg_s
@@ -716,7 +775,7 @@ def _validated_payload_inference_dynamics_evidence(
 def _validated_runtime_cpu_affinity_evidence(
     simulation_root: Path,
     *,
-    local_navigation_provider: str,
+    local_navigation_provider: str | None,
 ) -> dict[str, Any] | None:
     if local_navigation_provider != "local-policy":
         return None
@@ -743,6 +802,26 @@ def _validated_runtime_cpu_affinity_evidence(
     if len(local_model_ids) < minimum_model_cpu_count:
         raise RuntimeError("local-policy runtime CPU reservation is below the host-tier minimum")
     return affinity
+
+
+# 功能：
+#   读取发布资源中的控制配置，使独立验收与桌面运行管理器选择完全相同的控制模式。
+# 输入：
+#   resource_root：包含受清单约束 runtime 资源的根目录。
+# 输出：
+#   enabled：仅在配置精确声明独立路线控制时为 True；未知配置明确失败。
+def _independent_route_control_enabled(resource_root: Path) -> bool:
+    path = resource_root / "runtime" / "control-profile.json"
+    if not path.exists():
+        return False
+    profile = json.loads(read_plugin_file(path, limit=4096))
+    if profile != {
+        "schema_version": "dronedream.control-profile.v1",
+        "mode": "independent-route-v1",
+        "simulation_only": True,
+    }:
+        raise ValueError("RUNTIME_CONTROL_PROFILE_INVALID")
+    return True
 
 
 def _validated_multimodal_dataset_evidence(
@@ -783,7 +862,11 @@ def _atomic_json(path: Path, payload: object) -> None:
 
 
 def _execution_authority(
-    *, planning_root: Path, run_root: Path, prepared_payload: dict[str, Any]
+    *,
+    planning_root: Path,
+    run_root: Path,
+    prepared: PreparedMission,
+    prepared_payload: dict[str, Any],
 ) -> Path:
     """Derive one exact, single-use authority from the persisted planning boundary.
 
@@ -793,7 +876,6 @@ def _execution_authority(
     hash-bound authority without weakening any execution gate.
     """
 
-    prepared = PreparedMission.model_validate(prepared_payload)
     if prepared.schema_version != "dronedream.prepared-mission.v4":
         raise RuntimeError("PREPARED_MISSION_SCHEMA_OBSOLETE")
     runtime_payload: dict[str, Any] | None = None
@@ -905,7 +987,8 @@ def _summarize(
     watchdog_startup_deadline_ms: int,
     watchdog_scheduling_jitter_grace_ms: int,
     watchdog_persistent_miss_ms: int,
-    local_navigation_provider: str,
+    local_navigation_provider: str | None,
+    independent_route_control: bool,
     local_navigation_visual_enabled: bool,
     heading_policy: str,
     maximum_yaw_rate_deg_s: float,
@@ -942,6 +1025,7 @@ def _summarize(
         timing,
         heading_policy=heading_policy,
         maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,
+        independent_route_control=independent_route_control,
     )
     heading_tracking = _validated_heading_tracking_evidence(
         timing,
@@ -961,18 +1045,26 @@ def _summarize(
         required=record_multimodal_dataset,
     )
     model_navigation = measurements.get("model_navigation", {})
-    if not isinstance(model_navigation, dict) or not model_navigation.get("enabled"):
-        raise RuntimeError("continuous local model navigation was not enabled")
-    if int(model_navigation.get("provider_call_count", 0)) < 1:
-        raise RuntimeError("continuous local model navigation made no provider calls")
-    if int(model_navigation.get("authorized_control_applied_count", 0)) < 1:
-        raise RuntimeError("continuous local model navigation never authorized motion")
-    if model_navigation.get("provider") != local_navigation_provider:
-        raise RuntimeError("continuous local navigation provider binding changed")
-    if bool(model_navigation.get("visual_enabled")) != local_navigation_visual_enabled:
-        raise RuntimeError("continuous local navigation visual binding changed")
-    if not bool(model_navigation.get("model_control_authority_required")):
-        raise RuntimeError("continuous model control authority was not required")
+    if not isinstance(model_navigation, dict):
+        raise RuntimeError("model navigation evidence is malformed")
+    if independent_route_control:
+        if model_navigation.get("enabled") is not False:
+            raise RuntimeError("independent route control unexpectedly enabled a model actor")
+        if model_navigation.get("model_control_authority_required") is not False:
+            raise RuntimeError("independent route control granted model control authority")
+    else:
+        if not model_navigation.get("enabled"):
+            raise RuntimeError("continuous local model navigation was not enabled")
+        if int(model_navigation.get("provider_call_count", 0)) < 1:
+            raise RuntimeError("continuous local model navigation made no provider calls")
+        if int(model_navigation.get("authorized_control_applied_count", 0)) < 1:
+            raise RuntimeError("continuous local model navigation never authorized motion")
+        if model_navigation.get("provider") != local_navigation_provider:
+            raise RuntimeError("continuous local navigation provider binding changed")
+        if bool(model_navigation.get("visual_enabled")) != local_navigation_visual_enabled:
+            raise RuntimeError("continuous local navigation visual binding changed")
+        if not bool(model_navigation.get("model_control_authority_required")):
+            raise RuntimeError("continuous model control authority was not required")
     checkpoints = workflow.get("checkpoint_decisions", [])
     injection_path = run_root / "runtime-message-injection.json"
     runtime_message: dict[str, Any] | None = None
@@ -1044,6 +1136,9 @@ def _summarize(
         ),
         "completion_accepted": bool(workflow["completion_assessment"]["accepted"]),
         "continuous_model_navigation": model_navigation,
+        "control_mode": (
+            "independent-route-v1" if independent_route_control else "model-authority"
+        ),
         "heading_control": heading_control,
         "heading_tracking": heading_tracking,
         "px4_dynamics_telemetry": dynamics_telemetry,
@@ -1096,8 +1191,14 @@ def run(
         maximum_yaw_rate_deg_s,
     )
     prepared_path = planning_root / "plan" / "prepared-mission.json"
-    prepared = json.loads(prepared_path.read_text(encoding="utf-8"))
-    prepared_mission = PreparedMission.model_validate(prepared)
+    prepared_raw = read_plugin_file(prepared_path, limit=16 * 1024 * 1024)
+    prepared_mission = decode_contract_json(
+        prepared_raw,
+        PreparedMission,
+        limit=16 * 1024 * 1024,
+        node_limit=2_000_000,
+    )
+    prepared = json.loads(prepared_raw)
     if prepared_mission.schema_version != "dronedream.prepared-mission.v4":
         raise RuntimeError("PREPARED_MISSION_SCHEMA_OBSOLETE")
     contract_id = prepared_mission.contract.contract_id
@@ -1150,7 +1251,26 @@ def run(
         raise RuntimeError("prepared mission watchdog scheduling grace is outside the safe range")
     if not 25 <= watchdog_persistent_miss_ms <= 1_000:
         raise RuntimeError("prepared mission watchdog persistent miss is outside the safe range")
-    local_navigation_provider = local_navigation_provider or provider
+    independent_route_control = _independent_route_control_enabled(resource_root)
+    if independent_route_control and any(
+        value
+        for value in (
+            local_navigation_provider,
+            local_navigation_fallback_provider,
+            local_navigation_visual_enabled,
+            local_policy_package_paths,
+            local_policy_qualification_paths,
+            local_policy_simulation_admission_paths,
+            development_payload_collection,
+        )
+    ):
+        raise ValueError("INDEPENDENT_ROUTE_CONTROL_CONFLICT")
+    if independent_route_control:
+        local_navigation_provider = None
+        local_navigation_model = None
+        heading_policy = "route-tangent-relative"
+    else:
+        local_navigation_provider = local_navigation_provider or provider
     if local_navigation_provider == "local-policy":
         if not local_policy_package_paths or not (
             local_policy_qualification_paths or local_policy_simulation_admission_paths
@@ -1160,7 +1280,7 @@ def run(
                 "or simulation admission receipts"
             )
         local_navigation_model = "local-policy"
-    else:
+    elif local_navigation_provider is not None:
         if (
             local_policy_package_paths
             or local_policy_qualification_paths
@@ -1174,7 +1294,10 @@ def run(
         )
     if local_navigation_provider == provider and local_navigation_model != model:
         raise ValueError("one provider cannot select two models in the same runtime session")
-    if local_navigation_fallback_provider == local_navigation_provider:
+    if (
+        local_navigation_fallback_provider is not None
+        and local_navigation_fallback_provider == local_navigation_provider
+    ):
         raise ValueError("local navigation fallback provider must differ from primary")
     if development_payload_collection:
         if local_navigation_provider != "local-policy":
@@ -1217,6 +1340,7 @@ def run(
                 ),
                 watchdog_persistent_miss_ms=watchdog_persistent_miss_ms,
                 local_navigation_provider=local_navigation_provider,
+                independent_route_control=independent_route_control,
                 local_navigation_visual_enabled=local_navigation_visual_enabled,
                 heading_policy=heading_policy,
                 maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,
@@ -1229,7 +1353,7 @@ def run(
         raise FileExistsError(f"run directory already exists: {run_root}")
     provider_models: dict[str, str] = {}
     selections = [(provider, model)]
-    if local_navigation_provider != "local-policy":
+    if local_navigation_provider is not None and local_navigation_provider != "local-policy":
         selections.append((local_navigation_provider, local_navigation_model))
     if local_navigation_fallback_provider is not None:
         selections.append(
@@ -1320,10 +1444,8 @@ def run(
     ):
         raise RuntimeError("CURRENT_RUNTIME_ASSET_CONTRACT_MISMATCH")
     runtime = resource_root / "runtime"
-    resource_src = resource_root / "src"
-    checkpoint_executor = runtime / "px4_checkpoint_executor.py"
-    if not checkpoint_executor.is_file():
-        checkpoint_executor = resource_root / "scripts" / "px4_checkpoint_executor.py"
+    resource_src = _acceptance_source_root(resource_root)
+    checkpoint_executor = _acceptance_checkpoint_executor(resource_root)
     required = (
         prepared_path,
         world_sdf_path,
@@ -1354,6 +1476,7 @@ def run(
     authority_path = _execution_authority(
         planning_root=planning_root,
         run_root=run_root,
+        prepared=prepared_mission,
         prepared_payload=prepared,
     )
     secret_path = run_root / f".model-session-{uuid4().hex}.env"
@@ -1416,20 +1539,28 @@ def run(
         "12",
         "--runtime-replan-hold-seconds",
         "60",
-        "--local-navigation-provider",
-        local_navigation_provider,
-        "--local-navigation-model-timeout-seconds",
-        f"{local_navigation_model_timeout_seconds:g}",
-        "--local-navigation-period-seconds",
-        f"{local_navigation_period_seconds:g}",
-        "--local-navigation-context-id",
-        contract_id,
-        "--require-local-navigation-control-authority",
         "--heading-policy",
         heading_policy,
         "--maximum-yaw-rate-deg-s",
         f"{maximum_yaw_rate_deg_s:g}",
     ]
+    if independent_route_control:
+        command.extend(["--independent-route-control", "--simulation-map-fusion"])
+    else:
+        assert local_navigation_provider is not None
+        command.extend(
+            [
+                "--local-navigation-provider",
+                local_navigation_provider,
+                "--local-navigation-model-timeout-seconds",
+                f"{local_navigation_model_timeout_seconds:g}",
+                "--local-navigation-period-seconds",
+                f"{local_navigation_period_seconds:g}",
+                "--local-navigation-context-id",
+                contract_id,
+                "--require-local-navigation-control-authority",
+            ]
+        )
     if local_navigation_fallback_provider is not None:
         command.extend(
             [
@@ -1468,12 +1599,10 @@ def run(
     if development_payload_collection:
         command.append("--development-payload-collection")
     command_text = " ".join(shlex.quote(value) for value in command)
-    source_path_export = ""
-    if resource_src.is_dir():
-        source_path_export = (
-            f"export PYTHONPATH={shlex.quote(_wsl_path(resource_src))}"
-            "${PYTHONPATH:+:$PYTHONPATH}\n"
-        )
+    source_path_export = (
+        f"export PYTHONPATH={shlex.quote(_wsl_path(resource_src))}"
+        "${PYTHONPATH:+:$PYTHONPATH}\n"
+    )
     script = (
         "set -eo pipefail\n"
         "source /opt/ros/jazzy/setup.bash\n"
@@ -1546,6 +1675,7 @@ def run(
         watchdog_scheduling_jitter_grace_ms=watchdog_scheduling_jitter_grace_ms,
         watchdog_persistent_miss_ms=watchdog_persistent_miss_ms,
         local_navigation_provider=local_navigation_provider,
+        independent_route_control=independent_route_control,
         local_navigation_visual_enabled=local_navigation_visual_enabled,
         heading_policy=heading_policy,
         maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,

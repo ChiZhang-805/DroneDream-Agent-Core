@@ -21,6 +21,7 @@ def suite(tmp_path):
 
 
 # 功能：逐份校验20种材料的真实碰撞世界、来源摘要及原集合；输出：正式样本始终0。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def test_prepared_detour_suite_is_not_formal_training(suite, tmp_path):
     output = tmp_path / "detours"
     result = prepare(suite, output, radius_m=0.38, height_m=0.43, clearance_m=0.25)
@@ -47,6 +48,7 @@ def test_prepared_detour_suite_is_not_formal_training(suite, tmp_path):
 
 
 # 功能：采集前发现来源/划分修改时完全不发布新套件；输出：明确拒绝。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize("fault", ["split", "family", "recipe"])
 def test_source_mutation_rejected_before_output(suite, tmp_path, fault):
     doc = json.loads(suite.read_text())

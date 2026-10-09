@@ -57,7 +57,7 @@ async def run_preflight_recovery(
     for value in (timeout_seconds, cleanup_timeout_seconds):
         if type(value) not in (float, int) or not 0 < value <= 3600:
             raise ValueError("PREFLIGHT_TIMEOUT_INVALID")
-    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 3:
+    if type(maximum_attempts) is not int or not 1 <= maximum_attempts <= 5:
         raise ValueError("PREFLIGHT_ATTEMPT_LIMIT_INVALID")
     started = time.monotonic()
     deadline = started + timeout_seconds

@@ -40,6 +40,7 @@ from dronedream_agent_core.gazebo_adapter import (
     _maximum_model_participation_gap_seconds,
     _model_navigation_controller_lookahead_m,
     _model_navigation_cycle_is_applied,
+    _monitoring_phase_from_reads,
     _partition_runtime_cpus,
     _payload_spawn_spec,
     _phase_reference_polyline,
@@ -54,12 +55,161 @@ from dronedream_agent_core.gazebo_adapter import (
     _ros_overlay_environment,
     _runtime_evidence_writer_complete,
     _runtime_snapshot_writer_complete,
+    _simulation_px4_estimator_environment,
+    _spawn_clearance_preflight,
+    _static_collision_abort_confirmed,
     _terminal_completion_grace_allowed,
     _tracking_corridor_policy,
     _tracking_identity_required,
     _update_goal_progress,
     _with_runtime_cpu_affinity,
 )
+
+
+# 功能：验证毫米级静态包络重叠只触发闭环恢复，不会成为单点终止票。
+# 输入：无；输出：None，通过断言验证容差边界和状态复位。
+def test_millimetre_static_overlap_does_not_abort_flight() -> None:
+    state: dict[str, object] = {}
+
+    for elapsed_s in (10.0, 10.1, 11.0, 20.0):
+        assert not _static_collision_abort_confirmed(
+            state,
+            elapsed_s=elapsed_s,
+            primitive_name="teaching-stair-2-b-10",
+            clearance_m=-0.0027,
+            phase="TRACKING_RECOVERY",
+        )
+        assert state == {}
+
+
+# 功能：验证深碰撞和长期未脱离碰撞仍会请求受控终止，且必须经过连续确认。
+# 输入：无；输出：None，通过断言验证深度与持续时间门槛。
+def test_static_collision_requires_continuous_confirmation() -> None:
+    deep: dict[str, object] = {}
+    assert not _static_collision_abort_confirmed(
+        deep,
+        elapsed_s=1.0,
+        primitive_name="wall",
+        clearance_m=-0.09,
+        phase="TRACK",
+    )
+    assert not _static_collision_abort_confirmed(
+        deep,
+        elapsed_s=1.05,
+        primitive_name="wall",
+        clearance_m=-0.09,
+        phase="TRACKING_RECOVERY",
+    )
+    assert _static_collision_abort_confirmed(
+        deep,
+        elapsed_s=1.11,
+        primitive_name="wall",
+        clearance_m=-0.09,
+        phase="TRACKING_RECOVERY",
+    )
+
+    persistent: dict[str, object] = {}
+    for elapsed_s in (30.0, 30.1, 31.0, 32.0, 33.0, 34.0, 34.9):
+        assert not _static_collision_abort_confirmed(
+            persistent,
+            elapsed_s=elapsed_s,
+            primitive_name="wall",
+            clearance_m=-0.03,
+            phase="TRACKING_RECOVERY",
+        )
+    assert _static_collision_abort_confirmed(
+        persistent,
+        elapsed_s=35.1,
+        primitive_name="wall",
+        clearance_m=-0.03,
+        phase="TRACKING_RECOVERY",
+    )
+
+
+# 功能：阶段通道短时失联只退化到诊断标签，不能凭标签产生控制授权。
+# 输入：无；输出：None，通过断言验证主通道优先、诊断补充和双源失联。
+def test_phase_channel_outage_uses_diagnostic_label_without_granting_control() -> None:
+    primary = {
+        "phase": None,
+        "reused": False,
+        "read_age_seconds": 4.48,
+        "issue": "LIVE_RUNTIME_PHASE_UNAVAILABLE",
+    }
+    diagnostic = {
+        "phase": "TRACK",
+        "reused": False,
+        "read_age_seconds": 0.0,
+        "issue": None,
+    }
+
+    assert _monitoring_phase_from_reads(primary, diagnostic) == "TRACK"
+    assert _monitoring_phase_from_reads(primary, {**diagnostic, "issue": "READ_FAILED"}) is None
+    assert _monitoring_phase_from_reads(
+        {**primary, "phase": "LANDING", "issue": None},
+        diagnostic,
+    ) == "LANDING"
+
+
+# 功能：防止阶段辅助通道错误重新成为单点飞行终止开关。
+# 输入：无；输出：None，通过源约束验证不存在直接终止赋值。
+def test_phase_channel_issue_is_not_a_direct_flight_abort() -> None:
+    source = Path(gazebo_adapter.__file__).read_text(encoding="utf-8")
+    assert 'abort_reason = str(phase_read["issue"])' not in source
+    assert '"abort_authorized": False' in source
+
+
+def test_spawn_clearance_preflight_rejects_floor_embedding() -> None:
+    primitives = [{
+        "name": "teaching-floor-1-slab",
+        "semantic": "floor",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.11,
+        "size_x": 20.0,
+        "size_y": 20.0,
+        "size_z": 0.22,
+    }]
+    with pytest.raises(SimulationRuntimeError, match="PREFLIGHT_SPAWN_COLLISION"):
+        _spawn_clearance_preflight(
+            primitives,
+            model_root=(0.0, 0.0, -0.013),
+            collision_offset=(0.0, 0.0, 0.228),
+            radius=0.35,
+            half_height=0.215,
+        )
+
+
+def test_spawn_clearance_preflight_accepts_storey_launch_pad() -> None:
+    primitives = [
+        {
+            "name": "teaching-floor-3-slab",
+            "semantic": "floor",
+            "center_x": 0.0,
+            "center_y": 0.0,
+            "center_z": 7.31,
+            "size_x": 20.0,
+            "size_y": 20.0,
+            "size_z": 0.22,
+        },
+        {
+            "name": "launch-pad",
+            "semantic": "launch-pad",
+            "center_x": 0.0,
+            "center_y": 0.0,
+            "center_z": 7.46,
+            "radius_m": 1.0,
+            "height_m": 0.08,
+        },
+    ]
+    receipt = _spawn_clearance_preflight(
+        primitives,
+        model_root=(0.0, 0.0, 7.487),
+        collision_offset=(0.0, 0.0, 0.228),
+        radius=0.35,
+        half_height=0.215,
+    )
+    assert receipt["accepted"] is True
+    assert receipt["minimum_clearance_m"] == pytest.approx(0.0)
 
 
 def test_runtime_evidence_writer_gate_recounts_persisted_records() -> None:
@@ -269,8 +419,8 @@ def test_runtime_cpu_affinity_wraps_command_with_bound_cpu_set() -> None:
     ) == ["/usr/bin/taskset", "--cpu-list", "0,2,4", "gz", "sim"]
 
 
-def test_reference_route_deviation_yields_to_required_model_path_authority() -> None:
-    assert _reference_route_deviation_enforced(
+def test_reference_route_deviation_is_recovered_by_controller_not_terminal_monitor() -> None:
+    assert not _reference_route_deviation_enforced(
         phase="TRACK",
         goal_observed=False,
         model_control_authority_required=False,
@@ -465,6 +615,15 @@ def test_ros_overlay_environment_preserves_native_library_paths(
     assert result["LD_LIBRARY_PATH"] == "/qualified/install/lib"
     assert captured["env"] == {"BASE_TOKEN": "kept"}
     assert captured["command"][-1] == str(setup)
+
+
+def test_simulation_px4_estimator_matches_noiseless_navsat_without_weakening_gates() -> None:
+    assert _simulation_px4_estimator_environment() == {
+        "DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK": "1",
+        "PX4_PARAM_EKF2_GPS_CTRL": "7",
+        "PX4_PARAM_EKF2_HGT_REF": "3",
+        "PX4_PARAM_EKF2_GPS_P_NOISE": "0.01",
+    }
 
 
 def test_wall_timeout_extension_requires_fresh_closed_loop_progress(tmp_path: Path) -> None:
@@ -790,13 +949,20 @@ def test_live_camera_is_positioned_from_the_real_route() -> None:
 
 
 # 功能：控制优先只降低旁观画面负载，保留相同路线视角和真实图像主题。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 def test_control_priority_live_camera_keeps_view_without_sensor_changes():
     points = [(0., 0., 2.), (12., 8., 5.)]
     original, old_pose = _live_camera_sdf(points)
     compact, pose = _live_camera_sdf(points, control_priority=True)
     assert pose == old_pose
-    assert compact == original.replace('<update_rate>12</update_rate>', '<update_rate>6</update_rate>').replace(
-        '<width>1280</width><height>720</height>', '<width>640</width><height>360</height>')
+    assert compact == original.replace(
+        '<update_rate>12</update_rate>',
+        '<update_rate>6</update_rate>',
+    ).replace(
+        '<width>1280</width><height>720</height>',
+        '<width>640</width><height>360</height>',
+    )
     with pytest.raises(ValueError, match='LIVE_CAMERA_PROFILE_INVALID'):
         _live_camera_sdf(points, control_priority=1)
 
@@ -1195,6 +1361,38 @@ def test_payload_preflight_detach_requires_positive_state_readback(
                 env={},
             )
     assert any(command[3] == "/payload/detach" for command in commands if len(command) > 3)
+
+
+# 功能：
+#   Gazebo 在载荷物理预检中退出时必须立即报告，不继续消耗数分钟就绪期限。
+# 输入：
+#   monkeypatch：提供不会执行真实 Gazebo 命令的隔离替身。
+# 输出：
+#   None：断言错误包含明确的仿真进程退出原因。
+def test_payload_preflight_detects_gazebo_process_exit(monkeypatch) -> None:
+    class ExitedGazebo:
+        returncode = -6
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(
+        gazebo_adapter,
+        "_run",
+        lambda argv, *, env, timeout: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    with pytest.raises(
+        SimulationRuntimeError,
+        match="GAZEBO_EXITED_DURING_PAYLOAD_PREFLIGHT",
+    ):
+        _detach_payload_before_flight(
+            "gz",
+            detach_topic="/payload/detach",
+            output_topic="/payload/state",
+            env={},
+            gazebo_process=ExitedGazebo(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1824,7 +2022,7 @@ def test_landing_ground_contact_has_narrow_phase_surface_and_depth_boundary() ->
         primitive_name="school-map-ground",
         clearance_m=-0.0139,
     )
-    assert not _is_tolerated_landing_contact(
+    assert _is_tolerated_landing_contact(
         phase="LANDING",
         primitive_name="campus-main-gate-header",
         clearance_m=-0.0139,
@@ -1844,7 +2042,7 @@ def test_landing_ground_contact_has_narrow_phase_surface_and_depth_boundary() ->
         primitive_name="terrain-0",
         clearance_m=-0.0022,
     )
-    assert not _is_tolerated_landing_contact(
+    assert _is_tolerated_landing_contact(
         phase="PREFLIGHT",
         primitive_name="wall-0-0",
         clearance_m=-0.0022,

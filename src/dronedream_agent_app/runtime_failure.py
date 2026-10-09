@@ -14,8 +14,11 @@ from dronedream_plugin_sdk.protocol import decode_json
 #   detail：白名单错误码与用户可读说明；缺失、损坏或未知原因返回 None。
 def executor_failure_detail(run_dir: Path, *, english: bool) -> tuple[str, str] | None:
     try:
-        value = decode_json(read_plugin_file(run_dir / "offboard_timing.json", limit=2 * 1024**2),
-                            limit=2 * 1024**2, node_limit=100_000)
+        value = decode_json(
+            read_plugin_file(run_dir / "offboard_timing.json", limit=16 * 1024**2),
+            limit=16 * 1024**2,
+            node_limit=2_000_000,
+        )
     except (OSError, ValueError):
         return None
     if not isinstance(value, dict) or value.get("status") != "failed":
@@ -47,7 +50,8 @@ def executor_failure_detail(run_dir: Path, *, english: bool) -> tuple[str, str] 
                   "NATIVE_ROUTE_UNCERTAINTY_BUDGET_UNFUNDED:OverflowError"}:
         return ("NATIVE_ROUTE_UNCERTAINTY_BUDGET_UNFUNDED",
                 "The route clearance cannot cover the current localization uncertainty. "
-                "Use a wider validated route or improve localization; restarting alone will not fix this."
+                "Use a wider validated route or improve localization; restarting alone "
+                "will not fix this."
                 if english else
                 "路线净空无法覆盖当前定位误差。需要重新校验更宽的路线或改善定位；仅重启或删除对话不能解决。")
     if reason in {"NATIVE_PERCEPTION_FEATURES_NOT_READY", "NATIVE_PERCEPTION_STREAM_NOT_HEALTHY",

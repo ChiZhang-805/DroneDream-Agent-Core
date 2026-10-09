@@ -1,10 +1,13 @@
 import hashlib
 import json
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+
 from dronedream_agent_core.simulation_camera_clock import (
-    prepare_native_camera_clock, validate_native_camera_clock,
+    prepare_native_camera_clock,
+    validate_native_camera_clock,
 )
 
 
@@ -31,6 +34,9 @@ def test_run_owned_clock_configuration(tmp_path):
     a = prepare_native_camera_clock(**kwargs, output=tmp_path/'a')
     b = prepare_native_camera_clock(**kwargs, output=tmp_path/'b')
     assert a['epoch'] != b['epoch']
+    tree = ET.parse(Path(a['environment']['GZ_SIM_SERVER_CONFIG_PATH']))
+    assert tree.findtext(".//plugin[@name='dronedream::NativeCameraClock']/diagnostics_path") == str(
+        (tmp_path/'a'/'camera-clock.log').resolve())
     assert config.read_bytes() == original
     plugin = ET.parse(a['environment']['GZ_SIM_SERVER_CONFIG_PATH']).find(".//plugin[@name='dronedream::NativeCameraClock']")
     assert plugin.findtext('rgb_input') == '/camera/rgb'

@@ -53,7 +53,16 @@ fi
 
 ros2 topic pub --once /dronedream/safety_event \
   dronedream_agent_msgs/msg/SafetyEvent \
-  "{contract_id: safety-guard-contract, observation_sequence: 8, severity: 3, action: safe_hold_then_land, issue_codes: [WATCHDOG_DEADLINE]}" \
+  "{contract_id: safety-guard-contract, observation_sequence: 8, severity: 2, action: hold_correct_and_resume, issue_codes: [WATCHDOG_DEADLINE]}" \
+  >/dev/null
+sleep 1
+if [[ -e "${abort_file}" ]]; then
+  echo "SAFETY_GUARD_FAILED recoverable-event-was-promoted-to-abort" >&2
+  exit 3
+fi
+ros2 topic pub --once /dronedream/safety_event \
+  dronedream_agent_msgs/msg/SafetyEvent \
+  "{contract_id: safety-guard-contract, observation_sequence: 9, severity: 3, action: safe_hold_then_land, issue_codes: [PHYSICAL_EMERGENCY]}" \
   >/dev/null
 for _ in $(seq 1 50); do
   [[ -f "${abort_file}" ]] && break
@@ -72,11 +81,12 @@ assert payload["reason"] == "NATIVE_RUNTIME_SAFETY_EVENT"
 assert payload["contract_id"] == "safety-guard-contract"
 assert payload["action"] == "safe_hold_then_land"
 assert payload["severity"] == 3
-assert payload["observation_sequence"] == 8
-assert payload["issue_codes"] == ["WATCHDOG_DEADLINE"]
+assert payload["observation_sequence"] == 9
+assert payload["issue_codes"] == ["PHYSICAL_EMERGENCY"]
 print(
     "ROS_SAFETY_GUARD_READY "
-    f"contract_rejection=ok authorized_abort=ok sha256={hashlib.sha256(path.read_bytes()).hexdigest()}"
+    "recoverable_correction=ok "
+    f"physical_emergency_abort=ok sha256={hashlib.sha256(path.read_bytes()).hexdigest()}"
 )
 PY
 
@@ -95,28 +105,11 @@ ros2 run dronedream_agent_plugin_api capability_host --ros-args \
   -p watchdog_deadline_ms:=100 \
   -p watchdog_startup_deadline_ms:=1000 >"${host_log}" 2>&1 &
 host_pid=$!
-for _ in $(seq 1 50); do
-  [[ -f "${abort_file}" ]] && break
-  sleep 0.1
-done
-test -f "${abort_file}"
-test "$(grep -c 'forced fail-closed hold' "${host_log}")" -eq 1
-"${runtime_root}/venv/bin/python" - "${abort_file}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-assert payload["contract_id"] == "watchdog-contract"
-assert payload["action"] == "safe_hold_then_land"
-assert payload["issue_codes"] == [
-    "WATCHDOG_HEALTH_OR_DEADLINE_FAILURE",
-    "MISSION_OBSERVATION_DEADLINE_MISSED",
-]
-assert payload["observation_age_ms"] > payload["deadline_ms"]
-assert payload["deadline_ms"] == 1500
-print(
-    "ROS_WATCHDOG_ABORT_READY single_fail_closed_event=ok "
-    "bounded_scheduling_grace=ok persistent_miss_filter=ok executor_abort_gate=ok"
-)
-PY
+sleep 3
+if [[ -e "${abort_file}" ]]; then
+  echo "SAFETY_GUARD_FAILED watchdog-recovery-was-promoted-to-abort" >&2
+  exit 4
+fi
+test "$(grep -c 'recoverable hold/correction' "${host_log}")" -ge 1
+test "$(grep -c 'recoverable runtime degradation delegated' "${guard_log}")" -ge 1
+echo "ROS_WATCHDOG_RECOVERY_READY bounded_debounce=ok correction_delegation=ok no_executor_abort=ok"

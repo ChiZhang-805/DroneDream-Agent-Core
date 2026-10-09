@@ -27,17 +27,21 @@ from dronedream_agent_core.runtime_sensor_contracts import (
     RuntimeSensorStatus,
 )
 from scripts.runtime_depth_safety_worker import (
+    EstimatorWorldOffsetObserver,
     _advance_dynamic_recovery_episode,
     _BoundedRuntimeEvidenceWriter,
     _controller_step_for_profile,
     _coordinate_candidates_enabled,
+    _control_frame_estimator_offset,
     _development_depth_frame_suppressed,
     _effective_control_profile,
     _expired_model_control_observation,
     _fault_adjusted_perception_health,
+    _fresh_estimator_world_offset,
     _fresh_perception_can_finalize_model_cycle,
     _LatestOnlyDatasetWriter,
     _LatestRuntimeSnapshotWriter,
+    _localization_route_budget_context,
     _model_cycle_trigger,
     _model_navigation_goal_contract,
     _NativeIdentityTracker,
@@ -48,6 +52,138 @@ from scripts.runtime_depth_safety_worker import (
     _runtime_phase_context,
     _strategic_sensor_context,
 )
+
+
+# 功能：验证仿真见证偏差只用于诊断，绝不改变原生部署坐标中的控制位置。
+# 输入：一个明显非零的 Gazebo/PX4 见证偏差；输出：控制偏移仍严格为零。
+def test_truth_witness_offset_never_becomes_control_transform() -> None:
+    witness = Vector3(x=0.4, y=-0.2, z=0.18)
+
+    assert _control_frame_estimator_offset(witness) == Vector3(x=0.0, y=0.0, z=0.0)
+    assert witness == Vector3(x=0.4, y=-0.2, z=0.18)
+
+
+# 功能：
+#   验证原生高速控制环只消费新鲜、已接纳且有界的估计器到世界坐标校正。
+# 输入：
+#   tmp_path：独立身份通道目录。
+# 输出：
+#   None：有效校正被保留，过期或未接纳证据不改变控制坐标。
+def test_fresh_estimator_world_offset_rejects_stale_or_unaccepted_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "controlled-vehicle-identity.json"
+    payload = {
+        "schema_version": "dronedream.controlled-vehicle-identity.v1",
+        "selected_entity_name": "x500_depth_0::base_link",
+        "pose_reference": "canonical-link-relative-to-model",
+        "gazebo_collision_center_world_enu_m": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "aligned_gazebo_collision_center_world_enu_m": {
+            "x": 1.0,
+            "y": 2.0,
+            "z": 3.0,
+        },
+        "px4_collision_center_world_enu_m": {"x": 0.7, "y": 2.1, "z": 2.9},
+        "position_disagreement_m": 0.33,
+        "time_aligned_position_disagreement_m": 0.33,
+        "identity_offset_innovation_m": 0.31,
+        "maximum_offset_innovation_m": 0.25,
+        "maximum_absolute_correction_m": 1.0,
+        "estimator_to_world_position_offset_m": {"x": 0.3, "y": -0.1, "z": 0.1},
+        "identity_alignment_seconds": 0.0,
+        "maximum_correction_m": 1.0,
+        "tracking_age_seconds": 0.01,
+        "tracking_fresh": True,
+        "correction_source": "relocalized",
+        "consecutive_mismatch_samples": 0,
+        "accepted": True,
+        "updated_at_unix_ms": 10_000,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert _fresh_estimator_world_offset(path, now_unix_ms=10_100) == Vector3(
+        x=0.3, y=-0.1, z=0.1
+    )
+    assert _fresh_estimator_world_offset(path, now_unix_ms=10_751) is None
+    payload["accepted"] = False
+    payload["updated_at_unix_ms"] = 10_100
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert _fresh_estimator_world_offset(path, now_unix_ms=10_100) is None
+
+
+# 功能：
+#   验证挂载盘身份文件读取在后台阻塞时，高速控制调用仍只读内存并立即返回。
+# 输入：
+#   tmp_path：独立观察路径。
+# 输出：
+#   None：已验证校正可用，后续慢读不会阻塞 latest，线程可正常关闭。
+def test_estimator_world_offset_observer_keeps_file_io_off_control_thread(
+    tmp_path: Path,
+) -> None:
+    second_read_started = threading.Event()
+    release_second_read = threading.Event()
+    calls = 0
+
+    def reader(_path, *, now_unix_ms, maximum_age_ms):
+        nonlocal calls
+        assert type(now_unix_ms) is int
+        assert maximum_age_ms == 750
+        calls += 1
+        if calls > 1:
+            second_read_started.set()
+            release_second_read.wait(1.0)
+        return Vector3(x=0.2, y=-0.1, z=0.05)
+
+    observer = EstimatorWorldOffsetObserver(tmp_path / "identity.json", reader=reader)
+    try:
+        deadline = time.monotonic() + 1.0
+        offset = None
+        while offset is None and time.monotonic() < deadline:
+            offset = observer.latest(now_unix_ms=int(time.time() * 1_000))
+            time.sleep(0.005)
+        assert offset == Vector3(x=0.2, y=-0.1, z=0.05)
+        assert second_read_started.wait(1.0)
+        started = time.monotonic()
+        assert observer.latest(now_unix_ms=int(time.time() * 1_000)) == offset
+        assert time.monotonic() - started < 0.05
+    finally:
+        release_second_read.set()
+        assert observer.close()["thread_stopped"] is True
+
+
+# 功能：
+#   验证相邻帧定位方差无论升降都转为有界相对预算，零方差有效而非法数值被拒绝。
+# 输入：
+#   current、aligned：当前原生方差和深度对齐方差。
+# 输出：
+#   None：断言预算拆分不再把正常方差上升误标成感知故障。
+@pytest.mark.parametrize(
+    ("current", "aligned", "expected_current", "expected_relative"),
+    [
+        (0.05, 0.04, 0.05, 3.0 * (math.sqrt(0.05) - math.sqrt(0.04))),
+        (0.04, 0.05, 0.04, 3.0 * (math.sqrt(0.05) - math.sqrt(0.04))),
+        (0.0, 0.0, 0.0, 0.0),
+    ],
+)
+def test_localization_route_budget_accepts_covariance_changes_in_both_directions(
+    current, aligned, expected_current, expected_relative
+):
+    context = _localization_route_budget_context(current, aligned)
+    assert context is not None
+    assert context[0] == pytest.approx(expected_current)
+    assert context[1] == pytest.approx(expected_relative)
+
+
+# 功能：
+#   非有限、负数、布尔值或缺失方差不能进入路线预算。
+# 输入：
+#   value：单侧非法方差。
+# 输出：
+#   None：断言两个输入位置都执行相同验证。
+@pytest.mark.parametrize("value", [-0.01, float("nan"), float("inf"), True, None])
+def test_localization_route_budget_rejects_invalid_covariance(value):
+    assert _localization_route_budget_context(value, 0.01) is None
+    assert _localization_route_budget_context(0.01, value) is None
 
 
 # 功能：
@@ -1386,9 +1522,9 @@ def test_dispatch_budget_is_required_and_rejected_call_gets_only_hold_attributio
 
     worker = _load_depth_worker()
     assert worker._model_control_dispatch_unavailable(
-        published_at_unix_ms=1000, authority_deadline_unix_ms=1039)
+        published_at_unix_ms=1000, authority_deadline_unix_ms=1069)
     assert not worker._model_control_dispatch_unavailable(
-        published_at_unix_ms=1000, authority_deadline_unix_ms=1040)
+        published_at_unix_ms=1000, authority_deadline_unix_ms=1070)
     rejected = SimpleNamespace(hold_reason="MODEL_NAVIGATION_DECISION_STALE",
                                model_call_id="new-rejected-call")
     held = SimpleNamespace(model_navigation_authorized=False, model_call_id="old-call")
@@ -1403,6 +1539,7 @@ def test_dispatch_budget_is_required_and_rejected_call_gets_only_hold_attributio
 # 输入：有效指令及UNIX毫秒边界；输出：仅同一有效调用返回原始摘要。
 def test_hold_snapshot_identity_does_not_grant_motion_authority():
     from types import SimpleNamespace
+
     from test_runtime_commands import _load_depth_worker
 
     worker = _load_depth_worker()

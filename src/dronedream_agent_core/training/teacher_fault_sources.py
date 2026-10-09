@@ -7,7 +7,7 @@ from dronedream_plugin_sdk.protocol import decode_json
 
 from ..contracts import RuntimeLocalSafetyCommand, RuntimeLocalSafetyObservation
 from ..control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
-from ..control_timing import LOCAL_CONTROL_MAXIMUM_AGE_SECONDS
+from ..control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
 from ..hashing import sha256_json
 from ..simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from .advisor_sources import RecordedSource
@@ -77,7 +77,10 @@ def verify_teacher_fault_window(fault: dict, rows: list[dict], depth_rows=None) 
 #   prior：故障前命令摘要索引；braking_at：首个制动生成时刻或 None。
 def _fault_command_boundaries(rows: list[dict], start: int, end: int):
     prior, braking_at, previous = {}, None, -1
-    maximum_age_ms = round(LOCAL_CONTROL_MAXIMUM_AGE_SECONDS * 1000)
+    # The command is bound to the source sensor sample, so its absolute upper
+    # limit is the sensor-observation lifetime.  The shorter control lease is
+    # enforced separately when the command is actually dispatched.
+    maximum_age_ms = round(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
     for row in rows:
         stamp = row.get("recorded_at_unix_ms")
         if type(stamp) is not int or stamp < previous:

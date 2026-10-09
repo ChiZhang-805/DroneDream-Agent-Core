@@ -11,6 +11,7 @@ from dronedream_agent_core.decision_state_adapter import decision_digest
 
 
 # 功能：给合成短制动窗口补齐阶段、原输入与提前决策证据；输出：非真实训练夹具。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 def fixture():
     row, doc = stage_fixture()
     _, _, snapshot, _ = local_target_fixture()
@@ -111,6 +112,7 @@ def test_measured_ned_hold_requires_its_actual_anchor(fault):
 
 
 # 功能：来源重签不能掩盖错行为、事后选项、无进展、碰撞或提前结束；输出：拒绝正标签。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
 @pytest.mark.parametrize(
     "fault", ["future", "action", "state", "snapshot", "landing", "gap", "progress", "collision"]
 )

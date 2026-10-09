@@ -4,8 +4,8 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 # 功能：按不可变版本下载指定官方权重及本地推理配置，拒绝远程可执行文件。

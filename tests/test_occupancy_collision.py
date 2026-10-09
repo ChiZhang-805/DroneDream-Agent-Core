@@ -64,6 +64,100 @@ def test_full_containment_removes_only_a_redundant_collision_volume():
 
 
 # 功能：
+#   验证静态楼板的既有净空带会吸收量化跨面的深度体素，但不会删除超出该带的真实突出物。
+# 输入：
+#   无：构造与实飞楼板尺寸和四分之一米体素一致的局部几何。
+# 输出：
+#   None：断言重复楼板体素被移除而更高障碍仍保留。
+def test_static_clearance_band_removes_quantized_floor_duplicate_only():
+    floor = box(
+        center_x=-27.485,
+        center_y=13.0,
+        center_z=7.31,
+        size_x=51.03,
+        size_y=22.0,
+        size_z=0.22,
+    )
+    quantized_floor = box(
+        center_x=-23.875,
+        center_y=8.0,
+        center_z=7.375,
+        size_x=0.25,
+        size_y=0.25,
+        size_z=0.25,
+    )
+    raised_object = box(
+        center_x=-23.875,
+        center_y=8.0,
+        center_z=7.5,
+        size_x=0.25,
+        size_y=0.25,
+        size_z=0.5,
+    )
+
+    novel, count = _remove_known_static_perception_duplicates(
+        [quantized_floor, raised_object],
+        [floor],
+        covered_clearance_m=0.12,
+    )
+
+    assert count == 1
+    assert novel == [raised_object]
+
+
+# 功能：
+#   复现实飞中横跨墙面和自由空间的合并体素，只减去能被静态地图完整证明的单元。
+# 输入：
+#   无：构造六格合并盒，其中前四格位于已知墙体净空带内。
+# 输出：
+#   None：断言重复格被删除、墙外两格仍作为独立实测障碍保留。
+def test_partial_static_duplicate_is_subtracted_at_original_voxel_resolution():
+    merged = box(
+        name="perception-voxel-0-0-0-6-1-1",
+        center_x=0.75,
+        center_y=0.125,
+        center_z=0.125,
+        size_x=1.5,
+        size_y=0.25,
+        size_z=0.25,
+    )
+    wall = box(
+        name="known-wall",
+        center_x=0.5,
+        center_y=0.125,
+        center_z=0.125,
+        size_x=1.02,
+        size_y=0.27,
+        size_z=0.27,
+    )
+
+    novel, count = _remove_known_static_perception_duplicates([merged], [wall])
+
+    assert count == 4
+    assert [primitive["name"] for primitive in novel] == [
+        "perception-voxel-4-0-0",
+        "perception-voxel-5-0-0",
+    ]
+    assert [primitive["center_x"] for primitive in novel] == [1.125, 1.375]
+
+
+# 功能：
+#   拒绝非法净空值，防止 NaN 或负数把静态体积扩张成不可信的删除证明。
+# 输入：
+#   covered_clearance_m：非法净空测试值。
+# 输出：
+#   None：断言函数在检查感知证据前明确失败。
+@pytest.mark.parametrize("covered_clearance_m", [-0.01, float("nan"), float("inf"), True])
+def test_static_duplicate_clearance_must_be_finite_nonnegative(covered_clearance_m):
+    with pytest.raises(ValueError, match="STATIC_PERCEPTION_CLEARANCE_INVALID"):
+        _remove_known_static_perception_duplicates(
+            [box()],
+            [box(size_x=2.0, size_y=2.0, size_z=2.0)],
+            covered_clearance_m=covered_clearance_m,
+        )
+
+
+# 功能：
 #   检查部分重叠、接触边界、未知形状和非法数值都不能证明完整包含。
 # 输入：
 #   changes：覆盖单位盒的边界或非法字段。

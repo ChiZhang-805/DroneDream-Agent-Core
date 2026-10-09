@@ -17,8 +17,9 @@ class ExecutorBrakeApplication(StrictModel):
     sequence: int = Field(ge=1, strict=True)
     after_command_application_sequence: int = Field(ge=0, strict=True)
     accepted_at_unix_ms: int = Field(ge=0, strict=True)
-    reason: Literal["input-lease-unavailable", "command-unreadable", "command-stale",
-                    "command-missing", "command-startup", "hybrid-execution-contract"]
+    reason: Literal["input-lease-unavailable", "late-control-acceptance",
+                    "command-unreadable", "command-stale", "command-missing",
+                    "command-startup", "hybrid-execution-contract"]
     position_ned_m: tuple[float, float, float]
     velocity_ned_mps: tuple[float, float, float] = (0., 0., 0.)
     yaw_heading_deg: float = Field(strict=True)

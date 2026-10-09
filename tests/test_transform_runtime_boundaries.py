@@ -180,6 +180,16 @@ def test_router_does_not_invent_primary_or_duplicate_local_ports():
     assert _resilient_router(
         requested_port="primary", available_ports=["primary", "critic"], role="critic"
     )["candidates"] == ["primary", "critic"]
+    assert _resilient_router(
+        requested_port="primary",
+        available_ports=["primary"],
+        role="execution_monitor",
+    )["fail_closed"] is False
+    assert _privacy_first_router(
+        requested_port="primary",
+        available_ports=["primary"],
+        role="completion_verifier",
+    )["fail_closed"] is False
 
 
 # 功能：

@@ -160,3 +160,31 @@ def test_stalled_physics_fails_without_detach_success(monkeypatch):
             env={},
             readiness_timeout=0.01,
         )
+
+
+# 功能：冷启动只剩不足一次有效查询的预算时立即结束等待，不发起必然超时的伪重试。
+# 输入：0.49 秒就绪预算和可计数查询桩；输出：零次查询并报告物理尚未就绪。
+def test_preflight_does_not_start_query_without_minimum_budget(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        query,
+        "query_attachment_state",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "/detach\n/state", ""),
+    )
+
+    with pytest.raises(adapter.SimulationRuntimeError, match="PAYLOAD_PHYSICS_NOT_READY"):
+        adapter._detach_payload_before_flight(
+            "gz",
+            detach_topic="/detach",
+            output_topic="/state",
+            state_service="/world/w/model/p/attachment_state",
+            env={},
+            readiness_timeout=0.49,
+        )
+
+    assert calls == []

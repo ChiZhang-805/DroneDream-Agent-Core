@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from dronedream_agent_core.context_projection import compact_mission_request_event
 from dronedream_agent_core.contracts import ConversationWindow, MapAsset, MapCatalog, MissionRequest
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.plugin_api import PluginDefinition
@@ -55,6 +56,19 @@ def _structured_window(*, window: ConversationWindow) -> dict[str, object]:
                     "issue_codes",
                 )
             }
+        elif event.event_type.startswith("model."):
+            record = payload.get("record", {})
+            payload = {
+                "artifact": payload.get("artifact"),
+                "record": {
+                    key: record.get(key)
+                    for key in ("role", "provider", "model", "input_sha256", "output_sha256")
+                }
+                if isinstance(record, dict)
+                else {},
+            }
+        elif event.event_type == "mission.request":
+            payload = compact_mission_request_event(payload)
         recent.append(
             {
                 "sequence": event.sequence,
@@ -161,7 +175,7 @@ def _safety_context(*, value: dict[str, object], **_: Any) -> dict[str, object]:
         **copy_json(value),
         "non_relaxable_context": {
             "model_has_actuator_authority": False,
-            "unknown_critical_state": "hold-or-abort",
+            "unknown_critical_state": "hold-replan-return-or-land",
             "runtime_change_requires_safe_hold": True,
         },
     }

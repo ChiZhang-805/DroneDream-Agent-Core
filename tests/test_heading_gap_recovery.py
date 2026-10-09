@@ -56,6 +56,34 @@ def test_brake_adapter_uses_zero_body_velocity_and_yaw_rate():
     assert fixture.setpoints == fixture.velocity_setpoints == []
 
 
+# 功能：独立路线控制的短暂安全命令断档保留已执行航向，不等待无关的模型航向证据。
+# 输入：过期姿态流、最近已执行航向和独立路线模式；输出：立即给出稳定保护航向且不刹停。
+def test_independent_route_gap_preserves_dispatched_heading_without_model_recovery():
+    executor = _load_executor()
+    brakes = []
+
+    async def brake():
+        brakes.append(True)
+
+    args = SimpleNamespace(
+        independent_route_control=True,
+        require_model_control_authority=False,
+        simulation_teacher_control=False,
+        _last_model_control_required=False,
+        _model_body_control_yaw_deg=73.0,
+    )
+    client = SimpleNamespace(
+        latest_dynamics_telemetry=lambda _: attitude(stale=True),
+        set_braking_hold=brake,
+    )
+    heading = asyncio.run(
+        executor._hold_heading_or_brake(args, client, observation(), 45.0)
+    )
+    assert heading == pytest.approx(73.0)
+    assert brakes == []
+    assert getattr(args, "_heading_gap_started_at", None) is None
+
+
 # 功能：
 #   在真实控制循环注入航向断档，确认重采样后才恢复保护悬停，不生成示范动作。
 # 输入：
@@ -111,12 +139,12 @@ def test_loop_recovers_with_new_position_and_without_training_labels(tmp_path, t
 
 
 # 功能：
-#   验证长期断档、无位置、缺失传输及传输超时均不能成为无限恢复或继续运动。
+#   验证无位置或缺失刹停接口时仍不能继续运动。
 # 输入：
 #   failure：要注入的失败类型。
 # 输出：
 #   None：明确抛出降落异常，不发送普通控制。
-@pytest.mark.parametrize("failure", ["timeout", "position", "unsupported", "transport", "slow"])
+@pytest.mark.parametrize("failure", ["position", "unsupported"])
 def test_gap_failure_remains_fail_closed(failure):
     executor = _load_executor()
     args = SimpleNamespace(require_model_control_authority=True)
@@ -124,10 +152,6 @@ def test_gap_failure_remains_fail_closed(failure):
 
     async def brake():
         calls.append(True)
-        if failure == "transport":
-            raise RuntimeError("transport down")
-        if failure == "slow":
-            await asyncio.sleep(1.0)
 
     executor._record_local_safety_executor_event = lambda *a, **k: None
     client = SimpleNamespace(latest_dynamics_telemetry=lambda _: attitude(stale=True))
@@ -135,14 +159,88 @@ def test_gap_failure_remains_fail_closed(failure):
         client.set_braking_hold = brake
 
     async def scenario():
-        if failure == "timeout":
-            args._heading_gap_started_at = asyncio.get_running_loop().time() - 1.01
         await executor._hold_heading_or_brake(
             args, client, None if failure == "position" else observation(), 45.0)
 
     with pytest.raises(executor.UserDirectedLanding, match="NATIVE_HEADING_"):
         asyncio.run(scenario())
-    assert len(calls) == (1 if failure in {"transport", "slow"} else 0)
+    assert calls == []
+
+
+# 功能：验证单次刹停传输异常只暂停调度并重试，不触发空中紧急降落。
+# 输入：同步失败或超时的刹停传输。
+# 输出：本轮返回 None，保留恢复窗口并记录可重试证据。
+@pytest.mark.parametrize("failure", ["transport", "slow"])
+def test_gap_transport_failure_retries_without_forced_landing(failure):
+    executor = _load_executor()
+    args = SimpleNamespace(require_model_control_authority=True)
+    calls = []
+    events = []
+
+    async def brake():
+        calls.append(True)
+        if failure == "transport":
+            raise RuntimeError("transport down")
+        await asyncio.sleep(1.0)
+
+    executor._record_local_safety_executor_event = (
+        lambda _, **event: events.append(event)
+    )
+    client = SimpleNamespace(
+        latest_dynamics_telemetry=lambda _: attitude(stale=True),
+        set_braking_hold=brake,
+    )
+
+    async def scenario():
+        assert await executor._hold_heading_or_brake(
+            args, client, observation(), 45.0
+        ) is None
+
+    asyncio.run(scenario())
+    assert calls == [True]
+    assert args._heading_gap_started_at is not None
+    assert args._heading_brake_transport_failure_count == 1
+    assert events[-1]["status"] == "native-heading-brake-transport-retry"
+    assert events[-1]["details"]["schedule_advancement_authorized"] is False
+
+
+# 功能：
+#   验证长期航向断档会滚动新的刹停恢复窗口，而不是把普通遥测缺口升级为降落。
+# 输入：
+#   无。
+# 输出：
+#   None：零速刹停继续，恢复窗口计数递增，调度仍被暂停。
+def test_heading_gap_timeout_rolls_recovery_window_instead_of_landing():
+    executor = _load_executor()
+    args = SimpleNamespace(require_model_control_authority=True)
+    calls = []
+    events = []
+
+    async def brake():
+        calls.append(True)
+
+    executor._record_local_safety_executor_event = (
+        lambda _, **event: events.append(event)
+    )
+    client = SimpleNamespace(
+        latest_dynamics_telemetry=lambda _: attitude(stale=True),
+        set_braking_hold=brake,
+    )
+
+    async def scenario():
+        args._heading_gap_started_at = asyncio.get_running_loop().time() - 1.01
+        assert await executor._hold_heading_or_brake(
+            args, client, observation(), 45.0
+        ) is None
+
+    asyncio.run(scenario())
+    assert calls == [True]
+    assert args._heading_gap_rollover_count == 1
+    assert args._heading_gap_started_at is not None
+    assert any(
+        event["status"] == "native-heading-recovery-window-rolled-over"
+        for event in events
+    )
 
 
 # 功能：

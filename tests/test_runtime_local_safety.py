@@ -120,7 +120,257 @@ def test_command_binds_tracking_recovery_mode_and_target() -> None:
     assert command.tracking_recovery_active is True
     assert command.evaluated_target_position_m == observation.target_position_m
     velocity = command.decision.selected_velocity_mps
-    assert math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) <= 0.200001
+    assert math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) <= 0.350001
+
+
+# 功能：
+#   验证巡航切入低速恢复时不把既有惯性误判成必须原地保持，而是发布受加速度约束的减速纠偏。
+# 输入：
+#   无：复现真实飞行约 0.47 m/s 切换到 0.2 m/s 恢复包络的瞬间。
+# 输出：
+#   None：断言动作继续减速，且没有生成超速故障码。
+def test_tracking_recovery_decelerates_existing_cruise_momentum() -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=88,
+        observed_at_unix_ms=10_100,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.01,
+        localization_covariance_m2=0.01,
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        current_velocity_mps=Vector3(x=0.47, y=0.0, z=0.0),
+        current_acceleration_world_enu_mps2=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.37, y=0.0, z=1.0),
+    )
+
+    command = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle().model_copy(update={"max_acceleration_mps2": 0.8}),
+        static_primitives=[],
+        required_clearance_m=0.1,
+        generated_at_unix_ms=10_110,
+        maximum_speed_mps=0.8,
+        tracking_recovery_active=True,
+    )
+
+    velocity = command.decision.selected_velocity_mps
+    speed = math.hypot(velocity.x, velocity.y, velocity.z)
+    assert command.decision.action in {"continue", "slow"}
+    assert 0.2 < speed < 0.47
+    assert "MEASURED_SPEED_OUTSIDE_CONTROL_ENVELOPE" not in command.decision.issue_codes
+    assert "NEXT_STEP_SPEED_OUTSIDE_CONTROL_ENVELOPE" not in command.decision.issue_codes
+
+
+# 功能：
+#   复现真实飞行中机体轻微进入楼板保守包围体的场景，验证运行时封装不会否决规划器给出的单调脱离动作。
+# 输入：
+#   无：使用与失败现场相同量级的机体、楼板、目标高度和恢复速度上限。
+# 输出：
+#   None：低速向上脱离可执行，原始负余量仍作为证据保留，出口余量单独用于时效预算。
+def test_runtime_allows_bounded_static_penetration_escape() -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=9,
+        observed_at_unix_ms=10_200,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.01,
+        localization_covariance_m2=0.01,
+        current_position_m=Vector3(x=0.0, y=0.0, z=7.493),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=8.093),
+    )
+    floor = {
+        "name": "teaching-floor-3-slab-west",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 7.31,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.22,
+    }
+
+    command = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle().model_copy(update={"max_acceleration_mps2": 0.8}),
+        static_primitives=[floor],
+        required_clearance_m=0.1,
+        generated_at_unix_ms=10_210,
+        maximum_speed_mps=0.2,
+        tracking_recovery_active=True,
+        qualified_route_clearance_m=0.395,
+        current_localization_covariance_m2=0.01,
+        relative_perception_uncertainty_margin_m=0.001,
+    )
+
+    assert command.decision.action == "slow"
+    assert command.decision.selected_velocity_mps.z > 0.0
+    assert command.decision.minimum_predicted_clearance_m < 0.0
+    assert command.decision.recovery_exit_clearance_m is not None
+    assert command.decision.recovery_exit_clearance_m >= 0.12
+    assert command.decision.issue_codes == ["STATIC_PENETRATION_RECOVERY"]
+    assert command.decision.evaluated_candidate_count == 1
+    assert command.observation_budget.disposition == "control-eligible"
+
+
+# 功能：
+#   验证普通路线观测余量不足时，运行时仅给完整几何已证明的静态脱离动作短恢复租期。
+# 输入：
+#   无：观测仍在感知健康窗内，但不足以支付普通下游路线控制余量。
+# 输出：
+#   None：命令保持低速脱离且租期不超过 250 毫秒，不能退化为永久悬停。
+def test_runtime_grants_short_lease_to_static_penetration_escape() -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=10,
+        observed_at_unix_ms=9_760,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.45,
+        localization_covariance_m2=0.01,
+        current_position_m=Vector3(x=0.0, y=0.0, z=7.493),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=8.093),
+    )
+    floor = {
+        "name": "teaching-floor-3-slab-west",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 7.31,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.22,
+    }
+
+    command = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle().model_copy(update={"max_acceleration_mps2": 0.8}),
+        static_primitives=[floor],
+        required_clearance_m=0.1,
+        generated_at_unix_ms=10_210,
+        maximum_speed_mps=0.2,
+        tracking_recovery_active=True,
+        qualified_route_clearance_m=0.395,
+        current_localization_covariance_m2=0.01,
+        relative_perception_uncertainty_margin_m=0.001,
+    )
+
+    assert command.decision.action == "slow"
+    assert command.decision.issue_codes == ["STATIC_PENETRATION_RECOVERY"]
+    assert command.observation_budget.disposition == "control-eligible"
+    assert command.observation_budget.reason == "bounded-static-clearance-egress"
+    assert command.observation_budget.downstream_reserve_ms == 0
+    assert command.valid_until_unix_ms - command.generated_at_unix_ms <= 250
+
+
+# 功能：
+#   验证已资格化路线单独承担绝对定位误差，局部深度时效只扣图像/状态相对对时误差。
+# 输入：
+#   无：复现真实飞行中对齐方差 0.05、原生定位方差 0.011 的保守组合。
+# 输出：
+#   None：充足走廊正常运动，暂时欠定位预算时按净空缩放前进，物理过窄仍悬停。
+def test_qualified_route_separates_absolute_localization_from_relative_alignment() -> None:
+    from dronedream_agent_core.hashing import sha256_json
+
+    observation = RuntimeLocalSafetyObservation(
+        sequence=81,
+        observed_at_unix_ms=10_000,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.24,
+        localization_covariance_m2=0.05,
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=2.0, y=0.0, z=1.0),
+    )
+    relative_margin_m = 3.0 * (math.sqrt(0.05) - math.sqrt(0.011))
+    funded = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.76,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert funded.decision.action == "continue"
+    assert funded.observation_budget.uncertainty_margin_m == pytest.approx(relative_margin_m)
+
+    degraded = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.30,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert degraded.decision.action in {"continue", "slow", "replan"}
+    degraded_velocity = degraded.decision.selected_velocity_mps
+    degraded_speed = math.hypot(
+        degraded_velocity.x, degraded_velocity.y, degraded_velocity.z
+    )
+    assert 0.12 < degraded_speed <= 0.240001
+    assert degraded.observation_sha256 == sha256_json(observation)
+
+    structurally_narrow = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_010,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=600,
+        maximum_speed_mps=0.3,
+        qualified_route_clearance_m=0.08,
+        current_localization_covariance_m2=0.011,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+    assert structurally_narrow.decision.action == "hold"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"qualified_route_clearance_m": 0.76},
+        {
+            "qualified_route_clearance_m": 0.76,
+            "current_localization_covariance_m2": 0.011,
+        },
+        {
+            "qualified_route_clearance_m": 0.76,
+            "current_localization_covariance_m2": 0.011,
+            "relative_perception_uncertainty_margin_m": 0.8,
+        },
+    ],
+)
+def test_route_localization_budget_rejects_incomplete_or_impossible_context(overrides) -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=82,
+        observed_at_unix_ms=10_000,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.02,
+        localization_covariance_m2=0.05,
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=1.0, y=0.0, z=1.0),
+    )
+    with pytest.raises(ValueError):
+        evaluate_runtime_local_safety(
+            observation=observation,
+            vehicle=_vehicle(),
+            static_primitives=[],
+            required_clearance_m=0.15,
+            generated_at_unix_ms=10_010,
+            **overrides,
+        )
 
 
 # 功能：

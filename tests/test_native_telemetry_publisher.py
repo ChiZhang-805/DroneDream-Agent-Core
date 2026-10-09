@@ -178,3 +178,76 @@ def test_preflight_publisher_waits_for_connection_without_fake_state():
         assert summary['drained']
 
     asyncio.run(scenario())
+
+
+# 功能：
+#   验证慢速证据写入与快速状态通道相互独立，且待落盘数据只保留最新快照。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_slow_persistence_does_not_throttle_fast_native_state_channel():
+    # 功能：
+    #   阻塞首次证据写入，同时持续产生不同来源时间并统计快速发布次数。
+    # 输入：
+    #   无。
+    # 输出：
+    #   None：不返回业务数据。
+    async def scenario():
+        entered, release = threading.Event(), threading.Event()
+        fast_samples, persisted_samples = [], []
+        sample_number = 0
+
+        class Client:
+            # 功能：生成具有单调接收时间的位置样本，模拟持续更新的飞控缓存。
+            # 输入：timeout：接口等待参数，本夹具立即返回。
+            # 输出：observed：本轮位置样本。
+            async def sample_position_velocity_ned(self, timeout):
+                nonlocal sample_number
+                sample_number += 1
+                return SimpleNamespace(received_at_unix_ms=1000 + sample_number)
+
+            # 功能：返回结构合法且时间随位置样本变化的动力学来源。
+            # 输入：max_age：消费者允许的最大年龄。
+            # 输出：dynamics：本轮动力学快照。
+            def latest_dynamics_telemetry(self, max_age):
+                return {"sources": {"imu": {"timestamp_us": sample_number}}}
+
+        # 功能：记录控制通道实际取得的每个位置时间。
+        # 输入：observed、dynamics：本次对齐后的状态。
+        # 输出：None。
+        def publish(observed, dynamics):
+            fast_samples.append(observed.received_at_unix_ms)
+
+        # 功能：阻塞首次证据写入，释放后记录真正落盘的合并快照。
+        # 输入：observed、dynamics：本次待持久化状态。
+        # 输出：None。
+        def persist(observed, dynamics):
+            entered.set()
+            assert release.wait(timeout=2)
+            persisted_samples.append(observed.received_at_unix_ms)
+
+        publisher = NativeTelemetryPublisher(
+            Client(), publish, persist=persist, persist_interval_seconds=.01
+        )
+        publisher.start()
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            baseline = len(fast_samples)
+            for _ in range(100):
+                if len(fast_samples) >= baseline + 3:
+                    break
+                await asyncio.sleep(.01)
+            # 证据线程仍被阻塞时，20 Hz 快通道必须继续前进。
+            assert len(fast_samples) >= baseline + 3
+            assert persisted_samples == []
+        finally:
+            release.set()
+            summary = await publisher.close()
+        assert summary["drained"] is True
+        assert summary["published_count"] == len(fast_samples)
+        assert summary["persisted_count"] >= 1
+        assert persisted_samples[-1] == fast_samples[-1]
+        assert len(persisted_samples) < len(fast_samples)
+
+    asyncio.run(scenario())

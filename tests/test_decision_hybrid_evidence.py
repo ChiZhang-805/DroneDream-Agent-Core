@@ -56,6 +56,7 @@ def test_stage_audit_requires_actual_model_handback():
 @pytest.mark.parametrize("extra_motion", [False, True])
 def test_strict_distance_includes_motion_before_handback(extra_motion):
     from test_decision_label_evidence import native_fixture
+
     from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
 
     command = bridge_command(now=10000)

@@ -44,9 +44,14 @@ from .asset_packages import (
     open_verified_ddpkg,
     package_content_sha256,
 )
-from .collision import build_tracking_corridor_budget, validate_route_clearance
+from .collision import (
+    PREFERRED_TRANSIT_CLEARANCE_M,
+    build_tracking_corridor_budget,
+    validate_route_clearance,
+)
 from .contracts import GraphRoute, MapAsset, RouteQuery, StrictModel, VehicleAsset
 from .hashing import sha256_json
+from .known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
 from .navigation import shortest_route
 from .plugin_contracts import PluginHookReceipt, PluginSnapshot
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
@@ -809,7 +814,78 @@ def _round_trip_route(
     maximum_translation_m: float,
 ) -> tuple[GraphRoute, Any]:
     launch = _launch_node(graph)
+    launch_position = next(node.position_m for node in graph.nodes if node.node_id == launch)
     candidates: list[tuple[float, GraphRoute, Any]] = []
+
+    # RMF lanes are ground-robot traffic hints; they are not necessarily centered
+    # in a UAV-safe volume.  Prefer a real three-dimensional clearance route
+    # between named endpoints.  This planner consumes the exact collision
+    # geometry that Gazebo and the runtime safety worker use.
+    metric_planner = KnownMapMetricPlanner(
+        graph=graph,
+        semantic_path=semantic_path,
+        vehicle_diameter_m=vehicle.body_radius_m * 2,
+        vehicle_height_m=vehicle.body_height_m,
+        policy=MetricPlannerPolicy(required_clearance_m=PREFERRED_TRANSIT_CLEARANCE_M),
+    )
+    for node in graph.nodes:
+        if node.node_id == launch:
+            continue
+        straight_distance = math.dist(
+            (launch_position.x, launch_position.y, launch_position.z),
+            (node.position_m.x, node.position_m.y, node.position_m.z),
+        )
+        if not (minimum_translation_m <= straight_distance <= maximum_translation_m):
+            continue
+        try:
+            outbound = metric_planner.plan(
+                RouteQuery(start_node=launch, goal_node=node.node_id)
+            )
+        except ValueError:
+            continue
+        if not (minimum_translation_m <= outbound.route_length_m <= maximum_translation_m):
+            continue
+        try:
+            inbound = metric_planner.plan(
+                RouteQuery(start_node=node.node_id, goal_node=launch)
+            )
+        except ValueError:
+            # Metric collision geometry does not override directed topology:
+            # an endpoint with only an outbound lane is not a round-trip target.
+            continue
+        if not (minimum_translation_m <= inbound.route_length_m <= maximum_translation_m):
+            continue
+        route = GraphRoute(
+            start_node=launch,
+            goal_node=launch,
+            node_ids=[*outbound.node_ids, *inbound.node_ids[1:]],
+            edge_ids=[*outbound.edge_ids, *inbound.edge_ids],
+            positions_m=[*outbound.positions_m, *inbound.positions_m[1:]],
+            route_length_m=outbound.route_length_m + inbound.route_length_m,
+            all_edges_flight_verified=False,
+        )
+        clearance = validate_route_clearance(
+            route,
+            semantic_path,
+            vehicle_diameter_m=vehicle.body_radius_m * 2,
+            vehicle_height_m=vehicle.body_height_m,
+        )
+        if not clearance.accepted:
+            continue
+        try:
+            build_tracking_corridor_budget(clearance.minimum_clearance_m)
+        except ValueError:
+            continue
+        candidates.append((outbound.route_length_m, route, clearance))
+
+    if candidates:
+        _, route, clearance = max(candidates, key=lambda item: item[0])
+        return route, clearance
+
+    # Narrow maps may have no route that can fund the preferred 0.35 m transit
+    # clearance.  Retain the bounded topology fallback, but still require the
+    # shared tracking budget below; missing preference never becomes permission
+    # to cross a collision boundary.
     for node in graph.nodes:
         if node.node_id == launch:
             continue

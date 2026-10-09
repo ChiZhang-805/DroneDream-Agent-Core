@@ -21,6 +21,12 @@ from .plugin_files import read_plugin_file
 _HEALTH_BYTES = 262_144
 _RECEIPT_BYTES = _HEALTH_BYTES + 4096
 _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
+# The health publisher is asynchronous to the 10 Hz controller.  A healthy
+# sample can legitimately straddle the controller-to-landing transition by one
+# or two scheduler ticks, especially in a low real-time-factor simulation.  It
+# remains valid evidence when it is both identity-bound and no more than half a
+# second old.  This is an audit freshness window, not a flight-stop threshold.
+_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
 
 
 # 功能：
@@ -52,22 +58,32 @@ def _valid_track_digest(value) -> bool:
 #   completion_ms：控制结束时的 UNIX 毫秒。
 # 输出：
 #   ready：各项健康条件在完成时刻仍同时成立时为 True。
-def _health_ready(health: dict, *, completion_ms: int) -> bool:
+def _health_ready(health: dict, *, completion_ms: int,
+                  realtime_features_required: bool = True) -> bool:
+    if type(realtime_features_required) is not bool:
+        return False
     updated = health.get("updated_at_unix_ms")
     source_age = health.get("stream_age_seconds")
     localized = health.get("localization_observed_at_unix_ms")
     ready = bool(
         _valid_unix_ms(completion_ms) and _valid_unix_ms(updated)
-        and 0 <= completion_ms - updated <= 250
+        and 0 <= completion_ms - updated <= int(
+            _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS * 1_000
+        )
         # 先比较范围再转浮点，超大 JSON 整数不能在失败收尾时引起 OverflowError。
-        and type(source_age) in (int, float) and 0 <= source_age <= .25
+        and type(source_age) in (int, float)
+        and 0 <= source_age <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
         and math.isfinite(source_age)
-        and source_age + (completion_ms - updated) / 1000 <= .25
-        and _valid_unix_ms(localized) and 0 <= completion_ms - localized <= 250
+        and source_age + (completion_ms - updated) / 1000
+        <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
+        and _valid_unix_ms(localized)
+        and 0 <= completion_ms - localized
+        <= int(_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS * 1_000)
         and health.get("stream_healthy") is True
         and health.get("identity_accepted") is True
         and health.get("truth_correction_applied") is False
-        and health.get("realtime_features_ready") is True
+        and (not realtime_features_required
+             or health.get("realtime_features_ready") is True)
         and health.get("pose_source") == "native-estimator-fixed-deployment-binding"
     )
     return ready
@@ -86,11 +102,13 @@ def _health_ready(health: dict, *, completion_ms: int) -> bool:
 def capture_control_completion(
     path: Path, *, track_sha256: str, completed_at_unix_ms: int,
     receiver: PerceptionHealthReceiver | None = None,
+    realtime_features_required: bool = True,
 ) -> dict:
     track = track_sha256 if _valid_track_digest(track_sha256) else None
     completed = completed_at_unix_ms if _valid_unix_ms(completed_at_unix_ms) else None
     try:
-        if track is None or completed is None:
+        if (track is None or completed is None
+                or type(realtime_features_required) is not bool):
             raise ValueError("PERCEPTION_COMPLETION_IDENTITY_INVALID")
         if not isinstance(path, Path):
             raise ValueError("PERCEPTION_COMPLETION_PATH_INVALID")
@@ -110,8 +128,13 @@ def capture_control_completion(
         "event": "controlled-motion-completed-before-landing",
         "track_sha256": track,
         "completed_at_unix_ms": completed,
+        "realtime_features_required": realtime_features_required,
         "health": health,
-        "accepted": issue is None and _health_ready(health, completion_ms=completed),
+        "accepted": issue is None and _health_ready(
+            health,
+            completion_ms=completed,
+            realtime_features_required=realtime_features_required,
+        ),
         "read_issue": issue,
     }
     receipt = {**content, "receipt_sha256": sha256_json(content)}
@@ -142,6 +165,8 @@ def verify_control_completion(timing: dict) -> bool:
     health = content.get("health")
     completed = content.get("completed_at_unix_ms")
     track = content.get("track_sha256")
+    required = content.get("realtime_features_required", True)
+    timing_required = timing.get("perception_realtime_features_required", True)
     try:
         expected = sha256_json(content)
     except (TypeError, ValueError, RecursionError):
@@ -154,7 +179,12 @@ def verify_control_completion(timing: dict) -> bool:
         and content.get("read_issue") is None
         and _valid_track_digest(track)
         and track == timing.get("active_track_sha256")
+        and type(required) is bool and required is timing_required
         and type(health) is dict and _valid_unix_ms(completed)
-        and _health_ready(health, completion_ms=completed)
+        and _health_ready(
+            health,
+            completion_ms=completed,
+            realtime_features_required=required,
+        )
     )
     return valid

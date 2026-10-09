@@ -1,14 +1,14 @@
 """Read-only audit joining actual transport receipts to immutable safety commands."""
 import argparse
-from collections import Counter
 import hashlib
 import json
 import math
+from collections import Counter
 from pathlib import Path
 
+from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
 from dronedream_agent_core.control_execution_evidence import verify_control_applications
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
 
 
 # 功能：有界读取完整证据流，损坏/超长行不被静默跳过。

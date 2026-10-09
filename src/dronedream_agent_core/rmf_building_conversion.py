@@ -173,6 +173,62 @@ def _add_box(
             ElementTree.SubElement(material, "diffuse").text = "0.72 0.75 0.80 1"
 
 
+def _point_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """Return the bounded two-dimensional distance from a point to a wall segment."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 1e-18:
+        return math.dist(point, start)
+    ratio = max(
+        0.0,
+        min(1.0, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared),
+    )
+    projection = (start[0] + ratio * dx, start[1] + ratio * dy)
+    return math.dist(point, projection)
+
+
+def _safest_connected_launch_vertex(
+    points: list[tuple[float, float]],
+    lanes: list[Any],
+    walls: list[dict[str, Any]],
+) -> int:
+    """Select a deterministic connected launch vertex with maximum static wall clearance.
+
+    RMF lane ordering describes traffic topology, not a safe UAV spawn location.  Only
+    lane-connected vertices are candidates, and the source order remains the stable
+    tie-breaker for maps without walls or with equal clearance.
+    """
+    candidates: list[int] = []
+    for lane in lanes:
+        if not isinstance(lane, list) or len(lane) < 2:
+            continue
+        for value in lane[:2]:
+            try:
+                candidate = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= candidate < len(points) and candidate not in candidates:
+                candidates.append(candidate)
+    if not candidates:
+        return 0
+    if not walls:
+        return candidates[0]
+
+    def clearance(index: int) -> float:
+        point = points[index]
+        return min(
+            _point_segment_distance(point, tuple(wall["start_m"]), tuple(wall["end_m"]))
+            - float(wall["thickness_m"]) / 2.0
+            for wall in walls
+        )
+
+    return max(candidates, key=lambda index: (clearance(index), -candidates.index(index)))
+
+
 def convert_rmf_building_map(payload: bytes, *, source_name: str) -> RmfBuildingConversion:
     """Convert one declarative RMF building map without executing external tools."""
     source = _parse(payload)
@@ -356,17 +412,7 @@ def convert_rmf_building_map(payload: bytes, *, source_name: str) -> RmfBuilding
         flight_height = 6.0 if system == "wgs84" else 1.4
         launch_vertex_index: int | None = None
         if launch_node_id is None:
-            for lane in lanes:
-                if isinstance(lane, list) and len(lane) >= 2:
-                    try:
-                        candidate = int(lane[0])
-                    except (TypeError, ValueError):
-                        continue
-                    if 0 <= candidate < len(points):
-                        launch_vertex_index = candidate
-                        break
-            if launch_vertex_index is None:
-                launch_vertex_index = 0
+            launch_vertex_index = _safest_connected_launch_vertex(points, lanes, wall_records)
         for vertex_index, (point, raw_vertex) in enumerate(zip(points, raw_vertices, strict=True)):
             node_id = _slug(f"{level_name}-v{vertex_index}")
             label = raw_vertex[3] if len(raw_vertex) > 3 else ""

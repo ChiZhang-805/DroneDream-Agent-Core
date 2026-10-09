@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import sys
 import threading
@@ -24,6 +25,7 @@ from uuid import uuid4
 from dronedream_agent_core.assets import _load_object as _read_semantic_snapshot
 from dronedream_agent_core.collision import primitive_bounds as _primitive_bounds
 from dronedream_agent_core.contracts import (
+    ControlledVehicleIdentityEvidence,
     GraphRoute,
     OnboardPerceptionFrame,
     PerceptionFusionHealth,
@@ -35,7 +37,12 @@ from dronedream_agent_core.contracts import (
     VehicleAsset,
 )
 from dronedream_agent_core.control_authority import remaining_control_validity_ms
-from dronedream_agent_core.control_timing import LOCAL_DISPATCH_RESERVE_MS, resolve_control_timing
+from dronedream_agent_core.control_timing import (
+    LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
+    resolve_control_timing,
+)
+from dronedream_agent_core.control_uncertainty import LOCALIZATION_SIGMA_MULTIPLIER
 from dronedream_agent_core.depth_obstacle_tracker import DepthMotionTracker
 from dronedream_agent_core.depth_sensor_binding import DepthSensorBinding
 from dronedream_agent_core.forward_rgb_binding import ForwardRgbBinding
@@ -61,7 +68,6 @@ from dronedream_agent_core.local_policy_packages import (
     select_local_policy_for_simulation,
 )
 from dronedream_agent_core.local_policy_port import LocalPolicyPort
-from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort
 from dronedream_agent_core.local_safety_channel import LocalSafetyPublisher
 from dronedream_agent_core.local_vision_training import load_local_vision_label_map
 from dronedream_agent_core.local_world_model import MetricVoxelMap
@@ -93,6 +99,7 @@ from dronedream_agent_core.pipeline_timing import (
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 from dronedream_agent_core.plugin_values import plugin_json_text
 from dronedream_agent_core.preferred_airspace import PreferredAirspace
+from dronedream_agent_core.process_local_policy_port import ProcessLocalPolicyPort
 from dronedream_agent_core.realtime_feature_encoders import (
     body_control_intent_for_pilot_control,
     body_to_world_enu,
@@ -598,6 +605,60 @@ def _fault_adjusted_perception_health(
             "issue_codes": issues,
         }
     )
+
+
+# 功能：
+#   将当前原生定位方差与深度帧对齐方差拆成路线绝对预算和帧间相对预算，不因方差小幅上升撤销健康观测。
+# 输入：
+#   current_covariance_m2：当前原生状态的定位方差。
+#   aligned_covariance_m2：深度帧与定位状态对齐后的方差。
+# 输出：
+#   context：当前方差及两时刻标准差差额；非法输入返回 None。
+def _localization_route_budget_context(
+    current_covariance_m2: object,
+    aligned_covariance_m2: object,
+) -> tuple[float, float] | None:
+    values = (current_covariance_m2, aligned_covariance_m2)
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or value < 0.0
+        for value in values
+    ):
+        return None
+    current = float(current_covariance_m2)
+    aligned = float(aligned_covariance_m2)
+    relative_margin_m = LOCALIZATION_SIGMA_MULTIPLIER * abs(
+        math.sqrt(aligned) - math.sqrt(current)
+    )
+    return current, relative_margin_m
+
+
+def _advance_rejected_depth_cursor(
+    previous_received_at: float,
+    candidate_received_at: float,
+    *,
+    new_depth_frame: bool,
+) -> float:
+    """Consume one rejected source frame without replaying or inventing evidence.
+
+    A rejected frame remains rejected: it never renews perception health or a
+    control lease. Advancing only the receive cursor lets the next loop try a
+    newer physical frame. Without this boundary, a transport/alignment error
+    on one frame can pin the selector to that same frame until the executor's
+    safety grace expires, even while newer camera frames are arriving.
+    """
+    if type(previous_received_at) not in (int, float):
+        raise TypeError("previous_received_at must be numeric")
+    if type(candidate_received_at) not in (int, float):
+        raise TypeError("candidate_received_at must be numeric")
+    if not math.isfinite(float(previous_received_at)):
+        raise ValueError("previous_received_at must be finite")
+    if not math.isfinite(float(candidate_received_at)):
+        raise ValueError("candidate_received_at must be finite")
+    if not new_depth_frame:
+        return float(previous_received_at)
+    return max(float(previous_received_at), float(candidate_received_at))
 
 
 # 功能：
@@ -1805,22 +1866,134 @@ def _seed_qualified_static_map(
 
 
 # 功能：
-#   只消除完全包含于已知静态碰撞体的感知体素；仅重叠不能证明未知突出物不存在。
+#   消除已被静态碰撞体及其既有净空带完整覆盖的感知体素；普通重叠仍保留未知突出物。
 # 输入：
 #   perceived、known_static：感知新增盒体与已知静态图元。
+#   covered_clearance_m：静态图元在同一控制裁决中必然保留的净空带。
 # 输出：
 #   novel：仍须保留的感知障碍。
-#   removed_count：被完整包含规则消除的体素数。
+#   removed_count：被静态碰撞并集完整覆盖而消除的体素数。
 def _remove_known_static_perception_duplicates(
     perceived: list[dict[str, Any]],
     known_static: list[dict[str, Any]],
+    *,
+    covered_clearance_m: float = 0.0,
 ) -> tuple[list[dict[str, Any]], int]:
-    # An overlapping voxel may contain an unmodelled object protruding from
-    # a known wall. Only its full containment proves that removing it cannot
-    # reduce the collision union. Coarse overlap was not a valid proof.
-    mask = fully_contained_box_mask(perceived, known_static)
-    novel = [candidate for candidate, removed in zip(perceived, mask, strict=True) if not removed]
-    return novel, len(perceived) - len(novel)
+    if (
+        type(covered_clearance_m) not in (int, float)
+        or not math.isfinite(covered_clearance_m)
+        or covered_clearance_m < 0.0
+    ):
+        raise ValueError("STATIC_PERCEPTION_CLEARANCE_INVALID")
+    # The local planner expands every semantic primitive by the same required
+    # clearance.  A depth voxel fully inside that already-forbidden volume
+    # cannot add a new collision: retaining it only quantizes a floor/wall
+    # surface twice and can steer the aircraft away from its qualified route.
+    # Anything protruding beyond the proven band remains present.
+    expanded_static: list[dict[str, Any]] = []
+    for primitive in known_static:
+        if primitive.get("shape", "box") != "box":
+            expanded_static.append(primitive)
+            continue
+        try:
+            expanded = dict(primitive)
+            for field in ("size_x", "size_y", "size_z"):
+                value = primitive[field]
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0.0:
+                    raise ValueError
+                expanded[field] = float(value) + 2.0 * float(covered_clearance_m)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            # Invalid or unsupported semantic geometry cannot justify deleting
+            # live evidence; the downstream geometry validator will report it.
+            expanded_static.append(primitive)
+        else:
+            expanded_static.append(expanded)
+    mask = fully_contained_box_mask(perceived, expanded_static)
+    novel: list[dict[str, Any]] = []
+    removed_count = 0
+    for candidate, removed in zip(perceived, mask, strict=True):
+        if removed:
+            removed_count += 1
+            continue
+        cells = _decompose_merged_perception_voxel(candidate)
+        if cells is None:
+            novel.append(candidate)
+            continue
+        cell_mask = fully_contained_box_mask(cells, expanded_static)
+        if not any(cell_mask):
+            # Preserve the original compact primitive when no part can be
+            # proven redundant.  Decomposition is for set subtraction, not a
+            # general expansion of planner workload.
+            novel.append(candidate)
+            continue
+        novel.extend(
+            cell for cell, cell_removed in zip(cells, cell_mask, strict=True)
+            if not cell_removed
+        )
+        removed_count += sum(cell_mask)
+    return novel, removed_count
+
+
+_MERGED_PERCEPTION_VOXEL_NAME = re.compile(
+    r"^perception-voxel-(-?\d+)-(-?\d+)-(-?\d+)-(-?\d+)-(-?\d+)-(-?\d+)$"
+)
+
+
+# 功能：
+#   将非粗化的合并感知盒还原为原始网格单元，供静态几何并集做保守差集。
+# 输入：
+#   primitive：名称绑定半开网格范围、轴对齐且尺寸一致的感知盒。
+# 输出：
+#   cells：最多 96 个等尺寸单元；来源不可证明时返回 None 并保留原盒。
+def _decompose_merged_perception_voxel(
+    primitive: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    if not isinstance(primitive, dict) or primitive.get("shape", "box") != "box":
+        return None
+    name = primitive.get("name")
+    match = _MERGED_PERCEPTION_VOXEL_NAME.fullmatch(name) if isinstance(name, str) else None
+    if match is None:
+        return None
+    bounds = tuple(int(value) for value in match.groups())
+    counts = tuple(bounds[axis + 3] - bounds[axis] for axis in range(3))
+    cell_count = math.prod(counts)
+    if any(count <= 0 for count in counts) or cell_count <= 1 or cell_count > 96:
+        return None
+    try:
+        center = tuple(float(primitive[f"center_{axis}"]) for axis in "xyz")
+        size = tuple(float(primitive[f"size_{axis}"]) for axis in "xyz")
+        yaw = float(primitive.get("yaw_rad", 0.0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not all(math.isfinite(value) for value in (*center, *size, yaw))
+        or any(value <= 0.0 for value in size)
+        or abs(yaw) > 1e-12
+    ):
+        return None
+    cell_size = tuple(size[axis] / counts[axis] for axis in range(3))
+    if max(cell_size) - min(cell_size) > max(1e-9, min(cell_size) * 1e-6):
+        return None
+    lower = tuple(center[axis] - size[axis] / 2.0 for axis in range(3))
+    cells: list[dict[str, Any]] = []
+    for x in range(counts[0]):
+        for y in range(counts[1]):
+            for z in range(counts[2]):
+                key = (bounds[0] + x, bounds[1] + y, bounds[2] + z)
+                cell = dict(primitive)
+                cell.update(
+                    {
+                        "name": f"perception-voxel-{key[0]}-{key[1]}-{key[2]}",
+                        "center_x": lower[0] + (x + 0.5) * cell_size[0],
+                        "center_y": lower[1] + (y + 0.5) * cell_size[1],
+                        "center_z": lower[2] + (z + 0.5) * cell_size[2],
+                        "size_x": cell_size[0],
+                        "size_y": cell_size[1],
+                        "size_z": cell_size[2],
+                    }
+                )
+                cells.append(cell)
+    return cells
 
 
 class _NativeIdentityTracker:
@@ -2006,6 +2179,148 @@ def _register_resource_close(cleanup: contextlib.ExitStack, resource: Any, **clo
 
 
 # 功能：
+#   读取仿真见证发布的短时估计器到世界坐标校正；任何缺失、过期或越界证据均不改变控制状态。
+# 输入：
+#   path：受控实体身份原子通道；now_unix_ms：当前消费时刻；maximum_age_ms：允许的证据年龄。
+# 输出：
+#   offset：已验证且仍新鲜的 ENU 校正；当前没有可采纳证据时为 None。
+def _fresh_estimator_world_offset(
+    path: Path,
+    *,
+    now_unix_ms: int,
+    maximum_age_ms: int = 750,
+) -> Vector3 | None:
+    if type(now_unix_ms) is not int or type(maximum_age_ms) is not int or maximum_age_ms <= 0:
+        raise ValueError("IDENTITY_CORRECTION_TIME_INVALID")
+    try:
+        evidence = ControlledVehicleIdentityEvidence.model_validate(
+            read_runtime_object(path), strict=True
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+    age_ms = now_unix_ms - evidence.updated_at_unix_ms
+    offset = evidence.estimator_to_world_position_offset_m
+    if (
+        not evidence.accepted
+        or not evidence.tracking_fresh
+        or offset is None
+        or age_ms < 0
+        or age_ms > maximum_age_ms
+    ):
+        return None
+    maximum_correction_m = min(
+        1.0,
+        evidence.maximum_absolute_correction_m
+        or evidence.maximum_correction_m
+        or 1.0,
+    )
+    if math.hypot(offset.x, offset.y, offset.z) > maximum_correction_m + 1e-9:
+        return None
+    return offset
+
+
+# 功能：
+#   将仿真见证测得的估计器偏差限制为只读诊断证据，禁止其成为飞控坐标变换。
+# 输入：
+#   witness_offset：Gazebo 与 PX4 的短时位置差，可为空但不能改变控制权威。
+# 输出：
+#   control_offset：固定为零的 ENU 控制偏移；控制坐标只服从部署坐标合同与原生估计器。
+def _control_frame_estimator_offset(witness_offset: Vector3 | None) -> Vector3:
+    if witness_offset is not None:
+        Vector3.model_validate(witness_offset.model_dump(mode="python"), strict=True)
+    return Vector3(x=0.0, y=0.0, z=0.0)
+
+
+class EstimatorWorldOffsetObserver:
+    """Read estimator/world alignment evidence off the control-loop thread."""
+
+    MAXIMUM_AGE_MS = 750
+    POLL_SECONDS = 0.02
+
+    # 功能：
+    #   在后台读取身份校正文件，避免 WSL 挂载盘读取阻塞深度与控制周期。
+    # 输入：
+    #   path：本次运行的受控实体身份文件；reader：可替换的严格校验读取函数。
+    # 输出：
+    #   None：构造后立即启动自有后台线程。
+    def __init__(self, path: Path, *, reader=_fresh_estimator_world_offset):
+        if not callable(reader):
+            raise ValueError("IDENTITY_CORRECTION_READER_INVALID")
+        self._path = path
+        self._reader = reader
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._offset: Vector3 | None = None
+        self._validated_at_unix_ms: int | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="estimator-world-offset-observer",
+        )
+        self._thread.start()
+
+    # 功能：
+    #   周期读取并只缓存实际通过边界校验的校正；短暂读失败不延长旧证据寿命。
+    # 输入：
+    #   self：当前观察器。
+    # 输出：
+    #   None：不返回业务数据。
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            sampled_at_unix_ms = int(time.time() * 1_000)
+            offset = self._reader(
+                self._path,
+                now_unix_ms=sampled_at_unix_ms,
+                maximum_age_ms=self.MAXIMUM_AGE_MS,
+            )
+            if offset is not None:
+                with self._lock:
+                    if not self._closed:
+                        self._offset = offset
+                        self._validated_at_unix_ms = sampled_at_unix_ms
+            self._stop.wait(self.POLL_SECONDS)
+
+    # 功能：
+    #   从内存取得仍在短时缓存预算内的校正，不在调用线程触碰文件系统。
+    # 输入：
+    #   now_unix_ms：当前消费时刻。
+    # 输出：
+    #   offset：近期验证的校正副本；无证据、关闭或过期时为 None。
+    def latest(self, *, now_unix_ms: int) -> Vector3 | None:
+        if type(now_unix_ms) is not int:
+            raise ValueError("IDENTITY_CORRECTION_TIME_INVALID")
+        with self._lock:
+            if self._closed or self._offset is None or self._validated_at_unix_ms is None:
+                return None
+            age_ms = now_unix_ms - self._validated_at_unix_ms
+            if age_ms < 0 or age_ms > self.MAXIMUM_AGE_MS:
+                return None
+            return self._offset.model_copy()
+
+    # 功能：
+    #   停止后台读取并限时等待退出，防止运行结束后继续访问旧任务目录。
+    # 输入：
+    #   timeout_seconds：最多等待后台线程退出的秒数。
+    # 输出：
+    #   summary：线程是否已经停止的关闭回执。
+    def close(self, *, timeout_seconds: float = 2.0) -> dict[str, object]:
+        if (
+            type(timeout_seconds) not in (int, float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 2.0
+        ):
+            raise ValueError("IDENTITY_CORRECTION_CLOSE_TIMEOUT_INVALID")
+        with self._lock:
+            self._closed = True
+        self._stop.set()
+        self._thread.join(float(timeout_seconds))
+        if self._thread.is_alive():
+            raise RuntimeError("IDENTITY_CORRECTION_OBSERVER_DID_NOT_STOP")
+        return {"thread_stopped": True}
+
+
+# 功能：
 #   建立整个原生工作器的资源生命周期，初始化或处理抛错也执行已注册清理。
 # 输入：
 #   无；命令行参数由内部入口读取。
@@ -2086,6 +2401,26 @@ def _read_control_target(path: Path, *, now_unix_ms: int, reader=None, receiver=
         raise ValueError("LOCAL_SAFETY_TARGET_ID_INVALID")
     if target.get("control_profile") not in ("cruise", "precision"):
         raise ValueError("LOCAL_SAFETY_TARGET_PROFILE_INVALID")
+    segment_index = target.get("tracking_segment_index")
+    route_clearance = target.get("qualified_route_clearance_m")
+    if (segment_index is None) != (route_clearance is None):
+        raise ValueError("LOCAL_SAFETY_ROUTE_BUDGET_INCOMPLETE")
+    if segment_index is not None:
+        if type(segment_index) is not int or segment_index < 0:
+            raise ValueError("LOCAL_SAFETY_ROUTE_SEGMENT_INVALID")
+        if (
+            type(route_clearance) not in (int, float)
+            or not math.isfinite(route_clearance)
+            or route_clearance <= 0.0
+        ):
+            raise ValueError("LOCAL_SAFETY_ROUTE_CLEARANCE_INVALID")
+        prefix = "source-waypoint-"
+        try:
+            expected_segment_index = int(goal_id[len(prefix) :]) - 1
+        except (TypeError, ValueError):
+            expected_segment_index = -1
+        if not goal_id.startswith(prefix) or expected_segment_index != segment_index:
+            raise ValueError("LOCAL_SAFETY_ROUTE_SEGMENT_ID_MISMATCH")
     timestamp = target.get("updated_at_unix_ms")
     if (type(now_unix_ms) is not int or type(timestamp) is not int
             or not 0 <= timestamp <= now_unix_ms <= 10**15):
@@ -2490,7 +2825,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     fusion = RuntimePerceptionFusion(
         world=world,
         accepted_sensor_ids={"oakd-lite-depth"},
-        maximum_stream_age_seconds=0.35,
+        maximum_stream_age_seconds=LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
         minimum_rays_per_frame=8,
         sensor_registry=sensor_registry,
     )
@@ -2990,6 +3325,15 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     precision_latched_goal_id: str | None = None
     last_live_evidence_prune_at = -math.inf
     latest_realtime_feature_snapshot = None
+    # Metric geometry and tracked obstacles are required for every control
+    # cycle. The fixed-width neural feature snapshot is not: producing it on
+    # a deterministic independent-route flight added critical-path work even
+    # though no model, teacher, or learning recorder consumed it.
+    realtime_feature_encoding_required = bool(
+        model_navigation is not None
+        or args.simulation_teacher_control
+        or learning_recorder is not None
+    )
     ceiling_transition = CeilingTransition()
     if args.development_fault_evidence is not None:
         _atomic_json(
@@ -3046,6 +3390,12 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     perception_timing_summary = PhaseTimingSummary()
     source_diagnostics = PerceptionSourceDiagnostics()
     handoff_wait_started = None
+    witness_estimator_offset: Vector3 | None = None
+    estimator_offset_path = (
+        args.command.parent / "runtime-state" / "controlled-vehicle-identity.json"
+    )
+    estimator_offset_observer = EstimatorWorldOffsetObserver(estimator_offset_path)
+    cleanup.callback(estimator_offset_observer.close)
     while not stop_requested.is_set():
         # 许可到期即停止续发控制租约，由既有执行器失联处置接管，不延长旧动作。
         if trial_permit is not None and int(time.time() * 1000) >= trial_permit.expires_at_unix_ms:
@@ -3276,8 +3626,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 native_observation.payload, now_unix_ms=now_unix_ms,
             )
             identity_ok, identity_issues = True, []
-            estimator_offset = Vector3(x=0, y=0, z=0)
-            position = native_pose.position_world_enu_m
+            fresh_estimator_offset = estimator_offset_observer.latest(
+                now_unix_ms=now_unix_ms,
+            )
+            if fresh_estimator_offset is not None:
+                witness_estimator_offset = fresh_estimator_offset
+            estimator_offset = _control_frame_estimator_offset(witness_estimator_offset)
+            position = native_pose.position_world_enu_m.model_copy()
             orientation = native_pose.orientation_world_from_body
             velocity = native_pose.velocity_world_enu_mps
             identity_alignment.raw_disagreement_m = (
@@ -3332,6 +3687,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 else:
                     projection, projection_contract = cached_projection
                     sensor_registry.register_contract(projection_contract)
+                aligned_body_position = aligned_native.pose.position_world_enu_m.model_copy()
                 scan = RawMetricRangeScan(
                     sensor_id="oakd-lite-depth",
                     sequence=sequence,
@@ -3339,7 +3695,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     # keeps its own, possibly older deadline in the fusion.
                     observed_at_unix_ms=image_received_at_unix_ms,
                     observed_at_monotonic_seconds=image_received_at,
-                    body_position_world_enu_m=aligned_native.pose.position_world_enu_m,
+                    body_position_world_enu_m=aligned_body_position,
                     body_orientation_world_from_body=aligned_native.pose.orientation_world_from_body,
                     body_velocity_world_enu_mps=aligned_native.pose.velocity_world_enu_mps,
                     localization_covariance_m2=aligned_native.conservative_variance_m2,
@@ -3380,23 +3736,24 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     raise ValueError("PERCEPTION_FRAME_NOT_RECEIVED")
                 dynamic = list(frame.dynamic_obstacles)
                 cycle_timing.mark("tracking_and_metric_fusion")
-                geometry_encoding = encode_metric_geometry(
-                    scan,
-                    sensor_mount=mount,
-                    expected_horizontal_fov_rad=1.274,
-                    expected_vertical_fov_rad=2 * math.atan(
-                        math.tan(1.274 / 2) * int(image.height) / int(image.width)
-                    ),
-                    encoded_at_unix_ms=now_unix_ms,
-                )
-                dynamic_encoding = encode_dynamic_targets(
-                    dynamic,
-                    body_position_world_enu_m=position,
-                    body_orientation_world_from_body=orientation,
-                    body_velocity_world_enu_mps=velocity,
-                    observed_at_unix_ms=frame.observed_at_unix_ms,
-                    encoded_at_unix_ms=now_unix_ms,
-                )
+                if realtime_feature_encoding_required:
+                    geometry_encoding = encode_metric_geometry(
+                        scan,
+                        sensor_mount=mount,
+                        expected_horizontal_fov_rad=1.274,
+                        expected_vertical_fov_rad=2 * math.atan(
+                            math.tan(1.274 / 2) * int(image.height) / int(image.width)
+                        ),
+                        encoded_at_unix_ms=now_unix_ms,
+                    )
+                    dynamic_encoding = encode_dynamic_targets(
+                        dynamic,
+                        body_position_world_enu_m=position,
+                        body_orientation_world_from_body=orientation,
+                        body_velocity_world_enu_mps=velocity,
+                        observed_at_unix_ms=frame.observed_at_unix_ms,
+                        encoded_at_unix_ms=now_unix_ms,
+                    )
                 if now - last_live_evidence_prune_at >= args.live_evidence_prune_period_seconds:
                     world.prune_live_evidence(
                         center_m=position,
@@ -3408,31 +3765,39 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 last_depth_processing_failed = False
                 if first_accepted_frame_monotonic is None:
                     first_accepted_frame_monotonic = image_received_at
-            if latest_realtime_feature_snapshot is not None or not stale_tick:
-                if local_input_wake_enabled:
-                    # 投影/融合可能耗去一个原生状态周期。几何来源和射线坐标不变，
-                    # 但控制位置、速度、姿态与状态编码须共同取实际已经到达的更新，
-                    # 不能只给旧编码改时间或只更新模型输入而仍用旧姿态映射速度。
-                    control_reference_ms = int(time.time() * 1000)
-                    native_observation = native_state_sampler.buffer.latest_after(
-                        native_observation, now_unix_ms=control_reference_ms)
-                    native_pose = identity_alignment.admit_payload(
-                        native_observation.payload, now_unix_ms=control_reference_ms)
-                    now_unix_ms, now = control_reference_ms, time.monotonic()
-                    native_sample = native_observation.sample
-                    latest_flight_state_encoding = native_observation.encoding
-                    position = native_pose.position_world_enu_m
-                    orientation = native_pose.orientation_world_from_body
-                    velocity = native_pose.velocity_world_enu_mps
-                    acceleration_world_enu_mps2 = (
-                        body_to_world_enu(orientation, native_sample.acceleration_body_mps2)
-                        if native_sample.acceleration_body_mps2 is not None else None)
-                    visual_motion_alignment = forward_camera_motion_alignment(
-                        body_orientation_world_from_body=orientation,
-                        body_velocity_world_enu_mps=velocity, mount=mount)
-                    # 必须重新计算原深度的年龄，不能让新的控制参考钟给旧几何续期。
-                    health = fusion.health(now_unix_ms=now_unix_ms, now_monotonic_seconds=now)
+            if local_input_wake_enabled:
+                # 投影/融合可能耗去一个原生状态周期。几何来源和射线坐标不变，
+                # 但控制位置、速度、姿态与状态编码须共同取实际已经到达的更新，
+                # 不能只给旧编码改时间或只更新模型输入而仍用旧姿态映射速度。
+                control_reference_ms = int(time.time() * 1000)
+                native_observation = native_state_sampler.buffer.latest_after(
+                    native_observation, now_unix_ms=control_reference_ms)
+                native_pose = identity_alignment.admit_payload(
+                    native_observation.payload, now_unix_ms=control_reference_ms)
+                now_unix_ms, now = control_reference_ms, time.monotonic()
+                native_sample = native_observation.sample
+                latest_flight_state_encoding = native_observation.encoding
+                fresh_estimator_offset = estimator_offset_observer.latest(
+                    now_unix_ms=now_unix_ms,
+                )
+                if fresh_estimator_offset is not None:
+                    witness_estimator_offset = fresh_estimator_offset
+                estimator_offset = _control_frame_estimator_offset(witness_estimator_offset)
+                position = native_pose.position_world_enu_m.model_copy()
+                orientation = native_pose.orientation_world_from_body
+                velocity = native_pose.velocity_world_enu_mps
+                acceleration_world_enu_mps2 = (
+                    body_to_world_enu(orientation, native_sample.acceleration_body_mps2)
+                    if native_sample.acceleration_body_mps2 is not None else None)
+                visual_motion_alignment = forward_camera_motion_alignment(
+                    body_orientation_world_from_body=orientation,
+                    body_velocity_world_enu_mps=velocity, mount=mount)
+                # 必须重新计算原深度的年龄，不能让新的控制参考钟给旧几何续期。
+                health = fusion.health(now_unix_ms=now_unix_ms, now_monotonic_seconds=now)
+            if realtime_feature_encoding_required:
                 if stale_tick:
+                    if latest_realtime_feature_snapshot is None:
+                        continue
                     # Preserve geometry/track source times while accepting a
                     # newer state encoding. Missing images still age normally.
                     previous_encodings = {
@@ -3707,6 +4072,26 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             # 当前位姿绑定安全求解和垂直约束。几何时钟、覆盖及健康结论不刷新。
             observation = _bind_current_control_state(
                 observation, position=position, velocity=velocity)
+            qualified_route_clearance_m = target_payload.get("qualified_route_clearance_m")
+            current_localization_covariance_m2 = None
+            relative_perception_uncertainty_margin_m = None
+            if qualified_route_clearance_m is not None:
+                raw_covariance = native_observation.sample.localization_covariance_m2
+                aligned_covariance = observation.localization_covariance_m2
+                localization_budget_context = _localization_route_budget_context(
+                    raw_covariance,
+                    aligned_covariance,
+                )
+                if localization_budget_context is not None:
+                    (
+                        current_localization_covariance_m2,
+                        relative_perception_uncertainty_margin_m,
+                    ) = localization_budget_context
+                else:
+                    # A route corridor cannot fund an absent or inconsistent
+                    # native localization estimate.  Keep the producer alive
+                    # but revoke translation until a fresh estimate arrives.
+                    observation = observation.model_copy(update={"stream_healthy": False})
             if not identity_ok or not health.stream_healthy:
                 observation = observation.model_copy(update={"stream_healthy": False})
             realtime_control_features_ready = bool(
@@ -3742,7 +4127,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 (query_center.x, query_center.y, query_center.z), radius_m=query_radius_m
             )
             perceived, duplicate_perception_count = _remove_known_static_perception_duplicates(
-                perceived, nearby_static
+                perceived,
+                nearby_static,
+                covered_clearance_m=args.required_clearance,
             )
             static = [*nearby_static, *perceived]
             control_validity_ms = (
@@ -3809,7 +4196,14 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 clearance=args.required_clearance, coverage_check=motion_coverage,
                 coverage_identity=world.motion_coverage_identity(),
                 envelope=flight_dynamics_envelope,
-                measurement_only=args.development_payload_collection)
+                measurement_only=args.development_payload_collection,
+                # 只有定位预算有效时才把当前路线段净空交给顶部过渡器；
+                # 它仍须逐候选验证覆盖、目标收敛及动态障碍为空。
+                qualified_route_clearance_m=(
+                    qualified_route_clearance_m
+                    if current_localization_covariance_m2 is not None
+                    else None
+                ))
             hybrid_lease = None
             hybrid_input_checks = None
             if hybrid_arbiter is not None:
@@ -3896,7 +4290,49 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 if stream_unhealthy_since_monotonic is not None
                 else 0.0
             )
-            if identity_ok and (health.stream_healthy or stale_hold_elapsed_seconds <= 2.0):
+            # 软件渲染下深度帧可能暂时慢于飞控状态，但 Gazebo 仍持续提供
+            # 新鲜位姿。仅对显式独立路线仿真，且身份、定位、签名三维路线、
+            # 当前段完整覆盖与无动态障碍同时通过时，允许 0.12 m/s 的可审计降级。
+            # 真机、外部来源、过期真值、狭走廊或未覆盖段都不能进入该路径。
+            qualified_static_route_fallback = False
+            if args.independent_route_control:
+                from dronedream_agent_core.route_control_mode import (
+                    qualified_simulation_route_fallback_eligible,
+                )
+                qualified_static_route_fallback = (
+                    qualified_simulation_route_fallback_eligible(
+                        source=observation.source,
+                        identity_ok=identity_ok,
+                        stream_age_seconds=observation.stream_age_seconds,
+                        qualified_route_clearance_m=qualified_route_clearance_m,
+                        required_clearance_m=args.required_clearance,
+                        localization_covariance_m2=current_localization_covariance_m2,
+                        dynamic_obstacle_count=len(observation.dynamic_obstacles),
+                    )
+                    and not motion_guard.issues
+                    and motion_coverage(
+                        [
+                            (position.x, position.y, position.z),
+                            (route_target.x, route_target.y, route_target.z),
+                        ],
+                        args.required_clearance,
+                    )
+                )
+                if qualified_static_route_fallback:
+                    observation = RuntimeLocalSafetyObservation.model_validate({
+                        **observation.model_dump(mode="json"),
+                        "stream_healthy": True,
+                    })
+            # Missing depth revokes translational motion, but must not make the
+            # safety producer look dead. Keep issuing a short-lived braking
+            # hold from fresh authenticated flight state while synchronizers
+            # recover. A bounded 30 s outage still reaches the executor's
+            # landing policy instead of hovering indefinitely.
+            if identity_ok and (
+                health.stream_healthy
+                or stale_hold_elapsed_seconds <= 30.0
+                or qualified_static_route_fallback
+            ):
                 decision_started_at = time.monotonic()
                 evaluated = evaluate_runtime_local_safety(
                     observation=observation,
@@ -3912,7 +4348,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     # full School Map below real time.  Any lease gap causes a
                     # fixed-position hold and then a bounded landing.
                     validity_milliseconds=600,
-                    maximum_speed_mps=active_planner_speed_mps,
+                    maximum_speed_mps=(
+                        min(active_planner_speed_mps, 0.12)
+                        if qualified_static_route_fallback
+                        else active_planner_speed_mps
+                    ),
                     tracking_recovery_active=tracking_recovery_active,
                     navigation_goal_id=navigation_goal_id,
                     navigation_control_authority=(
@@ -3958,9 +4398,29 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         orientation=orientation, position=position,
                         goal=teacher_observation_target(position=position, goal=navigation_goal,
                                                         obstacles=list(observation.dynamic_obstacles)),
-                        maximum_rate_dps=min(45., active_yaw_rate_limit_dps),
-                    ) if (args.simulation_teacher_control or args.independent_route_control) else 0.),
+                         maximum_rate_dps=min(45., active_yaw_rate_limit_dps),
+                     ) if (args.simulation_teacher_control or args.independent_route_control) else 0.),
+                    qualified_route_clearance_m=(
+                        qualified_route_clearance_m
+                        if current_localization_covariance_m2 is not None
+                        else None
+                    ),
+                    current_localization_covariance_m2=current_localization_covariance_m2,
+                    relative_perception_uncertainty_margin_m=(
+                        relative_perception_uncertainty_margin_m
+                    ),
                 )
+                if qualified_static_route_fallback:
+                    evaluated = RuntimeLocalSafetyCommand.model_validate({
+                        **evaluated.model_dump(mode="json"),
+                        "decision": {
+                            **evaluated.decision.model_dump(mode="json"),
+                            "issue_codes": list(dict.fromkeys([
+                                *evaluated.decision.issue_codes,
+                                "SIMULATION_QUALIFIED_STATIC_ROUTE_FALLBACK",
+                            ])),
+                        },
+                    })
                 decision_compute_seconds = time.monotonic() - decision_started_at
                 last_decision_compute_seconds = decision_compute_seconds
                 published_at_unix_ms = int(time.time() * 1_000)
@@ -4563,6 +5023,15 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             }
             cycle_outcome = "control"
         except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
+            # A source frame which failed alignment/fusion is evidence of a
+            # failed cycle, not a retryable action. Consume its receive slot
+            # so the next iteration can select the newest real frame. Health
+            # remains false and no command lease is renewed by this action.
+            last_image_received_at = _advance_rejected_depth_cursor(
+                last_image_received_at,
+                image_received_at,
+                new_depth_frame=new_depth_frame,
+            )
             if hybrid_arbiter is not None:
                 hybrid_arbiter.invalidate("control-state-exception:" + type(error).__name__)
             error_kind = f"{type(error).__name__}:{error}"

@@ -6,7 +6,8 @@ from pathlib import Path
 
 from dronedream_agent_core.plugin_files import check_plain_plugin_path
 from dronedream_agent_core.simulation_camera_clock import (
-    CAMERA_CLOCK_FILES, validate_native_camera_clock,
+    CAMERA_CLOCK_FILES,
+    validate_native_camera_clock,
 )
 
 

@@ -1,5 +1,6 @@
 """Local SQLite regressions for append ordering and summary publication; no account data."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -207,7 +208,7 @@ def test_context_projection_detaches_nested_payload_and_rejects_foreign_events(t
         store.append(
             "thread",
             role="user",
-            event_type="mission.request",
+            event_type="conversation.note",
             payload={"message": "go", "nested": {"value": 1}},
         )
         window = store.window("thread")
@@ -217,6 +218,56 @@ def test_context_projection_detaches_nested_payload_and_rejects_foreign_events(t
         window.recent_events[0].conversation_id = "foreign-thread"
         with pytest.raises(ValueError, match="IDENTITY_OR_ORDER_INVALID"):
             _extractive_summary(window=window)
+    finally:
+        store.close()
+
+
+# 功能：
+#   验证旧版本已写入的完整任务请求会在模型窗口边界被压缩，避免澄清轮次重复发送大型控制面。
+# 输入：
+#   tmp_path：隔离数据库目录。
+# 输出：
+#   None：不返回业务数据。
+def test_structured_window_compacts_legacy_mission_request_payload(tmp_path):
+    from dronedream_agent_plugins.context_plugins import _structured_window
+
+    store = ContextStore(tmp_path / "context.sqlite3")
+    try:
+        store.append(
+            "thread",
+            role="user",
+            event_type="mission.request",
+            payload={
+                "schema_version": "dronedream.mission-request.v1",
+                "conversation_id": "thread",
+                "message": "deliver to supplies",
+                "start_entity": "office",
+                "locale": "zh-CN",
+                "input_channel": "text",
+                "attachments": [],
+                "input_metadata": {
+                    "request_purpose": "initial_plan",
+                    "model_harness_control_plane": {"bulk": "x" * 45_000},
+                    "preferred_airspace": {"bulk": "y" * 30_000},
+                    "model_harness_input": {
+                        "current_request": {
+                            "map_asset_id": "office",
+                            "map_content_sha256": "a" * 64,
+                            "vehicle_asset_id": "my-drone",
+                            "vehicle_content_sha256": "b" * 64,
+                        }
+                    },
+                },
+            },
+        )
+
+        result = _structured_window(window=store.window("thread"))
+        payload = result["recent_events"][0]["payload"]
+
+        assert payload["message"] == "deliver to supplies"
+        assert payload["input_metadata"]["selected_assets"]["map_asset_id"] == "office"
+        assert "model_harness_control_plane" not in payload["input_metadata"]
+        assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) < 8_000
     finally:
         store.close()
 

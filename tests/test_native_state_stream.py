@@ -29,6 +29,22 @@ def packet(timestamp=1000):
     return value
 
 
+# 功能：独立传感器一次部分更新不撤销仍新鲜的完整状态；截止时间仍保持原值。
+# 输入：一份完整样本及截止时间内外的两次拒收。输出：短暂故障可降级，过期后不可用。
+def test_transient_partial_update_retains_only_a_still_fresh_complete_state():
+    buffer = NativeStateBuffer()
+    buffer.ingest(packet(1000), now_unix_ms=1000)
+    assert buffer.retain_fresh_state_during_transient_failure(
+        "NATIVE_POSE_IMU_NOT_SYNCHRONIZED", now_unix_ms=1200,
+    )
+    assert buffer.latest(now_unix_ms=1200).sample.observed_at_unix_ms == 1000
+    assert not buffer.retain_fresh_state_during_transient_failure(
+        "NATIVE_ATTITUDE_EXPIRED", now_unix_ms=1251,
+    )
+    with pytest.raises(ValueError, match="UNAVAILABLE:NATIVE_ATTITUDE_EXPIRED"):
+        buffer.latest(now_unix_ms=1251)
+
+
 # 功能：验证对齐图像时保留的是匹配历史包的协方差及原时钟，而非最新包或图像时间。
 # 输入：无。
 # 输出：无；检查快照隔离、坐标系和不同来源期限。

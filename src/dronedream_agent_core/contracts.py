@@ -447,6 +447,11 @@ class PredictiveSafetyDecision(StrictModel):
     ] = "route-target"
     predicted_path_m: list[Vector3] = Field(min_length=1, max_length=1_000)
     minimum_predicted_clearance_m: float
+    # A bounded static-clearance recovery can start inside a conservative map
+    # envelope.  Keep the true minimum (including the origin) above, and carry
+    # the independently rechecked exit clearance here for command-lifetime
+    # budgeting.  Ordinary decisions omit this field from their wire identity.
+    recovery_exit_clearance_m: float | None = None
     time_to_minimum_clearance_seconds: float = Field(ge=0.0, le=15.0)
     threat_obstacle_id: str | None = None
     # 最近预测物体不一定阻碍原动作；只有原动作触及动态净空约束时记录避让原因。
@@ -468,6 +473,8 @@ class PredictiveSafetyDecision(StrictModel):
             payload.pop("braking_prediction_velocity_mps", None)
         if self.avoidance_obstacle_id is None:
             payload.pop("avoidance_obstacle_id", None)
+        if self.recovery_exit_clearance_m is None:
+            payload.pop("recovery_exit_clearance_m", None)
         return payload
 
     # 功能：
@@ -595,7 +602,9 @@ class RuntimeLocalSafetyCommand(StrictModel):
     # colocated while representing different control intentions.
     navigation_goal_id: str | None = Field(default=None, min_length=1, max_length=160)
     tracking_recovery_active: bool = False
-    navigation_control_authority: Literal["route-fallback", "model-required", "bounded-hybrid"] = "route-fallback"
+    navigation_control_authority: Literal[
+        "route-fallback", "model-required", "bounded-hybrid"
+    ] = "route-fallback"
     hybrid_lease: HybridControlLease | None = None
     model_navigation_authorized: bool = False
     model_call_id: str | None = None
@@ -943,6 +952,33 @@ class MissionAssetPairQualificationBinding(StrictModel):
         return versions
 
 
+class ClarificationOption(StrictModel):
+    """One bounded, directly selectable answer to a planning clarification."""
+
+    option_id: Literal["A", "B", "C"]
+    label: str = Field(min_length=1, max_length=120)
+    response: str = Field(min_length=1, max_length=240)
+
+
+class ClarificationQuestion(StrictModel):
+    """A user-facing question whose likely answers are ordered by relevance."""
+
+    question_id: str = Field(pattern=r"^[a-z][a-z0-9._-]{1,63}$")
+    prompt: str = Field(min_length=3, max_length=240)
+    options: list[ClarificationOption] = Field(default_factory=list, max_length=3)
+    allow_other: bool = True
+    other_label: str = Field(default="其他", min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> ClarificationQuestion:
+        expected = ["A", "B", "C"][: len(self.options)]
+        if [option.option_id for option in self.options] != expected:
+            raise ValueError("clarification options must use ordered A/B/C identifiers")
+        if self.options and len(self.options) < 2:
+            raise ValueError("a selectable clarification requires at least two options")
+        return self
+
+
 class IntentArtifact(StrictModel):
     schema_version: Literal["dronedream.intent.v1"] = "dronedream.intent.v1"
     goal: str = Field(min_length=3, max_length=1_000)
@@ -952,6 +988,10 @@ class IntentArtifact(StrictModel):
     payload_action: DomainActionId
     constraints: list[str] = Field(default_factory=list, max_length=32)
     missing_critical_fields: list[str] = Field(default_factory=list, max_length=16)
+    clarification_questions: list[ClarificationQuestion] = Field(
+        default_factory=list,
+        max_length=4,
+    )
     assumptions: list[str] = Field(default_factory=list, max_length=16)
     environment_mode: Literal[
         "qualified-static-map",
@@ -2639,6 +2679,7 @@ class ControlledVehicleIdentityEvidence(StrictModel):
     identity_offset_innovation_m: float | None = Field(default=None, ge=0.0)
     maximum_offset_innovation_m: float | None = Field(default=None, gt=0.0)
     maximum_absolute_correction_m: float | None = Field(default=None, gt=0.0, le=1.0)
+    estimator_to_world_position_offset_m: Vector3 | None = None
     # Signed because either transport can lead the other. The runtime alignment
     # algorithm is independently bounded to this half-second freshness window.
     identity_alignment_seconds: float = Field(default=0.0, ge=-0.5, le=0.5)
@@ -2649,7 +2690,11 @@ class ControlledVehicleIdentityEvidence(StrictModel):
     tracking_age_seconds: float
     tracking_fresh: bool = True
     correction_source: Literal[
-        "live", "cached", "unavailable", "validated-before-terminal-phase"
+        "live",
+        "relocalized",
+        "cached",
+        "unavailable",
+        "validated-before-terminal-phase",
     ] = "unavailable"
     last_correction_age_seconds: float | None = None
     gazebo_pose_queue_age_seconds: float | None = Field(default=None, ge=0.0)

@@ -47,12 +47,25 @@ Use the selected assets and their documented place functions to resolve this int
 Asset understanding is reusable advisory context, not permission or new ground truth;
 verify its references against the current map catalog and current asset content hashes.
 If one documented pickup location fits, use it. If distinct pickup locations fit equally,
-ask which one; do not ask about duplicate names for the same waypoint. Current location,
-payload weight and delivery destination remain unknown unless supplied by the current
-mission/state or an explicit product policy. Never invent them from a static map.
+ask which one; do not ask about duplicate names for the same waypoint. Apply the supplied
+workflow_scope.product_defaults before asking the user: a pickup request returns the item
+to the requester's mission start unless another delivery destination is explicit; pickup
+hover duration and scan policy are product workflow details, not questions for the user;
+and planning always waits for execution confirmation. Current location, payload weight and
+delivery destination remain unknown only when neither current mission state nor an explicit
+product policy supplies them. Never invent them from a static map.
 List ambiguity in missing_critical_fields as short user-facing questions in the user's
 language, using documented place names where relevant; do not invent coordinates, permissions, or
-safety constraints. Select payload_action only from the supplied domain_action_catalog;
+safety constraints. For each genuinely blocking ambiguity, also populate clarification_questions.
+When the map catalog offers two or three plausible documented answers, put them in descending
+likelihood order as A/B/C options and set allow_other=true. Do not put "Other" inside options;
+the product renders it separately. Each option.response must be a self-contained answer that can
+be submitted as the user's next turn. Every map-place option must represent exactly one entity,
+must include that entity's immutable entity_id in option.response, and must never group two names
+or two entity IDs into one choice. For example, use "去物资区（l1-supplies）取外卖" rather than
+"物资区（supplies / presupplies）". A pickup option must not point back to the launch entity when
+a distinct documented pickup candidate is available. Select payload_action only from the supplied
+domain_action_catalog;
 use none when no payload action is requested and pickup only when collection is explicit.
 Copy every supplied explicit_constraint_hint into constraints using its canonical name;
 mentioning the same idea only in goal is not a structured constraint.
@@ -103,15 +116,20 @@ not yet known: identity verification remains an observable runtime pickup step. 
 pickup request can refer to both a facility anchor and a qualified pickup waypoint, the
 pickup-semantic waypoint is the action-capable target and is not ambiguous.
 The supplied workflow_scope is authoritative: simulation-only operator authorization
-satisfies permission for preparation. workflow_scope does not assert whether this request
-is one-way or round-trip. Infer that only from the current user request. return_entity is
-the final landing entity: it equals target_entity for a one-way request and may equal the
-start entity for an explicit round trip; it must never be the string "none".
+satisfies permission for preparation. Product defaults in workflow_scope are authoritative;
+for a pickup request, accept returning to the mission start unless the user explicitly asks
+for a one-way mission or another delivery destination. Do not demand that the user restate
+that default. return_entity is the final landing entity and must never be the string "none".
 Reject an environment_mode that understates explicit dynamic or unknown-environment
 requirements. Do not convert absent sensor/readiness evidence into a model assumption.
 A staff member mentioned only as the late-bound handoff operator while the aircraft holds at
 a designated pickup point does not by itself require dynamic-obstacle route navigation. Accept
 qualified-static-map when no moving traffic avoidance or unknown-space discovery was requested.
+This stage reviews user intent only. Never reject for route clearance, pickup-volume geometry,
+map qualification, sensor readiness, payload mass or identity, attachment evidence, landing
+evidence, runtime checkpoints, or other downstream verification. Dedicated deterministic tools
+own those checks after intent review. A named map entity may be a facility landmark; its exact
+action pose and clearance are downstream planning concerns, not reasons to exhaust intent review.
 """.strip()
 )
 
@@ -301,8 +319,9 @@ You are a bounded execution monitor at a simulated UAV segment checkpoint. Revie
 typed PX4 telemetry snapshot, task/segment target, and immutable deterministic gates.
 Return action=accept only when every deterministic gate is true and the observed state is
 consistent with safely continuing to the next task. A model decision never contains
-coordinates or actuator commands. Use hold, retry, replan, or abort when evidence is
-missing or inconsistent; never relax a false deterministic gate.
+coordinates or actuator commands. Use hold, retry, replan, controlled return, or
+controlled landing when evidence is missing or inconsistent. A model assessment is
+advisory and must never become a single-vote abort; never relax a false deterministic gate.
 The checkpoint track_point_index is global within the complete PX4 track, never local to
 one FlightPlan segment. Qualified-map segment paths are world ENU while commands are PX4
 local NED; never compare those coordinates directly. Coordinate and target consistency

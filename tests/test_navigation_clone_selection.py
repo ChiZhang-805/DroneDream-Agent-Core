@@ -93,6 +93,7 @@ def test_missing_index_evidence_rejects_clone_without_changing_owner(monkeypatch
 #   None：不返回业务数据。
 def test_boundary_chunks_share_one_bounded_selection_without_changing_cells(monkeypatch):
     from unittest.mock import Mock
+
     import dronedream_agent_core.local_world_model as module
 
     world = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=-12., y=-12., z=-12.),

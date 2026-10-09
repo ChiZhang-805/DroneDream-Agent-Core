@@ -48,6 +48,21 @@ _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
     "open-rmf-triple-h": "asset-qualification-babfc35b4cb44740d7c89c1a",
 }
 
+# The public resource identifier names the catalog entry, while the normalized
+# package identifier names the concrete map asset imported into Agent Core.
+# Exposing both prevents clients from guessing package IDs (for example,
+# ``open-rmf-office`` is backed by the installed asset ``office``).
+_BUILTIN_MAP_ASSET_IDS = {
+    "dronedream-school-map": "dronedream.school-map.v1",
+    "open-rmf-airport-terminal": "airport-terminal",
+    "open-rmf-battle-royale": "battle-royale",
+    "open-rmf-campus": "campus",
+    "open-rmf-clinic": "clinic",
+    "open-rmf-hotel": "hotel",
+    "open-rmf-office": "office",
+    "open-rmf-triple-h": "triple-h",
+}
+
 
 def _maps() -> list[dict[str, object]]:
     resources = [_SCHOOL_MAP]
@@ -120,6 +135,9 @@ def _pair_record(
         "status": status,
         "compatible": status != "incompatible",
         "qualification_id": qualification_id,
+        "qualified_map_asset_id": (
+            _BUILTIN_MAP_ASSET_IDS[map_id] if qualification_id is not None else None
+        ),
         "qualified_vehicle_asset_id": (
             "dronedream.my-drone.v1" if qualification_id is not None else None
         ),

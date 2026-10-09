@@ -37,7 +37,10 @@ def main():
         shutil.copy2(args.core / "scripts" / name, resources / name)
     for name in ("payload-placement", "native-sensors"):
         shutil.copytree(args.runtime / name, resources / name)
-    from dronedream_agent_core.simulation_camera_clock import validate_native_camera_clock, CAMERA_CLOCK_FILES
+    from dronedream_agent_core.simulation_camera_clock import (
+        CAMERA_CLOCK_FILES,
+        validate_native_camera_clock,
+    )
     validate_native_camera_clock(args.camera_clock, source_root=args.core / "native/camera_clock")
     (resources / "camera-clock").mkdir()
     for name in CAMERA_CLOCK_FILES:

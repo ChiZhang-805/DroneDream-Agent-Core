@@ -32,12 +32,15 @@ CONTROL_PROFILES = {
         "IMX214": ("camera", 320, 180, 20),
         "StereoOV7251": ("depth_camera", 160, 120, 20),
     },
-    # Rates are in simulation time. On a slower-than-real-time host, explicit
-    # faster sampling can avoid skipping otherwise fresh source snapshots.
-    # Actual arrival/source cadence remains measured, never assumed to be 60 Hz.
+    # The control worker consumes one bounded latest-frame sample per control
+    # cycle. Publishing faster than that only grows Gazebo Transport's pending
+    # image work during long, slower-than-real-time runs; it does not create a
+    # newer usable control observation. Keep both streams at the consumer rate
+    # at a distinct 16 Hz profile (62.5 ms source period, within the 75 ms
+    # state-alignment budget) and continue measuring actual cadence separately.
     "responsive-control": {
-        "IMX214": ("camera", 320, 180, 60),
-        "StereoOV7251": ("depth_camera", 160, 120, 60),
+        "IMX214": ("camera", 320, 180, 16),
+        "StereoOV7251": ("depth_camera", 160, 120, 16),
     },
 }
 SIMULATION_CAMERA_CHOICES = ("native", *CONTROL_PROFILES)

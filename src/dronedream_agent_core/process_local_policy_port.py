@@ -7,14 +7,15 @@ plugin deserialization interface. Original monotonic deadlines cross unchanged.
 import math
 import multiprocessing as mp
 import pickle
-from pathlib import Path
 import queue
 import threading
 import time
+from contextlib import suppress
+from pathlib import Path
 
+from .contracts import ModelCallRecord
 from .local_policy_port import LocalPolicyPort
 from .model_harness.model_port import ModelInvocationError, ProviderSettings
-from .contracts import ModelCallRecord
 
 _MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 _PUBLIC_FAILURE_CODES = frozenset({
@@ -109,10 +110,8 @@ def _serve(inbox, responses, package, options, factory):
             else:
                 raise ValueError('LOCAL_POLICY_PROCESS_OPERATION_INVALID')
     except BaseException as error:
-        try:
+        with suppress(OSError, EOFError):
             responses.send_bytes(_freeze(_failure(error)))
-        except (OSError, EOFError):
-            pass
     finally:
         if port is not None:
             port.close()
@@ -243,10 +242,8 @@ class ProcessLocalPolicyPort:
         if self._closed:
             return
         self._closed = True
-        try:
+        with suppress(queue.Full):
             self._inbox.put_nowait(_freeze(('close', None)))
-        except queue.Full:
-            pass
         if self._process.pid is not None:
             self._process.join(timeout=2.)
             if self._process.is_alive():

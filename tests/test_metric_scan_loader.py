@@ -1,9 +1,9 @@
 """Import boundaries: an absent optional accelerator differs from an incompatible installed one."""
 
 import builtins
-from pathlib import Path
 import runpy
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -35,9 +35,12 @@ def test_absent_kernel_is_explicit(monkeypatch):
 @pytest.mark.parametrize('kind', ['missing-contract', 'wrong-contract', 'missing-entrypoint'])
 def test_incompatible_kernel_is_not_hidden(monkeypatch, kind):
     fake = SimpleNamespace(CONTRACT='exact-scan-max-hit-first-v1', integrate=lambda *args: ())
-    if kind == 'missing-contract': del fake.CONTRACT
-    elif kind == 'wrong-contract': fake.CONTRACT = 'old-contract'
-    else: del fake.integrate
+    if kind == 'missing-contract':
+        del fake.CONTRACT
+    elif kind == 'wrong-contract':
+        fake.CONTRACT = 'old-contract'
+    else:
+        del fake.integrate
     monkeypatch.setitem(sys.modules, NAME, fake)
     with pytest.raises(RuntimeError, match='CONTRACT_MISMATCH'):
         runpy.run_path(str(MODULE))

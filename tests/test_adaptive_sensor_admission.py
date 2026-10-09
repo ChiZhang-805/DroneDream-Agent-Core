@@ -43,7 +43,7 @@ def schedule(instance, **overrides):
 
 @pytest.mark.parametrize("basis,source,reason", [
     ("host-receive-not-hardware-exposure", 1000, "VISUAL_CONTROL_SOURCE_NOT_READY"),
-    ("simulation-scene-capture", 800, "VISUAL_CONTROL_SOURCE_NOT_READY"),
+    ("simulation-scene-capture", 600, "VISUAL_CONTROL_SOURCE_NOT_READY"),
     ("simulation-scene-capture", 1100, "VISUAL_CONTROL_SOURCE_NOT_READY"),
 ])
 def test_expired_unknown_future_images_do_not_prime_or_invoke(monkeypatch, basis, source, reason):
@@ -70,9 +70,11 @@ def test_live_image_has_its_own_older_deadline_even_with_new_state(monkeypatch):
         executor.submit.assert_called_once()
         evidence = executor.submit.call_args.kwargs["prepared_snapshot"]["visual_evidence"][0]
         assert evidence["source_observed_at_unix_ms"] == 950
-        assert evidence["control_deadline_unix_ms"] == 1200
-        assert instance.continuous_request_remaining_ms(now_unix_ms=1020) == 180
-        assert instance.continuous_request_remaining_ms(now_unix_ms=1200) == 0
+        assert evidence["control_deadline_unix_ms"] == 1300
+        # Visual transport may use the 350 ms sensor window, while the fused
+        # neural/model decision remains capped by its 250 ms feature lease.
+        assert instance.continuous_request_remaining_ms(now_unix_ms=1020) == 230
+        assert instance.continuous_request_remaining_ms(now_unix_ms=1250) == 0
     finally:
         instance.close()
 
@@ -206,11 +208,11 @@ def test_real_safety_adapter_binds_motion_to_source_not_evaluation_time():
     command = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
         static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_020)
     assert command.decision.action != "hold"
-    assert command.valid_until_unix_ms == 10_250
+    assert command.valid_until_unix_ms == 10_350
     # Same source, computational stall: the old observation cannot justify
     # motion despite its old, cached stream_healthy flag and small age field.
     expired = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
-        static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_220)
+        static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_320)
     assert expired.decision.action == "hold"
     assert expired.command_position_m == source.current_position_m
     assert "OBSERVATION_CONTROL_BUDGET_EXHAUSTED" in expired.decision.issue_codes
@@ -232,8 +234,19 @@ def test_action_specific_margin_veto_preserves_threat_forecast(monkeypatch):
     #   request、primitives、candidate_check：真实请求、碰撞几何和候选时效回调。
     # 输出：
     #   result：注入较小最终净空的真实预测结果。
-    def tight_forecast(request, primitives, *, candidate_check=None):
-        result = real(request, primitives, candidate_check=candidate_check)
+    def tight_forecast(
+        request,
+        primitives,
+        *,
+        candidate_check=None,
+        preferred_speed_mps=None,
+    ):
+        result = real(
+            request,
+            primitives,
+            candidate_check=candidate_check,
+            preferred_speed_mps=preferred_speed_mps,
+        )
         if result.action != "hold":
             result.minimum_predicted_clearance_m = .13  # Only 3 cm residual slack.
         return result
@@ -285,7 +298,7 @@ def test_absent_budget_does_not_rewrite_historical_command_identity():
 #   age_ms：真实观测到本次评估之间的毫秒数。
 # 输出：
 #   无。
-@pytest.mark.parametrize("age_ms", [220, 250, 500])
+@pytest.mark.parametrize("age_ms", [320, 350, 500])
 def test_early_candidate_veto_retains_original_budget_and_braking(age_ms):
     from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
 
@@ -297,7 +310,7 @@ def test_early_candidate_veto_retains_original_budget_and_braking(age_ms):
     assert command.decision.predicted_path_m
     assert command.decision.braking_prediction_velocity_mps is not None
     assert command.observation_budget.source_observed_at_unix_ms == 10_000
-    assert command.observation_budget.control_deadline_unix_ms == 10_250
+    assert command.observation_budget.control_deadline_unix_ms == 10_350
     assert command.observation_budget.disposition == "context-only"
     assert "CANDIDATE_TIME_BUDGET_EXHAUSTED" in command.decision.issue_codes
     assert "OBSERVATION_CONTROL_BUDGET_EXHAUSTED" in command.decision.issue_codes

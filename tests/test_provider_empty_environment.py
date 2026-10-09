@@ -1,5 +1,6 @@
 """Empty inherited variables must not route another provider's key to OpenAI."""
 import pytest
+
 from dronedream_agent_core.model_harness.model_port import ProviderSettings
 
 

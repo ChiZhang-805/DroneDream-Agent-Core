@@ -109,6 +109,8 @@ def test_latest_run_scoped_channel(tmp_path):
 
 
 # 功能：出站不再解压不等于信任报文；接收端拒绝伪造摘要和权限，并能接收下一帧。
+# 输入：测试夹具、参数化值或函数签名中的显式参数。
+# 输出：无业务返回值；以断言或预期异常表达结果。
 @pytest.mark.parametrize('corruption', ['digest', 'authority', 'trailing'])
 def test_receiver_still_validates_full_measurement(tmp_path, corruption):
     path = tmp_path / 'source.json'

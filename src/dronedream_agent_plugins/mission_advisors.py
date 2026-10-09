@@ -220,7 +220,7 @@ def plugin_definitions() -> list[PluginDefinition]:
             name="紧急降落顾问",
             description="要求任务全过程保持可达的安全悬停、返航和降落出口。",
             domain="landing",
-            checks=["nearest-safe-hold", "reachable-landing-site", "abort-at-every-phase"],
+            checks=["nearest-safe-hold", "reachable-landing-site", "recovery-at-every-phase"],
             evidence=["landing-site-candidates", "reachability", "controlled-landing-proof"],
             risk=lambda _request: ["landing-options-must-remain-available"],
             recommended_when={"always": True},

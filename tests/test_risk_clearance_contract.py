@@ -3,15 +3,17 @@
 import json
 
 import pytest
-from test_native_corrections import fixture
 from test_native_action_risk_artifacts import dataset, rehash
+from test_native_corrections import fixture
 
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.training.action_risk_artifacts import load_action_risk_dataset
 from dronedream_agent_core.training.counterfactual_teacher import CounterfactualConfig
 from dronedream_agent_core.training.flight_environment import PilotAction
 from dronedream_agent_core.training.risk_clearance_contract import (
-    OBSERVED_CLEARANCE_LABELS, clearance_risk_score, observed_required_clearance,
+    OBSERVED_CLEARANCE_LABELS,
+    clearance_risk_score,
+    observed_required_clearance,
 )
 from dronedream_agent_core.training.risk_reannotation import reannotate_clearance_labels
 

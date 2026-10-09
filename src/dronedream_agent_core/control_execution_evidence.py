@@ -228,6 +228,7 @@ def validate_application_binding(
 #   writer_summary：证据写入器的完成汇总。
 #   writer_artifact_counts：独立回读各证据文件后统计的条数。
 #   application_artifact_path：控制回执文件在写入清单中的路径。
+#   require_model_motion：本轮是否明确要求模型直接产生运动控制。
 # 输出：
 #   result：是否通过、拒绝代码、动作分类计数及最大模型输入年龄。
 def verify_control_applications(
@@ -239,6 +240,7 @@ def verify_control_applications(
     writer_summary: dict | None,
     writer_artifact_counts: dict[str, int],
     application_artifact_path: str,
+    require_model_motion: bool = True,
 ) -> dict:
     issues = set()
     snapshots = {}
@@ -337,16 +339,31 @@ def verify_control_applications(
                 if record.safety_action in {"continue", "slow"}:
                     hybrid_motion_count += 1
                     selected = command.decision.selected_velocity_mps
-                    if (record.transport != "velocity-ned" or record.model_authorized
-                            or intent is not None or record.yaw_rate_application is not None):
+                    if (
+                        record.transport != "velocity-ned"
+                        or record.model_authorized
+                        or intent is not None
+                        or record.yaw_rate_application is not None
+                    ):
                         issues.add("CONTROL_APPLICATION_HYBRID_TRANSPORT_INVALID")
-                    if any(abs(actual - expected) > 1e-6 for actual, expected in zip(
-                            record.velocity_ned_mps, (selected.y, selected.x, -selected.z), strict=True)):
+                    expected_velocity_ned = (selected.y, selected.x, -selected.z)
+                    if any(
+                        abs(actual - expected) > 1e-6
+                        for actual, expected in zip(
+                            record.velocity_ned_mps,
+                            expected_velocity_ned,
+                            strict=True,
+                        )
+                    ):
                         issues.add("CONTROL_APPLICATION_VELOCITY_DIFFERS_FROM_APPROVED_COMMAND")
                     lease, budget = command.hybrid_lease, command.observation_budget
-                    if (lease is None or budget is None or not
-                            lease.started_at_unix_ms <= record.accepted_at_unix_ms
-                            <= min(lease.expires_at_unix_ms, budget.control_deadline_unix_ms)):
+                    if (
+                        lease is None
+                        or budget is None
+                        or not lease.started_at_unix_ms
+                        <= record.accepted_at_unix_ms
+                        <= min(lease.expires_at_unix_ms, budget.control_deadline_unix_ms)
+                    ):
                         issues.add("CONTROL_APPLICATION_HYBRID_AUTHORITY_EXPIRED")
                 continue
             if intent is None or (record.control_source != "local-model-body-control"
@@ -409,7 +426,7 @@ def verify_control_applications(
                 issues.add("CONTROL_APPLICATION_INPUT_DEADLINE_VIOLATION")
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
             issues.add("CONTROL_APPLICATION_EVIDENCE_INVALID")
-    if motion_count == 0:
+    if require_model_motion and motion_count == 0:
         issues.add("CONTROL_APPLICATION_HAS_NO_MODEL_MOTION")
     result = {
         "accepted": not issues,

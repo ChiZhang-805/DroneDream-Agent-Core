@@ -19,7 +19,11 @@ from .map_measurement_noise import (
 )
 from .map_pose_transport import map_pose_transport_candidate
 from .native_odometry_source import decode_source_odometry
-from .temporal_map_pose import TemporalMapPoseTracker, TemporalMapSourceExpiredError
+from .temporal_map_pose import (
+    TemporalMapObservationPendingError,
+    TemporalMapPoseTracker,
+    TemporalMapSourceExpiredError,
+)
 
 # PX4 readback still requires <=200ms actual source-to-receipt age. Reserve
 # one complete 20Hz sensor period (50ms) for dispatch; this is not a new source
@@ -102,7 +106,7 @@ class LiveMapMeasurementSource:
                 index=self.index, binding=self.binding, binding_sha256=self.binding_sha256,
                 image_timestamp_ns=stamp, now_monotonic=started, map_sha256=self.map_sha256,
                 clock_domain=self.clock_domain)
-        except TemporalMapSourceExpiredError as error:
+        except (TemporalMapObservationPendingError, TemporalMapSourceExpiredError) as error:
             raise MapMeasurementPending(str(error)) from error
         fit = result.fit
         if not fit.usable_candidate or fit.issue is not None:

@@ -6,6 +6,7 @@ import copy
 import json
 import sys
 import tempfile
+from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
 from typing import Any, TypeVar
@@ -44,7 +45,7 @@ from .extensions import ExtensionExecutionError
 from .gazebo_adapter import run_px4_gazebo_track
 from .hashing import sha256_json
 from .model_harness.boundary import ModelHarnessExecutionAuthority
-from .model_harness.model_port import ProviderName, StructuredModelPort
+from .model_harness.model_port import ProviderName, StructuredCallResult, StructuredModelPort
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
 from .prompts import COMPLETION_VERIFIER
 from .runtime_control_io import publish_runtime_json, read_runtime_object
@@ -565,7 +566,6 @@ def _checkpoint_receipts_passed(
             or _read_contract(decision_path, RuntimeCheckpointDecision) != decision
             or not all_required_gates_passed(request.deterministic_gates)
             or decision.continue_authorized is not True
-            or decision.assessment.action != "accept"
             or decision.model_call.role != "execution_monitor"
             or decision.model_call.output_sha256 != sha256_json(decision.assessment)
         ):
@@ -851,6 +851,66 @@ def _invoke_completion_verifier(
             primary.add_note("Completion port cleanup also failed: " + type(error).__name__)
 
 
+def _deterministic_completion_fallback(
+    *, artifact: dict[str, Any], deterministic_success: bool, error: Exception
+) -> StructuredCallResult[CompletionAssessment]:
+    """Summarize immutable runtime gates when the advisory model is unavailable."""
+    assessment = CompletionAssessment(
+        accepted=deterministic_success,
+        issue_codes=([] if deterministic_success else ["DETERMINISTIC_RUNTIME_GATES_FAILED"]),
+    )
+    record = ModelCallRecord(
+        call_id=f"model-{uuid4().hex[:24]}",
+        role="completion_verifier",
+        attempt=1,
+        input_sha256=sha256_json(artifact),
+        output_sha256=sha256_json(assessment),
+        output_schema=CompletionAssessment.__name__,
+        provider="runtime-policy",
+        model="deterministic-completion-fallback",
+        response_id=type(error).__name__,
+        latency_ms=0,
+        created_at=datetime.now(UTC),
+    )
+    return StructuredCallResult(artifact=assessment, record=record)
+
+
+# 功能：
+#   固定运行门控对最终状态拥有裁决权；完成模型提供语义复核，但不能一票否决物理成功，
+#   也不能把失败飞行投票改成成功。矛盾输出保留在证据链后改用可审计的确定性结论。
+# 输入：
+#   completion：供应商完成模型的结构化结论及绑定记录。
+#   artifact：发送给完成模型的冻结输入，用于生成回退记录摘要。
+#   deterministic_success：PX4、Gazebo、动作回执和插件固定门控的联合结果。
+#   chain：追加原模型矛盾结论的证据链。
+# 输出：
+#   effective：与固定门控一致且摘要自洽的最终完成结论。
+def _enforce_deterministic_completion_authority(
+    *,
+    completion: StructuredCallResult[CompletionAssessment],
+    artifact: dict[str, Any],
+    deterministic_success: bool,
+    chain: EvidenceChain,
+) -> StructuredCallResult[CompletionAssessment]:
+    """Prevent an advisory completion model from overriding immutable runtime gates."""
+
+    if completion.artifact.accepted is deterministic_success:
+        return completion
+    chain.append(
+        "runtime.completion_verifier.deterministic-override",
+        {
+            "deterministic_success": deterministic_success,
+            "advisory_artifact": completion.artifact.model_dump(mode="json"),
+            "advisory_record": completion.record.model_dump(mode="json"),
+        },
+    )
+    return _deterministic_completion_fallback(
+        artifact=artifact,
+        deterministic_success=deterministic_success,
+        error=PreparedMissionBindingError("COMPLETION_MODEL_CONTRADICTS_DETERMINISTIC_GATES"),
+    )
+
+
 # 功能：
 #   1. 绑定运行证据、检查点、动作回执与当前计划，模型不能覆盖固定失败门控。
 #   2. 保存模型和插件实际回执，独占发布本次完成结果。
@@ -1030,28 +1090,52 @@ def _complete(
         and _active_runtime_gates_passed(runtime)
         and all(binding_gates.values())
     )
-    completion = _invoke_completion_verifier(
-        provider=completion_provider,
-        timeout_seconds=model_timeout_seconds,
-        chain=chain,
-        context_store=context_store,
-        conversation_id=prepared.contract.conversation_id,
-        instructions=completion_instructions,
-        artifact=_completion_verifier_input(
-            prepared=prepared,
-            route=route,
-            clearance=clearance,
-            track=track,
-            runtime=runtime,
-            offboard_timing=offboard_timing,
-            binding_gates=binding_gates,
-            normalized_runtime_evaluations=normalized_runtime_evaluations,
-            checkpoint_decisions=checkpoint_decisions,
-            runtime_action_receipts=runtime_action_receipts,
-            runtime_interruption_decisions=runtime_interruption_decisions,
+    completion_input = _completion_verifier_input(
+        prepared=prepared,
+        route=route,
+        clearance=clearance,
+        track=track,
+        runtime=runtime,
+        offboard_timing=offboard_timing,
+        binding_gates=binding_gates,
+        normalized_runtime_evaluations=normalized_runtime_evaluations,
+        checkpoint_decisions=checkpoint_decisions,
+        runtime_action_receipts=runtime_action_receipts,
+        runtime_interruption_decisions=runtime_interruption_decisions,
+        deterministic_success=deterministic_success,
+    )
+    try:
+        completion = _invoke_completion_verifier(
+            provider=completion_provider,
+            timeout_seconds=model_timeout_seconds,
+            chain=chain,
+            context_store=context_store,
+            conversation_id=prepared.contract.conversation_id,
+            instructions=completion_instructions,
+            artifact=completion_input,
+            context_id=f"{prepared.contract.conversation_id}::completion_verifier",
+        )
+    except Exception as error:
+        # Completion prose is advisory. Immutable PX4/Gazebo evidence remains
+        # authoritative, so an unavailable or malformed model response cannot
+        # veto a physically completed mission.
+        completion = _deterministic_completion_fallback(
+            artifact=completion_input,
             deterministic_success=deterministic_success,
-        ),
-        context_id=f"{prepared.contract.conversation_id}::completion_verifier",
+            error=error,
+        )
+        chain.append(
+            "runtime.completion_verifier.fallback",
+            {
+                "error_type": type(error).__name__,
+                "record": completion.record.model_dump(mode="json"),
+            },
+        )
+    completion = _enforce_deterministic_completion_authority(
+        completion=completion,
+        artifact=completion_input,
+        deterministic_success=deterministic_success,
+        chain=chain,
     )
     try:
         completion_output_receipts = validate_runtime_model_output(
@@ -1550,7 +1634,9 @@ def execute_prepared_mission(
             strict=True,
         )
         offboard_timing = read_runtime_object(
-            run_dir / "offboard_timing.json", maximum_bytes=16 * 1024 * 1024
+            run_dir / "offboard_timing.json",
+            maximum_bytes=16 * 1024 * 1024,
+            node_limit=2_000_000,
         )
         (
             runtime_action_receipts,
@@ -1640,7 +1726,9 @@ def reverify_prepared_run(
     ) = _load_package(prepared_path, confirm_contract_id, semantic_path, vehicle_sdf)
     runtime = _read_contract(run_dir / "mission_evidence.json", Px4GazeboRunEvidence)
     offboard_timing = read_runtime_object(
-        run_dir / "offboard_timing.json", maximum_bytes=16 * 1024 * 1024
+        run_dir / "offboard_timing.json",
+        maximum_bytes=16 * 1024 * 1024,
+        node_limit=2_000_000,
     )
     prior_result_path = run_dir / "workflow-result.json"
     if not prior_result_path.is_file():

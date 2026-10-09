@@ -47,6 +47,8 @@ class MetricPlannerPolicy:
     maximum_expansions: int = 450_000
     maximum_search_seconds: float | None = None
     preferred_airspace_weight: float = 1.5
+    allow_semantic_endpoint_projection: bool = False
+    maximum_semantic_endpoint_projection_m: float = 2.5
 
     # 功能：
     #   校验规划精度、非负代价和计算预算，禁止 NaN、布尔或负惩罚破坏有界 A* 搜索。
@@ -80,6 +82,13 @@ class MetricPlannerPolicy:
             raise ValueError("maximum expansions must be positive")
         if self.maximum_search_seconds is not None and self.maximum_search_seconds <= 0:
             raise ValueError("maximum search duration must be positive")
+        if type(self.allow_semantic_endpoint_projection) is not bool:
+            raise ValueError("semantic endpoint projection policy must be boolean")
+        if (
+            type(self.maximum_semantic_endpoint_projection_m) not in (int, float)
+            or not 0 < self.maximum_semantic_endpoint_projection_m <= 5.0
+        ):
+            raise ValueError("semantic endpoint projection distance is outside its budget")
 
 
 # 功能：
@@ -310,14 +319,65 @@ class KnownMapMetricPlanner:
             raise ValueError("route endpoint is not present in graph")
         if query.require_flight_verified_edges:
             raise ValueError("metric geometry routes are not flight-verified edges")
-        start_point = self.nodes[query.start_node].position_m
-        goal_point = self.nodes[query.goal_node].position_m
+        start_node = self.nodes[query.start_node]
+        goal_node = self.nodes[query.goal_node]
+        # A qualified launch node is an exact vehicle pose, not a semantic area
+        # label.  Projecting it can produce a collision-clear route that no longer
+        # begins or returns at the PX4 launch binding.  Non-launch semantic targets
+        # still use the same deterministic projection in both directions so adjacent
+        # route segments remain continuous.
+        start_point = (
+            start_node.position_m
+            if start_node.semantic == "launch"
+            else self._semantic_action_pose(start_node.position_m)
+        )
+        goal_point = (
+            goal_node.position_m
+            if goal_node.semantic == "launch"
+            else self._semantic_action_pose(goal_node.position_m)
+        )
         return self.plan_positions(
             query,
             start_position_m=start_point,
             goal_position_m=goal_point,
             prior_corridors=prior_corridors,
         )
+
+    def _semantic_action_pose(self, anchor: Vector3) -> Vector3:
+        """Resolve a map label anchor to the nearest clearance-valid operation pose.
+
+        Imported maps commonly place pantry, doorway and launch labels on a wall or
+        room boundary.  Those labels identify an area; they are not authoritative live
+        vehicle poses.  Initial planning may therefore use a nearby collision-valid pose,
+        while ``plan_positions`` deliberately remains fail-closed for measured positions.
+        """
+
+        origin = (anchor.x, anchor.y, anchor.z)
+        if self.clearance(origin) >= self.policy.required_clearance_m:
+            return anchor
+        if not self.policy.allow_semantic_endpoint_projection:
+            return anchor
+        spacing = max(0.15, min(self.policy.resolution_m / 2, 0.3))
+        radius = self.policy.maximum_semantic_endpoint_projection_m
+        extent = math.ceil(radius / spacing)
+        candidates: list[tuple[float, float, float, Point]] = []
+        for x_index in range(-extent, extent + 1):
+            for y_index in range(-extent, extent + 1):
+                for z_index in range(-extent, extent + 1):
+                    offset = (x_index * spacing, y_index * spacing, z_index * spacing)
+                    distance = math.sqrt(sum(value * value for value in offset))
+                    if distance == 0 or distance > radius:
+                        continue
+                    point = tuple(origin[axis] + offset[axis] for axis in range(3))
+                    vertical = abs(offset[2])
+                    preference = self.preferred_airspace.cost(point)
+                    candidates.append((distance + vertical * 1.4 + preference * 0.1,
+                                       distance, vertical, point))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        for _, _, _, point in candidates:
+            if self.clearance(point) >= self.policy.required_clearance_m:
+                return Vector3(x=point[0], y=point[1], z=point[2])
+        raise ValueError("semantic route endpoint has no nearby operational pose")
 
     # 功能：
     #   1. 在有界三维网格执行 A*，代价包括水平、垂直运动、净空和可选历史走廊惩罚。
@@ -572,15 +632,29 @@ class KnownMapMetricPlanner:
             return route.model_copy(deep=True)
         self._route_cache[cache_key] = route
         reverse_key = (query.goal_node, query.start_node, exact_goal, exact_start)
-        self._route_cache[reverse_key] = GraphRoute(
-            start_node=query.goal_node,
-            goal_node=query.start_node,
-            node_ids=list(reversed(route.node_ids)),
-            edge_ids=list(reversed(route.edge_ids)),
-            positions_m=list(reversed(route.positions_m)),
-            route_length_m=route.route_length_m,
-            all_edges_flight_verified=route.all_edges_flight_verified,
+        # Collision geometry is symmetric, but the named topology need not be.
+        # Cache a reversed metric path only when the map independently permits
+        # travel in that direction; otherwise a one-way lane would silently
+        # become a fabricated return route on the next query.
+        reverse_query = query.model_copy(
+            update={"start_node": query.goal_node, "goal_node": query.start_node}
         )
+        try:
+            if self.graph is None:
+                raise ValueError("topology graph is required for reverse route caching")
+            shortest_route(self.graph, reverse_query)
+        except ValueError:
+            self._route_cache.pop(reverse_key, None)
+        else:
+            self._route_cache[reverse_key] = GraphRoute(
+                start_node=query.goal_node,
+                goal_node=query.start_node,
+                node_ids=list(reversed(route.node_ids)),
+                edge_ids=list(reversed(route.edge_ids)),
+                positions_m=list(reversed(route.positions_m)),
+                route_length_m=route.route_length_m,
+                all_edges_flight_verified=route.all_edges_flight_verified,
+            )
         return route.model_copy(deep=True)
 
     # 功能：

@@ -12,6 +12,7 @@ from dronedream_agent_core.px4_track import route_to_px4_track, runtime_route_to
 from dronedream_agent_core.runtime_bindings import (
     MapRuntimeBindingsError,
     load_map_runtime_bindings,
+    resolve_grounded_vehicle_model_root,
 )
 
 
@@ -91,6 +92,19 @@ def _semantic() -> dict[str, object]:
             "vehicle_spawn": {"x": 10.0, "y": 20.0, "z": 5.0},
             "mission_launch_waypoint": {"x": 12.0, "y": 22.0, "z": 8.0},
         },
+        "collision_primitives": [
+            {
+                "name": "roof-support",
+                "semantic": "terrain",
+                "center_x": 10.0,
+                "center_y": 20.0,
+                "center_z": 4.9,
+                "size_x": 4.0,
+                "size_y": 4.0,
+                "size_z": 0.2,
+                "yaw_rad": 0.0,
+            }
+        ],
     }
     return semantic
 
@@ -147,8 +161,97 @@ def test_map_spawn_and_selected_vehicle_drive_complete_enu_to_px4_transform(
     assert track.schema_version == "dronedream.px4-track.v2"
     assert track.coordinate_contract.collision_center_offset_model_m == [0.1, 0.0, 0.25]
     assert track.points[0].x == pytest.approx(2.0)
-    assert track.points[0].y == pytest.approx(1.9)
+    assert track.points[0].y == pytest.approx(2.0)
     assert track.points[0].z == pytest.approx(2.75)
+
+
+# 功能：
+#   回归真实 X500 深度机型曾把地图通用出生高度和碰撞中心重复相加的错误。
+# 输入：
+#   无；用地面顶面、真实机身高度和碰撞中心偏移构造最小语义图。
+# 输出：
+#   None：模型根落在 -0.013 米且碰撞中心在机身半高时通过。
+def test_grounded_model_root_uses_support_surface_and_vehicle_envelope() -> None:
+    semantic = _semantic()
+    semantic["runtime_bindings"]["vehicle_spawn"] = {"x": 10.0, "y": 20.0, "z": 0.25}
+    semantic["runtime_bindings"]["mission_launch_waypoint"] = {
+        "x": 10.0,
+        "y": 20.0,
+        "z": 1.4,
+    }
+    semantic["collision_primitives"] = [
+        {
+            "name": "floor",
+            "semantic": "terrain",
+            "center_x": 10.0,
+            "center_y": 20.0,
+            "center_z": -0.06,
+            "size_x": 4.0,
+            "size_y": 4.0,
+            "size_z": 0.12,
+            "yaw_rad": 0.0,
+        }
+    ]
+    vehicle = VehicleAsset.model_validate(
+        {
+            **_vehicle().model_dump(mode="python"),
+            "body_height_m": 0.43,
+            "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
+        }
+    )
+
+    root = resolve_grounded_vehicle_model_root(semantic, vehicle)
+
+    assert (root.x, root.y, root.z) == pytest.approx((10.0, 20.0, -0.013))
+
+
+# 功能：
+#   回归多层地图只把 terrain 当支撑面、导致三楼出生点被移到零层的错误。
+# 输入：
+#   无；构造地面、楼板、圆形停机坪和高于起飞点的屋顶。
+# 输出：
+#   None：模型根必须停在地图声明的三楼停机坪高度。
+def test_grounded_model_root_selects_declared_storey_launch_pad() -> None:
+    semantic = _semantic()
+    semantic["runtime_bindings"]["vehicle_spawn"] = {"x": -42.25, "y": 15.3, "z": 7.487}
+    semantic["runtime_bindings"]["mission_launch_waypoint"] = {
+        "x": -42.25,
+        "y": 15.3,
+        "z": 8.15,
+    }
+    semantic["runtime_collision_primitives"] = [
+        {
+            "name": "ground", "semantic": "terrain",
+            "center_x": -42.25, "center_y": 15.3, "center_z": -0.05,
+            "size_x": 100.0, "size_y": 100.0, "size_z": 0.1,
+        },
+        {
+            "name": "third-floor", "semantic": "floor",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 7.31,
+            "size_x": 20.0, "size_y": 20.0, "size_z": 0.22,
+        },
+        {
+            "name": "office-drone-launch-pad", "semantic": "launch-pad",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 7.46,
+            "radius_m": 0.85, "height_m": 0.08,
+        },
+        {
+            "name": "roof", "semantic": "roof",
+            "center_x": -42.25, "center_y": 15.3, "center_z": 10.95,
+            "size_x": 20.0, "size_y": 20.0, "size_z": 0.2,
+        },
+    ]
+    vehicle = VehicleAsset.model_validate(
+        {
+            **_vehicle().model_dump(mode="python"),
+            "body_height_m": 0.43,
+            "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
+        }
+    )
+
+    root = resolve_grounded_vehicle_model_root(semantic, vehicle)
+
+    assert (root.x, root.y, root.z) == pytest.approx((-42.25, 15.3, 7.487))
 
 
 # 功能：
@@ -208,6 +311,28 @@ def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
     track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
     assert [point.speed_limit_mps for point in track.points] == [0.6, 0.6, 0.6]
+
+
+def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:
+    graph = _graph()
+    route = GraphRoute(
+        start_node="roof-launch",
+        goal_node="roof-launch",
+        node_ids=["roof-launch", "dock-a", "roof-launch"],
+        edge_ids=["launch-to-dock", "launch-to-dock"],
+        positions_m=[
+            graph.nodes[0].position_m,
+            graph.nodes[1].position_m,
+            {"x": 12.0, "y": 21.75, "z": 8.0},
+        ],
+        route_length_m=12.0,
+        all_edges_flight_verified=False,
+    )
+    semantic_path = tmp_path / "semantic.json"
+    semantic_path.write_text(json.dumps(_semantic()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not end at the qualified PX4 launch"):
+        route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
 
 # 功能：

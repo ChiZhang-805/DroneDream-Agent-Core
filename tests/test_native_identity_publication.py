@@ -70,3 +70,51 @@ def test_identity_publication_retains_receive_time_and_fixed_map_binding(tmp_pat
     assert native_map_pose(payload, now_unix_ms=1050).position_world_enu_m == Vector3(
         x=13, y=22, z=1.2
     )
+
+
+# 功能：
+#   验证快速通道发布与持久证据写入可分别关闭，避免磁盘延迟进入控制关键路径。
+# 输入：
+#   tmp_path：隔离的证据目录。
+# 输出：
+#   None：不返回业务数据。
+def test_identity_publication_separates_fast_channel_from_durable_snapshot(tmp_path):
+    module = _load_executor()
+    measured = SimpleNamespace(
+        north_m=0.0,
+        east_m=0.0,
+        down_m=0.0,
+        north_m_s=0.0,
+        east_m_s=0.0,
+        down_m_s=0.0,
+        received_at_unix_ms=1000,
+    )
+    coordinate = Px4CoordinateContract(
+        model_root_world_enu_m=[0, 0, 0], collision_center_offset_model_m=[0, 0, 0.2]
+    )
+    sent = []
+    args = Namespace(
+        run_dir=tmp_path,
+        _native_state_channel=SimpleNamespace(send=lambda payload: sent.append(payload)),
+    )
+    evidence_path = tmp_path / "runtime-state" / "px4-identity-telemetry.json"
+
+    module._publish_px4_identity_telemetry(
+        args=args,
+        coordinate_contract=coordinate,
+        observed=measured,
+        publish_channel=True,
+        durable_write=False,
+    )
+    assert len(sent) == 1
+    assert not evidence_path.exists()
+
+    module._publish_px4_identity_telemetry(
+        args=args,
+        coordinate_contract=coordinate,
+        observed=measured,
+        publish_channel=False,
+        durable_write=True,
+    )
+    assert len(sent) == 1
+    assert evidence_path.is_file()

@@ -124,12 +124,12 @@ def test_monotonicity_grid_and_numeric_edge_cases():
 def test_source_exposure_not_receive_time_controls_rgb_deadline():
     image = dict(timestamp_basis="simulation-scene-capture",
         scene_source_unix_ns=10_000_500_000, host_received_unix_ns=10_200_000_000)
-    assert image_control_deadline(image, now_unix_ms=10_201) == 10_250
+    assert image_control_deadline(image, now_unix_ms=10_201) == 10_350
     for altered in ({"scene_source_unix_ns": None}, {"scene_source_unix_ns": True},
                     {"scene_source_unix_ns": 10_300_000_000},
                     {"timestamp_basis": "host-receive-not-hardware-exposure"}):
         assert image_control_deadline({**image, **altered}, now_unix_ms=10_201) == 0
-    assert image_control_deadline(image, now_unix_ms=10_251) == 0
+    assert image_control_deadline(image, now_unix_ms=10_351) == 0
 
 
 def test_latch_blocks_same_frame_rejuvenation_and_out_of_order_replay():

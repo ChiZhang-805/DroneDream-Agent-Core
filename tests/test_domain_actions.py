@@ -129,6 +129,10 @@ def test_first_party_action_packs_merge_without_conflict() -> None:
     assert "survey.grid-capture" in movement_action_ids(catalog)
     assert action_by_id(catalog, "delivery.release-payload").authority == "actuate"
     assert not {"delivery.scan-code", "delivery.verify-recipient"} & action_ids(catalog)
+    assert all(
+        "abort" not in action.allowed_fallbacks
+        for action in catalog.actions
+    )
 
 
 def test_action_pack_conflict_is_rejected() -> None:
@@ -247,6 +251,17 @@ def test_task_graph_enforces_registered_action_fallback_and_evidence() -> None:
         }
     )
     _validate_task_graph(valid, contract, _map(), catalog)
+
+    # A room-scale semantic destination may resolve to the same topology node as
+    # launch and return.  The outbound navigate phase must not be mistaken for a
+    # return phase merely because all three node identifiers are equal.
+    colocated_contract = contract.model_copy(
+        update={"target_node": "office", "return_node": "office"}
+    )
+    colocated = valid.model_copy(deep=True)
+    for task in colocated.nodes:
+        task.target_node = "office"
+    _validate_task_graph(colocated, colocated_contract, _map(), catalog)
 
     for removed_id, code in (
         ("precontact", "MISSING_PRECONTACT_HOLD"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from dronedream_plugin_sdk.protocol import encode_json
@@ -57,3 +58,104 @@ def resolve_vehicle_collision_center_offset(vehicle: VehicleAsset) -> Vector3:
     # Guessing zero here would move the collision volume without moving the
     # selected vehicle, invalidating its clearance evidence.
     raise MapRuntimeBindingsError("VEHICLE_COLLISION_CENTER_OFFSET_MISSING")
+
+
+# 功能：
+#   1. 从地图在候选出生点下方的真实水平支撑面与机体碰撞包络，计算落地时的模型根位姿。
+#   2. 将地图声明的出生点解释为碰撞中心的水平位置，不把地图通用抬升量重复叠加到具体机型。
+# 输入：
+#   semantic：当前地图语义及碰撞基元。
+#   vehicle：当前机型的碰撞中心偏移和机身高度。
+# 输出：
+#   root：机体直立静置于支撑面时的模型根 ENU 坐标。
+def resolve_grounded_vehicle_model_root(
+    semantic: dict[str, Any], vehicle: VehicleAsset
+) -> Vector3:
+    """Resolve a vehicle-specific resting pose from map and body geometry.
+
+    A map cannot prescribe one model-root Z for every aircraft: model roots,
+    landing gear and collision centres differ.  The spawn binding identifies
+    both the horizontal location and the intended vertical storey.  The
+    selected aircraft then supplies the collision envelope needed to place its
+    lower face on the nearest load-bearing surface at that storey.  This avoids
+    placing an upper-floor launch inside a ground-floor slab.
+    """
+
+    bindings = load_map_runtime_bindings(semantic)
+    offset = resolve_vehicle_collision_center_offset(vehicle)
+    if not isinstance(vehicle, VehicleAsset) or not math.isfinite(vehicle.body_height_m):
+        raise MapRuntimeBindingsError("VEHICLE_GROUNDED_POSE_INVALID")
+    primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
+    if not isinstance(primitives, list) or not 1 <= len(primitives) <= 100_000:
+        raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_MISSING")
+    x = bindings.vehicle_spawn.x
+    y = bindings.vehicle_spawn.y
+    launch_z = bindings.mission_launch_waypoint.z
+    support_tops: list[float] = []
+    supported_semantics = {
+        "terrain", "floor", "launch-pad", "landing-pad", "platform", "roof",
+        "road", "pavement", "sidewalk", "stair-landing", "stair-tread",
+    }
+    for primitive in primitives:
+        if (
+            not isinstance(primitive, dict)
+            or str(primitive.get("semantic", "")).casefold() not in supported_semantics
+        ):
+            continue
+        values = tuple(primitive.get(key) for key in ("center_x", "center_y", "center_z"))
+        yaw = primitive.get("yaw_rad", 0.0)
+        if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+            raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_INVALID")
+        if type(yaw) not in (int, float) or not math.isfinite(yaw):
+            raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_INVALID")
+        center_x, center_y, center_z = map(float, values)
+        dx, dy = x - center_x, y - center_y
+        cosine, sine = math.cos(float(yaw)), math.sin(float(yaw))
+        local_x = cosine * dx + sine * dy
+        local_y = -sine * dx + cosine * dy
+        if all(key in primitive for key in ("size_x", "size_y", "size_z")):
+            dimensions = tuple(primitive.get(key) for key in ("size_x", "size_y", "size_z"))
+            if any(
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in dimensions
+            ):
+                raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_INVALID")
+            size_x, size_y, size_z = map(float, dimensions)
+            contains_spawn = (
+                abs(local_x) <= size_x / 2.0 + 1e-9
+                and abs(local_y) <= size_y / 2.0 + 1e-9
+            )
+            top = center_z + size_z / 2.0
+        elif all(key in primitive for key in ("radius_m", "height_m")):
+            radius = primitive.get("radius_m")
+            height = primitive.get("height_m")
+            if (
+                type(radius) not in (int, float)
+                or type(height) not in (int, float)
+                or not math.isfinite(radius)
+                or not math.isfinite(height)
+                or radius <= 0
+                or height <= 0
+            ):
+                raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_INVALID")
+            contains_spawn = math.hypot(local_x, local_y) <= float(radius) + 1e-9
+            top = center_z + float(height) / 2.0
+        else:
+            continue
+        if contains_spawn and top <= launch_z + 1e-9:
+            support_tops.append(top)
+    if not support_tops:
+        raise MapRuntimeBindingsError("MAP_SUPPORT_SURFACE_NOT_FOUND_AT_VEHICLE_SPAWN")
+    support_z = min(
+        support_tops,
+        key=lambda top: (abs(top - bindings.vehicle_spawn.z), -top),
+    )
+    collision_center_z = support_z + vehicle.body_height_m / 2.0
+    root = Vector3(
+        x=x - offset.x,
+        y=y - offset.y,
+        z=collision_center_z - offset.z,
+    )
+    if not all(math.isfinite(value) for value in (root.x, root.y, root.z)):
+        raise MapRuntimeBindingsError("VEHICLE_GROUNDED_POSE_INVALID")
+    return root

@@ -3,13 +3,17 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from fastapi.testclient import TestClient
 
-from dronedream_agent_app.preparation_progress import PreparationProgress
-from dronedream_agent_core.model_harness.progress import progress_sink, report_progress, report_model_progress
-from dronedream_agent_core.model_harness.progress import report_artifact_progress
-from dronedream_agent_core.contracts import SemanticPlan
 from dronedream_agent_app.identity import VerifiedIdentity
+from dronedream_agent_app.preparation_progress import PreparationProgress
 from dronedream_agent_app.server import create_app
 from dronedream_agent_app.storage import AppStore
+from dronedream_agent_core.contracts import SemanticPlan
+from dronedream_agent_core.model_harness.progress import (
+    progress_sink,
+    report_artifact_progress,
+    report_model_progress,
+    report_progress,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_server_credentials")
 
@@ -18,12 +22,14 @@ def test_request_account_isolation_bounded_events_and_late_callbacks():
     mailbox = PreparationProgress()
     key = ("owner", None, None, "thread", "request")
     late = []
+
     def operation():
         callback = progress_sink.get()
         late.append(callback)
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(report_model_progress, callback, "intent_parser", 1, "started").result()
-        for index in range(150): report_progress("route", str(index), str(index))
+        for index in range(150):
+            report_progress("route", str(index), str(index))
         return "result"
     assert mailbox.run(key, operation) == "result"
     snapshot = mailbox.read(key, 0)
@@ -37,7 +43,10 @@ def test_request_account_isolation_bounded_events_and_late_callbacks():
 
 def test_failure_preserves_original_exception_and_cleans_context():
     mailbox = PreparationProgress()
-    def failed(): raise ValueError("provider failure")
+
+    def failed():
+        raise ValueError("provider failure")
+
     with pytest.raises(ValueError, match="provider failure"):
         mailbox.run(("key",), failed)
     assert mailbox.read(("key",), 0)["state"] == "failed"
@@ -45,7 +54,9 @@ def test_failure_preserves_original_exception_and_cleans_context():
 
 
 def test_observer_failure_does_not_change_model_business_result():
-    def broken(*args): raise RuntimeError("UI observer failed")
+    def broken(*args):
+        raise RuntimeError("UI observer failed")
+
     token = progress_sink.set(broken)
     try:
         report_progress("assets", "地图", "map")
@@ -56,7 +67,10 @@ def test_observer_failure_does_not_change_model_business_result():
 
 def test_model_progress_explains_scope_and_reports_measured_time():
     events = []
-    sink = lambda *event: events.append(event)
+
+    def sink(*event):
+        events.append(event)
+
     report_model_progress(sink, "task_decomposer", 1, "started")
     assert len(events) == 2 and len(events[1][1]) > 100
     assert "固定四步模板" in events[1][1]

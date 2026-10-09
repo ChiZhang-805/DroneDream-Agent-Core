@@ -11,8 +11,8 @@ from test_executed_control_training import teacher_evidence
 
 from dronedream_agent_core.control_feature_contract import CURRENT_POLICY_FEATURE_CONTRACT_SHA256
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from dronedream_agent_core.realtime_feature_encoders import fuse_realtime_features
+from dronedream_agent_core.simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from dronedream_agent_core.training.demonstrations import (
     collect_demonstrations,
     file_sha256,

@@ -6,7 +6,7 @@ import random
 import pytest
 
 from dronedream_agent_core.contracts import Vector3
-from dronedream_agent_core.local_world_model import MetricVoxelMap, _FREE_LOG_ODDS_THRESHOLD
+from dronedream_agent_core.local_world_model import _FREE_LOG_ODDS_THRESHOLD, MetricVoxelMap
 
 
 # 功能：

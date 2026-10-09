@@ -10,9 +10,49 @@ import pytest
 
 from dronedream_agent_core.map_fusion_experiment import (
     MapFusionExperimentMixin,
+    map_fusion_failure_is_optional,
     prepare_map_fusion_experiment,
     read_map_fusion_experiment,
 )
+
+
+@pytest.mark.parametrize(
+    ("route", "fallback", "initialized", "expected"),
+    [
+        (True, True, True, True),
+        (False, True, True, False),
+        (True, False, True, False),
+        (True, True, False, True),
+    ],
+)
+def test_fusion_failure_degrades_only_with_independent_real_fallback(
+        route, fallback, initialized, expected):
+    assert map_fusion_failure_is_optional(
+        independent_route_control=route,
+        gnss_position_fallback=fallback,
+        initialized=initialized,
+    ) is expected
+
+
+# 功能：辅助地图融合退化后继续等待原生定位；输入：已正常结束的融合任务；输出：调用基础定位门。
+def test_preflight_continues_after_explicit_native_localization_degradation():
+    async def check():
+        client = Client()
+        client._fusion_ready = asyncio.Event()
+        client._fusion_ready.set()
+        client._fusion_degraded_to_native_localization = True
+
+        async def ended():
+            return None
+
+        client._fusion_task = asyncio.create_task(ended())
+        await asyncio.sleep(0)
+        NativeStub.wait_until_local_position_ready.reset_mock()
+        assert await client.wait_until_local_position_ready(1) is True
+        NativeStub.wait_until_local_position_ready.assert_awaited_once_with(1)
+        await client.close()
+
+    asyncio.run(check())
 
 
 # 功能：创建便携的合成资产和独占实验；输入：测试目录；输出：输入文件及配置。

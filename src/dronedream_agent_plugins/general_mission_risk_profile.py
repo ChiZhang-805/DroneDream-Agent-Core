@@ -61,7 +61,7 @@ def _profile(value: dict[str, object]) -> dict[str, Any]:
         raise ValueError("MISSION_ADVISOR_REQUEST_INVALID")
     rendered = f"{goal.lower()} {constraints}"
     factors: list[str] = []
-    focus = ["telemetry continuity", "abort availability"]
+    focus = ["telemetry continuity", "controlled recovery availability"]
     if action in {"pickup", "dropoff", "deliver", "release", "attach", "detach"} or (
         action.startswith("payload.")
     ):

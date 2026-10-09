@@ -56,7 +56,7 @@ from .perception_evidence import (
     freeze_perception_frame,
 )
 from .prompts import TEXT_NAVIGATION_ADVISOR
-from .realtime_feature_encoders import RealtimeFeatureSnapshot, parse_realtime_control_input
+from .realtime_feature_encoders import parse_realtime_control_input
 from .runtime_sensor_contracts import (
     RuntimeMultimodalSensorSnapshot,
     RuntimeSensorEnvelope,

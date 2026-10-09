@@ -15,7 +15,10 @@ from dronedream_agent_core.contracts import (
     Vector3,
 )
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.learning_observation_recorder import LearningObservationRecorder, learning_recovery_task_context
+from dronedream_agent_core.learning_observation_recorder import (
+    LearningObservationRecorder,
+    learning_recovery_task_context,
+)
 from dronedream_agent_core.local_world_model import MetricVoxelMap
 from dronedream_agent_core.navigation_snapshot import (
     NavigationSnapshotRequest,
@@ -173,6 +176,7 @@ def test_observer_uses_deployment_compiler_without_model_or_control_authority():
 #   None：断言内容、来源、控制权限与默认编译一致，后续地图变化不影响旧记录。
 def test_same_thread_compilation_owns_live_map_until_return(monkeypatch):
     from unittest.mock import Mock
+
     import dronedream_agent_core.learning_observation_recorder as module
 
     request, command = request_fixture()

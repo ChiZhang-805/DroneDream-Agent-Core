@@ -95,6 +95,34 @@ def test_launch_is_selected_from_connected_lane_not_first_decorative_vertex() ->
     assert any(edge.from_node == launch_id or edge.to_node == launch_id for edge in graph.edges)
 
 
+def test_launch_prefers_connected_vertex_with_greatest_wall_clearance() -> None:
+    source = b"""name: Safe launch selection
+coordinate_system: cartesian_meters
+levels:
+  L1:
+    elevation: 0
+    vertices:
+      - [0, 0, 0, near-wall]
+      - [1, 0, 0, also-near-wall]
+      - [5, 5, 0, safe]
+      - [0, 0.2, 0, wall-a]
+      - [1, 0.2, 0, wall-b]
+    walls:
+      - [3, 4, {}]
+    floors:
+      - {vertices: [0, 1, 2], parameters: {}}
+    lanes:
+      - [0, 1, {bidirectional: [4, true]}]
+      - [1, 2, {bidirectional: [4, true]}]
+"""
+    converted = convert_rmf_building_map(source, source_name="safe-launch.building.yaml")
+    graph = MapAsset.model_validate(json.loads(converted.topology))
+    assert graph.named_entities["launch"] == "l1-v2"
+    runtime_bindings = json.loads(converted.semantic)["runtime_bindings"]
+    assert runtime_bindings["vehicle_spawn"]["x"] == pytest.approx(5.0)
+    assert runtime_bindings["vehicle_spawn"]["y"] == pytest.approx(0.0)
+
+
 def test_zip_normalization_produces_unqualified_gazebo_package(tmp_path) -> None:
     source = tmp_path / "test.zip"
     with zipfile.ZipFile(source, "w") as bundle:

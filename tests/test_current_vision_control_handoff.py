@@ -4,14 +4,14 @@ import hashlib
 from types import SimpleNamespace
 
 import numpy as np
-import torch
 import pytest
+import torch
 
 from dronedream_agent_core import local_vision_training as training
 from dronedream_agent_core.training import visual_observation
+from dronedream_agent_core.training.px4_environment import ASSET_FIELDS, Px4TrainingConfig
 from dronedream_agent_core.training.vision_export import OUTPUT_NAMES
 from dronedream_agent_core.training.visual_lineage import VisualInputContract
-from dronedream_agent_core.training.px4_environment import ASSET_FIELDS, Px4TrainingConfig
 
 
 # 功能：

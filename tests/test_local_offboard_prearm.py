@@ -61,6 +61,33 @@ def test_success_keeps_stream_through_readiness_and_never_arms():
     assert evidence['still_disarmed'] and not evidence['arm_requested']
 
 
+# 功能：解锁前主机短暂卡顿只重置保持流证明窗口；输入：一次超过 400ms 的发布延迟；输出：重新连续后正常进入模式。
+def test_prearm_scheduling_gap_restarts_proof_window_instead_of_aborting():
+    async def scenario():
+        callbacks, calls = fixture()
+        original_publish = callbacks['publish_hold']
+        delayed = False
+
+        async def publish_with_one_gap():
+            nonlocal delayed
+            await original_publish()
+            if not delayed and calls.count('hold') == 2:
+                delayed = True
+                await asyncio.sleep(.45)
+
+        callbacks['publish_hold'] = publish_with_one_gap
+        evidence = {}
+        health = await prepare_local_offboard(
+            **callbacks, evidence=evidence, timeout_seconds=4.)
+        assert health.armable
+        assert evidence['hold_stream_restart_count'] == 1
+        assert evidence['maximum_hold_gap_seconds'] > .4
+        assert evidence['continuous_hold_span_seconds'] >= 1.2
+        assert evidence['status'] == 'ready'
+
+    asyncio.run(scenario())
+
+
 # 功能：未知/已解锁状态在任何保持流和模式命令前拒绝，不能把假值隐式转换为 False。
 # 输入：非明确 False 的状态。
 # 输出：无命令发送，握手失败。
@@ -70,6 +97,32 @@ def test_not_explicitly_disarmed_never_sends(armed):
     with pytest.raises(RuntimeError, match='REQUIRES_DISARMED'):
         asyncio.run(prepare_local_offboard(**callbacks, evidence={}))
     assert calls == ['read-armed']
+
+
+# 功能：
+#   慢速软件渲染环境允许使用完整三分钟起飞准备预算，但预算仍有严格上限。
+# 输入：
+#   明确已解锁状态使测试在配置校验后立即退出，不实际等待三分钟。
+# 输出：
+#   None：180 秒被接受，超过上限被配置校验拒绝。
+def test_prearm_accepts_full_takeoff_preparation_budget_only():
+    callbacks, _ = fixture(armed=True)
+    with pytest.raises(RuntimeError, match='REQUIRES_DISARMED'):
+        asyncio.run(
+            prepare_local_offboard(
+                **callbacks,
+                evidence={},
+                timeout_seconds=180.0,
+            )
+        )
+    with pytest.raises(ValueError, match='CONFIGURATION_INVALID'):
+        asyncio.run(
+            prepare_local_offboard(
+                **callbacks,
+                evidence={},
+                timeout_seconds=180.001,
+            )
+        )
 
 
 # 功能：丢失模式回执或健康拒绝时退出已尝试的模式；发送流失败不能被等待掩盖。

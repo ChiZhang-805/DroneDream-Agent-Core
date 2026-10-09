@@ -1,6 +1,7 @@
 """Optional CPU-only extension; pure Python remains available on unsupported platforms."""
 
 import os
+
 from setuptools import Extension, setup
 
 setup(ext_modules=[Extension('_dronedream_metric_scan', ['native/metric_scan/metric_scan.cpp'],

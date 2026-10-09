@@ -28,19 +28,23 @@ from dronedream_agent_core.model_harness.model_port import StructuredCallResult
 from dronedream_agent_core.orchestrator import (
     MissionPreparationBlocked,
     _bind_explicit_intent_constraints,
+    _bind_product_intent_defaults,
     _bind_task_graph_action_contracts,
     _decomposition_action_catalog_view,
     _explicit_constraint_hints,
+    _ground_intent_clarification_options,
     _intent_action_catalog_view,
     _intent_map_catalog_view,
     _intent_repair_feedback,
     _intent_workflow_scope,
     _missing_explicit_constraints,
     _model_records,
+    _normalize_intent_critique_scope,
     _recommended_plugin_tools,
     _resolve_consensus_result,
     _route_objective_weights,
     _route_operational_clearance_assessment,
+    _route_recovery_clarification,
     _semantic_planning_map_view,
     _validate_explicit_payload_capacity,
     _validate_semantic_plan,
@@ -66,6 +70,264 @@ def _model_result(
             created_at=datetime.now(UTC),
         ),
     )
+
+
+def test_intent_clarification_options_are_ordered_and_bounded() -> None:
+    intent = IntentArtifact(
+        goal="从办公室取餐",
+        start_entity="launch",
+        target_entity="__unresolved__",
+        return_entity="launch",
+        payload_action="pickup",
+        missing_critical_fields=["请选择取餐点"],
+        clarification_questions=[
+            {
+                "question_id": "pickup.location",
+                "prompt": "你希望去哪个取餐点？",
+                "options": [
+                    {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                    {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+                ],
+                "allow_other": True,
+                "other_label": "其他",
+            }
+        ],
+    )
+    assert intent.clarification_questions[0].options[0].option_id == "A"
+
+    with pytest.raises(ValueError, match="ordered A/B/C"):
+        IntentArtifact(
+            goal="从办公室取餐",
+            start_entity="launch",
+            target_entity="__unresolved__",
+            return_entity="launch",
+            payload_action="pickup",
+            missing_critical_fields=["请选择取餐点"],
+            clarification_questions=[
+                {
+                    "question_id": "pickup.location",
+                    "prompt": "你希望去哪个取餐点？",
+                    "options": [
+                        {"option_id": "B", "label": "补给站", "response": "去补给站取餐。"},
+                        {"option_id": "A", "label": "食品储藏室", "response": "去食品储藏室取餐。"},
+                    ],
+                }
+            ],
+        )
+
+
+def test_clarification_options_bind_one_entity_and_reject_grouped_choice() -> None:
+    graph = _map()
+    catalog = MapCatalog(
+        scene_id="office",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": "office",
+                "aliases": ["办公室", "office"],
+                "position_m": {"x": 0, "y": 0, "z": 3},
+                "semantic": "launch",
+                "source_pointer": "test:office",
+            },
+            {
+                "entity_id": "pickup",
+                "aliases": ["物资区", "supplies"],
+                "position_m": {"x": 10, "y": 0, "z": 1},
+                "semantic": "pickup",
+                "source_pointer": "test:pickup",
+            },
+        ],
+    )
+    intent = IntentArtifact(
+        goal="帮我取外卖",
+        start_entity="office",
+        target_entity="__unresolved__",
+        return_entity="office",
+        payload_action="pickup",
+        missing_critical_fields=["请选择取餐点"],
+        clarification_questions=[
+            {
+                "question_id": "pickup.location",
+                "prompt": "外卖放在哪里？",
+                "options": [
+                    {"option_id": "A", "label": "物资区", "response": "去物资区取外卖"},
+                    {
+                        "option_id": "B",
+                        "label": "办公室 / 物资区",
+                        "response": "去 office 或 pickup 取外卖",
+                    },
+                ],
+            }
+        ],
+    )
+
+    grounded, issues = _ground_intent_clarification_options(intent, catalog, graph)
+
+    assert grounded.clarification_questions[0].options[0].response.endswith("（pickup）。")
+    assert "CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE" in issues
+
+
+def test_route_exhaustion_offers_only_round_trip_reachable_map_entities() -> None:
+    graph = MapAsset.model_validate(
+        {
+            "asset_id": "office-map",
+            "name": "Office Map",
+            "nodes": [
+                {
+                    "node_id": "office",
+                    "label": "Office",
+                    "position_m": {"x": 0, "y": 0, "z": 1},
+                    "semantic": "launch",
+                },
+                {
+                    "node_id": "blocked",
+                    "label": "Blocked",
+                    "position_m": {"x": 3, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "pantry",
+                    "label": "Pantry",
+                    "position_m": {"x": 5, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "supplies",
+                    "label": "Supplies",
+                    "position_m": {"x": 7, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "isolated",
+                    "label": "Isolated",
+                    "position_m": {"x": 9, "y": 0, "z": 1},
+                    "semantic": "pickup",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "office-blocked",
+                    "from_node": "office",
+                    "to_node": "blocked",
+                    "distance_m": 3,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+                {
+                    "edge_id": "office-pantry",
+                    "from_node": "office",
+                    "to_node": "pantry",
+                    "distance_m": 5,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+                {
+                    "edge_id": "office-supplies",
+                    "from_node": "office",
+                    "to_node": "supplies",
+                    "distance_m": 7,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                },
+            ],
+            "named_entities": {
+                "office": "office",
+                "blocked": "blocked",
+                "pantry": "pantry",
+                "supplies": "supplies",
+                "isolated": "isolated",
+            },
+        }
+    )
+    catalog = MapCatalog(
+        scene_id="office",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": node_id,
+                "aliases": aliases,
+                "position_m": position,
+                "semantic": semantic,
+                "source_pointer": f"test:{node_id}",
+            }
+            for node_id, aliases, position, semantic in [
+                ("office", ["办公室", "office"], {"x": 0, "y": 0, "z": 1}, "launch"),
+                ("blocked", ["封闭取餐点", "blocked"], {"x": 3, "y": 0, "z": 1}, "pickup"),
+                ("pantry", ["茶水间", "pantry"], {"x": 5, "y": 0, "z": 1}, "pickup"),
+                ("supplies", ["物资区", "supplies"], {"x": 7, "y": 0, "z": 1}, "pickup"),
+                ("isolated", ["隔离区", "isolated"], {"x": 9, "y": 0, "z": 1}, "pickup"),
+            ]
+        ],
+    )
+    contract = _contract().model_copy(
+        update={
+            "map_asset_id": "office-map",
+            "target_node": "blocked",
+        }
+    )
+    intent = IntentArtifact(
+        goal="帮我取一下外卖",
+        start_entity="office",
+        target_entity="blocked",
+        return_entity="office",
+        payload_action="pickup",
+    )
+
+    fields, questions = _route_recovery_clarification(
+        MissionRequest(conversation_id="thread-route-recovery", message="帮我取一下外卖"),
+        intent,
+        contract,
+        catalog,
+        graph,
+    )
+
+    assert fields == ["当前目的地没有满足飞行条件的路线，请选择另一个地图地点"]
+    assert [option["option_id"] for option in questions[0]["options"]] == ["A", "B"]
+    assert [option["label"] for option in questions[0]["options"]] == [
+        "茶水间 (pantry)",
+        "物资区 (supplies)",
+    ]
+    assert "blocked" not in str(questions)
+    assert "isolated" not in str(questions)
+
+
+def test_pickup_product_defaults_return_to_start_and_add_bounded_hover() -> None:
+    intent = IntentArtifact(
+        goal="帮我取一下外卖",
+        start_entity="launch",
+        target_entity="pantry",
+        return_entity="pantry",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="帮我取一下外卖",
+        start_entity="launch",
+    )
+
+    resolved = _bind_product_intent_defaults(intent, request)
+
+    assert resolved.return_entity == "launch"
+    assert "pickup_hover_seconds=10" in resolved.constraints
+
+
+def test_pickup_product_defaults_preserve_explicit_one_way_destination() -> None:
+    intent = IntentArtifact(
+        goal="去餐点取件并在那里降落",
+        start_entity="launch",
+        target_entity="pantry",
+        return_entity="pantry",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="去餐点取件并在那里降落，不用回来",
+        start_entity="launch",
+    )
+
+    assert _bind_product_intent_defaults(intent, request).return_entity == "pantry"
 
 
 def test_dual_review_consensus_uses_the_conservative_rejection_and_keeps_every_record() -> None:
@@ -102,9 +364,7 @@ def test_non_review_consensus_dissent_fails_closed_instead_of_discarding_a_call(
     )
 
     with pytest.raises(MissionPreparationBlocked, match="MODEL_CONSENSUS_DISSENT_UNRESOLVED"):
-        _resolve_consensus_result(
-            [first, second], require_identical=False, record_dissent=True
-        )
+        _resolve_consensus_result([first, second], require_identical=False, record_dissent=True)
 
 
 def test_semantic_planning_map_view_removes_raw_geometry_and_irrelevant_entities() -> None:
@@ -172,8 +432,7 @@ def test_semantic_planning_map_view_removes_raw_geometry_and_irrelevant_entities
     assert "minimum_clearance_m" not in route
     assert "all_edges_flight_verified" not in route
     assert all(
-        "minimum_clearance_m" not in candidate
-        and "all_edges_flight_verified" not in candidate
+        "minimum_clearance_m" not in candidate and "all_edges_flight_verified" not in candidate
         for candidate in route["candidate_summaries"]
     )
 
@@ -576,9 +835,7 @@ def test_decomposition_view_and_binding_keep_runtime_evidence_core_owned() -> No
 
 def test_task_graph_requires_exact_catalog_evidence_not_a_negated_substring() -> None:
     graph = _task_graph(include_stale_gate=False)
-    graph.nodes[0] = graph.nodes[0].model_copy(
-        update={"success_evidence": ["not airborne"]}
-    )
+    graph.nodes[0] = graph.nodes[0].model_copy(update={"success_evidence": ["not airborne"]})
     catalog = DomainActionCatalog(
         catalog_id="core.test",
         domain_ids=["core.flight"],
@@ -741,6 +998,69 @@ def test_critic_feedback_is_preserved_when_no_deterministic_gate_rejects() -> No
     )
 
     assert _intent_repair_feedback(intent, critique, []) == critique.model_dump(mode="json")
+
+
+def test_intent_critic_cannot_block_a_resolved_pickup_with_downstream_checks() -> None:
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message="帮我取一下外卖。补充指令：外卖放在 L1 物资区，去那里取。",
+        start_entity="launch",
+    )
+    intent = _bind_product_intent_defaults(
+        IntentArtifact(
+            goal="从 L1 物资区取外卖并返回",
+            start_entity="launch",
+            target_entity="l1-supplies",
+            return_entity="launch",
+            payload_action="pickup",
+        ),
+        request,
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=[
+            "MISSING_EXPLICIT_CONSTRAINT_HINT_IN_CONSTRAINTS",
+            "RETURN_ENTITY_ROUND_TRIP_MISMATCH",
+            "ENVIRONMENT_MODE_UNDERSTATEMENT",
+            "PICKUP_WAYPOINT_SEMANTIC_MISSING",
+            "MISSING_PAYLOAD_MASS_CONSTRAINT",
+        ],
+        repair_instructions=["Run checks owned by later preparation stages."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(critique, intent, request)
+
+    assert normalized == IntentCritique(accepted=True)
+    assert discarded == critique.issue_codes
+
+
+def test_intent_critic_keeps_a_real_target_semantic_mismatch() -> None:
+    intent = IntentArtifact(
+        goal="去物资区取外卖",
+        start_entity="launch",
+        target_entity="l1-supplies",
+        return_entity="launch",
+        payload_action="pickup",
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=["TARGET_ENTITY_MISMATCH", "MISSING_PAYLOAD_MASS_CONSTRAINT"],
+        repair_instructions=["Use the place selected by the user."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(
+        critique,
+        intent,
+        MissionRequest(
+            conversation_id="conversation-test",
+            message="去休息室取外卖",
+            start_entity="launch",
+        ),
+    )
+
+    assert normalized.accepted is False
+    assert normalized.issue_codes == ["TARGET_ENTITY_MISMATCH"]
+    assert discarded == ["MISSING_PAYLOAD_MASS_CONSTRAINT"]
 
 
 def test_manifest_conditions_recommend_plugins_without_hardcoded_plugin_ids() -> None:

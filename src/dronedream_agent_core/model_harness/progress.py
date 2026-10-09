@@ -1,4 +1,6 @@
 """Public execution summaries only; never raw prompts or private model reasoning."""
+
+from contextlib import suppress
 from contextvars import ContextVar
 
 progress_sink: ContextVar = ContextVar("public_preparation_progress", default=None)
@@ -23,11 +25,9 @@ def report_progress(stage: str, zh: str, en: str) -> None:
 #   无返回值。
 def _emit(sink, stage: str, zh: str, en: str) -> None:
     if sink is not None:
-        try:
+        with suppress(Exception):
             sink(stage, zh, en)
-        except Exception:
             # 进度是旁路；业务的错误处理和验收结果由调用链本身保存。
-            pass
 
 
 ROLE_STAGES = {
@@ -59,7 +59,12 @@ ROLE_DETAILS = {
 # 输出：
 #   无返回值。
 def report_artifact_progress(sink, artifact) -> None:
-    from dronedream_agent_core.contracts import IntentArtifact, SemanticPlan, TaskGraphArtifact, PlanCritique
+    from dronedream_agent_core.contracts import (
+        IntentArtifact,
+        PlanCritique,
+        SemanticPlan,
+        TaskGraphArtifact,
+    )
     if isinstance(artifact, IntentArtifact):
         goal = artifact.goal[:240]
         _emit(sink, "intent", f"模型提取的任务目标：{goal}。起点：{artifact.start_entity}；目的地：{artifact.target_entity}；返回点：{artifact.return_entity}。仍需核对地图实体与约束。", f"Extracted goal: {goal}. Start: {artifact.start_entity}; destination: {artifact.target_entity}; return: {artifact.return_entity}. Map references and constraints still need checking.")
