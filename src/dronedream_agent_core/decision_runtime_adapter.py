@@ -5,7 +5,6 @@ import math
 
 from .decision_state_adapter import DecisionStateV2, decision_digest
 
-
 _SUPPORTED_FLIGHT_ENCODER_CONTRACTS = frozenset({
     # Historical 50 ms receive-alignment contract retained for archived evidence.
     "48f9536199319c760afc8e208826a2d349eea2d5b49f2de1437d481b4f831ad9",
@@ -14,9 +13,8 @@ _SUPPORTED_FLIGHT_ENCODER_CONTRACTS = frozenset({
 })
 
 
-# 功能：用单位四元数将 ENU 相对向量转换到机体 FRD，明确对接现有 FLU 机体契约。
-# 输入：世界向量、world_from_body_FLU 四元数；输出：前/右/下米向量，拒绝非单位姿态。
 def enu_to_frd(vector: dict, quaternion: list[float]) -> dict:
+    """Convert an ENU vector to body FRD using a unit world-from-body-FLU quaternion."""
     if (len(quaternion) != 4 or any(type(v) not in (int, float)
                                   or not math.isfinite(v) for v in quaternion)
             or abs(math.hypot(*quaternion) - 1) > .001):
@@ -30,12 +28,11 @@ def enu_to_frd(vector: dict, quaternion: list[float]) -> dict:
     return {"x": forward, "y": -left, "z": -up}
 
 
-# 功能：转换已有实测导航快照；所有未有可比证据的字段保留 unknown。
-# 输入：已存档快照及独立任务身份、标定摘要、明确制动参数；输出：v2 状态及覆盖问题。
 def state_from_navigation_snapshot(snapshot: dict, *, mission_id: str, sequence: int,
                                    calibration_sha256: str, braking_acceleration_mps2: float,
                                    scene: str, task: str = "navigate",
                                    history: tuple = ()) -> tuple[DecisionStateV2, list[str]]:
+    """Convert a measured navigation snapshot without inventing unwitnessed state."""
     if snapshot.get("schema_version") != "dronedream.text-navigation-snapshot.v1":
         raise ValueError("DECISION_NAVIGATION_SCHEMA_INVALID")
     if snapshot.get("source_of_truth") != (
@@ -56,8 +53,8 @@ def state_from_navigation_snapshot(snapshot: dict, *, mission_id: str, sequence:
             _SUPPORTED_FLIGHT_ENCODER_CONTRACTS):
         raise ValueError("DECISION_FLIGHT_ENCODER_CONTRACT_UNSUPPORTED")
 
-    # 功能：保留采集原时间和原时效；输入：编码角色；输出：源戳或未知。
     def source(role):
+        """Return the recorded source stamp for one encoder role, if present."""
         value = by_role.get(role)
         if value is None:
             return None

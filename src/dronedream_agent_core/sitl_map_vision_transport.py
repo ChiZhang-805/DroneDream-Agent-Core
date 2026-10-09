@@ -18,17 +18,14 @@ from .external_vision_clock import (
 from .live_map_measurement import MapMeasurementPending
 from .live_map_measurement_stream import run_map_measurement_stream
 
-
 # Reply count is not convergence evidence.  A short handshake only proves that
 # the dedicated link is bidirectional; every measurement is subsequently
 # checked against PX4's actual timestamp, reset counter and pose readback.
 MINIMUM_TIMESYNC_HANDSHAKES = 10
 
 
-# 功能：处理有界真实同步请求，拒绝其他实体和重复源钟，不挤占主控制循环。
-# 输入：独占 MAVLink 链路、当前仿真源钟和有界计数。
-# 输出：实际回复次数；不能以回复次数代替飞控时钟回读验证。
 def drain_timesync(link, clock, evidence):
+    """Answer a bounded batch of valid TIMESYNC requests on the owned MAVLink link."""
     for _ in range(64):
         message = link.recv_match(blocking=False)
         if message is None:
@@ -43,10 +40,8 @@ def drain_timesync(link, clock, evidence):
             evidence['timesync_replies'] += 1
 
 
-# 功能：检查同次发送的真实固件回读，缺失、错序、改时钟或位姿变化立即拒绝。
-# 输入：listener 原始文本和本次原始测量。
-# 输出：真实源时间误差；不授予模型精度或飞行资格。
 def check_measurement_readback(readback, measurement, *, reset_counter):
+    """Validate one firmware readback and return its source-time error."""
     observed = {}
     for name in ('timestamp', 'timestamp_sample', 'reset_counter'):
         matches = re.findall(r'^\s*' + name + r': (\d+)', readback, re.M)
@@ -64,10 +59,8 @@ def check_measurement_readback(readback, measurement, *, reset_counter):
     return difference
 
 
-# 功能：立即读取实际飞控结果，仅在仍看到上一次测量时有限重试，避免固定休眠拖慢定位。
-# 输入：独占只读命令、本次测量、重置标记及短回读期限。
-# 输出：匹配本次来源的文本和时间误差；错位姿、未来时钟和协议错误不重试掩盖。
 async def wait_measurement_readback(command, measurement, *, reset_counter, timeout_seconds=.15):
+    """Wait briefly for the current measurement while rejecting malformed readbacks."""
     source_us = measurement['source_timestamp_ns']//1000
     tolerance = measurement.get('transport_clock_uncertainty_us', 2_000)
     if type(tolerance) is not int or not 0 < tolerance <= 10_000:
@@ -90,13 +83,10 @@ async def wait_measurement_readback(command, measurement, *, reset_counter, time
             return readback, error
 
 
-# 功能：把连续地图约束通过独占链路送到隔离飞控，并逐次检查真实时间和位姿回读。
-# 输入：已绑定测量器、认证来源、独占 PX4 命令回调、源钟域、停止事件及空回执。
-#       on_verified 只用于外层记录证据，不参与求解或修改本次测量。
-# 输出：生命周期及真实回读统计；只处理仿真源钟，不读取路线、真值或用户绝对目录。
 async def run_sitl_map_vision_transport(*, source, read_latest, command, clock_domain,
                                        stop, evidence, on_verified=None,
                                        optional_after_initialization=False):
+    """Stream map measurements to isolated PX4 and verify each clock and pose readback."""
     if type(evidence) is not dict or evidence:
         raise ValueError('SITL_MAP_VISION_EVIDENCE_INVALID')
     # Imported only in the Linux simulator, never during Windows UI startup.
@@ -112,8 +102,8 @@ async def run_sitl_map_vision_transport(*, source, read_latest, command, clock_d
     evidence.update(timesync_replies=0, readbacks=0, maximum_time_error_us=0,
         motion_permission_granted=False, covariance_qualified=False, stream={})
 
-    # 功能：接收原始仿真钟，不以主机时间外推；输入：Gazebo 消息；输出：有锁时钟或致命故障。
     def receive_clock(message):
+        """Observe the raw Gazebo clock without extrapolating from host time."""
         nonlocal clock_issue
         try:
             clock.observe(int(message.sim.sec)*1_000_000_000+int(message.sim.nsec),
@@ -137,8 +127,8 @@ async def run_sitl_map_vision_transport(*, source, read_latest, command, clock_d
         await command('mavlink', 'stream', '-u', str(px4_port), '-s', 'TIMESYNC', '-r', '200')
         exchanged = asyncio.Event()
 
-        # 功能：测量与回读期间保持真实同步回应；输入：闭包；输出：可被所有者监视的任务。
         async def synchronize():
+            """Serve time synchronization until the owning run requests shutdown."""
             try:
                 while not stop.is_set():
                     if clock_issue is not None:
@@ -158,10 +148,8 @@ async def run_sitl_map_vision_transport(*, source, read_latest, command, clock_d
                 return
             raise RuntimeError('SITL_MAP_VISION_CLOCK_ENDED')
 
-        # 功能：发送源时间保持不变的位置约束，实际回读后才记录发送完成。
-        # 输入：通用连续测量器输出。
-        # 输出：协议回读记录；原生速度不复制成独立视觉速度，重置计数在本运行中保持固定。
         async def publish(measurement):
+            """Publish one source-timestamped pose and record it only after readback."""
             unknown_velocity = [0.] * 21
             for slot in (0, 6, 11, 15, 18, 20):
                 unknown_velocity[slot] = 100.
