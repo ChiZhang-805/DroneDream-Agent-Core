@@ -162,6 +162,15 @@ def test_disarmed_cold_start_uses_remaining_preflight_budget(tmp_path):
     assert closed == [True]
 
 
+# 功能：完整连接阶段包含 MAVSDK 服务启动及载荷快照刷新，软件渲染冷启动有完整一分钟预算。
+# 输入：实际基础执行器模块；输出：单次连接预算为六十秒且仍受外层总期限约束。
+def test_mavsdk_cold_connect_budget_avoids_server_restart_race():
+    base = _base_module()
+
+    assert base.MAVSDK_PREFLIGHT_CONNECT_TIMEOUT_SECONDS == 60.0
+    assert base.MAVSDK_PREFLIGHT_MAX_ATTEMPTS == 5
+
+
 # 功能：
 #   首帧永远不到或调用被取消时，检查必须退出并回收订阅，不能生成通过回执。
 # 输入：
@@ -500,7 +509,7 @@ def test_local_preparation_is_explicit_and_does_not_claim_armability(tmp_path):
 #   monkeypatch：缩短测试停流等待，不改变产品默认超时。
 # 输出：
 #   None：不返回业务数据。
-def test_position_subscription_automatically_recovers_without_duplicate_streams(monkeypatch):
+def test_position_subscription_recovers_only_after_owned_restart_without_duplicates(monkeypatch):
     base = _base_module()
     monkeypatch.setitem(base.DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS, "position_velocity", .02)
 
@@ -549,6 +558,11 @@ def test_position_subscription_automatically_recovers_without_duplicate_streams(
         task = asyncio.create_task(client._collect_position_velocity_ned())
         client._position_velocity_task = task
         try:
+            with pytest.raises(TimeoutError, match="telemetry timeout"):
+                await client.sample_position_velocity_ned(.02)
+            await client.restart_position_velocity_ned_stream()
+            task = client._position_velocity_task
+            assert task is not None
             await asyncio.wait_for(recovered.wait(), 1.)
             sample = await client.sample_position_velocity_ned(.2)
             assert sample.north_m == 1.

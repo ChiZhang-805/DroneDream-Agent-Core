@@ -72,7 +72,7 @@ class _PlanningPort:
                             "action": "takeoff",
                             "target_node": "a",
                             "success_evidence": ["to be bound"],
-                            "fallback": "abort",
+                            "fallback": "hold",
                         },
                         {
                             "task_id": "outbound",
@@ -96,7 +96,7 @@ class _PlanningPort:
                             "target_node": "a",
                             "depends_on": ["inbound"],
                             "success_evidence": ["to be bound"],
-                            "fallback": "abort",
+                            "fallback": "land",
                         },
                     ]
                 }

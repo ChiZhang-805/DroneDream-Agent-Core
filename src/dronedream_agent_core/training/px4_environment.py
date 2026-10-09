@@ -69,7 +69,7 @@ ASSET_FIELDS = ("route", "semantic", "world_sdf", "vehicle_sdf", "vehicle", "con
 # Owned numeric-container snapshots reduced measured preparation to 34 ms.
 # Keep that predictive reserve for unselected startup and the reward-step API. Streaming
 # imitation instead attempts preparation against the actual remaining deadline,
-# then discards an output if it lacks the shared 50 Hz executor dispatch reserve.
+# then discards an output if it lacks the shared 20 Hz executor dispatch reserve.
 # A prediction of preparation time never substitutes for final admission.
 TRAINING_REPLY_PREPARATION_RESERVE_MS = 50
 # 仅旧请求可丢弃并等待新帧；超长租约、身份不符和损坏内容必须继续上抛。

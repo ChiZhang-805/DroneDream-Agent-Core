@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from dronedream_agent_core.native_preflight import (
+    NATIVE_PREFLIGHT_MAXIMUM_AGE_MS,
     PREFLIGHT_STABLE_WINDOW_MS,
     NativePerceptionReadiness,
     assert_native_preflight_current,
@@ -42,12 +43,12 @@ def test_preflight_requires_distinct_progressing_frames_not_polls():
         assert not gate.observe(health(), now_unix_ms=1000)
     assert not gate.observe(health(2, 1050), now_unix_ms=1050)
     assert gate.observe(health(3, 1100), now_unix_ms=1100)
-    assert not gate.observe(health(3, 1100), now_unix_ms=1351)
+    assert not gate.observe(health(3, 1100), now_unix_ms=1451)
     assert gate.independent_frames == 0
 
 
 # 功能：连续窗口成立但来源只剩3毫秒时不发放回执，等待真正更鲜的下一帧。
-# 输入：前三帧247毫秒延迟、第四帧100毫秒延迟；输出：原始期限与至少70毫秒交接余量。
+# 输入：前三帧347毫秒延迟、第四帧100毫秒延迟；输出：原始期限与至少70毫秒交接余量。
 def test_preflight_waits_for_real_dispatch_margin(tmp_path, monkeypatch):
     from dronedream_agent_core import native_preflight
     clock, sequence = [1000], [0]
@@ -56,7 +57,7 @@ def test_preflight_waits_for_real_dispatch_margin(tmp_path, monkeypatch):
     def read_latest():
         clock[0] += 70
         sequence[0] += 1
-        age = 247 if sequence[0] <= 3 else 100
+        age = 347 if sequence[0] <= 3 else 100
         return {**health(sequence[0], clock[0]), 'perception_observed_at_unix_ms': clock[0]-age}
     evidence = {}
     result = asyncio.run(wait_for_native_perception(tmp_path/'unused', timeout_seconds=1,
@@ -64,12 +65,12 @@ def test_preflight_waits_for_real_dispatch_margin(tmp_path, monkeypatch):
         evidence=evidence))
     assert sequence[0] == 4
     assert result['source_observed_at_unix_ms'] == clock[0] - 100
-    assert result['valid_until_unix_ms'] == clock[0] + 150
+    assert result['valid_until_unix_ms'] == clock[0] + 250
     assert evidence['issue_counts']['NATIVE_PREFLIGHT_WAITING_FOR_DISPATCH_MARGIN'] == 1
 
 
 # 功能：真实来源每100毫秒推进，180毫秒处理延迟不能被重复加到帧间隔中。
-# 输入：连续独立帧及不变250毫秒时效；输出：完整一秒窗口通过，回执保持原始来源钟。
+# 输入：连续独立帧及统一传感器时效；输出：完整一秒窗口通过，回执保持原始来源钟。
 def test_delayed_but_fresh_frames_keep_the_source_continuity_window():
     gate = NativePerceptionReadiness(stable_window_ms=1000, require_source_timestamps=True)
     for index in range(11):
@@ -79,26 +80,50 @@ def test_delayed_but_fresh_frames_keep_the_source_continuity_window():
         assert gate.observe(packet, now_unix_ms=now) is (index == 10)
     assert gate.independent_frames == 11
     assert gate.source_observed_at_unix_ms == 2000
-    assert not gate.observe(packet, now_unix_ms=2251)
+    assert not gate.observe(packet, now_unix_ms=2351)
     assert gate.independent_frames == 0
 
 
 # 功能：即使新帧本身新鲜，真实来源断流仍清空稳定窗口。
-# 输入：间隔251毫秒的两个来源；输出：拒绝沿用旧计数。
+# 输入：间隔351毫秒的两个来源；输出：拒绝沿用旧计数。
 def test_fresh_new_frame_does_not_hide_a_real_source_gap():
     gate = NativePerceptionReadiness(require_source_timestamps=True)
     assert not gate.observe({**health(1, 1180), 'perception_observed_at_unix_ms': 1000},
                             now_unix_ms=1180)
-    assert not gate.observe({**health(2, 1300), 'perception_observed_at_unix_ms': 1251},
-                            now_unix_ms=1300)
+    assert not gate.observe({**health(2, 1400), 'perception_observed_at_unix_ms': 1351},
+                            now_unix_ms=1400)
     assert gate.last_issue == 'NATIVE_PREFLIGHT_SOURCE_INTERRUPTED'
     assert gate.independent_frames == 0
+
+
+def test_brief_expired_source_report_preserves_recent_real_frames():
+    """One transient late report waits for recovery instead of vetoing prior live frames."""
+
+    gate = NativePerceptionReadiness(require_source_timestamps=True)
+    first = {**health(1, 1000), "perception_observed_at_unix_ms": 1000}
+    assert not gate.observe(first, now_unix_ms=1000)
+    transient = {
+        **health(2, 1060),
+        "stream_healthy": False,
+        "issue_codes": ["NATIVE_STATE_STREAM_EXPIRED"],
+        "perception_observed_at_unix_ms": 1060,
+    }
+    assert not gate.observe(transient, now_unix_ms=1060)
+    assert gate.independent_frames == 1
+    assert not gate.observe(
+        {**health(3, 1070), "perception_observed_at_unix_ms": 1070},
+        now_unix_ms=1070,
+    )
+    assert gate.observe(
+        {**health(4, 1120), "perception_observed_at_unix_ms": 1120},
+        now_unix_ms=1120,
+    )
 
 
 # 功能：消费者失联和时钟回退不得凭一张新鲜图片继承之前的就绪窗口。
 # 输入：过长消费间隔或回退时钟；输出：清空窗口并保留具体原因。
 @pytest.mark.parametrize('now,source,issue', [
-    (1351, 1200, 'NATIVE_PREFLIGHT_SOURCE_INTERRUPTED'),
+    (1451, 1300, 'NATIVE_PREFLIGHT_SOURCE_INTERRUPTED'),
     (1099, 1050, 'NATIVE_PREFLIGHT_SOURCE_REGRESSED'),
 ])
 def test_consumer_gap_or_clock_regression_resets_window(now, source, issue):
@@ -145,17 +170,27 @@ def test_unusable_perception_does_not_authorize_arming(field, value):
 
 
 # 功能：确定性路线模式不依赖神经特征，但仍要求真实深度、身份和连续来源推进。
-# 输入：关闭特征要求的预检与三份无神经特征健康帧；输出：第三帧通过稳定窗口。
+# 输入：关闭特征要求的预检与两份无神经特征健康帧；输出：第二帧通过稳定窗口。
 def test_independent_route_preflight_does_not_require_unused_neural_features():
     gate = NativePerceptionReadiness(stable_window_ms=PREFLIGHT_STABLE_WINDOW_MS,
                                      require_realtime_features=False)
-    for sequence, timestamp in ((1, 1000), (2, 1050)):
-        packet = {**health(sequence, timestamp), "realtime_features_ready": False}
-        assert not gate.observe(packet, now_unix_ms=timestamp)
-    packet = {**health(3, 1100), "realtime_features_ready": False}
-    assert gate.observe(packet, now_unix_ms=1100)
+    packet = {**health(1, 1000), "realtime_features_ready": False}
+    assert not gate.observe(packet, now_unix_ms=1000)
+    packet = {**health(2, 1050), "realtime_features_ready": False}
+    assert gate.observe(packet, now_unix_ms=1050)
     packet["stream_healthy"] = False
-    assert not gate.observe(packet, now_unix_ms=1100)
+    assert not gate.observe(packet, now_unix_ms=1050)
+
+
+def test_zero_window_reacquires_one_current_frame_after_initial_qualification():
+    gate = NativePerceptionReadiness(
+        stable_window_ms=0,
+        require_source_timestamps=True,
+        require_realtime_features=False,
+    )
+    packet = {**health(7, 2000), "perception_observed_at_unix_ms": 1995}
+    assert gate.observe(packet, now_unix_ms=2000)
+    assert gate.independent_frames == 1
 
 
 # 功能：
@@ -264,7 +299,7 @@ def test_office_route_localization_deficit_uses_recoverable_preflight_mode():
 #   None：不返回业务数据。
 @pytest.mark.parametrize("variance,age", [
     (None, 0), (True, 0), ("0.001", 0), (float("nan"), 0), (-1, 0),
-    (.001, 251), (.001, -1),
+    (.001, 351), (.001, -1),
 ])
 def test_route_budget_rejects_unavailable_uncertainty_and_original_stale_time(variance, age):
     gate = NativePerceptionReadiness(minimum_route_clearance_m=.435)
@@ -311,7 +346,9 @@ def test_live_route_budget_is_included_in_actual_file_readiness_receipt(tmp_path
                                                    minimum_route_clearance_m=.435))
     assert result["uncertainty_basis"] == "live-native-localization"
     assert result["tracking_budget"]["reserved_uncertainty_m"] > .09
-    assert result["valid_until_unix_ms"] == result["source_observed_at_unix_ms"] + 250
+    assert result["valid_until_unix_ms"] == (
+        result["source_observed_at_unix_ms"] + NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
+    )
     assert result["independent_frames"] == sequence[0] == 3
     assert_native_preflight_current(result, now_unix_ms=clock[0])
 
@@ -360,7 +397,7 @@ def test_republished_ready_packet_cannot_renew_lease_and_gap_requires_requalific
         gate.observe(health(sequence, now), now_unix_ms=now)
     assert gate.observe(health(3, 1300), now_unix_ms=1300)
     assert gate.source_observed_at_unix_ms == 1120
-    assert not gate.observe(health(3, 1371), now_unix_ms=1371)
+    assert not gate.observe(health(3, 1471), now_unix_ms=1471)
     assert gate.independent_frames == 0
     assert not gate.observe(health(4, 1400), now_unix_ms=1400)
 
@@ -373,13 +410,13 @@ def test_republished_ready_packet_cannot_renew_lease_and_gap_requires_requalific
 # 输出：
 #   None：不返回业务数据。
 @pytest.mark.parametrize("changes,now", [
-    ({}, 1351), ({}, 1099), ({"ready": False}, 1200),
+    ({}, 1451), ({}, 1099), ({"ready": False}, 1200),
     ({"source_observed_at_unix_ms": True}, 1200),
     ({"valid_until_unix_ms": 2000}, 1200), ({"valid_until_unix_ms": None}, 1200),
 ])
 def test_preflight_receipt_cannot_authorize_after_priming_delay_or_tampering(changes, now):
     receipt = {"ready": True, "source_observed_at_unix_ms": 1100,
-               "valid_until_unix_ms": 1350, **changes}
+               "valid_until_unix_ms": 1450, **changes}
     with pytest.raises(ValueError, match="EVIDENCE_EXPIRED_OR_INVALID"):
         assert_native_preflight_current(receipt, now_unix_ms=now)
 

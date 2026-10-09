@@ -37,9 +37,12 @@ def test_portable_owned_runtime(tmp_path, monkeypatch):
     assert config["qualification_granted"] is False
     assert options["native_source_clock_domain"] == "px4-gz-sitl:" + config["run_name"]
     assert options["localization_source_channel"] == args["run_dir"] / "runtime-state/localization-source.json"
-    assert options["simulation_camera_profile"] == "native"
+    assert options["simulation_camera_profile"] == "responsive-control"
     assert options["batch_static_world_visuals"] is False
-    assert "camera_source_model_sha256" not in options
+    assert options["camera_source_model_sha256"] == fusion.hash_plugin_file(
+        args["px4_root"] / "Tools/simulation/gz/models/OakD-Lite/model.sdf",
+        limit=4 * 1024**2,
+    )
     assert not any("route" in key for key in config)
     with pytest.raises(FileExistsError):
         fusion.prepare_simulation_fusion(**args)

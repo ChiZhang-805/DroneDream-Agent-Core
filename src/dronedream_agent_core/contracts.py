@@ -447,6 +447,11 @@ class PredictiveSafetyDecision(StrictModel):
     ] = "route-target"
     predicted_path_m: list[Vector3] = Field(min_length=1, max_length=1_000)
     minimum_predicted_clearance_m: float
+    # A bounded static-clearance recovery can start inside a conservative map
+    # envelope.  Keep the true minimum (including the origin) above, and carry
+    # the independently rechecked exit clearance here for command-lifetime
+    # budgeting.  Ordinary decisions omit this field from their wire identity.
+    recovery_exit_clearance_m: float | None = None
     time_to_minimum_clearance_seconds: float = Field(ge=0.0, le=15.0)
     threat_obstacle_id: str | None = None
     # 最近预测物体不一定阻碍原动作；只有原动作触及动态净空约束时记录避让原因。
@@ -468,6 +473,8 @@ class PredictiveSafetyDecision(StrictModel):
             payload.pop("braking_prediction_velocity_mps", None)
         if self.avoidance_obstacle_id is None:
             payload.pop("avoidance_obstacle_id", None)
+        if self.recovery_exit_clearance_m is None:
+            payload.pop("recovery_exit_clearance_m", None)
         return payload
 
     # 功能：
@@ -2672,6 +2679,7 @@ class ControlledVehicleIdentityEvidence(StrictModel):
     identity_offset_innovation_m: float | None = Field(default=None, ge=0.0)
     maximum_offset_innovation_m: float | None = Field(default=None, gt=0.0)
     maximum_absolute_correction_m: float | None = Field(default=None, gt=0.0, le=1.0)
+    estimator_to_world_position_offset_m: Vector3 | None = None
     # Signed because either transport can lead the other. The runtime alignment
     # algorithm is independently bounded to this half-second freshness window.
     identity_alignment_seconds: float = Field(default=0.0, ge=-0.5, le=0.5)
@@ -2682,7 +2690,11 @@ class ControlledVehicleIdentityEvidence(StrictModel):
     tracking_age_seconds: float
     tracking_fresh: bool = True
     correction_source: Literal[
-        "live", "cached", "unavailable", "validated-before-terminal-phase"
+        "live",
+        "relocalized",
+        "cached",
+        "unavailable",
+        "validated-before-terminal-phase",
     ] = "unavailable"
     last_correction_age_seconds: float | None = None
     gazebo_pose_queue_age_seconds: float | None = Field(default=None, ge=0.0)

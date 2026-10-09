@@ -19,18 +19,18 @@ from dronedream_agent_core.control_timing import (
 # 功能：分离决策频率与实际发令轮询，训练和部署共用同一执行轮询，来源寿命不变。
 # 输入：生产共享常量；输出：交接余量来自真实轮询周期而非随意调小的阈值。
 def test_executor_reserve_matches_faster_dispatch_cadence():
-    assert LOCAL_SETPOINT_PERIOD_SECONDS == .02
-    assert LOCAL_DISPATCH_RESERVE_MS == 40
+    assert LOCAL_SETPOINT_PERIOD_SECONDS == .05
+    assert LOCAL_DISPATCH_RESERVE_MS == 70
     assert round(LOCAL_SETPOINT_PERIOD_SECONDS * 1000) + LOCAL_TRANSPORT_BUDGET_MS == LOCAL_DISPATCH_RESERVE_MS
     assert TRAINING_DISPATCH_RESERVE_MS == LOCAL_DISPATCH_RESERVE_MS
 
 
 # 功能：验证 CLI 不能用慢轮询冒充较短发令等待；输入：非法频率；输出：启动前拒绝。
-@pytest.mark.parametrize('rate', [20, 49.9, 101, True, None, float('nan'), float('inf')])
+@pytest.mark.parametrize('rate', [19.9, 101, True, None, float('nan'), float('inf')])
 def test_dispatch_rejects_rate_that_cannot_honor_reserve(rate):
     with pytest.raises(ValueError, match='MODEL_DISPATCH_RATE_INSUFFICIENT'):
         validate_model_dispatch_rate(rate)
-    validate_model_dispatch_rate(50)
+    validate_model_dispatch_rate(20)
     validate_model_dispatch_rate(100)
 
 

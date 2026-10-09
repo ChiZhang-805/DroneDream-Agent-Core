@@ -14,6 +14,7 @@ from test_runtime_manager import _execution_fixture, _manager, _runtime_resource
 from dronedream_agent_app.runtime_manager import RuntimeBridgeError
 from dronedream_agent_core.contracts import Vector3
 from dronedream_agent_core.route_control_mode import (
+    qualified_simulation_route_fallback_eligible,
     route_observation_eligible,
     validate_route_control_mode,
 )
@@ -42,9 +43,34 @@ def test_onboard_evidence_remains_required(source, healthy):
     assert route_observation_eligible(source, healthy) is (source == "onboard" and healthy is True)
 
 
-# 功能：飞控独立复验控制来源与坐标转换，拒绝真值补丁。
-# 输入：合成安全命令；输出：原生许可与错误来源的断言，无真实飞行。
-def test_executor_rejects_truth_and_wrong_authority():
+# 功能：只有身份、三维路线、定位和新鲜仿真真值都完整时允许低速静态回退。
+# 输入：基准上下文的单项损坏。输出：仅完整基准上下文返回真。
+@pytest.mark.parametrize("override", [
+    {},
+    {"source": "onboard"},
+    {"identity_ok": False},
+    {"stream_age_seconds": 0.51},
+    {"qualified_route_clearance_m": 0.09},
+    {"localization_covariance_m2": None},
+    {"dynamic_obstacle_count": 1},
+])
+def test_qualified_simulation_static_route_fallback_is_narrow_and_explicit(override):
+    context = {
+        "source": "simulation-ground-truth",
+        "identity_ok": True,
+        "stream_age_seconds": 0.12,
+        "qualified_route_clearance_m": 0.24,
+        "required_clearance_m": 0.1,
+        "localization_covariance_m2": 0.01,
+        "dynamic_obstacle_count": 0,
+    }
+    accepted = qualified_simulation_route_fallback_eligible(**{**context, **override})
+    assert accepted is (not override)
+
+
+# 功能：飞控独立复验控制来源与坐标转换，拒绝运行指令携带任何真值拟合补丁。
+# 输入：合成安全命令；输出：仅零校正机载许可通过，错误来源、权限和校正均拒绝。
+def test_executor_rejects_truth_alignment_and_wrong_authority():
     executor = _load_executor()
     _, command, _, _ = teacher_evidence()
     args = SimpleNamespace(independent_route_control=True)
@@ -59,7 +85,41 @@ def test_executor_rejects_truth_and_wrong_authority():
     assert check(command)
     assert not check(command.model_copy(update={"source": "simulation-ground-truth"}))
     assert not check(command.model_copy(update={"navigation_control_authority": "model-required"}))
-    assert not check(command.model_copy(update={"estimator_to_world_position_offset_m": Vector3(x=.1,y=0,z=0)}))
+    assert not check(command.model_copy(
+        update={"estimator_to_world_position_offset_m": Vector3(x=.1, y=0, z=0)}
+    ))
+    assert not check(command.model_copy(
+        update={"estimator_to_world_position_offset_m": Vector3(x=1.1, y=0, z=0)}
+    ))
+
+
+# 功能：执行器只接纳带明确降级回执且不超过 0.12 m/s 的仿真静态路线命令。
+# 输入：同一真值命令的低速和超速变体。输出：仅低速、零偏移、已标记变体通过。
+def test_executor_accepts_only_marked_low_speed_qualified_simulation_fallback():
+    executor = _load_executor()
+    _, command, _, _ = teacher_evidence()
+    args = SimpleNamespace(independent_route_control=True)
+    base_decision = command.decision.model_copy(update={
+        "selected_velocity_mps": Vector3(x=0.1, y=0.0, z=0.0),
+        "issue_codes": ["SIMULATION_QUALIFIED_STATIC_ROUTE_FALLBACK"],
+    })
+    fallback = command.model_copy(update={
+        "source": "simulation-ground-truth",
+        "navigation_control_authority": "route-fallback",
+        "model_navigation_authorized": False,
+        "requested_control_intent": None,
+        "estimator_to_world_position_offset_m": Vector3(x=0.0, y=0.0, z=0.0),
+        "decision": base_decision,
+    })
+    assert executor._local_safety_command_matches_required_authority(
+        args=args, command=fallback,
+    )
+    too_fast = fallback.model_copy(update={"decision": base_decision.model_copy(update={
+        "selected_velocity_mps": Vector3(x=0.121, y=0.0, z=0.0),
+    })})
+    assert not executor._local_safety_command_matches_required_authority(
+        args=args, command=too_fast,
+    )
 
 
 # 功能：局部控制等待必须立即尊重停止请求，不能困在悬停/重规划内循环。

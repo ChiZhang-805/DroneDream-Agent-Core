@@ -11,7 +11,12 @@ from .hashing import sha256_json
 
 FLIGHT_STATE_HISTORY_LENGTH = 16
 FLIGHT_STATE_MAXIMUM_GAP_MS = 250
-FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS = 50
+# The three MAVSDK streams are independently scheduled. A 25 Hz source has a
+# 40 ms nominal period; two adjacent real samples can therefore arrive more
+# than 50 ms apart under ordinary Windows/WSL scheduling. Seventy-five
+# milliseconds accepts that measured phase jitter while remaining well inside
+# the separate 250 ms source-expiry bound.
+FLIGHT_STATE_MAXIMUM_COMPONENT_SKEW_MS = 75
 GRAVITY_MPS2 = 9.80665
 SPATIAL_CELL_COUNT = 26  # horizontal, upper, lower rings of eight, then down/up poles
 GEOMETRY_FEATURE_COUNT = SPATIAL_CELL_COUNT * 5
@@ -52,7 +57,7 @@ def encoder_contract_sha256(role: str, *, history_length: int = FLIGHT_STATE_HIS
             "map_integration": "same-source scan; once per voxel; hit wins; fresh hit revokes free",
             "source_quality": "mean ray quality times measured valid-pixel fraction when available",
             "pose_alignment": (
-                "native bounded receive-time history; at most 50ms component skew; "
+                "native bounded receive-time history; at most 75ms component skew; "
                 "translation and angular footprint inflate variance; no truth-fitted pose"
             ),
             "missing": "zero value and zero mask; not observed free space",

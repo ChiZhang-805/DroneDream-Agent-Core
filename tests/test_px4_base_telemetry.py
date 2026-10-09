@@ -43,6 +43,7 @@ def test_position_velocity_consumers_share_one_fresh_mavsdk_stream() -> None:
         client._position_velocity_condition = asyncio.Condition()
         client._position_velocity_sample = None
         client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
         client._position_velocity_task = asyncio.create_task(
             client._collect_position_velocity_ned()
         )
@@ -78,6 +79,7 @@ def test_position_velocity_cache_rejects_a_stale_sample() -> None:
         client._position_velocity_condition = asyncio.Condition()
         client._position_velocity_sample = None
         client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
         client._position_velocity_task = asyncio.create_task(
             client._collect_position_velocity_ned()
         )
@@ -119,6 +121,7 @@ def test_position_velocity_stream_restart_replaces_stalled_subscription() -> Non
         client._position_velocity_condition = asyncio.Condition()
         client._position_velocity_sample = None
         client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
         client._position_velocity_task = asyncio.create_task(
             client._collect_position_velocity_ned()
         )
@@ -132,6 +135,51 @@ def test_position_velocity_stream_restart_replaces_stalled_subscription() -> Non
         client._position_velocity_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await client._position_velocity_task
+
+    asyncio.run(scenario())
+
+
+def test_position_velocity_transient_transport_error_waits_for_recovered_sample() -> None:
+    base = _base_module()
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        class Telemetry:
+            calls = 0
+
+            async def position_velocity_ned(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("temporary telemetry transport interruption")
+                yield SimpleNamespace(
+                    position=SimpleNamespace(north_m=6.0, east_m=7.0, down_m=-2.0),
+                    velocity=SimpleNamespace(north_m_s=0.0, east_m_s=0.0, down_m_s=0.0),
+                )
+                await release.wait()
+
+        telemetry = Telemetry()
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(telemetry=telemetry)
+        client._position_velocity_condition = asyncio.Condition()
+        client._position_velocity_sample = None
+        client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
+        client._dynamics_errors = {}
+        client._dynamics_restart_counts = {}
+        client._position_velocity_task = asyncio.create_task(
+            client._collect_position_velocity_ned()
+        )
+        try:
+            observed = await client.sample_position_velocity_ned(0.5)
+            assert observed.north_m == 6.0
+            assert telemetry.calls == 2
+            assert client._dynamics_restart_counts == {"position_velocity": 1}
+            assert client._position_velocity_terminal_error is None
+        finally:
+            client._position_velocity_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await client._position_velocity_task
 
     asyncio.run(scenario())
 
@@ -581,15 +629,202 @@ def test_dynamics_telemetry_rates_are_explicitly_requested() -> None:
         evidence = await client.configure_dynamics_telemetry_rates()
 
         assert telemetry.requests == [
-            ("position_velocity", 50.0),
-            ("imu", 50.0),
-            ("attitude", 50.0),
-            ("battery", 2.0),
-            ("actuator_output", 10.0),
-            ("odometry", 50.0),
+            ("position_velocity", 25.0),
+            ("imu", 25.0),
+            ("attitude", 25.0),
+            ("battery", 1.0),
+            ("actuator_output", 5.0),
+            ("odometry", 10.0),
         ]
         assert evidence["required_rate_requests_succeeded"] is True
         assert evidence["sources"]["battery"]["status"] == "requested"
+
+    asyncio.run(scenario())
+
+
+# 功能：
+#   验证替换位置速度订阅时明确关闭旧迭代器，长航时重复恢复不会积累 MAVSDK 回调流。
+# 输入：
+#   monkeypatch：缩短隔离流的样本等待期限，不接触真实飞控。
+# 输出：
+#   None：旧订阅关闭后才能创建并消费新订阅。
+def test_position_velocity_restart_explicitly_closes_previous_iterator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _base_module()
+    monkeypatch.setitem(
+        base.DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS, "position_velocity", 0.2
+    )
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        class Iterator:
+            def __init__(self, *, sample=None) -> None:
+                self.sample = sample
+                self.closed = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.sample is not None:
+                    sample, self.sample = self.sample, None
+                    return sample
+                await release.wait()
+                raise StopAsyncIteration
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        first = Iterator()
+        second = Iterator(sample=SimpleNamespace(
+            position=SimpleNamespace(north_m=4.0, east_m=5.0, down_m=-2.0),
+            velocity=SimpleNamespace(north_m_s=0.0, east_m_s=0.0, down_m_s=0.0),
+        ))
+
+        class Telemetry:
+            calls = 0
+
+            def position_velocity_ned(self):
+                self.calls += 1
+                return first if self.calls == 1 else second
+
+        telemetry = Telemetry()
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(telemetry=telemetry)
+        client._position_velocity_condition = asyncio.Condition()
+        client._position_velocity_sample = None
+        client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
+        client._dynamics_errors = {}
+        client._dynamics_restart_counts = {}
+        client._position_velocity_task = asyncio.create_task(
+            client._collect_position_velocity_ned()
+        )
+        await asyncio.sleep(0)
+        await client.restart_position_velocity_ned_stream()
+        observed = await client.sample_position_velocity_ned(0.2)
+        assert first.closed is True
+        assert observed.north_m == 4.0
+        client._position_velocity_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client._position_velocity_task
+        assert second.closed is True
+
+    asyncio.run(scenario())
+
+
+# 功能：
+#   验证普通位置回调间隙不会触发采集器自取消或建立第二条竞争订阅。
+# 输入：
+#   无；使用可控的隔离异步迭代器模拟超过旧三秒阈值的回调间隙。
+# 输出：
+#   None：同一订阅恢复后交付样本，且全过程只创建一次原生流。
+def test_position_velocity_callback_gap_preserves_single_subscription() -> None:
+    base = _base_module()
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        class Telemetry:
+            calls = 0
+
+            async def position_velocity_ned(self):
+                self.calls += 1
+                await release.wait()
+                yield SimpleNamespace(
+                    position=SimpleNamespace(north_m=9.0, east_m=2.0, down_m=-1.0),
+                    velocity=SimpleNamespace(north_m_s=0.0, east_m_s=0.0, down_m_s=0.0),
+                )
+                await asyncio.Event().wait()
+
+        telemetry = Telemetry()
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(telemetry=telemetry)
+        client._position_velocity_condition = asyncio.Condition()
+        client._position_velocity_sample = None
+        client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
+        client._dynamics_errors = {}
+        client._dynamics_restart_counts = {}
+        client._position_velocity_task = asyncio.create_task(
+            client._collect_position_velocity_ned()
+        )
+        try:
+            with pytest.raises(TimeoutError):
+                await client.sample_position_velocity_ned(0.01)
+            assert telemetry.calls == 1
+            assert client.position_velocity_stream_needs_restart() is False
+            release.set()
+            observed = await client.sample_position_velocity_ned(0.2)
+            assert observed.north_m == 9.0
+            assert telemetry.calls == 1
+            assert client._dynamics_restart_counts == {}
+        finally:
+            client._position_velocity_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await client._position_velocity_task
+
+    asyncio.run(scenario())
+
+
+# 功能：
+#   验证超过持续停流阈值的位置订阅会被单次替换，不会永久等待卡住的 gRPC 迭代器。
+# 输入：
+#   monkeypatch：缩短本测试的持续停流阈值。
+# 输出：
+#   None：替换流交付真实新样本，且同时最多只存在一条订阅。
+def test_position_velocity_sustained_stall_restarts_one_subscription(monkeypatch) -> None:
+    base = _base_module()
+    monkeypatch.setitem(
+        base.DYNAMICS_STREAM_SAMPLE_TIMEOUT_SECONDS,
+        "position_velocity",
+        0.02,
+    )
+
+    async def scenario() -> None:
+        first_closed = asyncio.Event()
+
+        class Telemetry:
+            calls = 0
+
+            async def position_velocity_ned(self):
+                self.calls += 1
+                if self.calls == 1:
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        first_closed.set()
+                    return
+                yield SimpleNamespace(
+                    position=SimpleNamespace(north_m=7.0, east_m=1.0, down_m=-2.0),
+                    velocity=SimpleNamespace(north_m_s=0.0, east_m_s=0.0, down_m_s=0.0),
+                )
+                await asyncio.Event().wait()
+
+        telemetry = Telemetry()
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(telemetry=telemetry)
+        client._position_velocity_condition = asyncio.Condition()
+        client._position_velocity_sample = None
+        client._position_velocity_error = None
+        client._position_velocity_terminal_error = None
+        client._dynamics_errors = {}
+        client._dynamics_restart_counts = {}
+        client._position_velocity_task = asyncio.create_task(
+            client._collect_position_velocity_ned()
+        )
+        try:
+            observed = await client.sample_position_velocity_ned(0.5)
+            assert first_closed.is_set()
+            assert telemetry.calls == 2
+            assert observed.north_m == 7.0
+            assert client._dynamics_restart_counts == {"position_velocity": 1}
+        finally:
+            client._position_velocity_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await client._position_velocity_task
 
     asyncio.run(scenario())
 

@@ -16,14 +16,21 @@ from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin
 from .runtime_control_io import publish_runtime_json
 
 
-# 功能：只在真实后备定位已经存在且视觉融合完成初始化后，允许辅助融合退化退出。
+# 功能：在独立路线控制和真实 GNSS/IMU 后备定位同时存在时，允许辅助地图纠偏退化。
 # 输入：三个显式布尔条件；输出：是否可由原生定位、路线和深度安全链继续运行。
 def map_fusion_failure_is_optional(*, independent_route_control,
                                    gnss_position_fallback, initialized):
     if any(type(value) is not bool for value in (
             independent_route_control, gnss_position_fallback, initialized)):
         raise TypeError("FUSION_DEGRADATION_STATE_INVALID")
-    return independent_route_control and gnss_position_fallback and initialized
+    # ``initialized`` is retained as evidence, but it must not become a hidden
+    # one-vote flight veto.  In independent-route mode PX4 GNSS/IMU is already
+    # the qualified primary local-position source; map vision is an auxiliary
+    # correction.  If its first handshake is late, waiting for it or aborting
+    # the mission would make an optional tool more authoritative than the
+    # primary estimator.  Without the real fallback the same failure remains
+    # terminal.
+    return independent_route_control and gnss_position_fallback
 
 
 # 功能：为独占的仿真实验绑定实际地图、源钟和输出位置，不使用开发机硬编码路径。
@@ -113,6 +120,7 @@ class MapFusionExperimentMixin:
         configure_sensor_thread_handoff()
         await super().connect(connection)
         self._fusion_stop, self._fusion_ready = asyncio.Event(), asyncio.Event()
+        self._fusion_degraded_to_native_localization = False
         self._fusion_task = asyncio.create_task(self._fusion_loop())
 
     # 功能：不因原生本地位置就绪就提前进入模式，先等待真实地图回读。
@@ -122,7 +130,8 @@ class MapFusionExperimentMixin:
             await self._fusion_ready.wait()
             if self._fusion_task.done():
                 await self._fusion_task
-                raise RuntimeError("FUSION_EXPERIMENT_STOPPED_BEFORE_PREFLIGHT")
+                if not getattr(self, "_fusion_degraded_to_native_localization", False):
+                    raise RuntimeError("FUSION_EXPERIMENT_STOPPED_BEFORE_PREFLIGHT")
             return await super().wait_until_local_position_ready(timeout_seconds)
 
     # 功能：在预先分组的采集场景运行地图融合，原始源时间、噪声和失败全部保留。
@@ -380,7 +389,9 @@ class MapFusionExperimentMixin:
                 # independent motion gates.  This never grants qualification.
                 report["degraded_to_native_localization"] = True
                 report["degradation_reason"] = report["issue"]
+                report["initialized_before_degradation"] = self._fusion_ready.is_set()
                 report["motion_permission_granted"] = False
+                self._fusion_degraded_to_native_localization = True
                 return
             # 先保存故障现场；所有者收到停止请求后可能立刻取消本任务。
             publish_runtime_json(output, report, maximum_bytes=16 * 1024 * 1024)

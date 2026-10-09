@@ -36,19 +36,56 @@ def test_explicit_configuration_is_not_overridden(wsl, monkeypatch, key):
 
 
 # 功能：
-#   默认 CPU 回退时优先选择真实探测成功的独立 GPU，不按某台电脑型号写死。
+#   默认 WSL 仿真选择进程级软件渲染，避免长时 Gazebo 负载触发 dxg 内核故障。
 # 输入：
 #   wsl、monkeypatch：隔离平台与探测输出。
 # 输出：
 #   无。
-def test_probed_discrete_renderer_is_process_local(wsl, monkeypatch):
+def test_default_wsl_renderer_is_stable_process_local_software(wsl, monkeypatch):
+    monkeypatch.setattr(selection, "_probe_renderer", lambda _: pytest.fail("unexpected probe"))
+    original = {"SECRET": "private"}
+    result, receipt = selection.select_render_process_environment(original)
+    assert result["GALLIUM_DRIVER"] == "llvmpipe"
+    assert result["LIBGL_ALWAYS_SOFTWARE"] == "1"
+    assert result["LP_NUM_THREADS"] == "8"
+    assert original == {"SECRET": "private"}
+    assert receipt["selection"] == "stable-wsl-software"
+    assert receipt["probes"] == []
+    assert "private" not in str(receipt)
+    assert not receipt["flight_qualification_granted"]
+
+
+# 功能：默认策略不把短时成功的 D3D12 探测当成长程内存稳定性证明。
+# 输入：隔离平台与可用的 NVIDIA 探测替身；输出：仍为限线程软件渲染。
+def test_default_wsl_renderer_does_not_promote_short_nvidia_probe(wsl, monkeypatch):
+    monkeypatch.setattr(selection, "_probe_renderer", lambda _: pytest.fail("unexpected probe"))
+    result, receipt = selection.select_render_process_environment({})
+    assert receipt["selection"] == "stable-wsl-software"
+    assert result["GALLIUM_DRIVER"] == "llvmpipe"
+    assert result["LP_NUM_THREADS"] == "8"
+    assert "MESA_D3D12_DEFAULT_ADAPTER_NAME" not in result
+
+
+# 功能：
+#   显式启用实验性 WSL GPU 时仍以真实探测结果选择设备，不按某台电脑型号写死。
+# 输入：
+#   wsl、monkeypatch：隔离平台与探测输出。
+# 输出：
+#   无。
+def test_opted_in_discrete_renderer_is_process_local(wsl, monkeypatch):
     names = iter(["llvmpipe (fixture)", "D3D12 (Intel UHD)", "D3D12 (NVIDIA fixture)"])
     monkeypatch.setattr(selection, "_probe_renderer", lambda _: next(names))
-    original = {"SECRET": "private"}
+    original = {
+        "SECRET": "private",
+        "DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING": "1",
+    }
     result, receipt = selection.select_render_process_environment(original)
     assert result["GALLIUM_DRIVER"] == "d3d12"
     assert result["MESA_D3D12_DEFAULT_ADAPTER_NAME"] == "NVIDIA"
-    assert original == {"SECRET": "private"}
+    assert original == {
+        "SECRET": "private",
+        "DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING": "1",
+    }
     assert "private" not in str(receipt)
     assert not receipt["flight_qualification_granted"]
 
@@ -63,7 +100,9 @@ def test_probed_discrete_renderer_is_process_local(wsl, monkeypatch):
 def test_unavailable_discrete_adapter_does_not_get_fabricated(wsl, monkeypatch, renderer):
     names = iter(["llvmpipe", renderer, renderer, renderer, renderer])
     monkeypatch.setattr(selection, "_probe_renderer", lambda _: next(names))
-    result, receipt = selection.select_render_process_environment({})
+    result, receipt = selection.select_render_process_environment(
+        {"DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING": "1"}
+    )
     assert "MESA_D3D12_DEFAULT_ADAPTER_NAME" not in result
     assert (result.get("GALLIUM_DRIVER") == "d3d12") == (renderer == "D3D12 (Intel UHD)")
 
@@ -76,4 +115,5 @@ def test_unavailable_discrete_adapter_does_not_get_fabricated(wsl, monkeypatch, 
 #   无。
 def test_working_default_hardware_is_preserved(wsl, monkeypatch):
     monkeypatch.setattr(selection, "_probe_renderer", lambda _: "Mesa Intel hardware")
-    assert selection.select_render_process_environment({})[0] == {}
+    environment = {"DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING": "1"}
+    assert selection.select_render_process_environment(environment)[0] == environment

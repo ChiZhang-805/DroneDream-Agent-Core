@@ -1,4 +1,4 @@
-"""Select a probed WSL renderer without changing global settings or control deadlines."""
+"""Select a stable process-local WSL renderer without changing global settings."""
 
 import json
 import subprocess
@@ -41,9 +41,9 @@ def _hardware(renderer: str | None) -> bool:
 
 
 # 功能：
-#   1. 仅在 WSL 存在 GPU 接口且用户未指定渲染器时，探测并选择可用硬件 EGL 渲染。
-#   2. 默认驱动已使用硬件则保持；软件回退时尝试 D3D12 的默认、NVIDIA、AMD、Intel Arc。
-#   3. 优先实际匹配的独立 GPU，否则使用可用默认硬件；失败保留原环境，不绕过任何安全门控。
+#   1. WSL 默认采用限线程软件渲染，避免 D3D12 相机流在长程 Gazebo 运行中累积共享缓冲。
+#   2. 只有显式实验开关才探测硬件；用户显式配置的图形环境始终保持原值。
+#   3. 软件选择只影响仿真像素生成，不改变控制周期、碰撞门槛或飞行合格判定。
 # 输入：
 #   environment：运行环境；保持父环境及 PX4、模型进程不变。
 # 输出：
@@ -54,6 +54,24 @@ def select_render_process_environment(environment: dict[str, str]) -> tuple[dict
     if (sys.platform != "linux" or not Path("/dev/dxg").exists()
             or any(selected.get(key) for key in ("GALLIUM_DRIVER", "LIBGL_ALWAYS_SOFTWARE",
                 "MESA_D3D12_DEFAULT_ADAPTER_NAME", "EGL_PLATFORM"))):
+        return selected, receipt
+    if selected.get("DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING") != "1":
+        # A short probe can prove that D3D12 starts, but cannot prove bounded
+        # memory over a multi-hour camera session.  r66/r67 reproduced linear
+        # anonymous render-buffer growth on a correctly selected NVIDIA D3D12
+        # adapter.  Do not spend a probe or select it in the stable default.
+        # llvmpipe otherwise creates one worker per visible logical CPU; eight
+        # workers preserve real pixels and leave capacity for PX4/MAVSDK.
+        selected.update(
+            GALLIUM_DRIVER="llvmpipe",
+            LIBGL_ALWAYS_SOFTWARE="1",
+            LP_NUM_THREADS="8",
+        )
+        receipt.update(
+            selection="stable-wsl-software",
+            renderer="llvmpipe",
+            reason="bounded-long-run-render-memory",
+        )
         return selected, receipt
     original = _probe_renderer(selected)
     receipt["probes"].append({"candidate": "default", "renderer": original})

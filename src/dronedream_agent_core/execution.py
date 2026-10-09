@@ -876,6 +876,42 @@ def _deterministic_completion_fallback(
 
 
 # 功能：
+#   固定运行门控对最终状态拥有裁决权；完成模型提供语义复核，但不能一票否决物理成功，
+#   也不能把失败飞行投票改成成功。矛盾输出保留在证据链后改用可审计的确定性结论。
+# 输入：
+#   completion：供应商完成模型的结构化结论及绑定记录。
+#   artifact：发送给完成模型的冻结输入，用于生成回退记录摘要。
+#   deterministic_success：PX4、Gazebo、动作回执和插件固定门控的联合结果。
+#   chain：追加原模型矛盾结论的证据链。
+# 输出：
+#   effective：与固定门控一致且摘要自洽的最终完成结论。
+def _enforce_deterministic_completion_authority(
+    *,
+    completion: StructuredCallResult[CompletionAssessment],
+    artifact: dict[str, Any],
+    deterministic_success: bool,
+    chain: EvidenceChain,
+) -> StructuredCallResult[CompletionAssessment]:
+    """Prevent an advisory completion model from overriding immutable runtime gates."""
+
+    if completion.artifact.accepted is deterministic_success:
+        return completion
+    chain.append(
+        "runtime.completion_verifier.deterministic-override",
+        {
+            "deterministic_success": deterministic_success,
+            "advisory_artifact": completion.artifact.model_dump(mode="json"),
+            "advisory_record": completion.record.model_dump(mode="json"),
+        },
+    )
+    return _deterministic_completion_fallback(
+        artifact=artifact,
+        deterministic_success=deterministic_success,
+        error=PreparedMissionBindingError("COMPLETION_MODEL_CONTRADICTS_DETERMINISTIC_GATES"),
+    )
+
+
+# 功能：
 #   1. 绑定运行证据、检查点、动作回执与当前计划，模型不能覆盖固定失败门控。
 #   2. 保存模型和插件实际回执，独占发布本次完成结果。
 # 输入：
@@ -1095,6 +1131,12 @@ def _complete(
                 "record": completion.record.model_dump(mode="json"),
             },
         )
+    completion = _enforce_deterministic_completion_authority(
+        completion=completion,
+        artifact=completion_input,
+        deterministic_success=deterministic_success,
+        chain=chain,
+    )
     try:
         completion_output_receipts = validate_runtime_model_output(
             extensions,
@@ -1592,7 +1634,9 @@ def execute_prepared_mission(
             strict=True,
         )
         offboard_timing = read_runtime_object(
-            run_dir / "offboard_timing.json", maximum_bytes=16 * 1024 * 1024
+            run_dir / "offboard_timing.json",
+            maximum_bytes=16 * 1024 * 1024,
+            node_limit=2_000_000,
         )
         (
             runtime_action_receipts,
@@ -1682,7 +1726,9 @@ def reverify_prepared_run(
     ) = _load_package(prepared_path, confirm_contract_id, semantic_path, vehicle_sdf)
     runtime = _read_contract(run_dir / "mission_evidence.json", Px4GazeboRunEvidence)
     offboard_timing = read_runtime_object(
-        run_dir / "offboard_timing.json", maximum_bytes=16 * 1024 * 1024
+        run_dir / "offboard_timing.json",
+        maximum_bytes=16 * 1024 * 1024,
+        node_limit=2_000_000,
     )
     prior_result_path = run_dir / "workflow-result.json"
     if not prior_result_path.is_file():

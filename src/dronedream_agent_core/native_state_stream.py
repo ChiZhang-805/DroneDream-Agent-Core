@@ -183,6 +183,31 @@ class NativeStateBuffer:
             self._issue = issue
 
     # 功能：
+    #   对独立位姿、IMU 或定位源的短暂相位差进行有界降级；上一份完整状态
+    #   仍在自身时效内时保留它，过期或从未有过完整状态时立即标记不可用。
+    # 输入：
+    #   self：状态缓冲对象。
+    #   issue：经过有界诊断分类的可恢复时序问题。
+    #   now_unix_ms：本次拒收发生的消费时刻。
+    # 输出：
+    #   retained：上一份完整状态仍可按原始截止时间使用时为 True。
+    def retain_fresh_state_during_transient_failure(
+        self, issue: str, *, now_unix_ms: int,
+    ) -> bool:
+        if type(issue) is not str or not issue or len(issue) > 256:
+            raise ValueError("NATIVE_STATE_ISSUE_INVALID")
+        _validate_consumer_time(now_unix_ms)
+        with self._lock:
+            retained = bool(
+                self._latest is not None
+                and self._latest.available_at_unix_ms <= now_unix_ms
+                and self._latest.encoding.fresh_at(now_unix_ms)
+            )
+            if not retained:
+                self._issue = issue
+            return retained
+
+    # 功能：
     #   1. 隔离并校验原生遥测，拒绝运行中坐标绑定变化和来源时间回退。
     #   2. 只有真实来源推进才增加编码历史，局部姿态更新刷新瞬时特征但保留最旧期限。
     # 输入：
@@ -593,7 +618,20 @@ class NativeStateSampler:
                             self._accepted += 1
                 except (OSError, ValueError, TypeError) as error:
                     issue = sensor_issue_code(error)
-                    self.buffer.invalidate(issue)
+                    # MAVSDK 的位置、姿态和 IMU 是独立调度的。一份复合包
+                    # 恰好落在部分更新窗口时，不应撤销仍在 250 ms 合同内的
+                    # 上一份完整样本。结构、绑定、回退等故障仍立即失效。
+                    transient = issue in {
+                        "NATIVE_IMU_EXPIRED", "NATIVE_STATE_EXPIRED",
+                        "NATIVE_POSE_EXPIRED", "NATIVE_ATTITUDE_EXPIRED",
+                        "SOURCE_SAMPLE_EXPIRED", "LOCALIZATION_SAMPLE_EXPIRED",
+                        "NATIVE_POSE_IMU_NOT_SYNCHRONIZED",
+                    }
+                    retained = transient and self.buffer.retain_fresh_state_during_transient_failure(
+                        issue, now_unix_ms=int(time.time() * 1000),
+                    )
+                    if not retained:
+                        self.buffer.invalidate(issue)
                     with self._diagnostic_lock:
                         self._failures[issue] = self._failures.get(issue, 0) + 1
                 self._stop.wait(max(0, 1 / self.rate_hz - (time.monotonic() - started)))

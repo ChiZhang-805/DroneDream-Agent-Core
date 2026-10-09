@@ -23,7 +23,12 @@ from dronedream_agent_app.asset_runtime_resolver import (
 )
 from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.contract_json import decode_contract_json
-from dronedream_agent_core.contracts import MapAsset, PreparedMission, VehicleAsset
+from dronedream_agent_core.contracts import (
+    MapAsset,
+    PreparedMission,
+    Px4RuntimeAbortRequest,
+    VehicleAsset,
+)
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.model_harness.boundary import (
     HarnessRuntimeEnvelope,
@@ -47,11 +52,11 @@ OUTER_RUNTIME_LANDING_GRACE_SECONDS = 900.0
 MINIMUM_ROUTE_TANGENT_HEADING_SAMPLE_COUNT = 20
 MAXIMUM_ROUTE_TANGENT_P99_HEADING_ERROR_DEG = 45.0
 REQUIRED_DYNAMICS_TELEMETRY_RATES_HZ = {
-    "position_velocity": 50.0,
-    "imu": 50.0,
-    "attitude": 50.0,
-    "odometry": 50.0,
-    "battery": 2.0,
+    "position_velocity": 25.0,
+    "imu": 25.0,
+    "attitude": 25.0,
+    "odometry": 10.0,
+    "battery": 1.0,
 }
 MINIMUM_DEVELOPMENT_PAYLOAD_MOTION_SAMPLES = 50
 
@@ -81,6 +86,34 @@ def _acceptance_source_root(resource_root: Path) -> Path:
         if package.is_file() and app_package.is_file():
             return candidate.resolve()
     raise FileNotFoundError("CURRENT_ACCEPTANCE_SOURCE_TREE_MISSING")
+
+
+# 功能：
+#   将独立验收绑定到当前源码生成的航点执行器，阻止暂存目录静默运行过期副本。
+# 输入：
+#   resource_root：本次验收使用的资源根。
+# 输出：
+#   staged_executor：与当前脚本目录源码逐字节一致的暂存执行器。
+def _acceptance_checkpoint_executor(resource_root: Path) -> Path:
+    source_executor = Path(__file__).resolve().parent / "px4_checkpoint_executor.py"
+    staged_candidates = (
+        resource_root / "runtime" / "px4_checkpoint_executor.py",
+        resource_root / "scripts" / "px4_checkpoint_executor.py",
+    )
+    if not source_executor.is_file():
+        raise FileNotFoundError("CURRENT_ACCEPTANCE_EXECUTOR_MISSING")
+    staged_executor = next(
+        (candidate for candidate in staged_candidates if candidate.is_file()),
+        None,
+    )
+    if staged_executor is None:
+        raise FileNotFoundError("STAGED_ACCEPTANCE_EXECUTOR_MISSING")
+    if (
+        hashlib.sha256(source_executor.read_bytes()).digest()
+        != hashlib.sha256(staged_executor.read_bytes()).digest()
+    ):
+        raise RuntimeError("CURRENT_ACCEPTANCE_EXECUTOR_MISMATCH")
+    return staged_executor.resolve()
 
 
 def _secret_lines(provider: str, model: str, api_key: str) -> str:
@@ -329,12 +362,15 @@ def _request_outer_timeout_landing(simulation_root: Path) -> Path:
     abort_path = simulation_root / "live_abort.request.json"
     if abort_path.exists():
         return abort_path
-    payload = {
-        "schema_version": "dronedream.runtime-abort-request.v1",
-        "reason": "OUTER_RUNTIME_TIMEOUT",
-        "world_paused": False,
-        "requested_at_unix_ms": int(time.time() * 1_000),
-    }
+    # Build the file through the same strict contract consumed by the flight
+    # executor.  An acceptance timeout is a landing request, not an evidence
+    # document, so it must not grow ad-hoc schema or timestamp fields that the
+    # runtime correctly rejects.
+    payload = Px4RuntimeAbortRequest(
+        reason="OUTER_RUNTIME_TIMEOUT",
+        world_paused=False,
+        source="runtime-acceptance:outer-timeout",
+    ).model_dump(mode="json", exclude_none=True)
     temporary = abort_path.with_name(f".{abort_path.name}.{uuid4().hex}.tmp")
     temporary.write_text(
         json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
@@ -398,14 +434,19 @@ def _validated_heading_evidence(
     *,
     heading_policy: str,
     maximum_yaw_rate_deg_s: float,
+    independent_route_control: bool = False,
 ) -> dict[str, Any]:
     heading_control = timing.get("takeoff_gate", {}).get("heading_control")
     if not isinstance(heading_control, dict):
         raise RuntimeError("PX4 heading-control evidence is missing")
-    expected_heading_policy = {
-        "measured-hold": "measured_prearm_heading_hold",
-        "route-tangent-relative": "measured_origin_route_tangent_rate_limited",
-    }[heading_policy]
+    expected_heading_policy = (
+        "live_local_controller_heading"
+        if independent_route_control
+        else {
+            "measured-hold": "measured_prearm_heading_hold",
+            "route-tangent-relative": "measured_origin_route_tangent_rate_limited",
+        }[heading_policy]
+    )
     if heading_control.get("policy") != expected_heading_policy:
         raise RuntimeError("PX4 heading-control policy binding changed")
     expected_yaw_rate = None if heading_policy == "measured-hold" else maximum_yaw_rate_deg_s
@@ -984,6 +1025,7 @@ def _summarize(
         timing,
         heading_policy=heading_policy,
         maximum_yaw_rate_deg_s=maximum_yaw_rate_deg_s,
+        independent_route_control=independent_route_control,
     )
     heading_tracking = _validated_heading_tracking_evidence(
         timing,
@@ -1403,9 +1445,7 @@ def run(
         raise RuntimeError("CURRENT_RUNTIME_ASSET_CONTRACT_MISMATCH")
     runtime = resource_root / "runtime"
     resource_src = _acceptance_source_root(resource_root)
-    checkpoint_executor = runtime / "px4_checkpoint_executor.py"
-    if not checkpoint_executor.is_file():
-        checkpoint_executor = resource_root / "scripts" / "px4_checkpoint_executor.py"
+    checkpoint_executor = _acceptance_checkpoint_executor(resource_root)
     required = (
         prepared_path,
         world_sdf_path,

@@ -24,6 +24,17 @@ from dronedream_agent_core.contracts import Px4CoordinateContract, Vector3
 def test_teacher_sends_velocity_yaw_with_distinct_authority(tmp_path, monkeypatch, first_action, independent_route):
     executor = _load_executor()
     _, command, _, _ = teacher_evidence()
+    if independent_route:
+        # Independent route control uses the immutable qualified deployment
+        # frame. Simulator-truth offsets are witness evidence and must not feed
+        # back into its actuator coordinates.
+        command = command.model_copy(
+            update={
+                "estimator_to_world_position_offset_m": Vector3(
+                    x=0.0, y=0.0, z=0.0
+                )
+            }
+        )
     # Keep the fixture's epoch and the executor's transport clock consistent;
     # do not bypass the production lease check to accommodate historical data.
     isolate_time(monkeypatch, executor, time=lambda: 1.05)
@@ -43,12 +54,15 @@ def test_teacher_sends_velocity_yaw_with_distinct_authority(tmp_path, monkeypatc
     class Client:
         def __init__(self):
             self.velocities = []
+            self.position_velocities = []
 
         async def set_velocity_ned(self, velocity):
             self.velocities.append(velocity)
 
         async def set_position_velocity_ned(self, *args):
-            raise AssertionError("Teacher accidentally used position control")
+            if not independent_route:
+                raise AssertionError("Teacher accidentally used position control")
+            self.position_velocities.append(args)
 
         # 功能：
         #   为保护接管提供与路线不同的合成实测航向，暴露误用路线航向的回退。
@@ -89,12 +103,13 @@ def test_teacher_sends_velocity_yaw_with_distinct_authority(tmp_path, monkeypatc
             planned_velocity_ned_mps=(1.0, 1.0, 1.0),
         )
     )
-    velocity = client.velocities[0]
+    velocity = client.velocities[-1]
     assert (velocity.north_m_s, velocity.east_m_s, velocity.down_m_s) == pytest.approx(
         (-0.2, 0.4, -0.375)
     )
-    # 首次接管也必须从实测114度起算，不能把路线20度当成当前航向突然转头。
+    # 首次本地接管必须从实测114度起算，不能把路线20度当成当前航向突然转头。
     assert observed.yaw_deg == pytest.approx(114.5)
+    assert client.position_velocities == []
     events = [record for record in records if "status" in record]
     assert events[0]["status"] == "accepted"
     assert events[0]["command_observation_sha256"] == command.observation_sha256

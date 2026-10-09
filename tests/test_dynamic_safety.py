@@ -51,6 +51,55 @@ def test_clear_corridor_continues_toward_target() -> None:
 
 
 # 功能：
+#   验证无动态目标时，已满足规定净空的确定性路线不会为寻找额外余量枚举替代速度。
+# 输入：
+#   无。
+# 输出：
+#   None：原航向通过一次完整预测后直接继续，避免覆盖检查耗尽短控制租期。
+def test_narrow_but_valid_static_route_uses_single_nominal_prediction() -> None:
+    parallel_wall = {
+        "name": "parallel-corridor-wall",
+        "center_x": 2.5,
+        "center_y": 0.84,
+        "center_z": 1.0,
+        "size_x": 10.0,
+        "size_y": 0.2,
+        "size_z": 3.0,
+    }
+
+    decision = predictive_safety_decision(_request(), [parallel_wall])
+
+    assert decision.action == "continue"
+    assert decision.minimum_predicted_clearance_m == pytest.approx(0.34)
+    assert decision.evaluated_candidate_count == 1
+
+
+# 功能：
+#   验证恰好到达恢复限速的浮点舍入误差不会在相邻周期制造刹停抖动。
+# 输入：
+#   无。
+# 输出：
+#   None：可达速度按继续执行处理，真实超速测试仍由独立用例覆盖。
+def test_exact_recovery_speed_limit_is_not_rejected_for_float_rounding() -> None:
+    request = _request().model_copy(
+        update={
+            "current_velocity_mps": Vector3(x=0.02, y=0.0, z=0.0),
+            "current_acceleration_mps2": Vector3(x=0.0, y=0.0, z=0.0),
+            "requested_velocity_mps": Vector3(x=0.12, y=0.0, z=0.0),
+            "max_speed_mps": 0.12,
+            "max_acceleration_mps2": 0.8,
+            "max_jerk_mps3": 100.0,
+        }
+    )
+
+    decision = predictive_safety_decision(request, [])
+
+    assert decision.action == "continue"
+    assert decision.selected_velocity_mps.x == pytest.approx(0.12)
+    assert "NEXT_STEP_SPEED_OUTSIDE_CONTROL_ENVELOPE" not in decision.issue_codes
+
+
+# 功能：
 #   验证加速度限制造成的暂时方向偏差不被误当作绕障理由。
 # 输入：
 #   无。
@@ -640,6 +689,131 @@ def test_positive_static_clearance_deficit_uses_monotonic_escape() -> None:
 
 
 # 功能：
+#   验证轻微进入静态保守包围体时会选择逐点改善的低速脱离，而不是在穿入位置永久悬停。
+# 输入：
+#   无：使用静止、无动态障碍且目标位于楼板上方的合成观测。
+# 输出：
+#   None：不返回业务数据。
+def test_bounded_static_penetration_uses_monotonic_escape() -> None:
+    floor = {
+        "name": "conservative-floor-slab",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.0,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.2,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=0.15),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        vehicle_radius_m=0.2,
+        vehicle_height_m=0.4,
+        max_speed_mps=0.3,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.1,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(request, [floor])
+
+    assert decision.action == "slow"
+    assert decision.selected_velocity_mps.z > 0.0
+    assert decision.minimum_predicted_clearance_m < 0.0
+    assert decision.recovery_exit_clearance_m is not None
+    assert decision.recovery_exit_clearance_m >= request.required_clearance_m + 0.02
+    assert decision.issue_codes == ["STATIC_PENETRATION_RECOVERY"]
+
+
+# 功能：
+#   验证普通路线租期不足时仍保留已由完整静态几何证明的唯一低速脱离轨迹。
+# 输入：
+#   无：候选时效回调统一拒绝，场景保持浅穿入、静止且无动态物体。
+# 输出：
+#   None：脱离动作继续交给运行时短恢复租期，而不是原地保持扩大接触。
+def test_static_penetration_escape_survives_route_candidate_budget_exhaustion() -> None:
+    floor = {
+        "name": "conservative-floor-slab",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.0,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.2,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=0.15),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        vehicle_radius_m=0.2,
+        vehicle_height_m=0.4,
+        max_speed_mps=0.3,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.1,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(
+        request,
+        [floor],
+        candidate_check=lambda _velocity, _clearance, _yaw: False,
+    )
+
+    assert decision.action == "slow"
+    assert decision.selected_velocity_mps.z > 0.0
+    assert decision.issue_codes == ["STATIC_PENETRATION_RECOVERY"]
+
+
+# 功能：
+#   验证动态物体存在时不能用静态穿入恢复例外绕过完整的动态碰撞裁决。
+# 输入：
+#   无：在相同楼板场景加入当前动态障碍。
+# 输出：
+#   None：不返回业务数据。
+def test_static_penetration_recovery_rejects_dynamic_scene() -> None:
+    floor = {
+        "name": "conservative-floor-slab",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.0,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.2,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=0.15),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=1.0),
+        dynamic_obstacles=[
+            DynamicObstacleObservation(
+                obstacle_id="moving-object",
+                position_m=Vector3(x=3.0, y=0.0, z=1.0),
+                velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+                radius_m=0.2,
+                height_m=0.4,
+                confidence=1.0,
+                age_seconds=0.0,
+            )
+        ],
+        vehicle_radius_m=0.2,
+        vehicle_height_m=0.4,
+        max_speed_mps=0.3,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.1,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(request, [floor])
+
+    assert decision.action == "hold"
+    assert "STATIC_PENETRATION_RECOVERY" not in decision.issue_codes
+
+
+# 功能：
 #   验证很小的余量不足可以按实际缺口恢复，而非必须额外移动固定五厘米。
 # 输入：
 #   无。
@@ -730,3 +904,95 @@ def test_static_clearance_recovery_is_reproved_against_complete_geometry(
         "FULL_GEOMETRY_RECHECK_FAILED",
         "HOLD_AND_REQUEST_REPLAN",
     ]
+
+
+# 功能：
+#   复现机体已轻微进入已知楼板时深度覆盖与脱离路径形成循环否决的现场。
+# 输入：
+#   无：完整静态几何证明向上脱离，覆盖门仅因起点位于楼板包围体内而拒绝。
+# 输出：
+#   None：只允许完整几何证明的低速静态脱离，不能永久保持在重叠位置。
+def test_static_penetration_escape_breaks_circular_unobserved_swept_space_hold() -> None:
+    floor = {
+        "name": "teaching-floor-3-slab-west",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 7.31,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.22,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=7.60),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=-0.08),
+        target_position_m=Vector3(x=0.0, y=0.0, z=8.12),
+        vehicle_radius_m=0.38,
+        vehicle_height_m=0.43,
+        max_speed_mps=0.35,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.097,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(
+        request,
+        [floor],
+        motion_check=lambda _request, _velocity, _path: [
+            "SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"
+        ],
+        candidate_check=lambda _velocity, _clearance, _yaw: False,
+        preferred_speed_mps=0.32,
+    )
+
+    assert decision.action == "slow"
+    assert decision.selected_velocity_mps.z > 0.0
+    assert decision.issue_codes == ["STATIC_PENETRATION_RECOVERY"]
+    assert decision.recovery_exit_clearance_m is not None
+    assert decision.recovery_exit_clearance_m >= request.required_clearance_m + 0.02
+
+
+# 功能：
+#   复现机体仍有毫米级正净空但低于要求时，覆盖门不能把唯一向上脱离路径循环否决。
+# 输入：
+#   无：完整静态几何证明路线目标会持续增加楼板净空，普通候选租期统一不可用。
+# 输出：
+#   None：选择带短恢复租期的静态余量脱离，而不是在楼板上方永久保持。
+def test_positive_clearance_escape_breaks_circular_unobserved_swept_space_hold() -> None:
+    floor = {
+        "name": "teaching-floor-3-slab-west",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 7.31,
+        "size_x": 10.0,
+        "size_y": 10.0,
+        "size_z": 0.22,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=7.6365),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=0.0, y=0.0, z=8.085),
+        vehicle_radius_m=0.38,
+        vehicle_height_m=0.43,
+        max_speed_mps=0.35,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.097,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(
+        request,
+        [floor],
+        motion_check=lambda _request, _velocity, _path: [
+            "SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"
+        ],
+        candidate_check=lambda _velocity, _clearance, _yaw: False,
+        preferred_speed_mps=0.2,
+    )
+
+    assert decision.action == "slow"
+    assert decision.selected_velocity_mps.z > 0.0
+    assert decision.issue_codes == ["STATIC_CLEARANCE_RECOVERY"]
+    assert decision.recovery_exit_clearance_m is not None
+    assert decision.recovery_exit_clearance_m >= request.required_clearance_m + 0.02

@@ -845,16 +845,23 @@ def _round_trip_route(
             continue
         if not (minimum_translation_m <= outbound.route_length_m <= maximum_translation_m):
             continue
+        try:
+            inbound = metric_planner.plan(
+                RouteQuery(start_node=node.node_id, goal_node=launch)
+            )
+        except ValueError:
+            # Metric collision geometry does not override directed topology:
+            # an endpoint with only an outbound lane is not a round-trip target.
+            continue
+        if not (minimum_translation_m <= inbound.route_length_m <= maximum_translation_m):
+            continue
         route = GraphRoute(
             start_node=launch,
             goal_node=launch,
-            node_ids=[*outbound.node_ids, *reversed(outbound.node_ids[:-1])],
-            edge_ids=[
-                *outbound.edge_ids,
-                *(f"{edge_id}-return" for edge_id in reversed(outbound.edge_ids)),
-            ],
-            positions_m=[*outbound.positions_m, *reversed(outbound.positions_m[:-1])],
-            route_length_m=outbound.route_length_m * 2.0,
+            node_ids=[*outbound.node_ids, *inbound.node_ids[1:]],
+            edge_ids=[*outbound.edge_ids, *inbound.edge_ids],
+            positions_m=[*outbound.positions_m, *inbound.positions_m[1:]],
+            route_length_m=outbound.route_length_m + inbound.route_length_m,
             all_edges_flight_verified=False,
         )
         clearance = validate_route_clearance(

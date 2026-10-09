@@ -90,13 +90,19 @@ def test_hybrid_receipt_is_verified_without_counting_as_model(fault):
     from test_bounded_hybrid_control import bridge_command
     record, inputs = evidence()
     command = bridge_command()
-    record = control_application_record(command, sequence=1, accepted_at_unix_ms=1100,
-        transport="velocity-ned", velocity_ned_mps=(.1, .1, 0.), yaw_heading_deg=0.).model_dump(mode="json")
+    record = control_application_record(
+        command,
+        sequence=1,
+        accepted_at_unix_ms=1100,
+        transport="velocity-ned",
+        velocity_ned_mps=(0.1, 0.1, 0.0),
+        yaw_heading_deg=0.0,
+    ).model_dump(mode="json")
     inputs["command_records"] = [{"command": command.model_dump(mode="json")}]
     if fault == "velocity":
-        record["velocity_ned_mps"] = [10., 0., 0.]
+        record["velocity_ned_mps"] = [10.0, 0.0, 0.0]
     elif fault == "position":
-        record.update(transport="position-velocity-ned", position_ned_m=[2., 0., 0.])
+        record.update(transport="position-velocity-ned", position_ned_m=[2.0, 0.0, 0.0])
     elif fault == "late":
         record["accepted_at_unix_ms"] = 2501
     result = verify_control_applications([record], **inputs)
@@ -111,6 +117,32 @@ def test_hybrid_receipt_is_verified_without_counting_as_model(fault):
         expected.update(("CONTROL_APPLICATION_TRANSPORT_DEADLINE_VIOLATION",
                          "CONTROL_APPLICATION_HYBRID_AUTHORITY_EXPIRED"))
     assert set(result["issue_codes"]) == expected
+
+
+# 功能：确定性路线控制未启用模型运动时，完整控制回执不能被误报为缺少模型运动。
+# 输入：合法有界走廊控制回执，并显式关闭模型运动要求。
+# 输出：证据验收通过，模型运动计数仍如实为零。
+def test_deterministic_route_control_does_not_require_model_motion() -> None:
+    from test_bounded_hybrid_control import bridge_command
+
+    record, inputs = evidence()
+    command = bridge_command()
+    record = control_application_record(
+        command,
+        sequence=1,
+        accepted_at_unix_ms=1100,
+        transport="velocity-ned",
+        velocity_ned_mps=(0.1, 0.1, 0.0),
+        yaw_heading_deg=0.0,
+    ).model_dump(mode="json")
+    inputs["command_records"] = [{"command": command.model_dump(mode="json")}]
+    inputs["require_model_motion"] = False
+
+    result = verify_control_applications([record], **inputs)
+
+    assert result["accepted"]
+    assert result["model_motion_record_count"] == 0
+    assert result["bounded_hybrid_motion_record_count"] == 1
 
 
 # 功能：

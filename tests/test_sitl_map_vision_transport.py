@@ -127,7 +127,7 @@ def test_session_cleans_resources_without_motion_commands(monkeypatch, fault):
         monkeypatch.setitem(sys.modules, name, module)
 
     def drain(link, clock, evidence):
-        evidence['timesync_replies'] += 650
+        evidence['timesync_replies'] += transport.MINIMUM_TIMESYNC_HANDSHAKES
 
     monkeypatch.setattr(transport, 'drain_timesync', drain)
 

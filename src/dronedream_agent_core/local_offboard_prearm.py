@@ -20,7 +20,7 @@ async def _assert_disarmed(read_armed):
 async def prepare_local_offboard(*, read_armed, publish_hold, enter_mode, leave_mode,
                                 verify_mode_and_health, evidence, timeout_seconds=12.):
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
-            or not 3 <= timeout_seconds <= 60 or type(evidence) is not dict or evidence):
+            or not 3 <= timeout_seconds <= 180 or type(evidence) is not dict or evidence):
         raise ValueError("LOCAL_PREARM_CONFIGURATION_INVALID")
     evidence.update({"arm_requested": False, "mode_requested": False,
                      "mode_acknowledged": False, "hold_publications": 0,
@@ -28,24 +28,37 @@ async def prepare_local_offboard(*, read_armed, publish_hold, enter_mode, leave_
     refresh = None
     succeeded = False
     previous_publication = None
+    continuous_hold_started = None
 
     # 功能：记录实际保持流间隔，不把名义 20Hz 或消息总数当作连续性证明。
     # 输入：实测保持发布回调；单调时钟测量实际完成间隔。
-    # 输出：更新连续性证据；超过 400ms 即拒绝准备，给固件 2Hz 要求保留余量。
+    # 输出：更新连续性证据；超过 400ms 重新累计证明时间，不把一次主机调度抖动升级为任务失败。
     async def publish_measured_hold():
-        nonlocal previous_publication
+        nonlocal previous_publication, continuous_hold_started
         await publish_hold()
         current = time.monotonic()
         if previous_publication is not None:
             interval = current - previous_publication
             evidence['maximum_hold_gap_seconds'] = max(
                 evidence.get('maximum_hold_gap_seconds', 0.), interval)
-            if interval < 0 or interval > .4:
-                raise RuntimeError('LOCAL_PREARM_HOLD_STREAM_GAP')
+            if interval < 0:
+                raise RuntimeError('LOCAL_PREARM_MONOTONIC_CLOCK_REGRESSED')
+            if interval > .4:
+                # PX4 has not been asked to enter Offboard yet.  A scheduling
+                # gap therefore invalidates only the accumulated proof-of-life
+                # window; it does not create an aircraft emergency.  Continue
+                # sending the measured stationary setpoint and require a new
+                # uninterrupted window before the mode request.
+                evidence['hold_stream_restart_count'] = (
+                    evidence.get('hold_stream_restart_count', 0) + 1
+                )
+                continuous_hold_started = current
         else:
             evidence['first_hold_monotonic'] = current
+            continuous_hold_started = current
         previous_publication = current
         evidence['hold_span_seconds'] = current - evidence['first_hold_monotonic']
+        evidence['continuous_hold_span_seconds'] = current - continuous_hold_started
         evidence['hold_publications'] += 1
 
     try:
@@ -82,8 +95,14 @@ async def prepare_local_offboard(*, read_armed, publish_hold, enter_mode, leave_
 
             refresh = asyncio.create_task(keep_hold())
             await guarded(first.wait())
-            # PX4 requires >1s of setpoint proof-of-life before Offboard entry.
-            await guarded(asyncio.sleep(1.2))
+            # PX4 requires >1s of uninterrupted setpoint proof-of-life before
+            # Offboard entry.  Wait for measured continuity, not wall time from
+            # the first attempt; a host stall restarts this window in place.
+            async def wait_for_continuous_hold():
+                while evidence.get('continuous_hold_span_seconds', 0.) < 1.2:
+                    await asyncio.sleep(.025)
+
+            await guarded(wait_for_continuous_hold())
             await guarded(_assert_disarmed(read_armed))
 
             # 功能：模式请求前立即重发实测保持值，避免等待遥测期间 SDK 旧模式心跳撤销设定值。

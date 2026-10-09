@@ -316,7 +316,7 @@ def test_compact_configuration_preserves_optics_pose_and_other_model_fields():
 def test_responsive_profile_is_explicit_and_cannot_inherit_compact_rate_receipt(tmp_path):
     path = readback_fixture(tmp_path, profile="responsive-control")
     receipt = json.loads(path.read_text())
-    assert {fields["update_rate_hz"] for fields in receipt["after"].values()} == {60}
+    assert {fields["update_rate_hz"] for fields in receipt["after"].values()} == {16}
     reader = CameraProfileReadback(path)
     assert reader.observe("depth", 160, 120) and reader.observe("rgb", 320, 180)
     proof = reader.require_ready()

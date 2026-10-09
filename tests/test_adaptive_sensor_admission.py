@@ -234,8 +234,19 @@ def test_action_specific_margin_veto_preserves_threat_forecast(monkeypatch):
     #   request、primitives、candidate_check：真实请求、碰撞几何和候选时效回调。
     # 输出：
     #   result：注入较小最终净空的真实预测结果。
-    def tight_forecast(request, primitives, *, candidate_check=None):
-        result = real(request, primitives, candidate_check=candidate_check)
+    def tight_forecast(
+        request,
+        primitives,
+        *,
+        candidate_check=None,
+        preferred_speed_mps=None,
+    ):
+        result = real(
+            request,
+            primitives,
+            candidate_check=candidate_check,
+            preferred_speed_mps=preferred_speed_mps,
+        )
         if result.action != "hold":
             result.minimum_predicted_clearance_m = .13  # Only 3 cm residual slack.
         return result

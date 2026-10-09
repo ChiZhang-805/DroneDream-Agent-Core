@@ -18,10 +18,11 @@ MAXIMUM_BYTES = 256 * 1024
 
 
 class ExecutorSnapshots:
-    """Only three explicit diagnostic paths; no queue of historical commands."""
+    """Coalesce explicit latest-state files; never queue historical commands."""
 
     # 功能：
-    #   为当前执行器的阶段、目标和遥测建立最多三条待写快照，其他文件仍使用原发布路径。
+    #   为当前执行器的阶段、目标、遥测和跟踪状态建立有界待写快照。
+    #   同一路径只保留最新值，避免 WSL 跨文件系统写入阻塞实时飞控。
     # 输入：
     #   directory：本次运行目录。
     #   writer：在后台执行的原子 JSON 写入器。
@@ -30,8 +31,16 @@ class ExecutorSnapshots:
     def __init__(self, directory: Path, *, writer=publish_runtime_json):
         self.phase_path = directory / "runtime-phase.json"
         self.target_path = directory / "local-safety-target.json"
-        self.paths = frozenset((self.phase_path, self.target_path,
-                               directory / "runtime-state" / "px4-identity-telemetry.json"))
+        state_directory = directory / "runtime-state"
+        self.paths = frozenset(
+            (
+                self.phase_path,
+                self.target_path,
+                state_directory / "px4-identity-telemetry.json",
+                state_directory / "closed-loop-tracking.json",
+                state_directory / "px4-heading-tracking.json",
+            )
+        )
         self._writer = writer
         self._condition = threading.Condition()
         self._pending: dict[Path, bytes] = {}

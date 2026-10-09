@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from dronedream_agent_core.contracts import Px4RuntimeAbortRequest
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.ros_workspace_provenance import (
     write_ros_workspace_provenance,
@@ -45,6 +46,34 @@ def test_acceptance_release_resources_use_current_repository_source(tmp_path: Pa
     assert source == Path(__file__).resolve().parents[1] / "src"
     assert (source / "dronedream_agent_core" / "__init__.py").is_file()
     assert (source / "dronedream_agent_app" / "__init__.py").is_file()
+
+
+# 功能：暂存执行器必须与当前源码一致，避免单元测试通过后真实仿真仍运行旧逻辑。
+# 输入：临时资源根与替换后的脚本路径；输出：一致时返回暂存文件，不一致时拒绝启动。
+def test_acceptance_rejects_stale_staged_checkpoint_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_runtime_acceptance_module()
+    repository = tmp_path / "repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    current = scripts / "px4_checkpoint_executor.py"
+    current.write_text("# current executor\n", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "__file__",
+        str(scripts / "run_pluginized_runtime_acceptance.py"),
+    )
+    staged = tmp_path / "resources" / "runtime" / "px4_checkpoint_executor.py"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("# stale executor\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="CURRENT_ACCEPTANCE_EXECUTOR_MISMATCH"):
+        module._acceptance_checkpoint_executor(tmp_path / "resources")
+
+    staged.write_bytes(current.read_bytes())
+    assert module._acceptance_checkpoint_executor(tmp_path / "resources") == staged.resolve()
 
 
 @pytest.mark.parametrize("value", [899.0, 43_201.0, float("nan"), float("inf")])
@@ -184,8 +213,11 @@ def test_outer_timeout_requests_landing_before_forced_process_cleanup(
 
     assert events == ["no-abort", "abort-present"]
     request = json.loads((tmp_path / "live_abort.request.json").read_text())
+    validated = Px4RuntimeAbortRequest.model_validate(request, strict=True)
     assert request["reason"] == "OUTER_RUNTIME_TIMEOUT"
     assert request["world_paused"] is False
+    assert validated.source == "runtime-acceptance:outer-timeout"
+    assert "schema_version" not in request
 
 
 def test_runtime_acceptance_heading_control_is_explicit_and_bounded() -> None:
@@ -231,6 +263,28 @@ def test_runtime_acceptance_requires_matching_px4_heading_evidence() -> None:
             timing,
             heading_policy="route-tangent-relative",
             maximum_yaw_rate_deg_s=20.0,
+        )
+
+    independent_timing = {
+        "takeoff_gate": {
+            "heading_control": {
+                "policy": "live_local_controller_heading",
+                "maximum_yaw_rate_deg_s": 15.0,
+            }
+        }
+    }
+    assert module._validated_heading_evidence(
+        independent_timing,
+        heading_policy="route-tangent-relative",
+        maximum_yaw_rate_deg_s=15.0,
+        independent_route_control=True,
+    ) == independent_timing["takeoff_gate"]["heading_control"]
+    with pytest.raises(RuntimeError, match="policy binding changed"):
+        module._validated_heading_evidence(
+            timing,
+            heading_policy="route-tangent-relative",
+            maximum_yaw_rate_deg_s=15.0,
+            independent_route_control=True,
         )
 
 
@@ -307,18 +361,18 @@ def test_runtime_acceptance_can_require_fresh_px4_dynamics(tmp_path: Path) -> No
                     "dynamics_telemetry_rates": {
                         "required_rate_requests_succeeded": True,
                         "sources": {
-                            "position_velocity": {"requested_rate_hz": 50.0, "status": "requested"},
-                            "odometry": {"requested_rate_hz": 50.0, "status": "requested"},
+                            "position_velocity": {"requested_rate_hz": 25.0, "status": "requested"},
+                            "odometry": {"requested_rate_hz": 10.0, "status": "requested"},
                             "imu": {
-                                "requested_rate_hz": 50.0,
+                                "requested_rate_hz": 25.0,
                                 "status": "requested",
                             },
                             "attitude": {
-                                "requested_rate_hz": 50.0,
+                                "requested_rate_hz": 25.0,
                                 "status": "requested",
                             },
                             "battery": {
-                                "requested_rate_hz": 2.0,
+                                "requested_rate_hz": 1.0,
                                 "status": "requested",
                             },
                         },
@@ -342,14 +396,14 @@ def test_runtime_acceptance_can_require_fresh_px4_dynamics(tmp_path: Path) -> No
     battery_rate = timing["preflight_connection"]["attempts"][0][
         "dynamics_telemetry_rates"
     ]["sources"]["battery"]
-    battery_rate["requested_rate_hz"] = 1.0
+    battery_rate["requested_rate_hz"] = 0.5
     with pytest.raises(RuntimeError, match="rate was not established: battery"):
         module._validated_px4_dynamics_evidence(
             tmp_path,
             required=True,
             timing=timing,
         )
-    battery_rate["requested_rate_hz"] = 2.0
+    battery_rate["requested_rate_hz"] = 1.0
 
     telemetry_path.write_text(
         json.dumps(
@@ -494,15 +548,15 @@ def test_runtime_acceptance_uses_hash_bound_inflight_dynamics_after_landing(
                     "dynamics_telemetry_rates": {
                         "required_rate_requests_succeeded": True,
                         "sources": {
-                            "position_velocity": {"requested_rate_hz": 50.0, "status": "requested"},
-                            "odometry": {"requested_rate_hz": 50.0, "status": "requested"},
-                            "imu": {"requested_rate_hz": 50.0, "status": "requested"},
+                            "position_velocity": {"requested_rate_hz": 25.0, "status": "requested"},
+                            "odometry": {"requested_rate_hz": 10.0, "status": "requested"},
+                            "imu": {"requested_rate_hz": 25.0, "status": "requested"},
                             "attitude": {
-                                "requested_rate_hz": 50.0,
+                                "requested_rate_hz": 25.0,
                                 "status": "requested",
                             },
                             "battery": {
-                                "requested_rate_hz": 2.0,
+                                "requested_rate_hz": 1.0,
                                 "status": "requested",
                             },
                         },

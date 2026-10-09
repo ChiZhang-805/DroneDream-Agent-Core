@@ -745,29 +745,26 @@ def _identity_estimator_reset_counter(payload: dict[str, Any]) -> int | None:
 
 
 # 功能：
-#   将地面允许阶段、表面类别和微小接触深度联合判断，不能据此认定飞行器已起飞或安全着陆。
+#   将地面允许阶段和微小接触深度联合判断，不能据此认定飞行器已起飞或安全着陆。
 # 输入：
 #   phase：执行阶段；primitive_name：接触体名称；clearance_m：带符号净空。
 # 输出：
-#   tolerated：是否符合着陆接触数值容差。
+#   tolerated：是否符合着陆接触数值容差；表面可承重性由后续几何检查决定。
 def _is_tolerated_landing_contact(
     *, phase: str | None, primitive_name: str, clearance_m: float
 ) -> bool:
     # Gazebo may report a millimetre-scale overlap between the conservative
     # vehicle envelope and its supporting floor while the real collision
-    # geometry is resting normally.  The TAKEOFF allowance covers only the
-    # controller/telemetry transition before positive vertical clearance is
-    # observed; the independent top-surface geometry check below still rejects
-    # walls, edges, slopes, ceilings and unsupported contact.
+    # geometry is resting normally.  Object names are not physics: a stair
+    # tread or platform may be a valid support even when its name contains no
+    # "floor" token.  The mandatory top-surface geometry check at each caller
+    # still rejects side impacts, edges, slopes, ceilings and unsupported
+    # contact.
     if phase not in {"PREFLIGHT", "TAKEOFF", "LANDING", "LANDED", "COMPLETE"}:
         return False
     if not -0.02 <= clearance_m < -0.001:
         return False
-    tolerated = any(
-        token in primitive_name.casefold()
-        for token in ("floor", "ground", "terrain", "road", "pad")
-    )
-    return tolerated
+    return isinstance(primitive_name, str) and bool(primitive_name.strip())
 
 
 # 功能：
@@ -798,6 +795,86 @@ def _landing_contact_from_above(primitive, center, radius, half_height):
         and abs(local_y) + radius <= primitive["size_y"] / 2
     )
     return supported
+
+
+# 功能：
+#   用连续观测确认不可恢复的静态碰撞，避免把毫米级包络重叠作为单点终止票。
+# 输入：
+#   state：本次运行的确认状态；elapsed_s：仿真时间；primitive_name：最近静态体名称。
+#   clearance_m：带符号净空；phase：执行阶段，仅用于保留可审计上下文。
+# 输出：
+#   confirmed：是否已达到需要受控终止的深度或持续碰撞条件。
+def _static_collision_abort_confirmed(
+    state: dict[str, object],
+    *,
+    elapsed_s: float,
+    primitive_name: str,
+    clearance_m: float,
+    phase: str | None,
+) -> bool:
+    """Distinguish recoverable envelope contact from a confirmed collision.
+
+    The local controller already owns continuous slowdown, monotonic egress and
+    replanning. This independent observer is therefore a last-resort landing
+    trigger, not a second controller: millimetre-scale contact remains evidence
+    for recovery, while a deep or persistent overlap must be confirmed over
+    time before it can terminate the mission.
+    """
+
+    _runtime_number(elapsed_s, "static collision elapsed seconds", 0.0)
+    _runtime_number(clearance_m, "static collision clearance", -100.0, 100.0)
+    if not isinstance(primitive_name, str) or not primitive_name.strip():
+        raise ValueError("static collision primitive name is empty")
+    if phase is not None and not isinstance(phase, str):
+        raise ValueError("static collision phase must be a string or null")
+
+    # Less than two centimetres of signed overlap is within the same
+    # conservative geometry tolerance used for supported landing contact. It
+    # is still visible to the local safety controller, but cannot independently
+    # end a flight.
+    if clearance_m > -0.02:
+        state.clear()
+        return False
+
+    previous_name = state.get("primitive_name")
+    previous_elapsed = state.get("last_elapsed_s")
+    if (
+        previous_name != primitive_name
+        or type(previous_elapsed) not in (int, float)
+        or elapsed_s < float(previous_elapsed)
+        or elapsed_s - float(previous_elapsed) > 1.0
+    ):
+        state.clear()
+        state.update(
+            {
+                "primitive_name": primitive_name,
+                "started_elapsed_s": elapsed_s,
+                "sample_count": 0,
+                "minimum_clearance_m": clearance_m,
+                "phase": phase,
+            }
+        )
+
+    sample_count = int(state.get("sample_count", 0)) + 1
+    started_elapsed = float(state.get("started_elapsed_s", elapsed_s))
+    minimum_clearance = min(float(state.get("minimum_clearance_m", clearance_m)), clearance_m)
+    state.update(
+        {
+            "last_elapsed_s": elapsed_s,
+            "sample_count": sample_count,
+            "minimum_clearance_m": minimum_clearance,
+            "latest_clearance_m": clearance_m,
+            "phase": phase,
+        }
+    )
+    duration_s = max(0.0, elapsed_s - started_elapsed)
+
+    # A deep overlap is confirmed quickly, but never from one buffered sample.
+    # A smaller overlap is given five seconds for the closed-loop controller to
+    # slow, escape or replan before the monitor requests a controlled landing.
+    deep_collision = minimum_clearance <= -0.08 and sample_count >= 3 and duration_s >= 0.10
+    persistent_collision = sample_count >= 3 and duration_s >= 5.0
+    return deep_collision or persistent_collision
 
 
 # 功能：
@@ -886,6 +963,35 @@ def _tracking_identity_required(phase: str | None) -> bool:
 
     required = phase not in {"PREFLIGHT", "LANDING", "LANDED", "COMPLETE", "FAILED"}
     return required
+
+
+# 功能：
+#   阶段心跳暂时缺失时，用只读诊断文件补充监视标签；标签不授权运动，也不单独终止飞行。
+# 输入：
+#   primary：运行级阶段通道读取；diagnostic：独立文件读取，只有主通道异常时提供。
+# 输出：
+#   phase：可用于碰撞分类和进度标注的阶段；两个来源均不可用时为 None。
+def _monitoring_phase_from_reads(
+    primary: dict[str, object],
+    diagnostic: dict[str, object] | None,
+) -> str | None:
+    """Choose a monitoring label without turning it into a control lease.
+
+    The run-scoped channel remains the primary source.  Its temporary loss is
+    not evidence that PX4 stopped flying: fresh native pose samples, process
+    liveness, collision checks, and the actuator watchdog have their own
+    contracts.  The phase file is therefore allowed only as a diagnostic label
+    for phase-sensitive monitoring; neither source can authorize movement.
+    """
+
+    primary_phase = primary.get("phase")
+    if primary.get("issue") is None and isinstance(primary_phase, str):
+        return primary_phase
+    if diagnostic is None or diagnostic.get("issue") is not None:
+        return None
+    diagnostic_phase = diagnostic.get("phase")
+    phase = diagnostic_phase if isinstance(diagnostic_phase, str) else None
+    return phase
 
 
 # 功能：
@@ -2001,7 +2107,8 @@ def _detach_payload_before_flight(
     env: dict[str, str],
     timeout: float = 15.0,
     state_service: str | None = None,
-    readiness_timeout: float = 90.0,
+    readiness_timeout: float = 240.0,
+    gazebo_process: subprocess.Popen[str] | None = None,
 ) -> dict[str, object]:
     """Fail closed unless Gazebo confirms that the payload starts detached.
 
@@ -2017,6 +2124,11 @@ def _detach_payload_before_flight(
     required_topics = {detach_topic, output_topic}
     observed_topics: set[str] = set()
     while time.monotonic() < deadline:
+        if gazebo_process is not None and gazebo_process.poll() is not None:
+            raise SimulationRuntimeError(
+                "GAZEBO_EXITED_DURING_PAYLOAD_PREFLIGHT: "
+                f"exit_code={gazebo_process.returncode}"
+            )
         result = _run([gz_binary, "topic", "-l"], env=env, timeout=5)
         observed_topics = {line.strip() for line in result.stdout.splitlines() if line.strip()}
         if result.returncode == 0 and required_topics <= observed_topics:
@@ -2038,11 +2150,32 @@ def _detach_payload_before_flight(
         ready_since: float | None = None
         previous_iteration: int | None = None
         advancing_samples = 0
-        while (remaining := ready_deadline - time.monotonic()) > 0:
+        # A cold D3D/Mesa shader cache can hold the Gazebo sensor thread for
+        # well over a minute after both entities have been accepted.  This is
+        # still preflight: no PX4 process is armed and no motion is possible.
+        # Wait for advancing physics evidence instead of turning a slow first
+        # render into a mission failure.  Do not start a final query with only
+        # a few milliseconds left; that obscures the useful preceding error
+        # with a guaranteed CLI timeout.
+        while (remaining := ready_deadline - time.monotonic()) >= 0.5:
+            if gazebo_process is not None and gazebo_process.poll() is not None:
+                raise SimulationRuntimeError(
+                    "GAZEBO_EXITED_DURING_PAYLOAD_PREFLIGHT: "
+                    f"exit_code={gazebo_process.returncode}"
+                )
             ready_attempts += 1
             try:
-                initial = query_attachment_state(gz_binary, service=state_service,
-                                                  env=env, timeout=min(2.5, remaining))
+                initial = query_attachment_state(
+                    gz_binary,
+                    service=state_service,
+                    env=env,
+                    timeout=min(2.5, remaining),
+                )
+                if gazebo_process is not None and gazebo_process.poll() is not None:
+                    raise SimulationRuntimeError(
+                        "GAZEBO_EXITED_DURING_PAYLOAD_PREFLIGHT: "
+                        f"exit_code={gazebo_process.returncode}"
+                    )
                 observed_at = time.monotonic()
                 if observed_at >= ready_deadline:
                     break
@@ -3238,7 +3371,8 @@ def run_px4_gazebo_track(
 
         require_hybrid_provider(provider=local_navigation_provider,
             model_authority=local_navigation_control_authority_required,
-            teacher_control=simulation_teacher_control, training_channel=simulation_training_channel)
+            teacher_control=simulation_teacher_control,
+            training_channel=simulation_training_channel)
         required_executor_flags.update({"--bounded-hybrid-control", "--hybrid-route-sha256"})
     if local_navigation_control_authority_required:
         required_executor_flags.update(
@@ -3754,7 +3888,13 @@ def run_px4_gazebo_track(
     phase_channels = [run_dir / "runtime-control" / f"phase-{name}-channel.json"
                       for name in ("independent", "identity", "control")]
     independent_phase_monitor = SimulationPhaseMonitor(channel=phase_channels[0])
+    diagnostic_phase_monitor = SimulationPhaseMonitor()
+    phase_channel_outage_started_at: float | None = None
+    phase_channel_outage_count = 0
+    recovered_phase_channel_outage_count = 0
+    maximum_phase_channel_outage_seconds = 0.0
     live_safety_event: dict[str, object] | None = None
+    static_collision_confirmation: dict[str, object] = {}
     tolerated_landing_contacts = 0
     minimum_tolerated_landing_clearance = math.inf
     started = time.monotonic()
@@ -3810,6 +3950,65 @@ def run_px4_gazebo_track(
     training_witness: GazeboOutcomeWitness | None = None
     localization_truth: LocalizationTruthCapture | None = None
     recovery_witness: RecoveryObstacleWitness | None = None
+
+    # 功能：
+    #   读取独立阶段上下文并记录通道退化；阶段标签丢失不是碰撞或失控证据，不能直接发出终止。
+    # 输入：
+    #   phase_path：当前运行阶段文件，仅在主通道异常时作为只读监视标签。
+    # 输出：
+    #   phase、primary_read：监视标签与保留原始年龄/错误的主通道读取。
+    def monitoring_phase(phase_path: Path) -> tuple[str | None, dict[str, object]]:
+        nonlocal phase_channel_outage_started_at
+        nonlocal phase_channel_outage_count
+        nonlocal recovered_phase_channel_outage_count
+        nonlocal maximum_phase_channel_outage_seconds
+
+        primary_read = independent_phase_monitor.read(phase_path)
+        issue = primary_read.get("issue")
+        diagnostic_read = None
+        now = time.monotonic()
+        recovered = False
+        if issue is not None:
+            diagnostic_read = diagnostic_phase_monitor.read(phase_path)
+            if phase_channel_outage_started_at is None:
+                phase_channel_outage_started_at = now
+                phase_channel_outage_count += 1
+            outage_seconds = max(0.0, now - phase_channel_outage_started_at)
+            maximum_phase_channel_outage_seconds = max(
+                maximum_phase_channel_outage_seconds,
+                outage_seconds,
+            )
+        else:
+            outage_seconds = 0.0
+            if phase_channel_outage_started_at is not None:
+                maximum_phase_channel_outage_seconds = max(
+                    maximum_phase_channel_outage_seconds,
+                    max(0.0, now - phase_channel_outage_started_at),
+                )
+                phase_channel_outage_started_at = None
+                recovered_phase_channel_outage_count += 1
+                recovered = True
+        phase = _monitoring_phase_from_reads(primary_read, diagnostic_read)
+        if issue is not None or recovered:
+            _write_json(
+                run_dir / "runtime-phase-monitoring.json",
+                {
+                    "schema_version": "dronedream.runtime-phase-monitoring.v1",
+                    "channel_degraded": issue is not None,
+                    "channel_issue": issue,
+                    "channel_read": primary_read,
+                    "diagnostic_read": diagnostic_read,
+                    "monitoring_phase": phase,
+                    "active_outage_seconds": outage_seconds,
+                    "maximum_outage_seconds": maximum_phase_channel_outage_seconds,
+                    "outage_count": phase_channel_outage_count,
+                    "recovered_outage_count": recovered_phase_channel_outage_count,
+                    "motion_authorized": False,
+                    "abort_authorized": False,
+                    "updated_at_unix_ms": int(time.time() * 1_000),
+                },
+            )
+        return phase, primary_read
 
     # 功能：
     #   按当前速度确定有限搜索范围，筛选与无人机相邻的已验证世界碰撞基元。
@@ -4053,8 +4252,11 @@ def run_px4_gazebo_track(
                             else None
                         ),
                     )
-                    identity_transform_consistent = bool(
+                    identity_absolute_correction_bounded = bool(
                         identity_error_m <= maximum_absolute_identity_correction_m
+                    )
+                    identity_transform_consistent = bool(
+                        identity_absolute_correction_bounded
                         and offset_innovation_m <= effective_identity_limit_m
                     )
                     identity_fresh = 0.0 <= tracking_age_seconds <= 0.5
@@ -4069,7 +4271,7 @@ def run_px4_gazebo_track(
                             last_identity_estimator_reset_counter = (
                                 identity_estimator_reset_counter
                             )
-                        if identity_fresh and identity_transform_consistent:
+                        if identity_fresh and identity_absolute_correction_bounded:
                             identity_mismatch_samples = 0
                             identity_stale_samples = 0
                             raw_offset = identity_alignment.estimator_offset_m
@@ -4080,7 +4282,19 @@ def run_px4_gazebo_track(
                                 last_estimator_offset = raw_offset
                                 has_validated_estimator_offset = True
                             else:
-                                alpha = estimator_offset_filter_alpha
+                                # The canonical Gazebo entity did not change and the
+                                # absolute correction remains below the independent
+                                # one-metre guard.  A larger transform innovation is
+                                # therefore estimator drift/relocalization, not proof
+                                # that control silently switched to another aircraft.
+                                # Track it faster than ordinary transport jitter so the
+                                # onboard local world and route controller converge
+                                # instead of accumulating five false identity failures.
+                                alpha = (
+                                    estimator_offset_filter_alpha
+                                    if identity_transform_consistent
+                                    else 0.5
+                                )
                                 last_estimator_offset = Vector3(
                                     x=(
                                         last_estimator_offset.x
@@ -4096,7 +4310,9 @@ def run_px4_gazebo_track(
                                     ),
                                 )
                             last_identity_validated_at_unix_ms = now_unix_ms
-                            correction_source = "live"
+                            correction_source = (
+                                "live" if identity_transform_consistent else "relocalized"
+                            )
                         elif identity_fresh:
                             # Gazebo pose callbacks run much faster than the PX4
                             # telemetry publisher. Count independent estimator
@@ -4113,7 +4329,7 @@ def run_px4_gazebo_track(
                         if last_identity_validated_at_unix_ms is not None
                         else None
                     )
-                    identity_accepted = correction_source == "live" or (
+                    identity_accepted = correction_source in {"live", "relocalized"} or (
                         correction_age_seconds is not None
                         and 0.0 <= correction_age_seconds <= 2.0
                         and identity_mismatch_samples < 5
@@ -4125,7 +4341,7 @@ def run_px4_gazebo_track(
                         identity_accepted = last_identity_validated_at_unix_ms is not None
                         if identity_accepted:
                             correction_source = "validated-before-terminal-phase"
-                    if identity_accepted and correction_source != "live":
+                    if identity_accepted and correction_source not in {"live", "relocalized"}:
                         correction_source = correction_source if not identity_required else "cached"
                     identity_payload = {
                         "schema_version": "dronedream.controlled-vehicle-identity.v1",
@@ -4138,6 +4354,11 @@ def run_px4_gazebo_track(
                         "identity_offset_innovation_m": offset_innovation_m,
                         "maximum_offset_innovation_m": effective_identity_limit_m,
                         "maximum_absolute_correction_m": (maximum_absolute_identity_correction_m),
+                        "estimator_to_world_position_offset_m": (
+                            last_estimator_offset.model_dump(mode="json")
+                            if has_validated_estimator_offset
+                            else None
+                        ),
                         "identity_alignment_seconds": (identity_alignment.alignment_seconds),
                         "estimator_reset_counter": identity_estimator_reset_counter,
                         "estimator_reset_observed": identity_estimator_reset_observed,
@@ -4626,6 +4847,7 @@ def run_px4_gazebo_track(
                     output_topic=str(payload_spawn["output_topic"]),
                     state_service=f"/world/{world_name}/model/{payload_spawn['entity_name']}/attachment_state",
                     env=env,
+                    gazebo_process=gazebo,
                 )
                 placement_service = _require_payload_placement_service(
                     gz_binary,
@@ -4655,7 +4877,12 @@ def run_px4_gazebo_track(
             camera_ready = False
             if live_camera_enabled:
                 camera_sdf, camera_pose = _live_camera_sdf(
-                    route_points, control_priority=local_navigation_control_authority_required)
+                    route_points,
+                    control_priority=(
+                        local_navigation_control_authority_required
+                        or independent_route_control
+                    ),
+                )
                 camera_sdf_path = run_dir / "live-camera.sdf"
                 camera_sdf_path.write_text(camera_sdf, encoding="utf-8")
                 try:
@@ -5225,7 +5452,7 @@ def run_px4_gazebo_track(
                         "--tracking-sample-rate-hz",
                         f"{tracking_corridor_policy['tracking_sample_rate_hz']:.9g}",
                         "--tracking-telemetry-recovery-timeout-seconds",
-                        "5",
+                        "20",
                         *heading_executor_arguments,
                         *contract_executor_arguments,
                         *(argument for path in phase_channels
@@ -5367,9 +5594,9 @@ def run_px4_gazebo_track(
                     and loop_now >= progress_stall_deadline
                     and abort_reason is None
                 ):
-                    stall_phase = independent_phase_monitor.read(run_dir / "runtime-phase.json")[
-                        "phase"
-                    ]
+                    stall_phase, _stall_phase_read = monitoring_phase(
+                        run_dir / "runtime-phase.json"
+                    )
                     if _tracking_identity_required(stall_phase):
                         _write_json(
                             run_dir / "executor-progress-recovery.json",
@@ -5387,9 +5614,9 @@ def run_px4_gazebo_track(
                     else:
                         progress_stall_deadline = None
                 if loop_now >= deadline and abort_reason is None:
-                    deadline_phase = independent_phase_monitor.read(run_dir / "runtime-phase.json")[
-                        "phase"
-                    ]
+                    deadline_phase, _deadline_phase_read = monitoring_phase(
+                        run_dir / "runtime-phase.json"
+                    )
                     deadline_progress_state = _fresh_tracking_progress_state(
                         run_dir / "runtime-state" / "closed-loop-tracking.json",
                         now_unix_ms=int(time.time() * 1_000),
@@ -5578,17 +5805,7 @@ def run_px4_gazebo_track(
                 for elapsed_s, x, y, z in fresh_samples:
                     center = (x + offset_east, y + offset_north, z + offset_up)
                     phase_path = run_dir / "runtime-phase.json"
-                    phase_read = independent_phase_monitor.read(phase_path)
-                    phase = phase_read["phase"]
-                    if phase_read["issue"] and abort_reason is None:
-                        abort_reason = str(phase_read["issue"])
-                        live_safety_event = {
-                            "schema_version": "dronedream.live-safety-event.v1",
-                            "reason": abort_reason,
-                            "elapsed_s": elapsed_s,
-                            "phase_read": phase_read,
-                        }
-                        _write_json(run_dir / "live-safety-event.json", live_safety_event)
+                    phase, phase_read = monitoring_phase(phase_path)
                     if phase == "TRACK" and goal_tracking_started_at is None:
                         # Buffered ground/takeoff poses must not be relabelled as
                         # task progress when the phase file first switches to TRACK.
@@ -5653,7 +5870,13 @@ def run_px4_gazebo_track(
                             minimum_tolerated_landing_clearance = min(
                                 minimum_tolerated_landing_clearance, minimum
                             )
-                        else:
+                        elif _static_collision_abort_confirmed(
+                            static_collision_confirmation,
+                            elapsed_s=elapsed_s,
+                            primitive_name=minimum_name,
+                            clearance_m=minimum,
+                            phase=phase,
+                        ):
                             if abort_reason is None:
                                 abort_reason = "LIVE_STATIC_COLLISION"
                                 live_safety_event = {
@@ -5671,6 +5894,8 @@ def run_px4_gazebo_track(
                                     "runtime_phase": phase,
                                 }
                                 _write_json(run_dir / "live-safety-event.json", live_safety_event)
+                    else:
+                        static_collision_confirmation.clear()
                     # Route error is evidence for the closed-loop recovery
                     # controller, never an independent abort request. Static
                     # collision monitoring above remains authoritative while
@@ -5687,7 +5912,13 @@ def run_px4_gazebo_track(
             executor_return_code = executor.wait(timeout=10)
             terminal_timing_path = run_dir / "offboard_timing.json"
             terminal_timing = (
-                read_runtime_object(terminal_timing_path) if terminal_timing_path.is_file() else {}
+                read_runtime_object(
+                    terminal_timing_path,
+                    maximum_bytes=16 * 1024 * 1024,
+                    node_limit=2_000_000,
+                )
+                if terminal_timing_path.is_file()
+                else {}
             )
             # A non-zero executor result describes the mission outcome, not the
             # aircraft's physical state.  Once independent PX4 telemetry has
@@ -5816,6 +6047,7 @@ def run_px4_gazebo_track(
             },
         )
         _cleanup_runtime_resource(cleanup_errors, independent_phase_monitor.close)
+        _cleanup_runtime_resource(cleanup_errors, diagnostic_phase_monitor.close)
         _cleanup_runtime_resource(cleanup_errors, identity_phase_monitor.close)
         _finish_runtime_cleanup(cleanup_errors, primary_error)
 
@@ -5840,7 +6072,15 @@ def run_px4_gazebo_track(
     goal = route_points[-1]
     minimum_goal_distance = min((math.dist(point, goal) for point in centers), default=math.inf)
     timing_path = run_dir / "offboard_timing.json"
-    timing = read_runtime_object(timing_path) if timing_path.is_file() else {}
+    timing = (
+        read_runtime_object(
+            timing_path,
+            maximum_bytes=16 * 1024 * 1024,
+            node_limit=2_000_000,
+        )
+        if timing_path.is_file()
+        else {}
+    )
     model_control_authority = Px4GazeboModelControlAuthorityEvidence.model_validate_json(
         encode_json(timing.get("model_control_authority", {})),
         strict=True,
@@ -5984,6 +6224,9 @@ def run_px4_gazebo_track(
     from .runtime_evidence import control_evidence_inventory
 
     control_writer_inventory = control_evidence_inventory(run_dir)
+    continuous_model_authority = continuous_control_evidence_required(
+        local_navigation_provider, local_navigation_control_authority_required
+    )
     control_application_verification = verify_control_applications(
         control_applications,
         navigation_snapshots=model_navigation_snapshots,
@@ -5992,10 +6235,22 @@ def run_px4_gazebo_track(
         writer_summary=timing.get("control_application_writer"),
         writer_artifact_counts=control_writer_inventory,
         application_artifact_path=str(control_applications_path),
+        require_model_motion=continuous_model_authority,
     )
     if control_application_read_error:
         control_application_verification["accepted"] = False
         control_application_verification["issue_codes"].append("CONTROL_APPLICATION_READ_FAILED")
+
+    # 运行器会先封存最后一次受控运动的新鲜感知，再停止传感器工作者。
+    # 停止后状态文件出现 NATIVE_STATE_STREAM_EXPIRED 是生命周期终态，不是飞行中故障；
+    # 完成验收使用封存且已接受的主动飞行快照，不能用关机后的空流覆盖它。
+    perception_control_completion = timing.get("perception_control_completion")
+    if (
+        isinstance(perception_control_completion, dict)
+        and perception_control_completion.get("accepted") is True
+        and isinstance(perception_control_completion.get("health"), dict)
+    ):
+        depth_perception_health = dict(perception_control_completion["health"])
     from .runtime_evidence import navigation_evidence_inventory
 
     runtime_evidence_artifact_counts = navigation_evidence_inventory(run_dir)
@@ -6045,9 +6300,6 @@ def run_px4_gazebo_track(
     model_participation_gap_limit_seconds = max(
         60.0,
         local_navigation_model_timeout_seconds * 3.0 + local_navigation_period_seconds * 3.0,
-    )
-    continuous_model_authority = continuous_control_evidence_required(
-        local_navigation_provider, local_navigation_control_authority_required
     )
     if continuous_model_authority:
         model_participation_gap_limit_seconds = LOCAL_CONTROL_MAXIMUM_AGE_SECONDS

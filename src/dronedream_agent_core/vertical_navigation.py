@@ -285,13 +285,15 @@ class VerticalMotionGuard:
     #   vehicle、payload、primitives：当前机型、同周期负载和保守局部几何。
     #   position、source_seconds、transition：碰撞中心、源时钟及运行级迟滞器。
     #   clearance、coverage_check：净空米数与对整条扫掠路径的证据检查函数。
+    #   qualified_route_clearance_m：当前路线段已验证的最小静态净空；缺失时不放宽顶部迟滞。
     #   envelope、domain：测量得到的动力学包络及适用环境；coverage_identity：地图观测来源版本。
     #   measurement_only：仅限上游已审定的仿真采集，状态写入每次观测背景。
     # 输出：
     #   None：建立只用于当前控制周期的保护器。
     def __init__(self, *, vehicle, payload, primitives, position, source_seconds, transition,
                  clearance, coverage_check: Callable, envelope=None, domain="simulation",
-                 coverage_identity=None, measurement_only=False):
+                 coverage_identity=None, measurement_only=False,
+                 qualified_route_clearance_m=None):
         self.vehicle = VehicleAsset.model_validate(vehicle.model_dump(mode="python"), strict=True)
         self.payload = deepcopy(payload)
         self.envelope = (FlightDynamicsEnvelope.model_validate(
@@ -302,6 +304,11 @@ class VerticalMotionGuard:
         self.domain = domain
         self.coverage_check = coverage_check
         self.clearance = clearance
+        if qualified_route_clearance_m is not None and (
+            not _finite(qualified_route_clearance_m) or qualified_route_clearance_m < 0.
+        ):
+            raise ValueError("QUALIFIED_ROUTE_CLEARANCE_INVALID")
+        self.qualified_route_clearance_m = qualified_route_clearance_m
         self.measurement_only = measurement_only
         self.radius = max(vehicle.body_radius_m,
                           self.envelope.collision_radius_m if self.envelope else 0.)
@@ -330,11 +337,42 @@ class VerticalMotionGuard:
             "ground_height_m": (position[2] - self.interval.floor_z_m
                                 if self.interval.floor_z_m is not None else None),
             "coverage_policy": "qualified-static-corridor-or-observed-whole-body",
+            "qualified_route_clearance_m": qualified_route_clearance_m,
             "collision_radius_m": self.radius,
             "collision_height_m": self.height,
             "issue_codes": list(self.issues),
         }
         self.sha256 = sha256_json(self.context)
+
+    # 功能：
+    #   在顶部迟滞因低频图像未及时释放时，允许沿已验证静态走廊继续向当前目标收敛。
+    # 输入：
+    #   request：含当前目标和同期动态障碍的预测请求；points：候选完整扫掠点列。
+    # 输出：
+    #   allowed：仅在净空、覆盖、无动态障碍且候选确实缩短目标距离时为真。
+    def qualified_route_transition_allowed(self, request: LocalPlannerRequest, points) -> bool:
+        if (
+            self.qualified_route_clearance_m is None
+            or self.qualified_route_clearance_m + 1e-9 < self.clearance
+            or request.dynamic_obstacles
+            or len(points) < 2
+        ):
+            return False
+        start = points[0]
+        end = points[-1]
+        target = request.target_position_m
+        target_xyz = (target.x, target.y, target.z)
+        start_distance = math.dist(start, target_xyz)
+        end_distance = math.dist(end, target_xyz)
+        if end_distance >= start_distance - 1e-6:
+            return False
+        vertical_goal = target.z - start[2]
+        vertical_motion = end[2] - start[2]
+        if vertical_goal * vertical_motion < -1e-8:
+            return False
+        if abs(vertical_motion) > abs(vertical_goal) + .02:
+            return False
+        return bool(self.coverage_check(points, self.clearance))
 
     # 功能：
     #   用机体整个停止扫掠盒对比静态障碍及同期移动目标的扫掠盒，宁可拒绝而不漏过中间碰撞。
@@ -429,10 +467,29 @@ class VerticalMotionGuard:
                     if not self.coverage_check([points[0], stop], self.clearance + drift):
                         return ["BRAKING_SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"]
                     # 顶面迟滞同样约束停止过程中仍会爬升的距离。
-                    if self.ceiling is not None and stop[2] > self.ceiling + 1e-9:
+                    if (self.ceiling is not None and stop[2] > self.ceiling + 1e-9
+                            and not self.qualified_route_transition_allowed(
+                                request, [points[0], stop])):
                         return ["VERTICAL_BRAKING_HEADROOM_INSUFFICIENT"]
         if self.ceiling is not None and max(p[2] for p in points) > self.ceiling + 1e-9:
-            return ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
+            # The retained exit-transition ceiling can briefly end up below the
+            # measured vehicle centre after estimator drift or a conservative
+            # geometry refresh.  Rejecting every candidate in that state also
+            # rejects the one motion that reduces the violation: a monotonic
+            # descent back into the qualified interval.  Permit only a path
+            # that never climbs and fully returns below the retained ceiling;
+            # swept-space coverage and collision checks still run afterwards.
+            descending_ceiling_recovery = (
+                points[0][2] > self.ceiling
+                and all(
+                    right[2] <= left[2] + 1e-6
+                    for left, right in zip(points[:-1], points[1:], strict=True)
+                )
+                and points[-1][2] <= self.ceiling + 1e-9
+            )
+            qualified_route_transition = self.qualified_route_transition_allowed(request, points)
+            if not descending_ceiling_recovery and not qualified_route_transition:
+                return ["CEILING_OR_EXIT_TRANSITION_LIMIT"]
         if not self.coverage_check(points, self.clearance):
             return ["SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"]
         return []

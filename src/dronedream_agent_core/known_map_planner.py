@@ -632,15 +632,29 @@ class KnownMapMetricPlanner:
             return route.model_copy(deep=True)
         self._route_cache[cache_key] = route
         reverse_key = (query.goal_node, query.start_node, exact_goal, exact_start)
-        self._route_cache[reverse_key] = GraphRoute(
-            start_node=query.goal_node,
-            goal_node=query.start_node,
-            node_ids=list(reversed(route.node_ids)),
-            edge_ids=list(reversed(route.edge_ids)),
-            positions_m=list(reversed(route.positions_m)),
-            route_length_m=route.route_length_m,
-            all_edges_flight_verified=route.all_edges_flight_verified,
+        # Collision geometry is symmetric, but the named topology need not be.
+        # Cache a reversed metric path only when the map independently permits
+        # travel in that direction; otherwise a one-way lane would silently
+        # become a fabricated return route on the next query.
+        reverse_query = query.model_copy(
+            update={"start_node": query.goal_node, "goal_node": query.start_node}
         )
+        try:
+            if self.graph is None:
+                raise ValueError("topology graph is required for reverse route caching")
+            shortest_route(self.graph, reverse_query)
+        except ValueError:
+            self._route_cache.pop(reverse_key, None)
+        else:
+            self._route_cache[reverse_key] = GraphRoute(
+                start_node=query.goal_node,
+                goal_node=query.start_node,
+                node_ids=list(reversed(route.node_ids)),
+                edge_ids=list(reversed(route.edge_ids)),
+                positions_m=list(reversed(route.positions_m)),
+                route_length_m=route.route_length_m,
+                all_edges_flight_verified=route.all_edges_flight_verified,
+            )
         return route.model_copy(deep=True)
 
     # 功能：

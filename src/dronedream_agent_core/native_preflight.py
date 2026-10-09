@@ -13,20 +13,37 @@ from .collision import (
     build_localization_recovery_budget,
     build_tracking_corridor_budget,
 )
-from .control_timing import LOCAL_DISPATCH_RESERVE_MS
+from .control_timing import (
+    LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 from .perception_health_channel import PerceptionHealthReceiver
 from .runtime_control_io import read_runtime_object
 from .sensor_diagnostics import sensor_issue_codes
 
-NATIVE_PREFLIGHT_MAXIMUM_AGE_MS = 250
-# Three independently advancing native frames over 100 ms prove that the
-# producer, fusion worker, and run-scoped transport are all live.  Requiring a
-# full second here made the qualification window four times longer than the
-# source lease; one ordinary Windows/Gazebo scheduling pause could therefore
-# erase the whole window forever even though the next measured frame recovered.
-# The current frame still keeps the strict 250 ms lease below, so this changes
-# continuity qualification rather than extending stale evidence.
-PREFLIGHT_STABLE_WINDOW_MS = 100
+# Pre-arm state and localization use the same measured sensor-age budget as
+# in-flight local safety.  Keeping a separate 250 ms value here made a valid
+# 16 Hz software-rendered simulation miss the hand-off window even though the
+# runtime health contract still considered the observation current.
+NATIVE_PREFLIGHT_MAXIMUM_AGE_MS = round(
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000
+)
+# Two independently advancing native frames over 50 ms prove that the producer,
+# fusion worker, and run-scoped transport are live before arming. Flight then
+# keeps validating every control cycle. Requiring three fusion completions in
+# one short source lease made startup nondeterministic under Gazebo rendering,
+# even while raw camera and PX4 streams kept advancing. The current frame still
+# keeps the shared sensor lease below, so stale evidence never gains authority.
+PREFLIGHT_STABLE_WINDOW_MS = 50
+_TRANSIENT_PREFLIGHT_SOURCE_ISSUES = frozenset({
+    "LOCALIZATION_SAMPLE_EXPIRED",
+    "NATIVE_PERCEPTION_DEPTH_SOURCE_INVALID_OR_EXPIRED",
+    "NATIVE_POSE_EXPIRED",
+    "NATIVE_POSE_IMU_NOT_SYNCHRONIZED",
+    "NATIVE_STATE_STREAM_EXPIRED",
+    "PERCEPTION_STREAM_STALE",
+    "SOURCE_SAMPLE_EXPIRED",
+})
 
 
 # 功能：
@@ -75,7 +92,8 @@ class NativePerceptionReadiness:
     # 输出：
     #   None：不返回业务数据。
     def __post_init__(self) -> None:
-        if (type(self.stable_window_ms) is not int or not 100 <= self.stable_window_ms <= 5000
+        if (type(self.stable_window_ms) is not int
+                or self.stable_window_ms != 0 and not 50 <= self.stable_window_ms <= 5000
                 or type(self.require_source_timestamps) is not bool
                 or type(self.require_realtime_features) is not bool):
             raise ValueError("NATIVE_PREFLIGHT_STABILITY_CONFIGURATION_INVALID")
@@ -94,7 +112,7 @@ class NativePerceptionReadiness:
         self.tracking_budget = None
 
     # 功能：
-    #   1. 只累计来源序列与时刻共同推进的新鲜帧，至少三帧且达到配置的稳定窗口才就绪。
+    #   1. 只累计来源序列与时刻共同推进的新鲜帧，至少两帧且达到配置的稳定窗口才就绪。
     #   2. 若要求路线余量，持续使用窗口内最差实测协方差；中断或回退使窗口失效。
     # 输入：
     #   self：感知就绪窗口及可选的路线净空约束。
@@ -173,6 +191,22 @@ class NativePerceptionReadiness:
                     valid = False
                     self.last_issue = ("NATIVE_ROUTE_UNCERTAINTY_BUDGET_UNFUNDED:"
                                        + type(error).__name__)
+        # A single late source report is not proof that the producer identity
+        # or clock changed. Preserve already-qualified real frames during a
+        # bounded dropout, but never return ready from the unhealthy report.
+        # If no new valid frame arrives before the shared sensor lease expires,
+        # the normal interruption path below clears the whole window.
+        transient_source_dropout = (
+            not valid
+            and self.last_issue in _TRANSIENT_PREFLIGHT_SOURCE_ISSUES
+            and self.last_frame_time is not None
+            and self.last_check_time is not None
+            and 0 <= now_unix_ms - self.last_frame_time <= NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
+            and 0 <= now_unix_ms - self.last_check_time <= NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
+        )
+        if transient_source_dropout:
+            self.last_check_time = now_unix_ms
+            return False
         regressed = valid and (
             sequence < self.last_sequence
             or (self.last_health_time is not None and updated < self.last_health_time)
@@ -206,8 +240,9 @@ class NativePerceptionReadiness:
                 self.first_frame_time = frame_time
         # 重写健康文件或重复轮询不能刷新真正获得独立帧计数的来源时刻。
         self.source_observed_at_unix_ms = self.last_frame_time
+        required_frames = 1 if self.stable_window_ms == 0 else 2
         ready = (
-            self.independent_frames >= 3
+            self.independent_frames >= required_frames
             and self.last_frame_time - self.first_frame_time >= self.stable_window_ms
         )
         return ready
@@ -236,7 +271,7 @@ def _read_native_health(path: Path) -> dict:
 #   minimum_route_clearance_m：可选的路线最小净空米数，用实测协方差重新核算余量。
 #   receiver：可选的运行专属接收器，由调用者持有并回收；配置后不回退到磁盘旧快照。
 #   evidence：可选的实时诊断容器，失败和取消也保留统计。
-#   stable_window_ms：连续独立观测所需的毫秒跨度，不改变单份观测有效期。
+#   stable_window_ms：连续独立观测所需的毫秒跨度；零表示已完成启动资格后仅重取一份当前帧。
 #   require_source_timestamps：是否强制检查深度的原始观测时刻。
 #   require_realtime_features：模型/教师接管时要求神经特征；确定性路线控制不要求。
 # 输出：
@@ -298,7 +333,7 @@ async def wait_for_native_perception(
                 if readiness.budget_assessment is not None:
                     diagnostics["route_budget_assessment"] = readiness.budget_assessment
                 # 连续性成立不等于还有足够交接时间；不能把只剩几毫秒的旧帧交给解锁。
-                # 等下一份更鲜的真实来源，保留原时刻与250毫秒期限，不续期、不降低稳定窗口。
+                # 等下一份更鲜的真实来源，保留原时刻与传感器期限，不续期、不降低稳定窗口。
                 if ready and (readiness.source_observed_at_unix_ms
                               + NATIVE_PREFLIGHT_MAXIMUM_AGE_MS - int(time.time() * 1000)
                               < LOCAL_DISPATCH_RESERVE_MS):

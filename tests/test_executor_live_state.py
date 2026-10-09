@@ -79,6 +79,10 @@ def test_slow_disk_never_stalls_native_snapshot_submission_or_phase_restore(tmp_
         for index in range(10):
             executor._atomic_json(tmp_path / "runtime-state" / "px4-identity-telemetry.json",
                                   {"sequence": index})
+            executor._atomic_json(tmp_path / "runtime-state" / "closed-loop-tracking.json",
+                                  {"tracking_sequence": index})
+            executor._atomic_json(tmp_path / "runtime-state" / "px4-heading-tracking.json",
+                                  {"heading_sequence": index})
         executor._publish_local_control_phase(
             snapshots.phase_path, local_phase="PERCEPTION_REFRESH_HOLD", details={})
         assert snapshots.phase()["enclosing_executor_state"]["phase"] == "TRACK"
@@ -86,7 +90,7 @@ def test_slow_disk_never_stalls_native_snapshot_submission_or_phase_restore(tmp_
         assert snapshots.phase() == {"phase": "TRACK"}
         assert written == []
         with snapshots._condition:
-            assert len(snapshots._pending) == 2
+            assert len(snapshots._pending) == 4
     finally:
         ACTIVE_SNAPSHOTS.reset(token)
         release.set()
@@ -95,6 +99,8 @@ def test_slow_disk_never_stalls_native_snapshot_submission_or_phase_restore(tmp_
     assert summary["submitted"] == summary["written"] + summary["coalesced"]
     assert written[-1][1] == {"phase": "TRACK"}
     assert any(value == {"sequence": 9} for _, value in written)
+    assert any(value == {"tracking_sequence": 9} for _, value in written)
+    assert any(value == {"heading_sequence": 9} for _, value in written)
 
 
 # 功能：

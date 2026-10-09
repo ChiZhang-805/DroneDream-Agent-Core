@@ -1,5 +1,6 @@
 """Local file ownership and bounded values; no vehicle or network execution."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,6 +114,23 @@ def test_large_typed_replacement_uses_separate_budget(tmp_path):
     with pytest.raises(ValueError, match="SIZE_LIMIT"):
         runtime_interrupt._atomic_json(tmp_path / "ordinary.json", value)
     assert not (tmp_path / "ordinary.json").exists()
+
+
+# 功能：验证长时飞行证据可显式申请更大节点预算，普通消息仍保持原限制。
+# 输入：超过默认节点数但未超过长运行证据上限的 JSON。
+# 输出：默认读取拒绝，显式大预算读取成功。
+def test_runtime_read_supports_explicit_long_evidence_node_budget(tmp_path):
+    path = tmp_path / "offboard_timing.json"
+    payload = {"events": [{"index": index} for index in range(55_000)]}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="COMPLEXITY_LIMIT"):
+        runtime_control_io.read_runtime_object(path, maximum_bytes=4 * 1024 * 1024)
+    assert runtime_control_io.read_runtime_object(
+        path,
+        maximum_bytes=4 * 1024 * 1024,
+        node_limit=500_000,
+    ) == payload
 
 
 # 功能：
