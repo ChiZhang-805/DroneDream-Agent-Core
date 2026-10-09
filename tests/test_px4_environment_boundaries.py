@@ -220,8 +220,8 @@ def test_constructor_owns_configuration(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
     env = module.Px4GazeboTrainingEnvironment(config)
     assert env._collection_mode == mode
-    # 流式派发为20毫秒执行周期+20毫秒传输余量；同步另留50毫秒准备时间。
-    assert env._input_admission_budget_ms() == (40 if mode == 'stream-imitation' else 90)
+    # 流式派发保留50毫秒执行周期和20毫秒传输余量；同步另留50毫秒准备时间。
+    assert env._input_admission_budget_ms() == (70 if mode == 'stream-imitation' else 120)
     if mode is not None:
         with pytest.raises(ValueError, match='MODE_CHANGED'):
             env._select_collection_mode('reward-step' if mode == 'stream-imitation' else 'stream-imitation')

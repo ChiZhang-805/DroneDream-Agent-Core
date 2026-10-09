@@ -14,6 +14,7 @@ import {
   Gauge,
   GitBranch,
   Globe2,
+  HardDrive,
   ImagePlus,
   KeyRound,
   Link2,
@@ -71,7 +72,7 @@ import {
   useI18n,
   type AppLocale,
 } from "./i18n";
-import type { AccountOverview, AssetImportJob, AssetImportState, AssetIssue, AssetQualificationEvidence, AssetQualificationJob, AssetQualificationState, AssetSourceAdapter, AssetVersionEntry, Bootstrap, ConnectorCredentialReference, DailyModelUsage, ManagedPlanId, ModelEntry, Page, PluginDetail, PluginEntry, PluginGovernancePolicy, PluginMarketplaceCatalog, PluginMarketplaceSource, PluginPanel, TaskThread } from "./types";
+import type { AccountOverview, AssetImportJob, AssetImportState, AssetIssue, AssetQualificationEvidence, AssetQualificationJob, AssetQualificationState, AssetSourceAdapter, AssetVersionEntry, Bootstrap, ConnectorCredentialReference, DailyModelUsage, ManagedPlanId, ModelEntry, Page, PluginDetail, PluginEntry, PluginGovernancePolicy, PluginMarketplaceCatalog, PluginMarketplaceSource, PluginPanel, StorageMaintenanceReport, TaskThread } from "./types";
 
 function BrandMark({ size = 34 }: { size?: number }) {
   return <img className="brand-mark" src="/brand/dronedream-agent-mark.png" width={size} height={size} alt="" />;
@@ -1319,7 +1320,25 @@ function SettingsPage({ session, data, account, accountError, onChanged, onRefre
   const [customProvider, setCustomProvider] = useState("");
   const [customModels, setCustomModels] = useState<string[]>([]);
   const [customApiStyle, setCustomApiStyle] = useState<"responses" | "chat-completions">("chat-completions");
+  const [storageReport, setStorageReport] = useState<StorageMaintenanceReport | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageError, setStorageError] = useState("");
   const configuredModels = data.models.filter((item) => item.source === "custom");
+  useEffect(() => {
+    let active = true;
+    void appApi.inspectStorage().then((report) => {
+      if (active) setStorageReport(report);
+    }).catch((reason) => {
+      if (active) setStorageError(humanError(reason, locale));
+    });
+    return () => { active = false; };
+  }, [locale]);
+  const cleanStorage = async () => {
+    setStorageBusy(true); setStorageError("");
+    try { setStorageReport(await appApi.cleanStorage()); }
+    catch (reason) { setStorageError(humanError(reason, locale)); }
+    finally { setStorageBusy(false); }
+  };
   const discoverModels = async () => {
     if (!customBaseUrl || !customApiKey) return;
     setCustomBusy(true); setCustomError(""); setCustomNotice("");
@@ -1358,6 +1377,7 @@ function SettingsPage({ session, data, account, accountError, onChanged, onRefre
   return <main className="settings-page">
     <section><h2>{tr("账户", "Account")}</h2><div className="setting-row account-setting"><button className="settings-avatar-trigger" aria-label={tr("更换头像", "Change profile photo")} onClick={onEditAvatar}><Avatar name={displayName} src={account?.avatarUrl} /></button><div><strong>{account?.email ?? session.user.email}</strong><span>{scope} · {plan?.name ?? tr("正在读取", "Loading")}</span></div><button className="secondary-button" onClick={() => void appApi.openPricing()}>{tr("管理套餐", "Manage plan")}</button></div></section>
     <section><h2>{tr("通用", "General")}</h2><label className="setting-row"><span>{tr("语言", "Language")}</span><select value={locale} onChange={async (e) => { const next = normalizeLocale(e.target.value); onLocaleChange(next); try { await appApi.patchSettings({ locale: next }); await onChanged(); } catch (value) { setCustomError(humanError(value, next)); } }}><option value="zh-CN">{tr("简体中文", "Simplified Chinese")}</option><option value="en-US">{tr("英文", "English")}</option></select></label><label className="setting-row"><span>{tr("更新通道", "Update channel")}</span><select value={data.settings.update_channel} onChange={async (e) => { await appApi.patchSettings({ update_channel: e.target.value }); await onChanged(); }}><option value="stable">{tr("稳定版", "Stable")}</option><option value="preview">{tr("预览版", "Preview")}</option></select></label></section>
+    <section><h2>{tr("存储空间", "Storage")}</h2><div className="setting-row storage-maintenance-row"><HardDrive /><div><strong>{tr("自动清理临时文件", "Automatic temporary-file cleanup")}</strong><span>{storageReport ? tr(`可释放 ${formatStorageBytes(storageReport.reclaimable_bytes)}；任务记录保留 ${storageReport.automatic_retention_days} 天，并保护每个任务最近 ${storageReport.protected_recent_executions_per_thread} 次运行。`, `${formatStorageBytes(storageReport.reclaimable_bytes)} can be reclaimed. Mission runs are retained for ${storageReport.automatic_retention_days} days, with the latest ${storageReport.protected_recent_executions_per_thread} runs per task protected.`) : tr("正在计算可清理空间…", "Calculating reclaimable space…")}</span></div><button className="secondary-button" disabled={storageBusy || !storageReport?.candidate_count} onClick={() => void cleanStorage()}>{storageBusy ? tr("正在清理", "Cleaning") : tr("立即清理", "Clean now")}</button></div>{storageReport && storageReport.removed_count > 0 && <div className="form-notice">{tr(`已清理 ${formatStorageBytes(storageReport.removed_bytes)}`, `${formatStorageBytes(storageReport.removed_bytes)} cleaned`)}</div>}{storageError && <div className="form-error">{storageError}</div>}</section>
     <section className="custom-models"><div className="custom-model-heading"><h2>{tr("模型", "Models")}</h2><button className="secondary-button" onClick={() => setCustomOpen(!customOpen)}><KeyRound />{tr("添加模型", "Add model")}</button></div>
       {configuredModels.map((model) => <div className="custom-model-row" key={model.id}><ProviderBrandLogo provider={model.provider} icon={model.icon} /><div><strong>{model.label}</strong><span>{model.provider} · {model.model}</span></div><button onClick={async () => { if (!model.profile_id) return; setCustomBusy(true); setCustomError(""); setCustomNotice(""); try { await appApi.testCustomModel(model.profile_id); setCustomNotice(tr(`${model.label} 连接正常`, `${model.label} is connected`)); } catch (value) { setCustomError(humanError(value, locale)); } finally { setCustomBusy(false); } }}>{tr("测试", "Test")}</button><button className="danger-icon" aria-label={`${tr("删除", "Delete")} ${model.label}`} onClick={async () => { if (!model.profile_id) return; await appApi.deleteCustomModel(model.profile_id); await onChanged(); }}><Trash2 /></button></div>)}
       {!configuredModels.length && !customOpen && <div className="custom-model-empty">{tr("尚未添加自定义模型", "No custom models added")}</div>}
@@ -1400,6 +1420,7 @@ function humanError(value: unknown, locale: AppLocale = "zh-CN", fallback?: stri
   if (code.startsWith("AVATAR_UPLOAD_FAILED:")) return en ? `The profile photo service returned an error (${code.split(":")[1]})` : `头像存储服务返回异常（${code.split(":")[1]}）`;
   if (code.startsWith("AVATAR_METADATA_FAILED:")) return en ? "The photo was uploaded, but the account profile could not be updated" : "头像已上传，但账户资料更新失败";
   const labels: Record<string, [string, string]> = {
+    STORAGE_CLEANUP_RUNTIME_ACTIVE: ["仿真或资产检查正在运行，请结束后再清理", "A simulation or asset check is running. Clean storage after it finishes."],
     MAP_NOT_QUALIFIED: ["所选地图尚未达到执行资格", "The selected map is not qualified for execution"],
     VEHICLE_NOT_QUALIFIED: ["所选无人机尚未达到执行资格", "The selected drone is not qualified for execution"],
     ASSET_VERSION_NOT_QUALIFIED: ["所选资产版本尚未完成真实仿真认证", "The selected asset version has not completed real-simulation qualification"],
@@ -1431,6 +1452,14 @@ function humanError(value: unknown, locale: AppLocale = "zh-CN", fallback?: stri
     return /^[A-Z0-9_.:-]+$/u.test(code) ? `操作失败（${code}）` : "操作失败，请稍后重试";
   }
   return code;
+}
+
+function formatStorageBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** index;
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 export default App;

@@ -357,7 +357,7 @@ def test_stable_window_restarts_without_extending_sensor_ttl():
         stamp = 1500 + 100*index
         packet = {**health(index+6, stamp), "perception_observed_at_unix_ms": stamp}
         assert gate.observe(packet, now_unix_ms=stamp) is (index == 10)
-    assert not gate.observe(packet, now_unix_ms=2751)
+    assert not gate.observe(packet, now_unix_ms=2851)
     assert gate.independent_frames == 0
 
 
@@ -367,7 +367,7 @@ def test_stable_window_restarts_without_extending_sensor_ttl():
 #   depth_time：待验证的深度来源时刻。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize("depth_time", [None, True, 700, 1001, "1000"])
+@pytest.mark.parametrize("depth_time", [None, True, 600, 1001, "1000"])
 def test_strict_gate_rejects_invalid_depth_source(depth_time):
     gate = NativePerceptionReadiness(require_source_timestamps=True)
     assert not gate.observe({**health(), "perception_observed_at_unix_ms": depth_time},

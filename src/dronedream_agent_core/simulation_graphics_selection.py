@@ -57,9 +57,9 @@ def select_render_process_environment(environment: dict[str, str]) -> tuple[dict
         return selected, receipt
     if selected.get("DRONEDREAM_ALLOW_EXPERIMENTAL_WSL_GPU_RENDERING") != "1":
         # A short probe can prove that D3D12 starts, but cannot prove bounded
-        # memory over a multi-hour camera session.  r66/r67 reproduced linear
-        # anonymous render-buffer growth on a correctly selected NVIDIA D3D12
-        # adapter.  Do not spend a probe or select it in the stable default.
+        # memory over a multi-hour camera session. Long-run acceptance reproduced
+        # linear anonymous render-buffer growth on a correctly selected NVIDIA
+        # D3D12 adapter. Do not spend a probe or select it in the stable default.
         # llvmpipe otherwise creates one worker per visible logical CPU; eight
         # workers preserve real pixels and leave capacity for PX4/MAVSDK.
         selected.update(

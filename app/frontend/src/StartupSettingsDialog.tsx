@@ -4,6 +4,7 @@ import {
   Check,
   ExternalLink,
   GraduationCap,
+  HardDrive,
   Languages,
   Monitor,
   Moon,
@@ -16,9 +17,9 @@ import { useEffect, useState } from "react";
 import { appApi } from "./api";
 import { ProviderLogo } from "./ProviderLogo";
 import { localeSafeError, useI18n, type AppLocale } from "./i18n";
-import type { Bootstrap } from "./types";
+import type { Bootstrap, StorageMaintenanceReport } from "./types";
 
-type TabId = "general" | "model" | "memory" | "course";
+type TabId = "general" | "model" | "memory" | "storage" | "course";
 
 const COURSE_URL = "https://binhu7.github.io/courses/ECE498/Spring2025/ECE498home.html";
 
@@ -37,6 +38,7 @@ export function StartupSettingsDialog({
   const [tab, setTab] = useState<TabId>("general");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [storage, setStorage] = useState<StorageMaintenanceReport | null>(null);
   const settings = data?.settings;
 
   useEffect(() => {
@@ -46,6 +48,21 @@ export function StartupSettingsDialog({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    if (tab !== "storage") return;
+    let active = true;
+    setError("");
+    void appApi.inspectStorage().then((report) => {
+      if (active) setStorage(report);
+    }).catch((reason) => {
+      if (active) setError(localeSafeError(reason, locale, {
+        zh: "无法读取存储空间，请稍后重试",
+        en: "Could not inspect storage. Try again later.",
+      }));
+    });
+    return () => { active = false; };
+  }, [locale, tab]);
 
   const patch = async (value: Record<string, unknown>) => {
     setBusy(true);
@@ -72,6 +89,7 @@ export function StartupSettingsDialog({
     { id: "general", label: tr("通用", "General"), icon: <Settings2 /> },
     { id: "model", label: tr("模型", "Models"), icon: <Bot /> },
     { id: "memory", label: tr("记忆", "Memory"), icon: <BrainCircuit /> },
+    { id: "storage", label: tr("存储", "Storage"), icon: <HardDrive /> },
     { id: "course", label: "ECE498BH", icon: <GraduationCap /> },
   ];
 
@@ -133,6 +151,21 @@ export function StartupSettingsDialog({
             <p className="startup-safety-note">{tr("记忆不会绕过安全边界、人工确认或紧急停止。", "Memory never bypasses safety boundaries, human confirmation, or emergency stop.")}</p>
           </SettingsSection>}
 
+          {tab === "storage" && <SettingsSection icon={<HardDrive />} title={tr("存储清理", "Storage cleanup")}>
+            <div className="startup-storage-card">
+              <strong>{storage ? formatBytes(storage.reclaimable_bytes) : "—"}</strong>
+              <span>{tr("可安全清理的临时文件", "of temporary files can be safely removed")}</span>
+              <p>{storage ? tr(`任务运行记录保留 ${storage.automatic_retention_days} 天，并始终保护每个任务最近 ${storage.protected_recent_executions_per_thread} 次运行。软件每次启动也会自动执行同样的清理。`, `Mission runs are retained for ${storage.automatic_retention_days} days, and the latest ${storage.protected_recent_executions_per_thread} runs per task are always protected. The same cleanup also runs automatically at startup.`) : tr("正在检查…", "Inspecting…")}</p>
+              <button disabled={busy || !storage?.candidate_count} onClick={async () => {
+                setBusy(true); setError("");
+                try { setStorage(await appApi.cleanStorage()); }
+                catch (reason) { setError(localeSafeError(reason, locale, { zh: "清理失败，请结束正在运行的仿真后重试", en: "Cleanup failed. Finish the active simulation and try again." })); }
+                finally { setBusy(false); }
+              }}>{busy ? tr("正在清理", "Cleaning") : tr("立即清理", "Clean now")}</button>
+              {storage && storage.removed_count > 0 && <small>{tr(`已释放 ${formatBytes(storage.removed_bytes)}`, `${formatBytes(storage.removed_bytes)} released`)}</small>}
+            </div>
+          </SettingsSection>}
+
           {tab === "course" && <div className="startup-course-panel">
             <div className="startup-course-mark"><GraduationCap /></div>
             <h3>ECE498BH</h3>
@@ -156,4 +189,12 @@ function Choice({ selected, icon, label, onClick, disabled }: { selected: boolea
 
 function Toggle({ checked, label, onChange, disabled }: { checked: boolean; label: string; onChange: (value: boolean) => void; disabled: boolean }) {
   return <label className={`startup-toggle-row ${disabled ? "disabled" : ""}`}><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} disabled={disabled} /><i aria-hidden="true" /></label>;
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** index;
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }

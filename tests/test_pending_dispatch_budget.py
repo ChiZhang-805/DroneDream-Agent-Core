@@ -40,7 +40,7 @@ def test_absent_or_expired_request_does_not_revalidate_unused_features():
 #   now：预算边界附近的毫秒时刻；expected：原公式的预期结果。
 # 输出：
 #   无。
-@pytest.mark.parametrize("now,expected", [(1210, True), (1211, False), (1250, False)])
+@pytest.mark.parametrize("now,expected", [(1180, True), (1181, False), (1250, False)])
 def test_pending_request_retains_both_original_deadlines(now, expected):
     features = retained_features(captured=1100)
     coordinator = pending_coordinator()
@@ -106,10 +106,10 @@ def test_waiting_uses_original_lease_but_completed_result_revalidates_features()
     features = retained_features(captured=1100)
     validate = Mock(wraps=features.control_deadline_unix_ms)
     proxy = SimpleNamespace(control_deadline_unix_ms=validate)
-    for now in (1100, 1150, 1210):
+    for now in (1100, 1150, 1180):
         assert model_handoff_budget_ready(coordinator, proxy, handoff_state=(True, False), now_unix_ms=now)
     validate.assert_not_called()
-    assert not model_handoff_budget_ready(coordinator, proxy, handoff_state=(True, False), now_unix_ms=1211)
+    assert not model_handoff_budget_ready(coordinator, proxy, handoff_state=(True, False), now_unix_ms=1181)
     assert not model_handoff_budget_ready(coordinator, proxy, handoff_state=(False, False), now_unix_ms=1100)
     assert model_handoff_budget_ready(coordinator, proxy, handoff_state=(False, True), now_unix_ms=1100)
     validate.assert_called_once_with(now_unix_ms=1100)

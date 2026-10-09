@@ -115,6 +115,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .startup-course-panel button:hover { border-color: #ed8da4; color: #b8193f; }
 .startup-course-panel button svg { width: 15px; }
 .startup-settings-error { margin: 18px 0 0; color: #b01739; font-size: 12px; }
+.startup-storage-card { display: grid; justify-items: start; gap: 8px; border: 1px solid #e5dfe4; border-radius: 12px; padding: 20px; background: #fff; }
+.startup-storage-card strong { color: #221d21; font-size: 28px; letter-spacing: -.03em; }
+.startup-storage-card span, .startup-storage-card p, .startup-storage-card small { color: #746d73; font-size: 12px; line-height: 1.55; }
+.startup-storage-card p { max-width: 580px; margin: 6px 0; }
+.startup-storage-card button { min-height: 36px; border: 0; border-radius: 8px; padding: 0 16px; color: #fff; background: #b91f47; cursor: pointer; font-weight: 650; }
+.startup-storage-card button:disabled { cursor: default; opacity: .45; }
 .startup-empty { color: #777077; }
 
 .startup-error-dialog { width: min(510px, calc(100vw - 44px)); border-radius: 17px; padding: 22px; background: #fff; box-shadow: 0 26px 80px rgb(20 11 15 / 28%); }
@@ -532,6 +538,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .setting-row span { color: var(--muted); font-size: 12px; }
 .setting-row > span:first-child { flex: 1; color: #242428; font-size: 13px; }
 .setting-row select { min-width: 160px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; background: #fff; }
+.storage-maintenance-row > div { min-width: 0; }
+.storage-maintenance-row > div span { line-height: 1.45; }
+.storage-maintenance-row > button { flex: 0 0 auto; }
 .settings-avatar-trigger { display: grid; flex: 0 0 38px; place-items: center; border-radius: 50%; }
 .settings-avatar-trigger .avatar { width: 38px; height: 38px; font-size: 14px; }
 .custom-model-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 10px; }

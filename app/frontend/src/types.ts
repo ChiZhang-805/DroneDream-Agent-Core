@@ -525,3 +525,16 @@ export interface RuntimeSetupSnapshot {
   started_at: string | null;
   updated_at: string;
 }
+
+export interface StorageMaintenanceReport {
+  schema_version: "dronedream.storage-maintenance.v1";
+  generated_at: string;
+  automatic_retention_days: number;
+  protected_recent_executions_per_thread: number;
+  candidate_count: number;
+  reclaimable_bytes: number;
+  removed_count: number;
+  removed_bytes: number;
+  categories: Record<string, number>;
+  issues: string[];
+}

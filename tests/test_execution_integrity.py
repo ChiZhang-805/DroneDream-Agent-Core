@@ -470,7 +470,9 @@ def _exercise_failed_execution_and_reverification(tmp_path, prepared, context, m
             prepared.runtime_checkpoints.checkpoints
         ),
     )
-    assert result.status == "failed" and result.completion_assessment.accepted
+    assert result.status == "failed"
+    assert not result.completion_assessment.accepted
+    assert result.completion_assessment.issue_codes == ["DETERMINISTIC_RUNTIME_GATES_FAILED"]
     originals = {path: path.read_bytes() for path in run_dir.rglob("*") if path.is_file()}
     reviewed = execution.reverify_prepared_run(
         prepared_path=package / "prepared-mission.json",

@@ -1137,6 +1137,23 @@ class AccountMemoryProjectionBridge:
             raise ValueError("MEMORY_PROJECTION_TOMBSTONE_SCAN_INCOMPLETE")
         applied = 0
         namespaces = _READ_NAMESPACES
+        # A tombstone page can contain hundreds of entries. Read each local
+        # namespace once instead of opening the same SQLite query for every
+        # tombstone; the remote deadline remains unchanged and still bounds the
+        # complete operation.
+        local_projection: dict[str, tuple[MemoryOwnerScope, tuple[str, ...]]] = {}
+        for namespace in namespaces:
+            projected_scope = MemoryOwnerScope(
+                owner_account_id=scope.owner_account_id,
+                tenant_id=scope.tenant_id,
+                organization_id=scope.organization_id,
+                namespace=namespace,
+                source_edition=scope.source_edition,
+            )
+            local_projection[namespace] = (
+                projected_scope,
+                tuple(self.memory.projection_keys(projected_scope)),
+            )
         for raw in response:
             if not isinstance(raw, dict):
                 raise ValueError("MEMORY_PROJECTION_TOMBSTONE_RESPONSE_INVALID")
@@ -1154,14 +1171,8 @@ class AccountMemoryProjectionBridge:
             ):
                 raise ValueError("MEMORY_PROJECTION_TOMBSTONE_RESPONSE_INVALID")
             for namespace in selected_namespaces:
-                projected_scope = MemoryOwnerScope(
-                    owner_account_id=scope.owner_account_id,
-                    tenant_id=scope.tenant_id,
-                    organization_id=scope.organization_id,
-                    namespace=namespace,
-                    source_edition=scope.source_edition,
-                )
-                for memory_key in self.memory.projection_keys(projected_scope):
+                projected_scope, memory_keys = local_projection[namespace]
+                for memory_key in memory_keys:
                     if remote_scope is not None and _memory_scope(memory_key) != remote_scope:
                         continue
                     if (

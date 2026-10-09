@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { currentSession, currentSupabasePublishableKey } from "./auth";
-import type { AssetImportJob, AssetIssueReport, AssetQualificationEvidence, AssetQualificationJob, Bootstrap, CustomModelDiscovery, Message, ModelEntry, RuntimeSetupSnapshot, RuntimeStatus, TaskThread } from "./types";
+import type { AssetImportJob, AssetIssueReport, AssetQualificationEvidence, AssetQualificationJob, Bootstrap, CustomModelDiscovery, Message, ModelEntry, RuntimeSetupSnapshot, RuntimeStatus, StorageMaintenanceReport, TaskThread } from "./types";
 
 interface BackendInfo {
   base_url: string;
@@ -157,6 +157,8 @@ export const appApi = {
   }),
   deleteConnectorCredential: (reference: string) => localRequest(`/v1/connector-credentials/${encodeURIComponent(reference)}`, { method: "DELETE" }),
   patchSettings: (patch: Record<string, unknown>) => localRequest("/v1/settings", { method: "PATCH", body: JSON.stringify(patch) }),
+  inspectStorage: () => localRequest<StorageMaintenanceReport>("/v1/storage/maintenance"),
+  cleanStorage: () => localRequest<StorageMaintenanceReport>("/v1/storage/maintenance", { method: "POST" }),
   discoverCustomModels: (baseUrl: string, apiKey: string) => localRequest<CustomModelDiscovery>("/v1/custom-models/discover", {
     method: "POST",
     body: JSON.stringify({ base_url: baseUrl, api_key: apiKey }),

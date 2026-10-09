@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -97,6 +97,7 @@ from .plugin_marketplace import PluginMarketplaceError, PluginMarketplaceService
 from .preparation_progress import PreparationProgress
 from .runtime_manager import RuntimeBridgeError, RuntimeManager
 from .storage import AppStore, AssetImportError
+from .storage_maintenance import StorageMaintenanceService
 from .vehicle_resource_catalog import vehicle_resource_catalog
 
 
@@ -175,6 +176,7 @@ def create_app(
     )
     verify_identity = identity_verifier or SupabaseJwtVerifier()
     runtime_manager = RuntimeManager(store, resource_root, plugin_manager)
+    storage_maintenance = StorageMaintenanceService(store.root)
     asset_import_service = AssetImportService(
         store,
         environment_versions_provider=runtime_manager.qualification_environment_versions,
@@ -195,10 +197,37 @@ def create_app(
     )
     plugin_manager.set_disable_guard(runtime_manager.prepare_plugin_disable)
 
+    # 功能：软件运行期间每六小时在无仿真任务时执行一次有界存储维护。
+    # 输入：无；闭包绑定运行管理器及存储维护服务。
+    # 输出：None：循环直到应用生命周期取消。
+    async def periodic_storage_maintenance() -> None:
+        while True:
+            await anyio.sleep(6 * 60 * 60)
+            if runtime_manager.storage_maintenance_blocked():
+                continue
+            try:
+                await anyio.to_thread.run_sync(storage_maintenance.clean)
+            except (OSError, ValueError):
+                # Storage maintenance is best-effort and must never interrupt a
+                # mission or prevent the local service from remaining usable.
+                continue
+
+    # 功能：启动时先做非阻塞维护，并管理周期任务与插件资源的完整生命周期。
+    # 输入：未使用的 FastAPI 实例。
+    # 输出：None：通过异步上下文交还应用控制权。
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
-            yield
+            # Cleanup is bounded to replaceable app-owned staging data and old
+            # mission executions. It runs before any runtime process can start.
+            with suppress(OSError, ValueError):
+                await anyio.to_thread.run_sync(storage_maintenance.clean)
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(periodic_storage_maintenance)
+                try:
+                    yield
+                finally:
+                    task_group.cancel_scope.cancel()
         finally:
             plugin_manager.close()
 
@@ -1748,6 +1777,22 @@ def create_app(
             additional_issues=tuple(projection_issues),
         )
         return {**updated, "memory_projection": projection}
+
+    # 功能：返回当前可清理空间，不修改磁盘内容。
+    # 输入：本地会话鉴权由依赖项完成。
+    # 输出：report：结构化存储维护预览。
+    @app.get("/v1/storage/maintenance", dependencies=[local])
+    def inspect_storage_maintenance() -> dict[str, object]:
+        return storage_maintenance.inspect()
+
+    # 功能：在没有活动仿真时立即清理过期的应用自产物。
+    # 输入：本地会话鉴权由依赖项完成。
+    # 输出：report：实际释放空间及未删除问题。
+    @app.post("/v1/storage/maintenance", dependencies=[local])
+    def apply_storage_maintenance() -> dict[str, object]:
+        if runtime_manager.storage_maintenance_blocked():
+            raise HTTPException(status_code=409, detail="STORAGE_CLEANUP_RUNTIME_ACTIVE")
+        return storage_maintenance.clean()
 
     @app.get("/v1/runtime/status", dependencies=[local])
     def runtime_status() -> dict[str, object]:

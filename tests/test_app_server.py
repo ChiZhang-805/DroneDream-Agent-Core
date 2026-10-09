@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -73,6 +75,32 @@ def test_loopback_api_requires_random_session_token(tmp_path):
     response = client.get("/v1/bootstrap", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     assert len(response.json()["models"]) == 7
+
+
+# 功能：验证本地鉴权接口先预览、再删除过期暂存，并立即返回零剩余候选。
+# 输入：tmp_path：隔离应用数据根。
+# 输出：None：通过 HTTP 响应和磁盘状态断言结果。
+def test_storage_maintenance_api_previews_and_removes_expired_staging(tmp_path):
+    token = "s" * 64
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(create_app(store=AppStore(tmp_path), token=token)) as client:
+        expired = tmp_path / "plugin-staging" / "expired"
+        expired.mkdir(parents=True)
+        payload = expired / "replaceable.bin"
+        payload.write_bytes(b"replaceable")
+        timestamp = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+        os.utime(expired, (timestamp, timestamp))
+
+        preview = client.get("/v1/storage/maintenance", headers=headers)
+        assert preview.status_code == 200
+        assert preview.json()["reclaimable_bytes"] == len(b"replaceable")
+
+        cleaned = client.post("/v1/storage/maintenance", headers=headers)
+        assert cleaned.status_code == 200
+        assert cleaned.json()["removed_bytes"] == len(b"replaceable")
+        assert cleaned.json()["reclaimable_bytes"] == 0
+        assert not expired.exists()
 
 
 def test_account_memory_governance_api_is_local_owner_and_thread_bound(tmp_path):

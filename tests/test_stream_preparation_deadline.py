@@ -24,7 +24,7 @@ from dronedream_agent_core.training.observations import TrainingObservationError
 # 输出：
 #   None：不返回业务数据。
 @pytest.mark.parametrize(
-    "mode,budget", [(None, 90), ("reward-step", 90), ("stream-imitation", 40)]
+    "mode,budget", [(None, 120), ("reward-step", 120), ("stream-imitation", 70)]
 )
 def test_only_stream_preparation_uses_actual_instead_of_predicted_cost(
     tmp_path, monkeypatch, mode, budget
@@ -273,7 +273,7 @@ def test_expired_progress_deadline_stays_expired(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError, match="NEXT_OBSERVATION_TIMEOUT"):
         env.next_stream_observation(deadline=9.0)
     env._receive_source_request.assert_not_called()
-    assert env._rollout_stop_reason["required_remaining_input_ms"] == 40
+    assert env._rollout_stop_reason["required_remaining_input_ms"] == 70
 
 
 # 功能：

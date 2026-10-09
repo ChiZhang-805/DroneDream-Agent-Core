@@ -168,6 +168,17 @@ class RuntimeManager:
         }
 
     # 功能：
+    #   判断是否存在正在运行的任务或资产资格仿真，避免存储清理与运行证据写入并发。
+    # 输入：
+    #   self：当前运行管理器。
+    # 输出：
+    #   blocked：任一受管运行仍处于活动状态时为真。
+    def storage_maintenance_blocked(self) -> bool:
+        with self._lock:
+            blocked = bool(self._active_runs or self._active_asset_qualification_runs)
+            return blocked
+
+    # 功能：
     #   有界序列化运行契约，经独占临时文件原子替换目标，失败只清理自身临时文件。
     # 输入：
     #   path：调用方确定的运行契约或请求文件路径。

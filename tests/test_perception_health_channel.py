@@ -175,7 +175,10 @@ def test_preflight_channel_accepts_live_frames_without_disk_reads(tmp_path, monk
                 minimum_route_clearance_m=1., timeout_seconds=1.)
             assert result["transport"] == "run-scoped-datagram"
             assert result["independent_frames"] >= 3
-            assert result["valid_until_unix_ms"] == result["source_observed_at_unix_ms"] + 250
+            assert result["valid_until_unix_ms"] == (
+                result["source_observed_at_unix_ms"]
+                + native_preflight.NATIVE_PREFLIGHT_MAXIMUM_AGE_MS
+            )
             native_preflight.assert_native_preflight_current(
                 result, now_unix_ms=int(time.time() * 1000))
             assert receiver.path.exists()  # 所有者在飞行资源回收阶段关闭，不阻塞解锁。
