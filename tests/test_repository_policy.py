@@ -126,13 +126,16 @@ def test_default_assets_have_content_addressed_multi_pair_boundary() -> None:
     packages = [entry for pair in pairs for entry in pair["packages"]]
 
     assert index["schema_version"] == "dronedream.bundled-assets.v3"
-    assert len(pairs) == 8
+    assert len(pairs) == 1
+    assert pairs[0]["resource_id"] == "dronedream-school-map"
     assert index["qualified_pair"] in pairs
     assert index["default_qualification_id"] == index["qualified_pair"]["qualification_id"]
     assert len({pair["qualification_id"] for pair in pairs}) == len(pairs)
     assert len({pair["resource_id"] for pair in pairs}) == len(pairs)
     assert "bundles" not in index
-    assert all({entry["kind"] for entry in pair["packages"]} == {"map", "vehicle"} for pair in pairs)
+    assert all(
+        {entry["kind"] for entry in pair["packages"]} == {"map", "vehicle"} for pair in pairs
+    )
     assert len({entry["file"] for entry in packages}) == len(packages)
 
     for entry in packages:
@@ -143,8 +146,7 @@ def test_default_assets_have_content_addressed_multi_pair_boundary() -> None:
             assert not any("legacy" in name.casefold() for name in names)
             assert not any(name.casefold().endswith(".zip") for name in names)
             assert all(
-                not name.casefold().startswith("source/")
-                or name == "source/source-reference.json"
+                not name.casefold().startswith("source/") or name == "source/source-reference.json"
                 for name in names
             )
             manifest = json.loads(bundle.read("manifest.json"))
@@ -404,12 +406,12 @@ def test_default_vehicle_range_is_derived_from_the_verified_track() -> None:
     source = (repository / "scripts/build-default-assets.py").read_text(encoding="utf-8")
 
     assert "def _verified_track_distance_m(" in source
-    assert 'qualified_range_m = _verified_track_distance_m(run_dir)' in source
+    assert "qualified_range_m = _verified_track_distance_m(run_dir)" in source
     assert '"qualified_range_m": 413.213' not in source
 
-    depth_qualification = (
-        repository / "scripts/run_school_map_depth_qualification.py"
-    ).read_text(encoding="utf-8")
+    depth_qualification = (repository / "scripts/run_school_map_depth_qualification.py").read_text(
+        encoding="utf-8"
+    )
     assert 'parser.add_argument("vehicle_metadata", type=Path)' in depth_qualification
     assert "vehicle = _load_vehicle(" in depth_qualification
     assert "qualified_range_m=413.213" not in depth_qualification

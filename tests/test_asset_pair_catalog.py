@@ -17,52 +17,38 @@ def test_catalog_covers_every_builtin_map_aircraft_combination_once() -> None:
     catalog = asset_pair_catalog()
     pairs = catalog["pairs"]
     assert catalog["schema_version"] == "dronedream.asset-pair-catalog.v1"
-    assert catalog["map_count"] == 8
+    assert catalog["map_count"] == 1
     assert catalog["vehicle_count"] == 13
-    assert catalog["pair_count"] == 104
-    assert len({item["pair_id"] for item in pairs}) == 104
+    assert catalog["pair_count"] == 13
+    assert len({item["pair_id"] for item in pairs}) == 13
     assert catalog["counts"] == {
-        "qualified_builtin": 8,
-        "compatible_requires_qualification": 78,
-        "incompatible": 18,
+        "qualified_builtin": 1,
+        "compatible_requires_qualification": 12,
+        "incompatible": 0,
     }
 
 
-def test_vtol_is_only_admitted_to_the_two_outdoor_maps() -> None:
+def test_vtol_is_admitted_to_the_outdoor_campus_pending_qualification() -> None:
     catalog = asset_pair_catalog()
     vtol_pairs = [item for item in catalog["pairs"] if item["vehicle_class"] == "vtol"]
     compatible = [item for item in vtol_pairs if item["compatible"]]
-    assert len(vtol_pairs) == 24
-    assert len(compatible) == 6
-    assert {item["map_resource_id"] for item in compatible} == {
-        "open-rmf-battle-royale",
-        "open-rmf-campus",
-    }
-    assert all(item["status"] == "incompatible" for item in vtol_pairs if not item["compatible"])
+    assert len(vtol_pairs) == 3
+    assert len(compatible) == 3
+    assert {item["map_resource_id"] for item in compatible} == {"dronedream-school-map"}
+    assert all(item["status"] == "compatible_requires_qualification" for item in vtol_pairs)
 
 
 def test_only_exact_builtin_x500_depth_pairs_claim_existing_qualification() -> None:
     catalog = asset_pair_catalog()
     qualified = [item for item in catalog["pairs"] if item["qualification_id"]]
-    assert len(qualified) == 8
-    assert {
-        item["map_resource_id"]: item["qualified_map_asset_id"]
-        for item in qualified
-    } == {
+    assert len(qualified) == 1
+    assert {item["map_resource_id"]: item["qualified_map_asset_id"] for item in qualified} == {
         "dronedream-school-map": "dronedream.school-map.v1",
-        "open-rmf-airport-terminal": "airport-terminal",
-        "open-rmf-battle-royale": "battle-royale",
-        "open-rmf-campus": "campus",
-        "open-rmf-clinic": "clinic",
-        "open-rmf-hotel": "hotel",
-        "open-rmf-office": "office",
-        "open-rmf-triple-h": "triple-h",
     }
     assert {item["vehicle_resource_id"] for item in qualified} == {"px4-x500-depth"}
     assert all(item["qualified_vehicle_asset_id"] == "dronedream.my-drone.v1" for item in qualified)
     assert all(
-        item["qualification_scope"] == "exact_builtin_normalized_package"
-        for item in qualified
+        item["qualification_scope"] == "exact_builtin_normalized_package" for item in qualified
     )
     assert all(not item["required_gates"] for item in qualified)
 
@@ -78,10 +64,7 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
         / "index.json"
     )
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    expected = {
-        item["resource_id"]: item["qualification_id"]
-        for item in index["qualified_pairs"]
-    }
+    expected = {item["resource_id"]: item["qualification_id"] for item in index["qualified_pairs"]}
     actual = {
         item["map_resource_id"]: item["qualification_id"]
         for item in asset_pair_catalog()["pairs"]
@@ -111,4 +94,4 @@ def test_asset_pair_catalog_api_is_loopback_token_protected(tmp_path) -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
-    assert response.json()["pair_count"] == 104
+    assert response.json()["pair_count"] == 13

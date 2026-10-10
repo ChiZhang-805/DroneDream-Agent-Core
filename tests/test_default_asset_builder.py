@@ -51,16 +51,16 @@ def test_pickup_index_comes_from_matching_checkpoint_and_payload_evidence(
     tmp_path: Path,
 ) -> None:
     builder = _load_builder()
-    (tmp_path / "runtime-checkpoints.json").write_text(
+    (tmp_path / "reference_track.json").write_text(
         json.dumps(
             {
-                "schema_version": "dronedream.runtime-checkpoints.v1",
-                "checkpoints": [
-                    {
-                        "checkpoint_id": "checkpoint-001",
-                        "track_point_index": 2,
-                    }
-                ],
+                "points": [
+                    {"x": 0.0, "y": 0.0, "z": 1.0, "phase": "launch"},
+                    {"x": 1.0, "y": 0.0, "z": 5.0, "phase": "transit"},
+                    {"x": 2.0, "y": 0.0, "z": 2.0, "phase": "pickup"},
+                    {"x": 1.0, "y": 0.0, "z": 5.0, "phase": "return"},
+                    {"x": 0.0, "y": 0.0, "z": 1.0, "phase": "land"},
+                ]
             }
         ),
         encoding="utf-8",
@@ -69,31 +69,32 @@ def test_pickup_index_comes_from_matching_checkpoint_and_payload_evidence(
         json.dumps(
             {
                 "accepted": True,
-                "checkpoint_id": "checkpoint-001",
                 "track_point_index": 2,
             }
         ),
         encoding="utf-8",
     )
 
-    assert builder._verified_pickup_track_point_index(
-        run_dir=tmp_path,
-        point_count=5,
-    ) == 2
+    assert (
+        builder._verified_pickup_track_point_index(
+            run_dir=tmp_path,
+            point_count=5,
+        )
+        == 2
+    )
 
 
-def test_pickup_index_rejects_mismatched_runtime_evidence(tmp_path: Path) -> None:
+def test_pickup_index_rejects_ambiguous_runtime_evidence(tmp_path: Path) -> None:
     builder = _load_builder()
-    (tmp_path / "runtime-checkpoints.json").write_text(
+    (tmp_path / "reference_track.json").write_text(
         json.dumps(
             {
-                "schema_version": "dronedream.runtime-checkpoints.v1",
-                "checkpoints": [
-                    {
-                        "checkpoint_id": "checkpoint-001",
-                        "track_point_index": 2,
-                    }
-                ],
+                "points": [
+                    {"x": 0.0, "y": 0.0, "z": 1.0, "phase": "launch"},
+                    {"x": 1.0, "y": 0.0, "z": 5.0, "phase": "transit"},
+                    {"x": 2.0, "y": 0.0, "z": 2.0, "phase": "pickup"},
+                    {"x": 0.0, "y": 0.0, "z": 1.0, "phase": "pickup"},
+                ]
             }
         ),
         encoding="utf-8",
@@ -102,8 +103,6 @@ def test_pickup_index_rejects_mismatched_runtime_evidence(tmp_path: Path) -> Non
         json.dumps(
             {
                 "accepted": True,
-                "checkpoint_id": "checkpoint-001",
-                "track_point_index": 3,
             }
         ),
         encoding="utf-8",
@@ -118,21 +117,18 @@ def test_pickup_index_rejects_mismatched_runtime_evidence(tmp_path: Path) -> Non
 
 def test_qualified_runtime_evidence_uses_current_gate_contract(tmp_path: Path) -> None:
     builder = _load_builder()
-    gates = {
-        "runtime_pose_samples_present": True,
-        "ros_observations_present": True,
-        "goal_observed": True,
-        "landing_confirmed": True,
-        "static_route_clearance_bound": True,
-    }
+    gates = {gate: True for gate in builder.CURRENT_RUNTIME_GATES}
     mission_evidence = tmp_path / "mission_evidence.json"
     mission_evidence.write_text(
         json.dumps(
             {
-                "schema_version": "dronedream.generic-px4-gazebo-run.v1",
+                "schema_version": "dronedream.school-map-px4-mission-evidence.v1",
                 "status": "verified",
                 "gates": gates,
-                "measurements": {"pose_sample_count": 5, "landing_state": "ON_GROUND"},
+                "pose_sample_count": 10,
+                "measurements": {"pose_sample_count": 10, "landing_state": "ON_GROUND"},
+                "process_failure": None,
+                "artifacts": {"px4_ulogs": ["flight.ulg"]},
             }
         ),
         encoding="utf-8",
@@ -155,8 +151,20 @@ def test_qualified_runtime_evidence_uses_current_gate_contract(tmp_path: Path) -
         target = qualification_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(str(relative), encoding="utf-8")
+    generic_gates = [
+        "executor_completed",
+        "offboard_timing_complete",
+        "runtime_pose_samples_present",
+        "ros_observations_present",
+        "goal_observed",
+        "landing_confirmed",
+        "native_terminal_lifecycle_published",
+        "no_live_abort",
+        "px4_ulog_present",
+        "static_route_clearance_bound",
+    ]
     plan = SimpleNamespace(
-        required_runtime_gates=list(gates),
+        required_runtime_gates=generic_gates,
         inputs=inputs,
         route_sha256="route",
         track_sha256="track",
@@ -169,8 +177,8 @@ def test_qualified_runtime_evidence_uses_current_gate_contract(tmp_path: Path) -
         mission_evidence_path=mission_evidence,
     )
 
-    assert result["gates"] == gates
-    assert result["measurements"]["pose_sample_count"] == 5
+    assert all(result["gates"].values())
+    assert result["measurements"]["pose_sample_count"] == 10
 
 
 def test_superseded_pair_records_preserve_the_complete_retirement_chain(
@@ -201,16 +209,12 @@ def test_superseded_pair_records_preserve_the_complete_retirement_chain(
                         {
                             "kind": "map",
                             "content_sha256": current["map_content_sha256"],
-                            "source_content_sha256": current[
-                                "map_source_content_sha256"
-                            ],
+                            "source_content_sha256": current["map_source_content_sha256"],
                         },
                         {
                             "kind": "vehicle",
                             "content_sha256": current["vehicle_content_sha256"],
-                            "source_content_sha256": current[
-                                "vehicle_source_content_sha256"
-                            ],
+                            "source_content_sha256": current["vehicle_source_content_sha256"],
                         },
                     ],
                 },

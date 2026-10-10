@@ -11,41 +11,19 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from .map_resource_catalog import map_resource_catalog
 from .vehicle_resource_catalog import vehicle_resource_catalog
 
 _SCHOOL_MAP = {
     "resource_id": "dronedream-school-map",
-    "display_name": {"zh-CN": "学校地图", "en-US": "School Map"},
-    "environment_class": "indoor_mixed",
+    "display_name": {"zh-CN": "Kumpula 科学校园", "en-US": "Kumpula Campus"},
+    "environment_class": "outdoor_campus",
 }
-
-_MAP_ENVIRONMENT_CLASSES = {
-    "open-rmf-airport-terminal": "indoor_large",
-    "open-rmf-battle-royale": "outdoor_open",
-    "open-rmf-campus": "outdoor_large",
-    "open-rmf-clinic": "indoor_multilevel",
-    "open-rmf-hotel": "indoor_multilevel",
-    "open-rmf-office": "indoor_tight",
-    "open-rmf-triple-h": "indoor_corridor",
-}
-
-_OUTDOOR_VTOL_MAPS = frozenset(
-    {"open-rmf-battle-royale", "open-rmf-campus"}
-)
 
 # These identifiers bind to receipts already shipped in default-assets/index.json.
 # The qualified aircraft is the normalized built-in My Drone package, whose
 # reviewed source model is PX4 x500_depth.
 _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
-    "dronedream-school-map": "asset-qualification-9968cd42eaf394ff55ce5792",
-    "open-rmf-airport-terminal": "asset-qualification-36d838de8568c92fb3708504",
-    "open-rmf-battle-royale": "asset-qualification-e2cab08140791a54cfe24b44",
-    "open-rmf-campus": "asset-qualification-c1e60d7740e8e5f64448db27",
-    "open-rmf-clinic": "asset-qualification-106f0c4bf24b22858c9e7927",
-    "open-rmf-hotel": "asset-qualification-ad8c28b4c381af95b681b0cb",
-    "open-rmf-office": "asset-qualification-c4ec6a2c0137760b8f175db2",
-    "open-rmf-triple-h": "asset-qualification-babfc35b4cb44740d7c89c1a",
+    "dronedream-school-map": "asset-qualification-582554632b54abc53723f55b",
 }
 
 # The public resource identifier names the catalog entry, while the normalized
@@ -54,28 +32,13 @@ _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
 # ``open-rmf-office`` is backed by the installed asset ``office``).
 _BUILTIN_MAP_ASSET_IDS = {
     "dronedream-school-map": "dronedream.school-map.v1",
-    "open-rmf-airport-terminal": "airport-terminal",
-    "open-rmf-battle-royale": "battle-royale",
-    "open-rmf-campus": "campus",
-    "open-rmf-clinic": "clinic",
-    "open-rmf-hotel": "hotel",
-    "open-rmf-office": "office",
-    "open-rmf-triple-h": "triple-h",
 }
 
 
 def _maps() -> list[dict[str, object]]:
-    resources = [_SCHOOL_MAP]
-    for resource in map_resource_catalog()["resources"]:
-        resource_id = str(resource["resource_id"])
-        resources.append(
-            {
-                "resource_id": resource_id,
-                "display_name": resource["display_name"],
-                "environment_class": _MAP_ENVIRONMENT_CLASSES[resource_id],
-            }
-        )
-    return resources
+    """Return the sole map admitted to the built-in mission catalog."""
+
+    return [deepcopy(_SCHOOL_MAP)]
 
 
 def _pair_record(
@@ -96,13 +59,6 @@ def _pair_record(
             "required PX4/Gazebo gates on this map.",
         ]
         required_gates: list[str] = []
-    elif vehicle_class == "vtol" and map_id not in _OUTDOOR_VTOL_MAPS:
-        status = "incompatible"
-        reasons = [
-            "The map contains indoor, multilevel, doorway, stair, or corridor "
-            "constraints outside this VTOL model's admitted operating envelope.",
-        ]
-        required_gates = []
     else:
         status = "compatible_requires_qualification"
         if vehicle_class == "vtol":
@@ -146,14 +102,12 @@ def _pair_record(
         ),
         "reasons": reasons,
         "required_gates": required_gates,
-        "sensor_constraints": deepcopy(
-            vehicle_resource["analysis"]["excluded_from"]
-        ),
+        "sensor_constraints": deepcopy(vehicle_resource["analysis"]["excluded_from"]),
     }
 
 
 def asset_pair_catalog() -> dict[str, object]:
-    """Return the complete 8-map by 13-aircraft compatibility matrix."""
+    """Return the complete one-map by 13-aircraft compatibility matrix."""
     maps = _maps()
     vehicles = vehicle_resource_catalog()["resources"]
     pairs = [
@@ -162,9 +116,7 @@ def asset_pair_catalog() -> dict[str, object]:
         for vehicle_resource in vehicles
     ]
     counts = {
-        "qualified_builtin": sum(
-            item["status"] == "qualified_builtin" for item in pairs
-        ),
+        "qualified_builtin": sum(item["status"] == "qualified_builtin" for item in pairs),
         "compatible_requires_qualification": sum(
             item["status"] == "compatible_requires_qualification" for item in pairs
         ),
@@ -172,7 +124,7 @@ def asset_pair_catalog() -> dict[str, object]:
     }
     return {
         "schema_version": "dronedream.asset-pair-catalog.v1",
-        "catalog_revision": "2026-09-28.1",
+        "catalog_revision": "2026-10-10.1",
         "map_count": len(maps),
         "vehicle_count": len(vehicles),
         "pair_count": len(pairs),

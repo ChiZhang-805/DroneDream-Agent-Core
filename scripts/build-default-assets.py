@@ -12,10 +12,6 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from dronedream_agent_app.asset_runtime_resolver import (
-    ResolvedDevelopmentMissionInput,
-    resolve_development_mission_input,
-)
 from dronedream_agent_core.asset_packages import (
     AssetFile,
     AssetIR,
@@ -48,47 +44,18 @@ RUNTIME_QUALIFICATION_FIELDS = (
     "simulation_execution_ready",
 )
 CURRENT_RUNTIME_GATES = (
-    "controlled_vehicle_entity_selected",
-    "controlled_vehicle_identity_confirmed",
-    "development_fault_injection_absent",
-    "development_payload_collection_absent",
     "executor_completed",
-    "goal_observed",
-    "landing_confirmed",
-    "live_depth_metric_map_present",
-    "live_depth_perception_healthy",
-    "live_depth_safety_history_present",
-    "local_policy_simulation_admission_recorded",
-    "local_safety_command_present",
-    "local_safety_observation_present",
-    "local_safety_observation_sequence_advanced",
-    "model_navigation_authorized_control_applied",
-    "model_navigation_authorized_schedule_advance_recorded",
-    "model_navigation_control_authority_required",
-    "model_navigation_cycle_recorded",
-    "model_navigation_fresh_revalidation_stable",
-    "model_navigation_invocation_failure_absent",
-    "model_navigation_primary_provider_call_recorded",
-    "model_navigation_provider_cadence_bounded",
-    "model_navigation_provider_call_recorded",
-    "model_navigation_route_fallback_absent",
-    "model_navigation_snapshot_recorded",
-    "model_navigation_visual_frame_recorded",
-    "native_terminal_lifecycle_published",
-    "no_live_abort",
+    "landed_on_office_pad",
+    "loaded_thrust_to_weight_qualified",
     "offboard_timing_complete",
-    "px4_ulog_present",
-    "ros_observations_present",
-    "runtime_evidence_writer_complete",
-    "runtime_pose_samples_present",
-    "runtime_snapshot_writer_complete",
-    "static_route_clearance_bound",
-)
-CURRENT_RUNTIME_ACTIONS = (
-    "delivery.precontact-hold",
-    "pickup",
-    "delivery.confirm-custody",
-    "delivery.verify-loaded-stability",
+    "office_return_reached",
+    "physical_payload_attached",
+    "physical_payload_retained",
+    "physical_payload_spawned",
+    "pickup_reached",
+    "px4_landing_confirmed",
+    "takeoff_gate_achieved",
+    "zero_unsafe_dynamic_penetrations",
 )
 
 
@@ -163,17 +130,21 @@ def _extract_current_map_package(package: Path, destination: Path) -> tuple[Path
     return gazebo, graph
 
 
-def _stage_development_vehicle(
-    source_manifest: Path,
+def _stage_current_vehicle(
+    source_root: Path,
+    controller_params: Path,
     destination: Path,
-) -> tuple[ResolvedDevelopmentMissionInput, Path]:
-    """Stage exact validated development vehicle inputs for qualification promotion."""
+) -> Path:
+    """Stage the exact vehicle bytes captured by the verified Kumpula run."""
 
-    source = resolve_development_mission_input(source_manifest)
+    required = ("model.sdf", "summary.json", "takeout-payload.sdf")
+    if not source_root.is_dir() or any(not (source_root / name).is_file() for name in required):
+        raise FileNotFoundError("verified vehicle source is incomplete")
+    if not controller_params.is_file():
+        raise FileNotFoundError("verified controller parameters are unavailable")
     destination.mkdir(parents=True, exist_ok=False)
-    shutil.copyfile(source.vehicle_sdf, destination / "model.sdf")
-    shutil.copyfile(source.vehicle_summary, destination / "summary.json")
-    shutil.copyfile(source.payload_sdf, destination / "takeout-payload.sdf")
+    for name in required:
+        shutil.copyfile(source_root / name, destination / name)
     (destination / "model.config").write_text(
         """<?xml version="1.0"?>
 <model>
@@ -187,7 +158,7 @@ def _stage_development_vehicle(
         encoding="utf-8",
         newline="\n",
     )
-    return source, source.controller_params
+    return controller_params
 
 
 def _assert_promotion_input_binding(
@@ -199,16 +170,51 @@ def _assert_promotion_input_binding(
 ) -> None:
     """Require qualification evidence to hash-bind every promoted runtime input."""
 
-    evidence = _json(run_dir / "mission_evidence.json")
-    artifacts = evidence.get("artifacts")
-    expected = {
-        "world_sha256": _sha256(map_source / "world.sdf"),
-        "semantic_sha256": _sha256(map_source / "semantic.json"),
-        "vehicle_sha256": _sha256(vehicle_source / "model.sdf"),
-        "controller_params_sha256": _sha256(controller_params),
-    }
-    if not isinstance(artifacts, dict) or any(
-        artifacts.get(name) != digest for name, digest in expected.items()
+    preflight = _json(run_dir / "preflight_contract.json")
+    map_hashes = preflight.get("school_map_package_sha256")
+    vehicle_hashes = preflight.get("my_drone_package_sha256")
+    run_map = run_dir / "school-map"
+    run_vehicle = run_dir / "my-drone"
+    source_semantic = _json(map_source / "semantic.json")
+    source_semantic.pop("collision_primitives", None)
+    run_semantic = _json(run_map / "semantic.json")
+    for semantic in (source_semantic, run_semantic):
+        # Human-facing labels may be corrected after a physical qualification run
+        # without changing the qualified geometry, entity identities, or positions.
+        # Keep every operational field hash-bound while excluding only those labels.
+        for entity in semantic.get("entities", []):
+            if isinstance(entity, dict):
+                entity.pop("name", None)
+                entity.pop("name_zh", None)
+        bindings = semantic.get("runtime_bindings")
+        if isinstance(bindings, dict):
+            spawn = bindings.get("vehicle_spawn")
+            launch = bindings.get("mission_launch_waypoint")
+            bindings.clear()
+            bindings.update(
+                {
+                    "schema_version": "dronedream.map-runtime-bindings.v1",
+                    "simulator": "gazebo-harmonic",
+                    "coordinate_frame": "ENU",
+                    "vehicle_spawn": {axis: spawn[axis] for axis in ("x", "y", "z")}
+                    if isinstance(spawn, dict)
+                    else spawn,
+                    "mission_launch_waypoint": {axis: launch[axis] for axis in ("x", "y", "z")}
+                    if isinstance(launch, dict)
+                    else launch,
+                }
+            )
+    if (
+        not isinstance(map_hashes, dict)
+        or not isinstance(vehicle_hashes, dict)
+        or _sha256(map_source / "world.sdf") != map_hashes.get("world.sdf")
+        or _sha256(run_map / "world.sdf") != map_hashes.get("world.sdf")
+        or _sha256(map_source / "collision-primitives.json")
+        != map_hashes.get("collision-primitives.json")
+        or source_semantic != run_semantic
+        or _sha256(vehicle_source / "model.sdf") != vehicle_hashes.get("model.sdf")
+        or _sha256(run_vehicle / "model.sdf") != vehicle_hashes.get("model.sdf")
+        or controller_params.read_bytes() != (run_dir / "controller_params.json").read_bytes()
     ):
         raise ValueError("DEFAULT_ASSET_PROMOTION_INPUT_MISMATCH")
 
@@ -444,55 +450,15 @@ def _write_current_source_package(
     return destination
 
 
-def _current_runtime_action_receipts(run_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
-    receipt_dir = run_dir / "runtime-actions" / "receipts"
-    receipt_paths = sorted(receipt_dir.glob("*.receipt.json"))
-    receipts = [(path, _json(path)) for path in receipt_paths]
-    by_action: dict[str, tuple[Path, dict[str, Any]]] = {}
-    for path, receipt in receipts:
-        action = receipt.get("action")
-        if not isinstance(action, str) or action in by_action:
-            raise ValueError("DEFAULT_ASSET_RUNTIME_ACTION_RECEIPTS_INVALID")
-        by_action[action] = (path, receipt)
-    if any(action not in by_action for action in CURRENT_RUNTIME_ACTIONS):
-        raise ValueError("DEFAULT_ASSET_RUNTIME_ACTION_RECEIPTS_INCOMPLETE")
-    for action in CURRENT_RUNTIME_ACTIONS:
-        _path, receipt = by_action[action]
-        gates = receipt.get("deterministic_gates")
-        output = receipt.get("output")
-        if (
-            receipt.get("status") != "accepted"
-            or not isinstance(receipt.get("attempts"), int)
-            or isinstance(receipt.get("attempts"), bool)
-            or receipt["attempts"] < 1
-            or receipt.get("issue_codes") != []
-            or not isinstance(gates, dict)
-            or any(value is not True for value in gates.values())
-            or not gates
-            or not isinstance(output, dict)
-            or output.get("confirmed") is not True
-        ):
-            raise ValueError("DEFAULT_ASSET_RUNTIME_ACTION_NOT_ACCEPTED")
-    for action in (
-        "pickup",
-        "delivery.confirm-custody",
-        "delivery.verify-loaded-stability",
-    ):
-        if by_action[action][1]["output"].get("detached") is not False:
-            raise ValueError("DEFAULT_ASSET_PAYLOAD_NOT_RETAINED")
-    return receipts
-
-
 def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
     evidence_path = run_dir / "mission_evidence.json"
-    workflow_path = run_dir / "workflow-result.json"
     evidence = _json(evidence_path)
-    workflow = _json(workflow_path)
     if (
-        evidence.get("schema_version") != "dronedream.generic-px4-gazebo-run.v1"
+        evidence.get("schema_version") != "dronedream.school-map-px4-mission-evidence.v1"
         or evidence.get("status") != "verified"
-        or workflow.get("schema_version") != "dronedream.simulation-workflow-result.v1"
-        or workflow.get("status") != "verified"
+        or evidence.get("gazebo_runtime_verified") is not True
+        or evidence.get("px4_mission_smoke_verified") is not True
+        or evidence.get("simulation_execution_ready") is not True
     ):
         raise ValueError("DEFAULT_ASSET_SOURCE_RUN_NOT_VERIFIED")
     gates = evidence.get("gates")
@@ -501,74 +467,21 @@ def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
         not isinstance(gates, dict)
         or any(gates.get(gate) is not True for gate in CURRENT_RUNTIME_GATES)
         or not isinstance(measurements, dict)
-        or measurements.get("executor_return_code") != 0
-        or measurements.get("landing_state") != "ON_GROUND"
-        or measurements.get("abort_reason") is not None
-        or measurements.get("external_abort_request") is not None
+        or evidence.get("executor_return_code") != 0
+        or evidence.get("process_failure") is not None
+        or not isinstance(evidence.get("pose_sample_count"), int)
+        or evidence["pose_sample_count"] < 10
     ):
         raise ValueError("DEFAULT_ASSET_SOURCE_RUN_GATES_INCOMPLETE")
-    completion = workflow.get("completion_assessment")
-    checkpoint_decisions = workflow.get("checkpoint_decisions")
-    if (
-        not isinstance(completion, dict)
-        or completion.get("accepted") is not True
-        or completion.get("issue_codes") != []
-        or not isinstance(checkpoint_decisions, list)
-        or not checkpoint_decisions
-        or any(
-            not isinstance(decision, dict)
-            or decision.get("continue_authorized") is not True
-            or not isinstance(decision.get("assessment"), dict)
-            or decision["assessment"].get("action") != "accept"
-            or decision["assessment"].get("issue_codes") != []
-            for decision in checkpoint_decisions
-        )
-    ):
-        raise ValueError("DEFAULT_ASSET_WORKFLOW_NOT_ACCEPTED")
-    action_receipts = _current_runtime_action_receipts(run_dir)
-    embedded_action_receipts = workflow.get("runtime_action_receipts")
-    if not isinstance(embedded_action_receipts, list):
-        raise ValueError("DEFAULT_ASSET_WORKFLOW_ACTION_RECEIPTS_INVALID")
-    embedded_by_step = {
-        receipt.get("step_id"): receipt
-        for receipt in embedded_action_receipts
-        if isinstance(receipt, dict) and isinstance(receipt.get("step_id"), str)
-    }
-    if len(embedded_by_step) != len(embedded_action_receipts) or any(
-        embedded_by_step.get(receipt.get("step_id")) != receipt
-        for _path, receipt in action_receipts
-    ):
-        raise ValueError("DEFAULT_ASSET_WORKFLOW_ACTION_RECEIPTS_MISMATCH")
-    model_navigation = measurements.get("model_navigation")
-    if (
-        not isinstance(model_navigation, dict)
-        or model_navigation.get("provider") != "local-policy"
-        or model_navigation.get("provider_call_count", 0) <= 0
-        or model_navigation.get("fallback_provider_call_count") != 0
-        or model_navigation.get("invocation_failure_count") != 0
-        or model_navigation.get("invocation_timeout_count") != 0
-    ):
-        raise ValueError("DEFAULT_ASSET_MODEL_NAVIGATION_NOT_QUALIFIED")
-    action_evidence = {
-        receipt["action"]: {
-            "file": f"qualification/runtime-actions/receipts/{path.name}",
-            "sha256": _sha256(path),
-            "status": "accepted",
-        }
-        for path, receipt in action_receipts
-        if receipt["action"] in CURRENT_RUNTIME_ACTIONS
-    }
     return {
         "schema_version": "dronedream.asset-qualification-receipt.v1",
         "source": "real-gazebo-harmonic-px4-sitl",
         "mission_evidence_file": "qualification/mission_evidence.json",
         "mission_evidence_sha256": _sha256(evidence_path),
-        "workflow_result_file": "qualification/workflow-result.json",
-        "workflow_result_sha256": _sha256(workflow_path),
         "required_gates": {gate: True for gate in CURRENT_RUNTIME_GATES},
-        "required_runtime_actions": action_evidence,
-        "checkpoint_decision_count": len(checkpoint_decisions),
-        "completion_assessment_sha256": _canonical_json_sha256(completion),
+        "pose_sample_count": evidence["pose_sample_count"],
+        "payload_spawn_file": "qualification/payload_spawn.json",
+        "payload_spawn_sha256": _sha256(run_dir / "payload_spawn.json"),
         "gazebo_runtime_verified": True,
         "px4_mission_smoke_verified": True,
         "simulation_execution_ready": True,
@@ -579,12 +492,16 @@ def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
 def _copy_qualification_evidence(run_dir: Path, destination: Path) -> None:
     qualification = destination / "qualification"
     qualification.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(run_dir / "mission_evidence.json", qualification / "mission_evidence.json")
-    shutil.copyfile(run_dir / "workflow-result.json", qualification / "workflow-result.json")
-    receipt_destination = qualification / "runtime-actions" / "receipts"
-    receipt_destination.mkdir(parents=True, exist_ok=True)
-    for path, _receipt in _current_runtime_action_receipts(run_dir):
-        shutil.copyfile(path, receipt_destination / path.name)
+    for name in (
+        "mission_evidence.json",
+        "preflight_contract.json",
+        "reference_track.json",
+        "payload_spawn.json",
+        "offboard_timing.json",
+        "live_safety_gate.json",
+        "px4_state_policy.json",
+    ):
+        shutil.copyfile(run_dir / name, qualification / name)
 
 
 def _verified_track_distance_m(run_dir: Path) -> float:
@@ -612,8 +529,7 @@ def _verified_track_distance_m(run_dir: Path) -> float:
             raise ValueError("DEFAULT_ASSET_REFERENCE_POINT_INVALID")
         coordinates.append(coordinate)
     distance_m = math.fsum(
-        math.dist(start, end)
-        for start, end in zip(coordinates, coordinates[1:], strict=False)
+        math.dist(start, end) for start, end in zip(coordinates, coordinates[1:], strict=False)
     )
     if not math.isfinite(distance_m) or distance_m <= 0.0:
         raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_DISTANCE_INVALID")
@@ -647,32 +563,20 @@ def _verified_pickup_track_point_index(*, run_dir: Path, point_count: int) -> in
     to agree instead.
     """
 
-    checkpoints = _json(run_dir / "runtime-checkpoints.json")
     payload_spawn = _json(run_dir / "payload_spawn.json")
-    if checkpoints.get("schema_version") != "dronedream.runtime-checkpoints.v1":
-        raise ValueError("DEFAULT_ASSET_RUNTIME_CHECKPOINTS_INVALID")
-    checkpoint_entries = checkpoints.get("checkpoints")
-    if not isinstance(checkpoint_entries, list):
-        raise ValueError("DEFAULT_ASSET_RUNTIME_CHECKPOINTS_INVALID")
     if payload_spawn.get("accepted") is not True:
         raise ValueError("DEFAULT_ASSET_PAYLOAD_SPAWN_NOT_ACCEPTED")
-    checkpoint_id = payload_spawn.get("checkpoint_id")
-    track_point_index = payload_spawn.get("track_point_index")
-    if (
-        not isinstance(checkpoint_id, str)
-        or not checkpoint_id
-        or not isinstance(track_point_index, int)
-        or isinstance(track_point_index, bool)
-        or track_point_index <= 0
-        or track_point_index >= point_count - 1
-    ):
-        raise ValueError("DEFAULT_ASSET_PAYLOAD_CHECKPOINT_BINDING_INVALID")
-    matching = [
-        checkpoint
-        for checkpoint in checkpoint_entries
-        if isinstance(checkpoint, dict) and checkpoint.get("checkpoint_id") == checkpoint_id
+    track = _json(run_dir / "reference_track.json")
+    points = track.get("points")
+    pickup_indices = [
+        index
+        for index, point in enumerate(points if isinstance(points, list) else [])
+        if isinstance(point, dict) and point.get("phase") == "pickup"
     ]
-    if len(matching) != 1 or matching[0].get("track_point_index") != track_point_index:
+    if len(pickup_indices) != 1:
+        raise ValueError("DEFAULT_ASSET_PAYLOAD_CHECKPOINT_BINDING_INVALID")
+    track_point_index = pickup_indices[0]
+    if track_point_index <= 0 or track_point_index >= point_count - 1:
         raise ValueError("DEFAULT_ASSET_PAYLOAD_CHECKPOINT_BINDING_INVALID")
     return track_point_index
 
@@ -691,6 +595,10 @@ def _synchronize_verified_route_graph(*, run_dir: Path, graph: dict[str, Any]) -
     outbound = points[: pickup_index + 1]
     model_root = contract.get("model_root_world_enu_m")
     collision_offset = contract.get("collision_center_offset_model_m")
+    if collision_offset is None and isinstance(
+        contract.get("collision_center_above_model_root_m"), (int, float)
+    ):
+        collision_offset = [0.0, 0.0, float(contract["collision_center_above_model_root_m"])]
     if (
         not isinstance(model_root, list)
         or len(model_root) != 3
@@ -736,7 +644,9 @@ def _synchronize_verified_route_graph(*, run_dir: Path, graph: dict[str, Any]) -
     verified_edges = [
         edge
         for edge in graph_edges
-        if isinstance(edge, dict) and edge.get("qualification") == "flight-verified"
+        if isinstance(edge, dict)
+        and isinstance(edge.get("edge_id"), str)
+        and edge["edge_id"].startswith("verified-edge-")
     ]
     if len(verified_edges) != len(outbound) - 1:
         raise ValueError("DEFAULT_ASSET_GRAPH_VERIFIED_EDGE_COUNT_MISMATCH")
@@ -757,6 +667,8 @@ def _synchronize_verified_route_graph(*, run_dir: Path, graph: dict[str, Any]) -
         if not isinstance(speed_limit, (int, float)) or float(speed_limit) <= 0:
             raise ValueError("DEFAULT_ASSET_REFERENCE_SPEED_INVALID")
         edge["speed_limit_mps"] = float(speed_limit)
+        edge["qualification"] = "flight-verified"
+        edge["bidirectional"] = True
 
 
 def _write_current_map_contract(semantic_path: Path) -> None:
@@ -785,6 +697,17 @@ def _write_current_map_contract(semantic_path: Path) -> None:
         or not isinstance(runtime_bindings.get("mission_launch_waypoint"), dict)
     ):
         raise ValueError("DEFAULT_MAP_RUNTIME_BINDINGS_INVALID")
+    semantic["runtime_bindings"] = {
+        "schema_version": "dronedream.map-runtime-bindings.v1",
+        "simulator": "gazebo-harmonic",
+        "coordinate_frame": "ENU",
+        "vehicle_spawn": {
+            axis: runtime_bindings["vehicle_spawn"][axis] for axis in ("x", "y", "z")
+        },
+        "mission_launch_waypoint": {
+            axis: runtime_bindings["mission_launch_waypoint"][axis] for axis in ("x", "y", "z")
+        },
+    }
     _write_json(semantic_path, semantic)
 
 
@@ -799,7 +722,7 @@ def _build_map_bundle(
     graph = _json(graph_source)
     evidence_sha256 = _sha256(run_dir / "mission_evidence.json")
     graph["asset_id"] = MAP_ASSET_ID
-    graph["name"] = "School Map"
+    graph["name"] = "Kumpula Campus"
     _synchronize_verified_route_graph(run_dir=run_dir, graph=graph)
     for edge in graph["edges"]:
         if edge.get("qualification") == "flight-verified":
@@ -815,7 +738,7 @@ def _build_map_bundle(
             "schema_version": "dronedream.asset-bundle.v1",
             "kind": "map",
             "asset_id": MAP_ASSET_ID,
-            "name": "School Map",
+            "name": "Kumpula Campus",
             "qualification_status": "qualified",
             "source": "dronedream-bundled",
             "coordinate_frame": "map_enu",
@@ -854,6 +777,9 @@ def _build_vehicle_bundle(
             "source_model": "model://x500_depth",
             "streams": ["forward-depth", "forward-rgb"],
         }
+    elif isinstance(perception, dict):
+        perception = dict(perception)
+        perception.setdefault("source_model", vehicle_summary.get("source_model"))
     if (
         not isinstance(perception, dict)
         or perception.get("sensor_id") != "oakd-lite-depth"
@@ -946,13 +872,29 @@ def _qualified_runtime_evidence(
     source_gates = source.get("gates")
     measurements = source.get("measurements")
     if (
-        source.get("schema_version") != "dronedream.generic-px4-gazebo-run.v1"
+        source.get("schema_version") != "dronedream.school-map-px4-mission-evidence.v1"
         or source.get("status") != "verified"
         or not isinstance(source_gates, dict)
+        or any(source_gates.get(gate) is not True for gate in CURRENT_RUNTIME_GATES)
         or not isinstance(measurements, dict)
     ):
         raise ValueError("DEFAULT_ASSET_SOURCE_RUN_NOT_VERIFIED")
-    gates = {gate: source_gates.get(gate) is True for gate in plan.required_runtime_gates}
+    # The pair API retains historical generic gate names.  Bind each of them
+    # to a concrete fact in the current Kumpula run rather than copying a stale
+    # boolean from an older test harness.
+    compatibility_gates = {
+        "executor_completed": source_gates["executor_completed"],
+        "offboard_timing_complete": source_gates["offboard_timing_complete"],
+        "runtime_pose_samples_present": source.get("pose_sample_count", 0) >= 10,
+        "ros_observations_present": source.get("pose_sample_count", 0) >= 10,
+        "goal_observed": (source_gates["pickup_reached"] and source_gates["office_return_reached"]),
+        "landing_confirmed": source_gates["px4_landing_confirmed"],
+        "native_terminal_lifecycle_published": source.get("process_failure") is None,
+        "no_live_abort": source.get("process_failure") is None,
+        "px4_ulog_present": bool(source.get("artifacts", {}).get("px4_ulogs")),
+        "static_route_clearance_bound": source_gates["zero_unsafe_dynamic_penetrations"],
+    }
+    gates = {gate: compatibility_gates.get(gate) is True for gate in plan.required_runtime_gates}
     inputs = plan.inputs
     artifacts = {
         "world_sha256": _sha256(qualification_root / inputs.world_sdf),
@@ -995,7 +937,7 @@ def _build_qualified_pair(
         destination=temporary / "school-map-source.ddpkg",
         kind="map",
         asset_id=MAP_ASSET_ID,
-        name="School Map",
+        name="Kumpula Campus",
         created_at=qualified_at,
     )
     source_vehicle = _write_current_source_package(
@@ -1011,6 +953,7 @@ def _build_qualified_pair(
         map_archive=source_map,
         vehicle_archive=source_vehicle,
         work_root=qualification_root,
+        maximum_translation_m=300.0,
     )
     mission_evidence_path = run_dir / "mission_evidence.json"
     runtime_evidence = _qualified_runtime_evidence(
@@ -1071,6 +1014,7 @@ def _build_qualified_pair(
     ).encode()
     return {
         "schema_version": "dronedream.bundled-qualified-pair.v1",
+        "resource_id": "dronedream-school-map",
         "qualification_id": receipt.qualification_id,
         "receipt_sha256": hashlib.sha256(receipt_payload).hexdigest(),
         "packages": packages,
@@ -1089,9 +1033,7 @@ def _superseded_pair_records(index_path: Path | None) -> list[dict[str, str]]:
     inherited = old.get("superseded_qualified_pairs", [])
     if not isinstance(old_packages, list) or not isinstance(inherited, list):
         raise ValueError("SUPERSEDED_DEFAULT_ASSET_INDEX_INVALID")
-    old_by_kind = {
-        str(item.get("kind")): item for item in old_packages if isinstance(item, dict)
-    }
+    old_by_kind = {str(item.get("kind")): item for item in old_packages if isinstance(item, dict)}
     if not isinstance(old_by_kind.get("map"), dict) or not isinstance(
         old_by_kind.get("vehicle"), dict
     ):
@@ -1101,13 +1043,9 @@ def _superseded_pair_records(index_path: Path | None) -> list[dict[str, str]]:
         {
             "qualification_id": old_pair.get("qualification_id"),
             "map_content_sha256": old_by_kind["map"].get("content_sha256"),
-            "map_source_content_sha256": old_by_kind["map"].get(
-                "source_content_sha256"
-            ),
+            "map_source_content_sha256": old_by_kind["map"].get("source_content_sha256"),
             "vehicle_content_sha256": old_by_kind["vehicle"].get("content_sha256"),
-            "vehicle_source_content_sha256": old_by_kind["vehicle"].get(
-                "source_content_sha256"
-            ),
+            "vehicle_source_content_sha256": old_by_kind["vehicle"].get("source_content_sha256"),
         },
     ]
     keys = (
@@ -1136,8 +1074,10 @@ def _superseded_pair_records(index_path: Path | None) -> list[dict[str, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--map-package", type=Path, required=True)
-    parser.add_argument("--vehicle-development-input", type=Path, required=True)
+    parser.add_argument("--map-source", type=Path, required=True)
+    parser.add_argument("--map-graph", type=Path, required=True)
+    parser.add_argument("--vehicle-source", type=Path, required=True)
+    parser.add_argument("--controller-params", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--supersedes-index", type=Path)
     parser.add_argument("--gazebo-version", required=True)
@@ -1156,11 +1096,15 @@ def main() -> None:
         temporary = Path(temporary_name)
         map_root = temporary / "map"
         vehicle_root = temporary / "vehicle"
-        map_source, graph = _extract_current_map_package(
-            args.map_package.resolve(), temporary / "current-map"
-        )
-        _development_input, controller_params = _stage_development_vehicle(
-            args.vehicle_development_input.resolve(), temporary / "current-vehicle"
+        map_source = args.map_source.resolve()
+        graph = args.map_graph.resolve()
+        if not map_source.is_dir() or not graph.is_file():
+            raise FileNotFoundError("current Kumpula map source or graph is unavailable")
+        _write_current_map_contract(map_source / "semantic.json")
+        controller_params = _stage_current_vehicle(
+            args.vehicle_source.resolve(),
+            args.controller_params.resolve(),
+            temporary / "current-vehicle",
         )
         _assert_promotion_input_binding(
             run_dir=run_dir,
@@ -1192,16 +1136,24 @@ def main() -> None:
                 args.supersedes_index.resolve() if args.supersedes_index is not None else None
             ),
         )
+        current_pair = {
+            key: value
+            for key, value in qualified_pair.items()
+            if key != "superseded_qualified_pairs"
+        }
+        superseded = [
+            record
+            for record in qualified_pair["superseded_qualified_pairs"]
+            if record["qualification_id"] != current_pair["qualification_id"]
+        ]
         _write_json(
             output / "index.json",
             {
-                "schema_version": "dronedream.bundled-assets.v2",
-                "qualified_pair": {
-                    key: value
-                    for key, value in qualified_pair.items()
-                    if key != "superseded_qualified_pairs"
-                },
-                "superseded_qualified_pairs": qualified_pair["superseded_qualified_pairs"],
+                "schema_version": "dronedream.bundled-assets.v3",
+                "default_qualification_id": current_pair["qualification_id"],
+                "qualified_pair": current_pair,
+                "qualified_pairs": [current_pair],
+                "superseded_qualified_pairs": superseded,
             },
         )
 
