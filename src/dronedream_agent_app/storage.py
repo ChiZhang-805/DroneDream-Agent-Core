@@ -1402,8 +1402,7 @@ class AppStore:
             if job.qualification_id == qualification_id:
                 matches.append((row, job))
         if not matches:
-            retired = False
-            return retired
+            return False
         if len(matches) != 1:
             raise AssetImportError("BUNDLED_PAIR_RETIREMENT_IDENTITY_AMBIGUOUS")
 
@@ -1449,8 +1448,7 @@ class AppStore:
             raise
         if tombstone is not None and tombstone.is_dir():
             shutil.rmtree(tombstone)
-        retired = True
-        return retired
+        return True
 
     # 功能：
     #   保存资格任务进度并绑定原地图、飞机及工作路径；后续保存不能静默更换或忽略路径。
