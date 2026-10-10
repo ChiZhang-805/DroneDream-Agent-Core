@@ -1417,9 +1417,15 @@ class AppStore:
 
         qualification_root = self.asset_qualification_root.resolve()
         workspace = Path(str(row["workspace_root"])).resolve()
-        # 包含于根目录仍可能属于另一个任务。删除只接受该任务的规范目录，
-        # 预期路径不 resolve，避免任务目录符号链接把“预期”一同指向别人的目录。
-        if workspace != qualification_root / job.job_id:
+        # 内置资格任务从第一版起使用 bundled-<qualification_id> 目录；普通任务使用
+        # <job_id> 目录。升级清理必须同时识别这两个由 Core 自己生成的精确路径，
+        # 但仍拒绝资格根目录内的任何其他目录，避免误删用户证据。
+        is_current_workspace = workspace == qualification_root / job.job_id
+        is_legacy_bundled_workspace = (
+            job.owner_id == "bundled-release"
+            and workspace == qualification_root / f"bundled-{job.qualification_id}"
+        )
+        if not is_current_workspace and not is_legacy_bundled_workspace:
             raise AssetImportError("BUNDLED_PAIR_RETIREMENT_PATH_INVALID")
         if workspace.exists() and not workspace.is_dir():
             raise AssetImportError("BUNDLED_PAIR_RETIREMENT_PATH_INVALID")

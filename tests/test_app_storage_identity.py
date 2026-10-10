@@ -451,6 +451,44 @@ def test_retirement_removes_only_exact_canonical_workspace(store, pair_job):
 
 
 # 功能：
+#   验证旧版本内置资产使用的 bundled-<qualification_id> 规范目录可在升级时退役。
+# 输入：
+#   store：独立测试存储。
+#   pair_job：原资格任务。
+# 输出：
+#   None：不返回业务数据。
+def test_retirement_accepts_legacy_bundled_workspace(store, pair_job):
+    qualification_id = "asset-qualification-" + "b" * 24
+    qualified = pair_job.model_copy(
+        update=dict(
+            owner_id="bundled-release",
+            state="qualified",
+            progress_percent=100,
+            qualification_id=qualification_id,
+            result_map_content_sha256="c" * 64,
+            result_vehicle_content_sha256="d" * 64,
+        )
+    )
+    legacy_workspace = store.asset_qualification_root / f"bundled-{qualification_id}"
+    workspace, map_root, vehicle_root = store.asset_pair_qualification_paths(pair_job.job_id)
+    store.save_asset_pair_qualification_job(qualified)
+    workspace.rename(legacy_workspace)
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE asset_pair_qualification_jobs SET workspace_root=? WHERE job_id=?",
+            (str(legacy_workspace), pair_job.job_id),
+        )
+
+    assert store.retire_bundled_asset_pair_qualification(
+        qualification_id=qualification_id,
+        map_content_sha256=qualified.result_map_content_sha256,
+        vehicle_content_sha256=qualified.result_vehicle_content_sha256,
+    ) is True
+    assert not legacy_workspace.exists()
+    assert map_root.is_dir() and vehicle_root.is_dir()
+
+
+# 功能：
 #   验证插件配置拒绝会发生键合并的 JSON，并保留先前配置，不留下已提交但无法读取的记录。
 # 输入：
 #   store：独立测试存储。
