@@ -182,10 +182,19 @@ def _assert_promotion_input_binding(
         # Human-facing labels may be corrected after a physical qualification run
         # without changing the qualified geometry, entity identities, or positions.
         # Keep every operational field hash-bound while excluding only those labels.
+        semantic.pop("scene_id", None)
+        semantic.pop("display_name", None)
+        semantic.pop("aliases", None)
         for entity in semantic.get("entities", []):
             if isinstance(entity, dict):
                 entity.pop("name", None)
                 entity.pop("name_zh", None)
+                entity.pop("aliases", None)
+                # `semantic` is the current parser-facing spelling of the retained
+                # historical `kind` value.  Treat the duplicate as a schema repair,
+                # not as a change to the qualified geometry or mission behavior.
+                if entity.get("semantic") == entity.get("kind"):
+                    entity.pop("semantic", None)
         bindings = semantic.get("runtime_bindings")
         if isinstance(bindings, dict):
             spawn = bindings.get("vehicle_spawn")
@@ -681,6 +690,8 @@ def _write_current_map_contract(semantic_path: Path) -> None:
         raise ValueError("DEFAULT_MAP_CONTRACT_OBSOLETE")
     if semantic.get("coordinate_frame") != "ENU":
         raise ValueError("DEFAULT_MAP_COORDINATE_FRAME_INVALID")
+    if semantic.get("scene_id") != "kumpula-campus":
+        raise ValueError("DEFAULT_MAP_SCENE_ID_INVALID")
     entities = semantic.get("entities")
     if not isinstance(entities, list) or not entities:
         raise ValueError("DEFAULT_MAP_ENTITY_CATALOG_MISSING")

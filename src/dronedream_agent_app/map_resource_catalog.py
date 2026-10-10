@@ -11,8 +11,12 @@ _KUMPULA_CAMPUS = {
     "schema_version": "dronedream.map-resource.v1",
     "resource_id": "dronedream-school-map",
     "display_name": {
-        "zh-CN": "Kumpula 科学校园",
+        "zh-CN": "赫尔辛基大学昆普拉校区",
         "en-US": "Kumpula Campus",
+    },
+    "aliases": {
+        "zh-CN": ["昆普拉校区", "昆普拉科学园区", "赫尔辛基大学昆普拉校区"],
+        "en-US": ["Kumpula Campus", "Kumpula Science Campus", "Kumpulan kampus"],
     },
     "description": {
         "zh-CN": "赫尔辛基大学真实校园三维仿真地图，包含建筑、正射影像、碰撞体和经验证航线。",
@@ -26,7 +30,7 @@ _KUMPULA_CAMPUS = {
     "install_mode": "bundled",
     "review": {
         "status": "approved",
-        "reviewed_at": "2026-10-10",
+        "reviewed_at": "2026-10-11",
         "source_commit_pinned": False,
         "source_data_hashes_pinned": True,
         "license_reviewed": True,
@@ -43,7 +47,7 @@ _KUMPULA_CAMPUS = {
     "source": {
         "source_type": "bundled_ddpkg",
         "location": "dronedream://default-assets/school-map.ddpkg",
-        "expected_sha256": ("7490afa940dd7dade5953486faf43b31557b0f04f35defa35e2f5d6dca329cb0"),
+        "expected_sha256": ("8a4b67cb8f378497131bc629510ca358a056fa8d6bf0982e0c711c8ea72c3d35"),
         "source_format": "dronedream-ddpkg",
         "expected_kind": "map",
         "real_world_crs": "EPSG:3879",
@@ -53,8 +57,14 @@ _KUMPULA_CAMPUS = {
         "parser": "dronedream.kumpula-campus-3d.v1",
         "building_count": 42,
         "collision_primitive_count": 44,
-        "visual_primitive_count": 45,
+        "visual_primitive_count": 43,
         "named_buildings": ["Chemicum", "Dynamicum", "Exactum", "Physicum"],
+        "named_buildings_zh": [
+            "化学楼",
+            "气象楼",
+            "信息科学楼",
+            "物理楼",
+        ],
         "coordinate_frame": "ENU",
         "notes": [
             "Building footprints and the orthophoto are real geospatial data.",
@@ -66,7 +76,7 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-582554632b54abc53723f55b",
+        "qualification_id": "asset-qualification-9e8f76549880788ec9e81ef0",
         "required_inputs": [],
     },
 }
@@ -79,7 +89,7 @@ def map_resource_catalog() -> dict[str, object]:
 
     return {
         "schema_version": "dronedream.map-resource-catalog.v1",
-        "catalog_revision": "2026-10-10.1",
+        "catalog_revision": "2026-10-11.1",
         "resources": deepcopy(list(_RESOURCES)),
     }
 

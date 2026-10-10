@@ -736,7 +736,7 @@ def create_app(
     # 输入：
     #   无。接口只返回当前版本中经过审查的只读组合策略。
     # 输出：
-    #   catalog：8 张地图、13 架无人机及其 104 个精确组合。
+    #   catalog：1 张正式地图、13 架无人机及其 13 个精确组合。
     @app.get("/v1/asset-pair-catalog", dependencies=[local])
     def list_asset_pairs() -> dict[str, object]:
         return asset_pair_catalog()
@@ -1143,25 +1143,51 @@ def create_app(
     # 输出：
     #   result：已保存标题和真实模型调用证据。
     @app.post("/v1/threads/{thread_id}/title", dependencies=[local])
-    def name_conversation(thread_id: str, payload: ConversationTitleRequest, identity: VerifiedIdentity = verified_identity) -> dict[str, object]:
+    def name_conversation(
+        thread_id: str,
+        payload: ConversationTitleRequest,
+        identity: VerifiedIdentity = verified_identity,
+    ) -> dict[str, object]:
         from .conversation_title import generate_conversation_title
         from .mission_service import _assert_model_connections_in_plugin_snapshot
 
         require_identity_match(payload, identity)
         try:
             thread = store.get_thread(thread_id)
-            scope = MemoryOwnerScope(owner_account_id=identity.owner_account_id, tenant_id=identity.tenant_id, organization_id=identity.organization_id, source_edition=payload.source_edition)
+            scope = MemoryOwnerScope(
+                owner_account_id=identity.owner_account_id,
+                tenant_id=identity.tenant_id,
+                organization_id=identity.organization_id,
+                source_edition=payload.source_edition,
+            )
             mission_service.account_memory.bind_thread(scope, thread_id)
             if thread["selected_model"] != payload.model_id:
                 raise ValueError("CONVERSATION_TITLE_MODEL_MISMATCH")
             if payload.model_grant.startswith("ddc_"):
-                connection = custom_models.consume_grant(payload.model_grant, thread_id, payload.model_id)
+                connection = custom_models.consume_grant(
+                    payload.model_grant, thread_id, payload.model_id
+                )
             else:
                 if payload.gateway_base_url is None:
                     raise ValueError("MODEL_GATEWAY_REQUIRED")
-                provider, _plugin_id, capability_id = plugin_manager.model_binding_for_model(payload.model_id)
-                connection = ModelConnection(selection_id=payload.model_id, provider=provider, model_id=payload.model_id, api_key=payload.model_grant, base_url=_validate_gateway(str(payload.gateway_base_url), identity.issuer), api_style="chat-completions", capability_id=capability_id, source="default")
-            _assert_model_connections_in_plugin_snapshot(plugin_manager.snapshot(thread_id=thread_id), connection, {})
+                provider, _plugin_id, capability_id = (
+                    plugin_manager.model_binding_for_model(payload.model_id)
+                )
+                connection = ModelConnection(
+                    selection_id=payload.model_id,
+                    provider=provider,
+                    model_id=payload.model_id,
+                    api_key=payload.model_grant,
+                    base_url=_validate_gateway(
+                        str(payload.gateway_base_url), identity.issuer
+                    ),
+                    api_style="chat-completions",
+                    capability_id=capability_id,
+                    source="default",
+                )
+            _assert_model_connections_in_plugin_snapshot(
+                plugin_manager.snapshot(thread_id=thread_id), connection, {}
+            )
             result = generate_conversation_title(connection, payload.message, payload.locale)
             store.patch_thread(thread_id, {"title": result["title"]})
             return result
@@ -1179,10 +1205,24 @@ def create_app(
     # 输出：
     #   snapshot：新增进度事件。
     @app.get("/v1/threads/{thread_id}/preparation-progress", dependencies=[local])
-    def read_preparation_progress(thread_id: str, request_id: str, after: int = 0, identity: VerifiedIdentity = verified_identity) -> dict:
+    def read_preparation_progress(
+        thread_id: str,
+        request_id: str,
+        after: int = 0,
+        identity: VerifiedIdentity = verified_identity,
+    ) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id) or after < 0:
             raise HTTPException(status_code=422, detail="INVALID_PROGRESS_CURSOR")
-        return preparation_progress.read((identity.owner_account_id, identity.tenant_id, identity.organization_id, thread_id, request_id), after)
+        return preparation_progress.read(
+            (
+                identity.owner_account_id,
+                identity.tenant_id,
+                identity.organization_id,
+                thread_id,
+                request_id,
+            ),
+            after,
+        )
 
     @app.post("/v1/threads/{thread_id}/prepare", dependencies=[local])
     def prepare(
@@ -1268,7 +1308,13 @@ def create_app(
                 },
             )
             store.append_message(thread_id, role="user", kind="text", content=payload.message)
-            progress_key = (identity.owner_account_id, identity.tenant_id, identity.organization_id, thread_id, payload.progress_request_id)
+            progress_key = (
+                identity.owner_account_id,
+                identity.tenant_id,
+                identity.organization_id,
+                thread_id,
+                payload.progress_request_id,
+            )
             result = preparation_progress.run(progress_key, lambda: mission_service.prepare(
                 thread_id=thread_id,
                 message=payload.message,

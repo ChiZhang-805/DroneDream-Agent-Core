@@ -192,6 +192,26 @@ def test_launch_binding_includes_natural_office_landing_phrases(tmp_path: Path) 
     assert "三楼办公室起降坪" in launch.aliases
 
 
+def test_localized_entity_names_are_resolvable_aliases(tmp_path: Path) -> None:
+    """Treat authored English and Chinese display names as semantic aliases."""
+    semantic_path = tmp_path / "semantic.json"
+    _write_semantic(semantic_path, include_pickup_binding=True)
+    raw = json.loads(semantic_path.read_text(encoding="utf-8"))
+    raw["entities"][0].update(
+        {
+            "name": "Kumpula south launch pad",
+            "name_zh": "昆普拉校区南侧起降点",
+        }
+    )
+    semantic_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    catalog = load_map_catalog(semantic_path)
+    launch = next(entity for entity in catalog.entities if entity.entity_id == "office-launch-pad")
+
+    assert "Kumpula south launch pad" in launch.aliases
+    assert "昆普拉校区南侧起降点" in launch.aliases
+
+
 def test_facility_anchor_keeps_pickup_alias_without_action_binding(tmp_path: Path) -> None:
     """Do not remove a declared place name just because no separate action pad exists."""
     semantic_path = tmp_path / "semantic.json"

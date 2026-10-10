@@ -190,25 +190,52 @@ def test_failed_peer_falls_through_and_every_returned_peer_has_usage():
 
 
 # 功能：
-#   验证重复名称或同一端口对象的别名不能凑足双响应要求，拒绝发生在调用前。
+#   验证可选模型路由、共识和提示增强不可用时回落到核心单端口流程，而不是中断任务。
+# 输入：
+#   无。
+# 输出：
+#   None：断言仍获得结构化模型结果并记录每项降级证据。
+def test_optional_model_policies_degrade_to_core_defaults():
+    ports = {"primary": _Port("first", "1")}
+    instance, stored, evidence = _harness(ports, ["primary"], {})
+    instance._invoke_single_extension = lambda *args, **kwargs: None
+    instance._invoke_extension_pipeline = lambda slot, hook, value, **kwargs: (
+        None if slot == "models.prompt-packs" else value
+    )
+
+    result = _call(instance, evidence)
+
+    assert result.record.provider == "first"
+    assert len(stored) == 1
+    names = {name for name, _ in evidence.events}
+    assert "models.runtime-router.degraded" in names
+    assert "models.consensus-policy.degraded" in names
+    assert "models.prompt-packs.degraded" in names
+
+
+# 功能：
+#   验证重复名称或同一端口对象不能伪造双响应，并自动降级到一次真实调用。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_duplicate_names_and_alias_objects_cannot_create_quorum():
+def test_duplicate_names_and_alias_objects_degrade_to_one_real_response():
     port = _Port("same", "1")
     instance, _, evidence = _harness(
         {"primary": port, "critic": port},
         ["primary", "primary", "critic"],
         {"minimum_responses": 2, "maximum_responses": 2},
     )
-    with pytest.raises(MissionPreparationBlocked, match="INSUFFICIENT_RESPONSES"):
-        _call(instance, evidence)
-    assert not port.calls
+    result = _call(instance, evidence)
+    assert result.record.provider == "same"
+    assert len(port.calls) == 1
+    assert any(
+        name == "models.consensus-policy.degraded" for name, _ in evidence.events
+    )
 
 
 # 功能：
-#   验证共识数量和开关拒绝布尔、文本与小数的隐式转换，且不消耗模型调用。
+#   验证非法共识标量不会被隐式转换，而是降级到核心单响应策略。
 # 输入：
 #   update：覆盖正常共识配置的非法字段。
 # 输出：
@@ -228,9 +255,15 @@ def test_policy_scalars_are_not_coerced_to_quorum_or_consent(update):
     instance, _, evidence = _harness(
         {"primary": port}, ["primary"], {"minimum_responses": 1, "maximum_responses": 1} | update
     )
-    with pytest.raises(MissionPreparationBlocked, match="BOUNDS_INVALID"):
-        _call(instance, evidence)
-    assert not port.calls
+    result = _call(instance, evidence)
+    assert result.record.provider == "first"
+    assert len(port.calls) == 1
+    degraded = [
+        value
+        for name, value in evidence.events
+        if name == "models.consensus-policy.degraded"
+    ]
+    assert degraded[-1]["issue"] == "MODEL_CONSENSUS_BOUNDS_INVALID"
 
 
 # 功能：

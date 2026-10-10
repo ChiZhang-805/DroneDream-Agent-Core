@@ -55,7 +55,7 @@ def _px4_resource(
         "install_mode": "on_demand",
         "review": {
             "status": "approved",
-            "reviewed_at": "2026-09-27",
+            "reviewed_at": "2026-10-11",
             "source_commit_pinned": True,
             "license_reviewed": True,
             "executable_content_required": False,
@@ -362,7 +362,7 @@ def vehicle_resource_catalog() -> dict[str, object]:
     """Return detached catalog data so request handlers cannot mutate policy."""
     return {
         "schema_version": "dronedream.vehicle-resource-catalog.v1",
-        "catalog_revision": "2026-09-28.1",
+        "catalog_revision": "2026-10-11.1",
         "resources": deepcopy(list(_RESOURCES)),
     }
 

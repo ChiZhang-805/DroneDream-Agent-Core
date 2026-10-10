@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import zipfile
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -29,8 +32,41 @@ def test_reviewed_catalog_only_exposes_qualified_kumpula_campus() -> None:
         assert len(resource["source"]["expected_sha256"]) == 64
         assert resource["analysis"]["status"] == "qualified"
         assert resource["analysis"]["building_count"] == 42
+        assert resource["analysis"]["visual_primitive_count"] == 43
+        assert resource["analysis"]["collision_primitive_count"] == 44
         assert resource["readiness"]["simulation"] == "ready"
         assert resource["readiness"]["flight"] == "qualified"
+
+
+def test_bundled_kumpula_package_matches_catalog_and_carries_bilingual_semantics() -> None:
+    resource = get_map_resource("dronedream-school-map")
+    package = (
+        Path(__file__).parents[1]
+        / "app"
+        / "desktop"
+        / "src-tauri"
+        / "resources"
+        / "default-assets"
+        / "school-map.ddpkg"
+    )
+    assert hashlib.sha256(package.read_bytes()).hexdigest() == resource["source"]["expected_sha256"]
+    with zipfile.ZipFile(package) as bundle:
+        semantic = json.loads(bundle.read("normalized/map/gazebo/semantic.json"))
+    assert semantic["scene_id"] == "kumpula-campus"
+    assert semantic["display_name"]["zh-CN"] == "赫尔辛基大学昆普拉校区"
+    by_id = {entry["entity_id"]: entry for entry in semantic["entities"]}
+    assert "办公室" in by_id["office-launch-pad"]["aliases"]
+    assert "外卖取餐点" in by_id["takeout-pickup-pad"]["aliases"]
+    assert by_id["chemicum"]["name_zh"] == "化学楼"
+    assert by_id["dynamicum"]["name_zh"] == "气象楼"
+    assert by_id["exactum"]["name_zh"] == "信息科学楼"
+    assert by_id["physicum"]["name_zh"] == "物理楼"
+    assert resource["analysis"]["named_buildings_zh"] == [
+        "化学楼",
+        "气象楼",
+        "信息科学楼",
+        "物理楼",
+    ]
 
 
 def test_catalog_returns_detached_values_and_rejects_unknown_id() -> None:

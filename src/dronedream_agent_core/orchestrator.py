@@ -1972,6 +1972,48 @@ def _route_objective_weights(route_policy: str) -> dict[str, float]:
 
 
 # 功能：
+#   当非安全关键的路线排序器不可用时，在已经通过全部硬门控的候选中稳定选路。
+# 输入：
+#   candidates：包含连续净空、任务合同和轨迹可导出门控结果的候选集合。
+# 输出：
+#   decision：优先已验证、短距离和大净空的确定性降级决策；绝不接纳不可行候选。
+def _fallback_route_alternative_decision(
+    candidates: list[RouteAlternativeCandidate],
+) -> RouteAlternativeDecision:
+    feasible = [candidate for candidate in candidates if candidate.feasible]
+    if not feasible:
+        raise MissionPreparationBlocked("ROUTE_ALTERNATIVE_NO_FEASIBLE_CANDIDATE")
+    ranked = sorted(
+        feasible,
+        key=lambda candidate: (
+            not candidate.route.all_edges_flight_verified,
+            candidate.route.route_length_m,
+            -candidate.clearance.minimum_clearance_m,
+            candidate.alternative_id,
+        ),
+    )
+    denominator = sum(range(1, len(ranked) + 1))
+    normalized_scores = {
+        candidate.alternative_id: (len(ranked) - index) / denominator
+        for index, candidate in enumerate(ranked)
+    }
+    return RouteAlternativeDecision(
+        selected_alternative_id=ranked[0].alternative_id,
+        ranked_alternative_ids=[candidate.alternative_id for candidate in ranked],
+        normalized_scores=normalized_scores,
+        selection_reasons=[
+            "The optional ranker was unavailable; Core selected among hard-gate-passing "
+            "routes by qualification, distance, clearance, and stable identifier order."
+        ],
+        rejected_alternatives={
+            candidate.alternative_id: list(candidate.issue_codes)
+            for candidate in candidates
+            if not candidate.feasible
+        },
+    )
+
+
+# 功能：
 #   限制轨迹优化只收紧速度和到达容差、增加停留，不能改坐标基准、阶段或放宽稳定要求。
 # 输入：
 #   track：优化后的轨迹。
@@ -2338,6 +2380,7 @@ class MissionOrchestrator:
         *,
         evidence: EvidenceChain,
         required: bool = False,
+        degrade_on_error: bool = False,
         **kwargs: Any,
     ) -> Any | None:
         try:
@@ -2346,6 +2389,17 @@ class MissionOrchestrator:
             )
         except ExtensionExecutionError as error:
             self._record_hook_receipts([error.receipt], evidence)
+            if degrade_on_error:
+                evidence.append(
+                    "plugin-single.degraded",
+                    {
+                        "slot_id": slot_id,
+                        "hook": hook,
+                        "issue_codes": list(error.receipt.issue_codes),
+                        "outcome": "continued-with-core-default",
+                    },
+                )
+                return None
             raise MissionPreparationBlocked(str(error)) from error
         self._record_hook_receipts(receipts, evidence)
         return output
@@ -2392,6 +2446,7 @@ class MissionOrchestrator:
         value: Any,
         *,
         evidence: EvidenceChain,
+        degrade_on_error: bool = False,
         **kwargs: Any,
     ) -> Any:
         try:
@@ -2400,6 +2455,17 @@ class MissionOrchestrator:
             )
         except ExtensionExecutionError as error:
             self._record_hook_receipts([error.receipt], evidence)
+            if degrade_on_error:
+                evidence.append(
+                    "plugin-pipeline.degraded",
+                    {
+                        "slot_id": slot_id,
+                        "hook": hook,
+                        "issue_codes": list(error.receipt.issue_codes),
+                        "outcome": "continued-with-validated-input",
+                    },
+                )
+                return value
             raise MissionPreparationBlocked(str(error)) from error
         self._record_hook_receipts(receipts, evidence)
         return output
@@ -2438,6 +2504,7 @@ class MissionOrchestrator:
             "models.role-policy",
             "select_port",
             evidence=evidence,
+            degrade_on_error=True,
             role=role,
             requested_port=requested_port,
         )
@@ -2450,16 +2517,22 @@ class MissionOrchestrator:
             "models.runtime-router",
             "route_model",
             evidence=evidence,
-            required=True,
+            degrade_on_error=True,
             role=role,
             requested_port=requested_port,
             available_ports=sorted(self.model_ports),
         )
-        if not isinstance(route_policy, dict):
-            raise MissionPreparationBlocked("MODEL_ROUTER_INVALID")
-        candidates = route_policy.get("candidates")
+        candidates = route_policy.get("candidates") if isinstance(route_policy, dict) else None
         if not isinstance(candidates, list) or len(candidates) > 64:
-            raise MissionPreparationBlocked("MODEL_ROUTER_CANDIDATES_INVALID")
+            candidates = [requested_port]
+            evidence.append(
+                "models.runtime-router.degraded",
+                {
+                    "role": role,
+                    "requested_port": requested_port,
+                    "outcome": "continued-with-requested-port",
+                },
+            )
         candidate_ports: list[str] = []
         seen_ports: set[int] = set()
         for name in candidates:
@@ -2484,12 +2557,24 @@ class MissionOrchestrator:
             "models.consensus-policy",
             "select_consensus",
             evidence=evidence,
-            required=True,
+            degrade_on_error=True,
             role=role,
             candidates=candidate_ports,
         )
         if not isinstance(consensus, dict):
-            raise MissionPreparationBlocked("MODEL_CONSENSUS_INVALID")
+            consensus = {
+                "minimum_responses": 1,
+                "maximum_responses": 1,
+                "require_identical": False,
+                "record_dissent": False,
+            }
+            evidence.append(
+                "models.consensus-policy.degraded",
+                {
+                    "role": role,
+                    "outcome": "continued-with-single-response",
+                },
+            )
         minimum_responses = consensus.get("minimum_responses", 1)
         maximum_responses = consensus.get("maximum_responses", 1)
         if (
@@ -2499,18 +2584,57 @@ class MissionOrchestrator:
             or type(consensus.get("require_identical", False)) is not bool
             or type(consensus.get("record_dissent", False)) is not bool
         ):
-            raise MissionPreparationBlocked("MODEL_CONSENSUS_BOUNDS_INVALID")
+            consensus = {
+                "minimum_responses": 1,
+                "maximum_responses": 1,
+                "require_identical": False,
+                "record_dissent": False,
+            }
+            minimum_responses = 1
+            maximum_responses = 1
+            evidence.append(
+                "models.consensus-policy.degraded",
+                {
+                    "role": role,
+                    "issue": "MODEL_CONSENSUS_BOUNDS_INVALID",
+                    "outcome": "continued-with-single-response",
+                },
+            )
         if len(candidate_ports) < minimum_responses:
-            raise MissionPreparationBlocked("MODEL_CONSENSUS_INSUFFICIENT_RESPONSES:distinct ports")
+            consensus = {
+                "minimum_responses": 1,
+                "maximum_responses": 1,
+                "require_identical": False,
+                "record_dissent": False,
+            }
+            minimum_responses = 1
+            maximum_responses = 1
+            evidence.append(
+                "models.consensus-policy.degraded",
+                {
+                    "role": role,
+                    "issue": "MODEL_CONSENSUS_INSUFFICIENT_DISTINCT_PORTS",
+                    "outcome": "continued-with-single-response",
+                },
+            )
+        base_instructions = instructions
         instructions = self._invoke_extension_pipeline(
             "models.prompt-packs",
             "augment_prompt",
             instructions,
             evidence=evidence,
+            degrade_on_error=True,
             role=role,
         )
         if not isinstance(instructions, str) or not instructions.strip():
-            raise MissionPreparationBlocked("PLUGIN_PROMPT_PIPELINE_INVALID")
+            instructions = base_instructions
+            evidence.append(
+                "models.prompt-packs.degraded",
+                {
+                    "role": role,
+                    "outcome": "continued-with-core-prompt",
+                },
+            )
         results: list[StructuredCallResult[Any]] = []
         response_metering: list[Any] = []
         failures: list[str] = []
@@ -2567,13 +2691,23 @@ class MissionOrchestrator:
                     "attempt_failures": list(candidate_result.attempt_failures),
                 },
             )
-            metering = self._invoke_multiple_extensions(
-                "models.token-meters",
-                "measure_tokens",
-                evidence=evidence,
-                role=role,
-                record=candidate_result.record,
-            )
+            try:
+                metering = self._invoke_multiple_extensions(
+                    "models.token-meters",
+                    "measure_tokens",
+                    evidence=evidence,
+                    role=role,
+                    record=candidate_result.record,
+                )
+            except MissionPreparationBlocked as error:
+                # Token accounting is observability, not mission semantics.  The
+                # provider record above remains authoritative, so a metering
+                # extension outage must not discard an otherwise valid response.
+                metering = []
+                evidence.append(
+                    "model.token-meter.degraded",
+                    {"role": role, "issue": str(error), "outcome": "continued"},
+                )
             response_metering.append(metering)
             # Persist before quorum/output guards: rejected answers cost tokens
             # too. This local receipt is not a second cloud billing debit.
@@ -3666,6 +3800,7 @@ class MissionOrchestrator:
             "fuse_results",
             plugin_advice,
             evidence=evidence,
+            degrade_on_error=True,
             contract=contract,
             domain_actions=domain_actions,
         )
@@ -3757,6 +3892,7 @@ class MissionOrchestrator:
                 "transform_task_graph",
                 decomposed.artifact.graph,
                 evidence=evidence,
+                degrade_on_error=True,
                 contract=contract,
                 map_graph=self.map_graph,
                 planning_round=planning_attempts,
@@ -3824,6 +3960,7 @@ class MissionOrchestrator:
                 "optimize_semantic_plan",
                 planned.artifact,
                 evidence=evidence,
+                degrade_on_error=True,
                 contract=contract,
                 task_graph=task_graph,
                 map_graph=self.map_graph,
@@ -4099,14 +4236,33 @@ class MissionOrchestrator:
                 candidates=route_alternatives,
                 objective_weights=_route_objective_weights(semantic_plan.route_policy),
             )
-            decision_value, decision_receipt = self._call_required_slot(
-                "planning.alternative-ranker",
-                alternative_set,
-                conversation_id=request.conversation_id,
-                evidence=evidence,
-            )
-            alternative_decision = _artifact_snapshot(decision_value, RouteAlternativeDecision)
-            attempt_receipts.append(decision_receipt)
+            try:
+                decision_value, decision_receipt = self._call_required_slot(
+                    "planning.alternative-ranker",
+                    alternative_set,
+                    conversation_id=request.conversation_id,
+                    evidence=evidence,
+                )
+            except MissionPreparationBlocked as error:
+                alternative_decision = _fallback_route_alternative_decision(
+                    route_alternatives
+                )
+                decision_receipt = None
+                evidence.append(
+                    "planning.alternative-ranker-degraded",
+                    {
+                        "issue": str(error),
+                        "selected_alternative_id": (
+                            alternative_decision.selected_alternative_id
+                        ),
+                        "outcome": "continued-with-core-deterministic-ranking",
+                    },
+                )
+            else:
+                alternative_decision = _artifact_snapshot(
+                    decision_value, RouteAlternativeDecision
+                )
+                attempt_receipts.append(decision_receipt)
             feasible_ids = {
                 candidate.alternative_id for candidate in route_alternatives if candidate.feasible
             }
@@ -4151,6 +4307,7 @@ class MissionOrchestrator:
                 "optimize_track",
                 px4_track,
                 evidence=evidence,
+                degrade_on_error=True,
                 contract=contract,
                 task_graph=task_graph,
                 semantic_plan=semantic_plan,
@@ -4164,9 +4321,10 @@ class MissionOrchestrator:
             attempt_receipts.append(track_receipt)
             selected_plan_receipts = [
                 *alternative_receipts[selected_alternative.alternative_id],
-                decision_receipt,
                 track_receipt,
             ]
+            if decision_receipt is not None:
+                selected_plan_receipts.append(decision_receipt)
             selected_plan_receipt_ids = {receipt.call_id for receipt in selected_plan_receipts}
             selected_plan_receipts_accepted = all(
                 receipt.outcome == "accepted" for receipt in selected_plan_receipts

@@ -59,5 +59,5 @@ Run:
 ```powershell
 .venv\Scripts\python.exe scripts\verify_vehicle_resource_catalog.py `
   --checkout Q:\DroneDream-Workspace\Caches\ThirdParty\PX4-gazebo-models-5577035667af `
-  --report Q:\DroneDream-Workspace\TestRuns\vehicle-resource-catalog-20260928\verification.json
+  --report Q:\DroneDream-Workspace\TestRuns\vehicle-resource-catalog-20261011\verification.json
 ```

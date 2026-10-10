@@ -323,7 +323,7 @@ def test_negative_user_values_are_not_reinterpreted(message):
 #   无。
 # 输出：
 #   None。
-def test_meter_failure_keeps_the_provider_receipt():
+def test_meter_failure_keeps_the_provider_receipt_and_continues():
     instance, _, evidence = _harness({"primary": _Port("offline", "1")}, ["primary"], {})
 
     # 功能：
@@ -337,11 +337,48 @@ def test_meter_failure_keeps_the_provider_receipt():
         raise module.MissionPreparationBlocked("FIXTURE_METER_FAILURE")
 
     instance._invoke_multiple_extensions = fail_meter
-    with pytest.raises(module.MissionPreparationBlocked, match="METER_FAILURE"):
-        _call(instance, evidence)
+    result = _call(instance, evidence)
     receipts = [value for name, value in evidence.events if name.endswith("provider-response")]
     assert len(receipts) == 1
     assert receipts[0]["record"]["input_tokens"] == 10
+    assert result.artifact.accepted is True
+    degraded = [value for name, value in evidence.events if name == "model.token-meter.degraded"]
+    assert degraded == [
+        {"role": "plan_critic", "issue": "FIXTURE_METER_FAILURE", "outcome": "continued"}
+    ]
+
+
+def test_fallback_route_ranking_never_selects_a_failed_gate() -> None:
+    """A ranker outage may reduce optimization quality, not bypass route safety gates."""
+    candidates = [
+        SimpleNamespace(
+            alternative_id="rejected",
+            feasible=False,
+            issue_codes=["CLEARANCE_REJECTED"],
+            route=SimpleNamespace(all_edges_flight_verified=True, route_length_m=1.0),
+            clearance=SimpleNamespace(minimum_clearance_m=9.0),
+        ),
+        SimpleNamespace(
+            alternative_id="long-qualified",
+            feasible=True,
+            issue_codes=[],
+            route=SimpleNamespace(all_edges_flight_verified=True, route_length_m=20.0),
+            clearance=SimpleNamespace(minimum_clearance_m=3.0),
+        ),
+        SimpleNamespace(
+            alternative_id="short-unqualified",
+            feasible=True,
+            issue_codes=[],
+            route=SimpleNamespace(all_edges_flight_verified=False, route_length_m=2.0),
+            clearance=SimpleNamespace(minimum_clearance_m=8.0),
+        ),
+    ]
+
+    decision = module._fallback_route_alternative_decision(candidates)
+
+    assert decision.selected_alternative_id == "long-qualified"
+    assert "rejected" not in decision.ranked_alternative_ids
+    assert decision.rejected_alternatives == {"rejected": ["CLEARANCE_REJECTED"]}
 
 
 # 功能：

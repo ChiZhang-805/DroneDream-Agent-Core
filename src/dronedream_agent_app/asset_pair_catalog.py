@@ -15,7 +15,7 @@ from .vehicle_resource_catalog import vehicle_resource_catalog
 
 _SCHOOL_MAP = {
     "resource_id": "dronedream-school-map",
-    "display_name": {"zh-CN": "Kumpula 科学校园", "en-US": "Kumpula Campus"},
+    "display_name": {"zh-CN": "赫尔辛基大学昆普拉校区", "en-US": "Kumpula Campus"},
     "environment_class": "outdoor_campus",
 }
 
@@ -23,7 +23,7 @@ _SCHOOL_MAP = {
 # The qualified aircraft is the normalized built-in My Drone package, whose
 # reviewed source model is PX4 x500_depth.
 _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
-    "dronedream-school-map": "asset-qualification-582554632b54abc53723f55b",
+    "dronedream-school-map": "asset-qualification-9e8f76549880788ec9e81ef0",
 }
 
 # The public resource identifier names the catalog entry, while the normalized
@@ -124,7 +124,7 @@ def asset_pair_catalog() -> dict[str, object]:
     }
     return {
         "schema_version": "dronedream.asset-pair-catalog.v1",
-        "catalog_revision": "2026-10-10.1",
+        "catalog_revision": "2026-10-11.1",
         "map_count": len(maps),
         "vehicle_count": len(vehicles),
         "pair_count": len(pairs),

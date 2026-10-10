@@ -241,11 +241,17 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
                 raise AssetQualificationError("map semantic entity identity is invalid")
             seen.add(entity_id)
             raw_aliases = _text_list(raw.get("aliases", []), field="ALIASES", maximum=24)
+            localized_names = [
+                _text(raw[field], field=field.upper(), maximum=240)
+                for field in ("name", "name_zh")
+                if field in raw
+            ]
             aliases = list(
                 dict.fromkeys(
                     [
                         entity_id,
                         entity_id.replace("-", " "),
+                        *localized_names,
                         *[alias.strip() for alias in raw_aliases],
                     ]
                 )
