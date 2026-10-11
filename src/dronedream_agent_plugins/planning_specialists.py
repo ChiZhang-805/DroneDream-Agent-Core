@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections import deque
 from typing import Any
 
 from dronedream_agent_core.contracts import (
@@ -55,38 +54,6 @@ def _within_qualified_range(distance_m: float, qualified_range_m: float) -> bool
 
 
 # 功能：
-#   按边方向进行广度优先可达检查，未知端点及悬空边不得因为名称相同而被接受。
-# 输入：
-#   graph：本任务的拓扑地图。
-#   start：出发节点标识。
-#   goal：目的节点标识。
-# 输出：
-#   reachable：有效拓扑中存在符合边方向的连接时为 True。
-def _reachable(graph: MapAsset, start: str, goal: str) -> bool:
-    reachable = False
-    neighbours: dict[str, set[str]] = {node.node_id: set() for node in graph.nodes}
-    if start not in neighbours or goal not in neighbours:
-        return reachable
-    for edge in graph.edges:
-        if edge.from_node not in neighbours or edge.to_node not in neighbours:
-            return reachable
-        neighbours[edge.from_node].add(edge.to_node)
-        if edge.bidirectional:
-            neighbours[edge.to_node].add(edge.from_node)
-    queue = deque([start])
-    seen = {start}
-    while queue:
-        node = queue.popleft()
-        if node == goal:
-            reachable = True
-            return reachable
-        for neighbour in neighbours[node] - seen:
-            seen.add(neighbour)
-            queue.append(neighbour)
-    return reachable
-
-
-# 功能：
 #   根据任务与资产判定当前规划层是否适用，列出约束和指标，不冒充物理验证已经完成。
 # 输入：
 #   layer：已声明的规划层标识。
@@ -123,7 +90,7 @@ def _contribution(
         "link": (
             "outdoor" in semantics and bool(semantics & {"corridor", "stairs", "door", "office"})
         ),
-        "payload": contract.payload_action == "pickup",
+        "payload": contract.payload_action not in {"none", "navigate"},
         "regulatory": any(
             token in normalized_constraints
             for token in ("regulatory", "airspace", "法规", "空域", "禁飞")
@@ -134,20 +101,24 @@ def _contribution(
         "temporal": [
             "route duration must be finite and holds bounded; deadlines need separate evidence"
         ],
-        "global": ["start, target, and return remain connected in the selected map graph"],
+        "global": [
+            "the tool-generated 3-D route visits the grounded target and return endpoint"
+        ],
         "local": ["every continuous trajectory segment passes collision-envelope clearance"],
         "indoor": ["door, stair, and corridor transitions respect vehicle envelope and speed"],
         "outdoor": ["outdoor legs retain a reachable return or safe-landing path"],
         "dynamic-obstacle": ["online obstacles can only tighten motion or trigger hold/replan"],
         "energy": ["distance, climb, payload, and reserve remain inside qualified envelope"],
         "link": ["indoor/outdoor transitions retain heartbeat and lost-link behavior"],
-        "payload": ["pickup identity, attachment, mass update, and custody evidence are required"],
+        "payload": [
+            "the requested pickup or delivery action is bound to the grounded target"
+        ],
         "regulatory": ["real-flight airspace constraints require explicit regulatory evidence"],
     }[layer]
     metrics = {
         "semantic": ["grounded-target-ratio"],
         "temporal": ["estimated-duration-seconds", "deadline-slack-seconds"],
-        "global": ["route-length-m", "graph-edge-count"],
+        "global": ["route-length-m", "generated-segment-count"],
         "local": ["minimum-clearance-m", "turn-speed-mps"],
         "indoor": ["door-transition-count", "stair-transition-count"],
         "outdoor": ["outdoor-distance-m", "landing-option-count"],
@@ -248,14 +219,22 @@ def _validation(
             "bounded_waypoint_holds": px4_track.waypoint_hold_seconds <= 30.0,
         }
     elif layer == "global":
+        target_indexes = [
+            index for index, node_id in enumerate(route.node_ids)
+            if node_id == contract.target_node
+        ]
         gates = {
-            "start_to_target_reachable": _reachable(
-                map_graph, contract.start_node, contract.target_node
+            "route_starts_at_contract_start": route.start_node == contract.start_node,
+            "route_visits_contract_target": bool(target_indexes),
+            "route_returns_after_target": (
+                route.goal_node == contract.return_node
+                and bool(target_indexes)
+                and target_indexes[0] < len(route.node_ids) - 1
             ),
-            "target_to_return_reachable": _reachable(
-                map_graph, contract.target_node, contract.return_node
+            "generated_segments_are_complete": (
+                len(route.edge_ids) == len(route.positions_m) - 1
+                and len(route.node_ids) == len(route.positions_m)
             ),
-            "route_nonempty": bool(route.edge_ids),
         }
     elif layer == "local":
         gates = {
@@ -302,14 +281,24 @@ def _validation(
             )
         }
     elif layer == "payload":
-        pickups = [node for node in task_graph.nodes if node.action == "pickup"]
-        pickup_required = contract.payload_action == "pickup"
+        payload_required = contract.payload_action not in {"none", "navigate"}
+        payload_tasks = [
+            node for node in task_graph.nodes if node.action == contract.payload_action
+        ]
+        side_effect_tasks = [
+            node
+            for node in task_graph.nodes
+            if node.action in {"pickup", "delivery.release-payload"}
+        ]
         gates = {
-            "pickup_action_present": len(pickups) == (1 if pickup_required else 0),
-            "pickup_target_bound": all(
-                node.target_node == contract.target_node for node in pickups
+            "payload_action_present": len(payload_tasks) == (1 if payload_required else 0),
+            "payload_target_bound": all(
+                node.target_node == contract.target_node for node in payload_tasks
             ),
-            "payload_capacity_positive": (not pickup_required or vehicle.max_pickup_payload_kg > 0),
+            "no_unrequested_payload_side_effect": payload_required or not side_effect_tasks,
+            "pickup_capacity_positive": (
+                contract.payload_action != "pickup" or vehicle.max_pickup_payload_kg > 0
+            ),
         }
     elif layer == "regulatory":
         # This declaration check cannot certify airspace authorization. Real

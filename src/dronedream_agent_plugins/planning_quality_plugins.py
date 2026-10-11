@@ -161,29 +161,42 @@ def _route_binding_gate(
 
 
 # 功能：
-#   取件合同必须恰有一个绑定目标的取件动作，非取件合同不能额外加入取件副作用。
+#   载荷合同必须恰有一个绑定目标的对应动作，普通导航不能夹带取件或投递副作用。
 # 输入：
 #   contract：当前合同的目标与载荷动作。
 #   task_graph：待执行的任务动作图。
 #   _：本门控不使用的其他制品。
 # 输出：
-#   validation：取件流程检查结果、数量及修复要求。
+#   validation：载荷流程检查结果、数量及修复要求。
 def _payload_gate(
     *, contract: MissionContract, task_graph: TaskGraph, **_: Any
 ) -> dict[str, object]:
-    pickup_tasks = [task for task in task_graph.nodes if task.action == "pickup"]
+    payload_required = contract.payload_action not in {"none", "navigate"}
+    payload_tasks = [
+        task for task in task_graph.nodes if task.action == contract.payload_action
+    ]
+    side_effect_tasks = [
+        task
+        for task in task_graph.nodes
+        if task.action in {"pickup", "delivery.release-payload"}
+    ]
     accepted = (
-        len(pickup_tasks) == 1 and pickup_tasks[0].target_node == contract.target_node
-        if contract.payload_action == "pickup"
-        else not pickup_tasks
+        len(payload_tasks) == 1 and payload_tasks[0].target_node == contract.target_node
+        if payload_required
+        else not side_effect_tasks
     )
     validation = {
         "validator": "payload-workflow",
         "accepted": accepted,
-        "pickup_task_count": len(pickup_tasks),
-        "issue_codes": [] if accepted else ["PAYLOAD_PICKUP_TASK_INVALID"],
+        "required_payload_action": contract.payload_action,
+        "payload_task_count": len(payload_tasks),
+        "issue_codes": [] if accepted else ["PAYLOAD_ACTION_TASK_INVALID"],
         "repair_instructions": (
-            [] if accepted else ["Create exactly one pickup task at the contract target node."]
+            []
+            if accepted
+            else [
+                "Create exactly one task for the contract payload action at the contract target."
+            ]
         ),
     }
     return validation

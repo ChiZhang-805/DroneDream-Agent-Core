@@ -191,6 +191,23 @@ def test_gps_and_odometry_do_not_claim_arbitrary_indoor_autonomy(tmp_path) -> No
 
 
 # 功能：
+#   验证静态三维规划依赖语义端点和碰撞几何，不依赖作者预先绘制的图边。
+# 输入：
+#   tmp_path：测试私有目录。
+# 输出：
+#   None：不返回业务数据。
+def test_static_planning_is_ready_without_authored_edges(tmp_path) -> None:
+    graph, catalog = _graph_and_catalog()
+    graph = graph.model_copy(update={"edges": []})
+    semantic = tmp_path / "semantic.json"
+    semantic.write_text(json.dumps({"collision_primitives": [{"name": "floor"}]}))
+
+    report = assess_navigation_readiness(graph, catalog, semantic, _vehicle(["imu"]))
+
+    assert report.static_map_planning_ready is True
+
+
+# 功能：
 #   检查所需声明全部满足时的组合逻辑，不将合成声明当作实际飞行验收。
 # 输入：
 #   tmp_path：测试私有目录。

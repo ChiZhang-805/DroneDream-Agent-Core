@@ -30,13 +30,14 @@ class _PlanningPort:
     #   alter_asset：可选的测试注入，在模型响应期间替换资产。
     # 输出：
     #   None。
-    def __init__(self, alter_asset=None, clarification=False):
+    def __init__(self, alter_asset=None, clarification=False, delivery=False):
         self.settings = SimpleNamespace(name="offline-fixture", model="contract-test-only")
         self.supports_provider_context = False
         self.supports_image_input = False
         self.calls = []
         self.alter_asset = alter_asset
         self.clarification = clarification
+        self.delivery = delivery
         self.intent_inputs = []
 
     # 功能：
@@ -51,11 +52,15 @@ class _PlanningPort:
         if role == "intent_parser":
             self.intent_inputs.append(kwargs["input_artifact"])
             value = dict(
-                goal="Visit target and return without a payload",
+                goal=(
+                    "Deliver the carried item to target and return"
+                    if self.delivery
+                    else "Visit target and return without a payload"
+                ),
                 start_entity="start",
                 target_entity="target",
                 return_entity="start",
-                payload_action="none",
+                payload_action=("delivery.release-payload" if self.delivery else "none"),
             )
             if self.clarification:
                 value["missing_critical_fields"] = ["要送回办公室，还是送到其他位置？"]
@@ -64,6 +69,28 @@ class _PlanningPort:
         elif role == "plugin_router":
             value = {"calls": []}
         elif role == "task_decomposer":
+            payload_nodes = (
+                [
+                    {
+                        "task_id": "delivery-verify",
+                        "action": "delivery.verify-release-area",
+                        "target_node": "b",
+                        "depends_on": ["outbound"],
+                        "success_evidence": ["release area verified"],
+                        "fallback": "hold",
+                    },
+                    {
+                        "task_id": "delivery",
+                        "action": "delivery.release-payload",
+                        "target_node": "b",
+                        "depends_on": ["delivery-verify"],
+                        "success_evidence": ["release confirmed"],
+                        "fallback": "hold",
+                    }
+                ]
+                if self.delivery
+                else []
+            )
             value = {
                 "graph": {
                     "nodes": [
@@ -82,11 +109,14 @@ class _PlanningPort:
                             "success_evidence": ["to be bound"],
                             "fallback": "hold",
                         },
+                    ]
+                    + payload_nodes
+                    + [
                         {
                             "task_id": "inbound",
                             "action": "return",
                             "target_node": "a",
-                            "depends_on": ["outbound"],
+                            "depends_on": ["delivery" if self.delivery else "outbound"],
                             "success_evidence": ["to be bound"],
                             "fallback": "hold",
                         },
@@ -137,9 +167,24 @@ class _PlanningPort:
 #   change_asset：是否在计划评审响应时改写机型文件。
 # 输出：
 #   None。
-@pytest.mark.parametrize("change_asset", [False, True, "clarification"])
-def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset, monkeypatch):
+@pytest.mark.parametrize(
+    "change_asset,authored_edges,delivery",
+    [
+        (False, False, False),
+        (True, False, False),
+        ("clarification", False, False),
+        (False, True, False),
+        (True, True, False),
+        ("clarification", True, False),
+        (False, False, True),
+    ],
+)
+def test_full_preparation_uses_real_plugins_and_geometry(
+    tmp_path, change_asset, authored_edges, delivery, monkeypatch
+):
     graph = _graph()
+    if not authored_edges:
+        graph = graph.model_copy(update={"edges": []})
     vehicle = _vehicle()
     vehicle.collision_center_offset_model_m = Vector3(x=0, y=0, z=0.1)
     semantic = _semantic()
@@ -165,12 +210,45 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
     semantic_path = tmp_path / "semantic.json"
     semantic_path.write_text(json.dumps(semantic), encoding="utf-8")
     sdf = tmp_path / "vehicle.sdf"
-    sdf.write_text('<sdf version="1.9"><model name="fixture"/></sdf>', encoding="utf-8")
+    sdf.write_text(
+        (
+            """<sdf version="1.10"><model name="fixture">
+            <plugin name="detachable_joint">
+            <parent_link>base_link</parent_link><child_model>payload</child_model>
+            <child_link>payload_link</child_link><attach_topic>/payload/attach</attach_topic>
+            <detach_topic>/payload/detach</detach_topic><output_topic>/payload/state</output_topic>
+            </plugin></model></sdf>"""
+            if delivery
+            else '<sdf version="1.9"><model name="fixture"/></sdf>'
+        ),
+        encoding="utf-8",
+    )
+    if delivery:
+        (tmp_path / "summary.json").write_text(
+            json.dumps(
+                {
+                    "mission_payload": {
+                        "model_name": "payload",
+                        "center_above_model_root_m": 0.12,
+                        "maximum_attachment_error_m": 0.02,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "takeout-payload.sdf").write_text(
+            """<sdf version="1.10"><model name="payload"><link name="payload_link">
+            <inertial><mass>0.1</mass><inertia><ixx>0.01</ixx><iyy>0.02</iyy>
+            <izz>0.03</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+            </link></model></sdf>""",
+            encoding="utf-8",
+        )
     port = _PlanningPort(
         alter_asset=(lambda: sdf.write_text("changed test asset", encoding="utf-8"))
         if change_asset is True
         else None,
         clarification=change_asset == "clarification",
+        delivery=delivery,
     )
     context = ContextStore(tmp_path / "context.sqlite")
     instance = None
@@ -194,7 +272,11 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
         request = _bind_development_harness_request(
             MissionRequest(
                 conversation_id="offline-pipeline",
-                message="Visit target and return without a payload",
+                message=(
+                    "把携带的物品送到目标地点，然后回来"
+                    if delivery
+                    else "Visit target and return without a payload"
+                ),
                 start_entity="start",
             ),
             config=config,
@@ -224,6 +306,13 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
             assert prepared.execution_route.node_ids == ["a", "b", "a"]
             assert prepared.route_clearance.accepted
             assert len(prepared.plan.segments) == 2
+            if delivery:
+                assert prepared.contract.payload_action == "delivery.release-payload"
+                assert [
+                    task.action
+                    for task in prepared.task_graph.nodes
+                    if task.action == "delivery.release-payload"
+                ] == ["delivery.release-payload"]
             assert prepared.contract.map_semantic_sha256 == prepared.route_clearance.semantic_sha256
             assert all(record.provider == "offline-fixture" for record in prepared.model_calls)
             assert {
@@ -233,6 +322,17 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
                 "global_planner",
                 "plan_critic",
             } <= set(port.calls)
+            accepted_tool_ids = {
+                receipt.tool_id
+                for receipt in prepared.tool_receipts
+                if receipt.outcome == "accepted"
+            }
+            if not authored_edges:
+                assert {
+                    "planning.candidate-metric-geometry.candidate",
+                    "safety.route-clearance",
+                    "px4.export-track",
+                } <= accepted_tool_ids
             assert (output_dir / "prepared-mission.json").is_file()
             assert (output_dir / "mission-lifecycle.json").is_file()
             from test_execution_integrity import _exercise_failed_execution_and_reverification

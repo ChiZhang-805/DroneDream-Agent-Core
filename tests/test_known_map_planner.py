@@ -141,8 +141,46 @@ def test_metric_planner_uses_collision_geometry_instead_of_fixed_graph(tmp_path:
         min(report.segment_minimum_clearances_m)
     )
     assert route.route_length_m > 6
-    assert any(abs(point.y) > 1.8 for point in route.positions_m)
+    assert any(abs(point.y) > 1.8 or point.z > 2.0 for point in route.positions_m)
     assert route.all_edges_flight_verified is False
+
+
+# 功能：
+#   证明新地图只提供语义地点和碰撞几何时即可规划，不要求作者预先连接路线边。
+# 输入：
+#   tmp_path：隔离测试目录。
+# 输出：
+#   None：无边地图生成绕障三维路线并通过独立净空复核。
+def test_metric_planner_routes_between_unconnected_semantic_places(tmp_path: Path):
+    semantic = _semantic(tmp_path / "semantic.json")
+    graph = _graph().model_copy(update={"edges": []})
+    planner = KnownMapMetricPlanner(
+        graph=graph,
+        semantic_path=semantic,
+        vehicle_diameter_m=0.4,
+        vehicle_height_m=0.3,
+        policy=MetricPlannerPolicy(
+            resolution_m=0.4,
+            required_clearance_m=0.25,
+            search_padding_m=2.5,
+        ),
+    )
+
+    outbound = planner.plan(RouteQuery(start_node="start", goal_node="goal"))
+    inbound = planner.plan(RouteQuery(start_node="goal", goal_node="start"))
+    report = validate_route_clearance(
+        outbound,
+        semantic,
+        vehicle_diameter_m=0.4,
+        vehicle_height_m=0.3,
+        sample_interval_m=0.05,
+    )
+
+    assert report.accepted
+    assert outbound.positions_m[0] == graph.nodes[0].position_m
+    assert outbound.positions_m[-1] == graph.nodes[1].position_m
+    assert any(abs(point.y) > 1.8 or point.z > 2.0 for point in outbound.positions_m)
+    assert inbound.positions_m == list(reversed(outbound.positions_m))
 
 
 def test_initial_named_place_plan_projects_wall_label_to_safe_operation_pose(tmp_path: Path):

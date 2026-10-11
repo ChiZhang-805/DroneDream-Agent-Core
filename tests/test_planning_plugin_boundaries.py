@@ -89,6 +89,29 @@ def test_additional_pickup_outside_contract_target_is_rejected() -> None:
 
 
 # 功能：
+#   验证质量门按合同中的领域动作校验投递，而不是把所有载荷工作硬编码成 pickup。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_delivery_payload_action_is_validated_at_contract_target() -> None:
+    contract = SimpleNamespace(
+        payload_action="delivery.release-payload", target_node="delivery-zone"
+    )
+    graph = SimpleNamespace(
+        nodes=[
+            SimpleNamespace(
+                action="delivery.release-payload", target_node="delivery-zone"
+            )
+        ]
+    )
+
+    assert _payload_gate(contract=contract, task_graph=graph)["accepted"]
+    graph.nodes[0].target_node = "other"
+    assert not _payload_gate(contract=contract, task_graph=graph)["accepted"]
+
+
+# 功能：
 #   验证航点停车策略不能使空轨迹、非法速度或超限速度变得合格。
 # 输入：
 #   speeds：需要拒绝的航点速度列表。

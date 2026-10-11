@@ -160,7 +160,7 @@ def _bind_qualified_topology(catalog: MapCatalog, graph: MapAsset | None) -> Map
         encode_json(graph.model_dump(mode="json"), limit=MAX_SEMANTIC_BYTES, node_limit=1_000_000),
         strict=True,
     )
-    if not graph.nodes or not graph.edges or not graph.named_entities:
+    if not graph.nodes or not graph.named_entities:
         raise AssetQualificationError("qualified map graph is incomplete")
     nodes = {node.node_id: node for node in graph.nodes}
     existing_entity_ids = {entity.entity_id for entity in catalog.entities}

@@ -785,6 +785,8 @@ class MapNode(StrictModel):
         "corridor",
         "outdoor",
         "pickup",
+        "delivery",
+        "handoff",
     ]
 
 
@@ -806,7 +808,9 @@ class MapAsset(StrictModel):
     name: str
     coordinate_frame: Literal["map_enu"] = "map_enu"
     nodes: list[MapNode] = Field(min_length=2, max_length=10_000)
-    edges: list[MapEdge] = Field(min_length=1, max_length=50_000)
+    # Geometry-capable maps may start with semantic places and no authored
+    # routes. Metric planning derives each route from collision geometry.
+    edges: list[MapEdge] = Field(default_factory=list, max_length=50_000)
     named_entities: dict[str, str] = Field(min_length=1, max_length=1_000)
 
     # 功能：

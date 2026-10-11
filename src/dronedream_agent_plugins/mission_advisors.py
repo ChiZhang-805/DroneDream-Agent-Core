@@ -192,12 +192,15 @@ def plugin_definitions() -> list[PluginDefinition]:
             risk=lambda request: [
                 flag
                 for flag, active in {
-                    "payload-increases-energy": request.payload_action == "pickup",
+                    "payload-affects-energy": request.payload_action
+                    not in {"none", "navigate"},
                     "return-leg-required": "return" in request.goal.casefold(),
                 }.items()
                 if active
             ],
-            recommended_when={"payload_action_in": ["pickup"]},
+            recommended_when={
+                "payload_action_in": ["pickup", "delivery.release-payload"]
+            },
             order=10,
         ),
         _definition(
@@ -235,10 +238,12 @@ def plugin_definitions() -> list[PluginDefinition]:
             evidence=["identity-observation", "attachment-confirmation", "payload-state-trace"],
             risk=lambda request: (
                 ["payload-identity-and-attachment-required"]
-                if request.payload_action == "pickup"
+                if request.payload_action not in {"none", "navigate"}
                 else []
             ),
-            recommended_when={"payload_action_in": ["pickup"]},
+            recommended_when={
+                "payload_action_in": ["pickup", "delivery.release-payload"]
+            },
             order=40,
         ),
         _definition(

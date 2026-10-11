@@ -401,7 +401,7 @@ def _normalize_intent_critique_scope(
             continue
         if (
             normalized == "RETURN_ENTITY_MISMATCH"
-            and intent.payload_action == "pickup"
+            and intent.payload_action in {"pickup", "delivery.release-payload"}
             and intent.return_entity == intent.start_entity
             and not any(marker in request.message.lower() for marker in one_way_markers)
         ):
@@ -856,10 +856,10 @@ def _ground_intent_clarification_options(
 
 
 # 功能：
-#   在当前目标的所有候选路线均不可执行时，从现有地图拓扑中生成可往返的替代目的地追问。
+#   在当前目标的所有候选路线均不可执行时，从语义地点生成重新规划选项，不把缺边误判成不可达。
 # 输入：
 #   request：提供用户语言；intent：保留任务动作；contract：提供已冻结起点、目标和返程点；
-#   catalog：地图实体目录；graph：有向或双向地图拓扑。
+#   catalog：地图实体目录；graph：实体到语义节点的绑定。
 # 输出：
 #   fields：面向用户的缺失信息；questions：按任务语义和实体标识稳定排序的二至三个选项。
 def _route_recovery_clarification(
@@ -870,27 +870,6 @@ def _route_recovery_clarification(
     graph: MapAsset,
 ) -> tuple[list[str], list[dict[str, object]]]:
     """Turn route exhaustion into a bounded replanning choice when alternatives exist."""
-
-    adjacency: dict[str, set[str]] = {node.node_id: set() for node in graph.nodes}
-    for edge in graph.edges:
-        adjacency[edge.from_node].add(edge.to_node)
-        if edge.bidirectional:
-            adjacency[edge.to_node].add(edge.from_node)
-
-    def reachable(start: str, goal: str) -> bool:
-        if start == goal:
-            return True
-        visited = {start}
-        pending = [start]
-        while pending:
-            current = pending.pop()
-            for neighbor in adjacency.get(current, set()):
-                if neighbor == goal:
-                    return True
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    pending.append(neighbor)
-        return False
 
     def display_label(entity: CatalogEntity) -> str:
         aliases = list(entity.aliases)
@@ -909,10 +888,9 @@ def _route_recovery_clarification(
             continue
         if node_id in excluded_nodes:
             continue
-        if not reachable(contract.start_node, node_id) or not reachable(
-            node_id, contract.return_node
-        ):
-            continue
+        # A missing topology edge is not evidence of geometric
+        # unreachability. The next planning round invokes the installed 3-D
+        # route and clearance tools for the selected semantic place.
         semantic_priority = 0 if entity.semantic == intent.payload_action else 1
         candidates.append((semantic_priority, entity.entity_id, display_label(entity)))
     candidates.sort(key=lambda item: (item[0], item[1]))
@@ -971,6 +949,7 @@ def _intent_workflow_scope() -> dict[str, object]:
         "product_defaults": {
             "plan_before_execution": True,
             "pickup_returns_to_requester_start_unless_another_destination_is_explicit": True,
+            "delivery_returns_to_requester_start_unless_one_way_is_explicit": True,
             "pickup_hover_seconds": 10,
             "pickup_scan_policy": "only_when_required_by_the_pickup_workflow",
             "launch_entity_is_current_simulated_position_when_the_user_does_not_name_a_start": True,
@@ -1009,9 +988,11 @@ def _bind_product_intent_defaults(
 
     values = list(intent.constraints)
     updates: dict[str, object] = {}
-    if intent.payload_action == "pickup":
-        if not any(value.startswith("pickup_hover_seconds=") for value in values):
-            values.append("pickup_hover_seconds=10")
+    if intent.payload_action == "pickup" and not any(
+        value.startswith("pickup_hover_seconds=") for value in values
+    ):
+        values.append("pickup_hover_seconds=10")
+    if intent.payload_action in {"pickup", "delivery.release-payload"}:
         one_way_markers = (
             "不回来",
             "不用回来",
@@ -1503,10 +1484,20 @@ def _validate_task_graph(
         for task in graph.nodes
     ):
         raise MissionPreparationBlocked("TASK_GRAPH_MISSING_TARGET_MOVEMENT")
-    if contract.payload_action == "pickup" and not any(
-        task.action == "pickup" and task.target_node == contract.target_node for task in graph.nodes
-    ):
-        raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PICKUP")
+    if contract.payload_action not in {"none", "navigate"}:
+        matching_payload_tasks = [
+            task for task in graph.nodes
+            if task.action == contract.payload_action
+            and task.target_node == contract.target_node
+        ]
+        if not matching_payload_tasks:
+            raise MissionPreparationBlocked(
+                f"TASK_GRAPH_MISSING_PAYLOAD_ACTION:{contract.payload_action}"
+            )
+        if len(matching_payload_tasks) != 1:
+            raise MissionPreparationBlocked(
+                f"TASK_GRAPH_DUPLICATE_PAYLOAD_ACTION:{contract.payload_action}"
+            )
     if contract.payload_action == "pickup":
         by_id = {task.task_id: task for task in graph.nodes}
         if actions.count("pickup") != 1:

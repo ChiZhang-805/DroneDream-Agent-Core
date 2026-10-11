@@ -103,7 +103,14 @@ def assess_navigation_readiness(graph: MapAsset, catalog: MapCatalog, semantic_p
             "px4_mission_smoke_verified",
         )
     )
-    static_planning = catalog.topology_available and bool(graph.edges) and static_collision_ready
+    # Runtime 3-D planning needs grounded semantic endpoints and collision
+    # geometry. Authored graph edges are optional hints, not an admission gate.
+    static_planning = (
+        catalog.topology_available
+        and bool(graph.nodes)
+        and bool(graph.named_entities)
+        and static_collision_ready
+    )
     dynamic_ready = (
         static_planning
         and indoor_localization

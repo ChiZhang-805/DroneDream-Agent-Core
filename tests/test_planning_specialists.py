@@ -27,7 +27,7 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.plugin_api import build_discovered_extension_registry
-from dronedream_agent_plugins.planning_specialists import _reachable, _validation
+from dronedream_agent_plugins.planning_specialists import _validation
 
 
 # 功能：
@@ -340,14 +340,68 @@ def test_payload_specialist_requires_pickup_at_the_contract_target():
 
 
 # 功能：
-#   验证两个同名但不存在的端点不能被当作零距离可达路线。
+#   验证投递任务与取件任务使用同一通用载荷门控，动作必须唯一且绑定合同目标。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_graph_reachability_does_not_accept_same_unknown_endpoint():
+def test_payload_specialist_accepts_delivery_action_at_the_contract_target():
+    contract, _, vehicle, task_graph, route, clearance, track = _fixtures()
+    contract = contract.model_copy(update={"payload_action": "delivery.release-payload"})
+    task_graph = task_graph.model_copy(
+        update={
+            "nodes": [
+                task_graph.nodes[0].model_copy(
+                    update={"action": "delivery.release-payload"}
+                )
+            ]
+        }
+    )
+
+    accepted = _validation(
+        "payload",
+        contract=contract,
+        map_graph=_fixtures()[1],
+        vehicle=vehicle,
+        task_graph=task_graph,
+        route=route,
+        clearance=clearance,
+        px4_track=track,
+    )
+    misplaced = _validation(
+        "payload",
+        contract=contract,
+        map_graph=_fixtures()[1],
+        vehicle=vehicle,
+        task_graph=task_graph.model_copy(
+            update={
+                "nodes": [
+                    task_graph.nodes[0].model_copy(update={"target_node": "start"})
+                ]
+            }
+        ),
+        route=route,
+        clearance=clearance,
+        px4_track=track,
+    )
+
+    assert accepted.accepted
+    assert not misplaced.accepted
+
+
+# 功能：
+#   验证全局规划验收以工具生成的三维路线为准，不要求地图作者预画拓扑边。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_global_specialist_accepts_verified_metric_route_without_authored_edges():
     graph = _fixtures()[1]
-    assert not _reachable(graph, "unknown", "unknown")
+    graph = graph.model_copy(update={"edges": []})
+
+    validation = _validate_fixture("global", map_graph=graph)
+
+    assert validation.accepted
 
 
 # 功能：

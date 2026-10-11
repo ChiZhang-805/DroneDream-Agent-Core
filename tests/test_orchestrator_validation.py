@@ -168,7 +168,7 @@ def test_clarification_options_bind_one_entity_and_reject_grouped_choice() -> No
     assert "CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE" in issues
 
 
-def test_route_exhaustion_offers_only_round_trip_reachable_map_entities() -> None:
+def test_route_exhaustion_keeps_semantic_places_without_authored_edges() -> None:
     graph = MapAsset.model_validate(
         {
             "asset_id": "office-map",
@@ -284,13 +284,14 @@ def test_route_exhaustion_offers_only_round_trip_reachable_map_entities() -> Non
     )
 
     assert fields == ["当前目的地没有满足飞行条件的路线，请选择另一个地图地点"]
-    assert [option["option_id"] for option in questions[0]["options"]] == ["A", "B"]
+    assert [option["option_id"] for option in questions[0]["options"]] == ["A", "B", "C"]
     assert [option["label"] for option in questions[0]["options"]] == [
+        "隔离区 (isolated)",
         "茶水间 (pantry)",
         "物资区 (supplies)",
     ]
     assert "blocked" not in str(questions)
-    assert "isolated" not in str(questions)
+    assert "isolated" in str(questions)
 
 
 def test_pickup_product_defaults_return_to_start_and_add_bounded_hover() -> None:
@@ -328,6 +329,45 @@ def test_pickup_product_defaults_preserve_explicit_one_way_destination() -> None
     )
 
     assert _bind_product_intent_defaults(intent, request).return_entity == "pantry"
+
+
+def test_delivery_product_defaults_return_to_start_without_requiring_user_to_repeat_it() -> None:
+    intent = IntentArtifact(
+        goal="把样品送到化学楼",
+        start_entity="launch",
+        target_entity="chemicum-delivery",
+        return_entity="chemicum-delivery",
+        payload_action="delivery.release-payload",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-delivery",
+        message="把样品送到化学楼",
+        start_entity="launch",
+    )
+
+    resolved = _bind_product_intent_defaults(intent, request)
+
+    assert resolved.return_entity == "launch"
+    assert "pickup_hover_seconds=10" not in resolved.constraints
+
+
+def test_task_graph_requires_the_contract_delivery_action_at_the_target() -> None:
+    contract = _contract().model_copy(
+        update={
+            "payload_action": "delivery.release-payload",
+            "authorized_actions": [
+                *_contract().authorized_actions,
+                "delivery.release-payload",
+                "delivery.verify-release-area",
+            ],
+        }
+    )
+
+    with pytest.raises(
+        MissionPreparationBlocked,
+        match="TASK_GRAPH_MISSING_PAYLOAD_ACTION:delivery.release-payload",
+    ):
+        _validate_task_graph(_task_graph(include_stale_gate=False), contract, _map())
 
 
 def test_dual_review_consensus_uses_the_conservative_rejection_and_keeps_every_record() -> None:

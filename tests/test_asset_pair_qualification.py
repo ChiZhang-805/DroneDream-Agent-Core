@@ -200,6 +200,7 @@ def _fixtures(
     complete_vehicle_physics: bool = True,
     controller_over_limit: bool = False,
     complete_sensor_suite: bool = True,
+    authored_edges: bool = True,
 ) -> tuple[Path, Path]:
     graph = {
         "schema_version": "dronedream.map-graph.v1",
@@ -231,7 +232,7 @@ def _fixtures(
                 "bidirectional": True,
                 "qualification": "geometry-derived",
             }
-        ],
+        ] if authored_edges else [],
         "named_entities": {"launch": "launch"},
     }
     semantic = {
@@ -392,6 +393,26 @@ def test_prepares_hash_bound_round_trip_for_real_runtime(tmp_path: Path) -> None
     assert plan.inputs.vehicle_name == "qualification_vehicle"
     assert plan.inputs.px4_sitl_model == "x500"
     assert (work_root / "qualification-plan.json").is_file()
+
+
+# 功能：
+#   验证新地图无需作者预画航线，资格流程会从语义端点和碰撞几何生成往返路线。
+# 输入：
+#   tmp_path：隔离资产目录。
+# 输出：
+#   None：不返回业务数据。
+def test_prepares_metric_round_trip_without_authored_graph_edges(tmp_path: Path) -> None:
+    map_archive, vehicle_archive = _fixtures(tmp_path, authored_edges=False)
+
+    plan = prepare_asset_pair_qualification(
+        map_archive=map_archive,
+        vehicle_archive=vehicle_archive,
+        work_root=tmp_path / "run-no-edges",
+    )
+
+    assert plan.route.node_ids == ["launch", "turn", "launch"]
+    assert plan.route.route_length_m == 4.0
+    assert plan.route.all_edges_flight_verified is False
 
 
 # 功能：

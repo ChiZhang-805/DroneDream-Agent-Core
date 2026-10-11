@@ -52,7 +52,6 @@ from .collision import (
 from .contracts import GraphRoute, MapAsset, RouteQuery, StrictModel, VehicleAsset
 from .hashing import sha256_json
 from .known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
-from .navigation import shortest_route
 from .plugin_contracts import PluginHookReceipt, PluginSnapshot
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
 from .px4_track import route_to_px4_track
@@ -850,8 +849,6 @@ def _round_trip_route(
                 RouteQuery(start_node=node.node_id, goal_node=launch)
             )
         except ValueError:
-            # Metric collision geometry does not override directed topology:
-            # an endpoint with only an outbound lane is not a round-trip target.
             continue
         if not (minimum_translation_m <= inbound.route_length_m <= maximum_translation_m):
             continue
@@ -882,54 +879,6 @@ def _round_trip_route(
         _, route, clearance = max(candidates, key=lambda item: item[0])
         return route, clearance
 
-    # Narrow maps may have no route that can fund the preferred 0.35 m transit
-    # clearance.  Retain the bounded topology fallback, but still require the
-    # shared tracking budget below; missing preference never becomes permission
-    # to cross a collision boundary.
-    for node in graph.nodes:
-        if node.node_id == launch:
-            continue
-        try:
-            outbound = shortest_route(graph, RouteQuery(start_node=launch, goal_node=node.node_id))
-        except ValueError:
-            continue
-        if not (minimum_translation_m <= outbound.route_length_m <= maximum_translation_m):
-            continue
-        try:
-            inbound = shortest_route(graph, RouteQuery(start_node=node.node_id, goal_node=launch))
-        except ValueError:
-            # 有去路不代表有回路；单向死路不能让其余合格候选一起失败。
-            continue
-        if not (minimum_translation_m <= inbound.route_length_m <= maximum_translation_m):
-            # 往返资格不能只限制去程；单向图上的超长绕返会把短练习静默扩成
-            # 数百米任务，并使运行时长、能量与定位预算脱离本次验收边界。
-            continue
-        route = GraphRoute(
-            start_node=launch,
-            goal_node=launch,
-            node_ids=[*outbound.node_ids, *inbound.node_ids[1:]],
-            edge_ids=[*outbound.edge_ids, *inbound.edge_ids],
-            positions_m=[*outbound.positions_m, *inbound.positions_m[1:]],
-            route_length_m=outbound.route_length_m + inbound.route_length_m,
-            all_edges_flight_verified=outbound.all_edges_flight_verified
-            and inbound.all_edges_flight_verified,
-        )
-        clearance = validate_route_clearance(
-            route,
-            semantic_path,
-            vehicle_diameter_m=vehicle.body_radius_m * 2,
-            vehicle_height_m=vehicle.body_height_m,
-        )
-        if not clearance.accepted:
-            continue
-        try:
-            build_tracking_corridor_budget(clearance.minimum_clearance_m)
-        except ValueError:
-            # The runtime reserves this same clearance for local avoidance,
-            # localization uncertainty and tracking drift. Rejecting here keeps
-            # preparation and execution from applying different safety budgets.
-            continue
-        candidates.append((outbound.route_length_m, route, clearance))
     if not candidates:
         raise AssetPairQualificationError("ASSET_QUALIFICATION_CLEAR_ROUND_TRIP_REQUIRED")
     _, route, clearance = max(candidates, key=lambda item: item[0])

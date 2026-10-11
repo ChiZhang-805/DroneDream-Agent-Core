@@ -1,10 +1,9 @@
 """Metric 3-D global planning over qualified static collision semantics.
 
-The topology graph remains useful for named places and for bounding the search, but
-it is deliberately not treated as the flight path.  This module searches the
-qualified collision geometry with the complete vehicle envelope plus an explicit
-operational margin.  It therefore produces genuinely different paths when free
-space permits instead of applying different scores to the same graph chain.
+The topology graph remains useful for named places, but it is deliberately not
+treated as the flight path. This module derives search bounds and route geometry
+from qualified collision geometry, using the complete vehicle envelope plus an
+explicit operational margin. Authored graph edges are never required.
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from dronedream_plugin_sdk.protocol import decode_json
 from .assets import MAX_SEMANTIC_BYTES
 from .collision import _clearance, planning_collision_primitives, primitive_bounds
 from .contracts import GraphRoute, MapAsset, RouteQuery, Vector3
-from .navigation import shortest_route
 from .plugin_files import read_plugin_file
 from .preferred_airspace import PreferredAirspace, checked_point
 
@@ -258,46 +256,72 @@ class KnownMapMetricPlanner:
         return True
 
     # 功能：
-    #   用命名拓扑路线限定搜索范围，同时包含当前实测起终点，不把无人机吸回旧图节点。
+    #   仅依据当前实测起终点和地图碰撞几何建立搜索范围，不要求地图作者预画航线。
     # 输入：
-    #   self：带拓扑图的规划器。
-    #   query：命名起终点查询。
+    #   self：当前规划器。
     #   exact_start、exact_goal：当前真实任务起终点。
     # 输出：
     #   bounds：本次有界搜索空间的下界和上界。
     def _search_bounds(
         self,
-        query: RouteQuery,
         *,
         exact_start: Point,
         exact_goal: Point,
     ) -> tuple[Point, Point]:
-        if self.graph is None:
-            raise ValueError("topology graph is required for bounded global planning")
-        baseline = shortest_route(
-            self.graph,
-            query.model_copy(update={"require_flight_verified_edges": False}),
+        points = [exact_start, exact_goal]
+        # Obstacles that cross the direct search prism enlarge the prism far
+        # enough for A* to get around their complete vehicle-expanded bounds.
+        # Horizontal terrain/floor slabs deliberately do not expand X/Y: doing
+        # so would turn every local request into a full-map voxel search.
+        padding = max(
+            self.policy.search_padding_m,
+            self.vehicle_radius_m + self.policy.required_clearance_m + self.policy.resolution_m,
         )
-        points = [(point.x, point.y, point.z) for point in baseline.positions_m]
-        # The graph supplies a broad search corridor, never an instruction to
-        # snap a live vehicle or a revised semantic action pose back onto an
-        # old route node.
-        points.extend((exact_start, exact_goal))
-        padding = self.policy.search_padding_m
+        low = [min(point[axis] for point in points) - padding for axis in range(3)]
+        high = [max(point[axis] for point in points) + padding for axis in range(3)]
+        lateral_semantics = {"terrain", "floor", "ground", "ground-plane"}
+        for primitive in self.primitives:
+            primitive_low, primitive_high = _primitive_bounds(
+                dict(primitive),
+                self.vehicle_radius_m + self.policy.required_clearance_m,
+            )
+            if primitive.get("semantic") in lateral_semantics:
+                covers_both_endpoints = all(
+                    primitive_low[axis] <= exact_start[axis] <= primitive_high[axis]
+                    and primitive_low[axis] <= exact_goal[axis] <= primitive_high[axis]
+                    for axis in (0, 1)
+                )
+                if covers_both_endpoints and primitive_high[2] <= min(
+                    exact_start[2], exact_goal[2]
+                ):
+                    # A finite ground mesh must behave as a floor for this local
+                    # search. Otherwise A* can leave its underside and tunnel
+                    # below terrain because the mesh itself has finite thickness.
+                    low[2] = max(low[2], primitive_high[2])
+                continue
+            overlaps_direct_prism = all(
+                primitive_high[axis] >= low[axis] and primitive_low[axis] <= high[axis]
+                for axis in range(3)
+            )
+            if not overlaps_direct_prism:
+                continue
+            for axis in (0, 1):
+                low[axis] = min(low[axis], primitive_low[axis] - padding)
+                high[axis] = max(high[axis], primitive_high[axis] + padding)
         preferred_upper = max(
             (band.preferred_upper_z_m for point in points
              if (band := self.preferred_airspace.band_at(point)) is not None),
             default=max(point[2] for point in points))
         return (
             (
-                min(point[0] for point in points) - padding,
-                min(point[1] for point in points) - padding,
-                min(point[2] for point in points) - padding,
+                low[0],
+                low[1],
+                low[2],
             ),
             (
-                max(point[0] for point in points) + padding,
-                max(point[1] for point in points) + padding,
-                max(max(point[2] for point in points) + padding, preferred_upper),
+                high[0],
+                high[1],
+                max(high[2], preferred_upper),
             ),
         )
 
@@ -416,8 +440,107 @@ class KnownMapMetricPlanner:
         cached = self._route_cache.get(cache_key) if not prior_corridors else None
         if cached is not None:
             return cached.model_copy(deep=True)
+
+        # 功能：
+        #   将经连续碰撞证明的点列封装并缓存为本次语义航段；反向复用依据静态几何对称性。
+        # 输入：
+        #   points：包含精确起终点的路线点。
+        # 输出：
+        #   route：绑定命名端点且不冒充飞行验证边的路线。
+        def finish(points: list[Point]) -> GraphRoute:
+            simplified = self._simplify(points)
+            digest = hashlib.sha256(
+                json.dumps(simplified, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:12]
+            node_ids = [
+                query.start_node,
+                *(f"metric-{digest}-{index:04d}" for index in range(1, len(simplified) - 1)),
+                query.goal_node,
+            ]
+            edge_ids = [
+                f"metric-edge-{digest}-{index:04d}" for index in range(len(simplified) - 1)
+            ]
+            route = GraphRoute(
+                start_node=query.start_node,
+                goal_node=query.goal_node,
+                node_ids=node_ids,
+                edge_ids=edge_ids,
+                positions_m=[Vector3(x=item[0], y=item[1], z=item[2]) for item in simplified],
+                route_length_m=sum(
+                    math.dist(first, second)
+                    for first, second in zip(simplified, simplified[1:], strict=False)
+                ),
+                all_edges_flight_verified=False,
+            )
+            if prior_corridors:
+                return route.model_copy(deep=True)
+            self._route_cache[cache_key] = route
+            reverse_key = (query.goal_node, query.start_node, exact_goal, exact_start)
+            self._route_cache[reverse_key] = GraphRoute(
+                start_node=query.goal_node,
+                goal_node=query.start_node,
+                node_ids=list(reversed(route.node_ids)),
+                edge_ids=list(reversed(route.edge_ids)),
+                positions_m=list(reversed(route.positions_m)),
+                route_length_m=route.route_length_m,
+                all_edges_flight_verified=False,
+            )
+            return route.model_copy(deep=True)
+
+        if self.clearance(exact_start) < self.policy.required_clearance_m:
+            raise ValueError("metric route start violates operational clearance")
+        if self.clearance(exact_goal) < self.policy.required_clearance_m:
+            raise ValueError("metric route goal violates operational clearance")
+
+        # Common outdoor legs do not need a full voxel search. First prove the
+        # direct segment; then derive one cruise height from actual obstacle
+        # bounds intersecting the start-goal prism. Both paths still undergo the
+        # same continuous swept-volume proof as A* output.
+        if (
+            not prior_corridors
+            and (
+                self.preferred_airspace.domain is None
+                or self.policy.preferred_airspace_weight == 0
+            )
+            and self._segment_is_free(exact_start, exact_goal)
+        ):
+            return finish([exact_start, exact_goal])
+        if not prior_corridors:
+            preferred_upper = max(
+                (
+                    band.preferred_upper_z_m
+                    for point in (exact_start, exact_goal)
+                    if (band := self.preferred_airspace.band_at(point)) is not None
+                ),
+                default=max(exact_start[2], exact_goal[2]),
+            )
+            cruise_z = max(exact_start[2], exact_goal[2], preferred_upper)
+            x_low, x_high = sorted((exact_start[0], exact_goal[0]))
+            y_low, y_high = sorted((exact_start[1], exact_goal[1]))
+            for primitive in self.primitives:
+                primitive_low, primitive_high = _primitive_bounds(
+                    dict(primitive),
+                    self.vehicle_radius_m + self.policy.required_clearance_m,
+                )
+                if (
+                    primitive_high[0] >= x_low
+                    and primitive_low[0] <= x_high
+                    and primitive_high[1] >= y_low
+                    and primitive_low[1] <= y_high
+                ):
+                    cruise_z = max(cruise_z, primitive_high[2] + self.policy.resolution_m)
+            cruise = [
+                exact_start,
+                (exact_start[0], exact_start[1], cruise_z),
+                (exact_goal[0], exact_goal[1], cruise_z),
+                exact_goal,
+            ]
+            if all(
+                self._segment_is_free(first, second)
+                for first, second in zip(cruise, cruise[1:], strict=False)
+            ):
+                return finish(cruise)
         low, high = self._search_bounds(
-            query,
             exact_start=exact_start,
             exact_goal=exact_goal,
         )
@@ -499,10 +622,6 @@ class KnownMapMetricPlanner:
                 clearance_cache[key] = value
             return value
 
-        if self.clearance(exact_start) < self.policy.required_clearance_m:
-            raise ValueError("metric route start violates operational clearance")
-        if self.clearance(exact_goal) < self.policy.required_clearance_m:
-            raise ValueError("metric route goal violates operational clearance")
         if key_clearance(start_key) < self.policy.required_clearance_m:
             # The exact endpoint is authoritative; retain it as a special grid node.
             point_cache[start_key] = exact_start
@@ -606,56 +725,7 @@ class KnownMapMetricPlanner:
             keys.append(previous[keys[-1]])
         keys.reverse()
         raw_points = [exact_start, *(point(key) for key in keys[1:-1]), exact_goal]
-        simplified = self._simplify(raw_points)
-        digest = hashlib.sha256(
-            json.dumps(simplified, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:12]
-        node_ids = [
-            query.start_node,
-            *(f"metric-{digest}-{index:04d}" for index in range(1, len(simplified) - 1)),
-            query.goal_node,
-        ]
-        edge_ids = [f"metric-edge-{digest}-{index:04d}" for index in range(len(simplified) - 1)]
-        route = GraphRoute(
-            start_node=query.start_node,
-            goal_node=query.goal_node,
-            node_ids=node_ids,
-            edge_ids=edge_ids,
-            positions_m=[Vector3(x=item[0], y=item[1], z=item[2]) for item in simplified],
-            route_length_m=sum(
-                math.dist(first, second)
-                for first, second in zip(simplified, simplified[1:], strict=False)
-            ),
-            all_edges_flight_verified=False,
-        )
-        if prior_corridors:
-            return route.model_copy(deep=True)
-        self._route_cache[cache_key] = route
-        reverse_key = (query.goal_node, query.start_node, exact_goal, exact_start)
-        # Collision geometry is symmetric, but the named topology need not be.
-        # Cache a reversed metric path only when the map independently permits
-        # travel in that direction; otherwise a one-way lane would silently
-        # become a fabricated return route on the next query.
-        reverse_query = query.model_copy(
-            update={"start_node": query.goal_node, "goal_node": query.start_node}
-        )
-        try:
-            if self.graph is None:
-                raise ValueError("topology graph is required for reverse route caching")
-            shortest_route(self.graph, reverse_query)
-        except ValueError:
-            self._route_cache.pop(reverse_key, None)
-        else:
-            self._route_cache[reverse_key] = GraphRoute(
-                start_node=query.goal_node,
-                goal_node=query.start_node,
-                node_ids=list(reversed(route.node_ids)),
-                edge_ids=list(reversed(route.edge_ids)),
-                positions_m=list(reversed(route.positions_m)),
-                route_length_m=route.route_length_m,
-                all_edges_flight_verified=route.all_edges_flight_verified,
-            )
-        return route.model_copy(deep=True)
+        return finish(raw_points)
 
     # 功能：
     #   贪心选择满足净空的最远可直达点，连相邻点和两点路线也必须复验，不能漏检端点接驳。
