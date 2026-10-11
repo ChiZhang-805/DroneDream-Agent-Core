@@ -176,9 +176,13 @@ def _assert_promotion_input_binding(
     run_map = run_dir / "school-map"
     run_vehicle = run_dir / "my-drone"
     source_semantic = _json(map_source / "semantic.json")
-    source_semantic.pop("collision_primitives", None)
     run_semantic = _json(run_map / "semantic.json")
     for semantic in (source_semantic, run_semantic):
+        # Collision primitives are already bound independently by the exact
+        # collision-primitives.json digest above.  Exported run snapshots may
+        # retain the same primitives as a parser convenience, so remove that
+        # duplicate representation from both sides before comparing semantics.
+        semantic.pop("collision_primitives", None)
         # Human-facing labels may be corrected after a physical qualification run
         # without changing the qualified geometry, entity identities, or positions.
         # Keep every operational field hash-bound while excluding only those labels.
