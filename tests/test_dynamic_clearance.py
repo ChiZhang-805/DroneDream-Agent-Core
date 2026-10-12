@@ -98,32 +98,29 @@ def test_a_center_ray_cannot_clear_unseen_sides_or_vertical_volume():
     )
 
 
-def test_long_lost_track_preserves_real_age_and_denies_control_without_crashing_fusion():
+def test_lost_prediction_retires_on_fresh_scan_without_claiming_volume_clearance():
     f = fusion()
     f.ingest(frame(1, 1000, detected=True), now_unix_ms=1000, now_monotonic_seconds=1)
     health = f.ingest(frame(2, 61_000), now_unix_ms=61_000, now_monotonic_seconds=61)
-    assert not health.stream_healthy
-    assert "DYNAMIC_TRACK_OBSERVATION_STALE:moving-object" in health.issue_codes
-    assert len(f.latest_frame.dynamic_obstacles) == 1
-    assert f.latest_frame.dynamic_obstacles[0].age_seconds == 60
+    assert health.stream_healthy
+    assert not f.latest_frame.dynamic_obstacles
     assert not f.last_dynamic_clearances
     observation = f.local_safety_observation(target_position_m=Vector3(x=4, y=0, z=0),
                                             now_unix_ms=61_000)
-    assert not observation.stream_healthy
-    assert observation.dynamic_obstacles[0].age_seconds == 60
+    assert observation.stream_healthy
+    assert not observation.dynamic_obstacles
 
 
-# 功能：过期轨迹不触发无效全图清除计算，但保留原观测、年龄和阻塞状态。
-# 输入：一条超过短时清除包络期限的失联轨迹；输出：不计算自由网格且不会误放行。
-def test_long_lost_track_skips_unusable_clearance_work_without_becoming_clear(monkeypatch):
+# Retiring an extrapolation does not fabricate a free-space scan.
+def test_lost_prediction_skips_unusable_clearance_work(monkeypatch):
     f = fusion()
     f.ingest(frame(1, 1000, detected=True), now_unix_ms=1000, now_monotonic_seconds=1)
     def forbidden(*args, **kwargs):
         raise AssertionError('an expired envelope cannot consume a free-space scan')
     monkeypatch.setattr('dronedream_agent_core.perception_runtime.fresh_free_voxels', forbidden)
     health = f.ingest(frame(2, 2001), now_unix_ms=2001, now_monotonic_seconds=2.001)
-    assert not health.stream_healthy
-    assert f.latest_frame.dynamic_obstacles[0].age_seconds == 1.001
+    assert health.stream_healthy
+    assert not f.latest_frame.dynamic_obstacles
     assert not f.last_dynamic_clearances
 
 
@@ -187,3 +184,19 @@ def test_overflowing_ray_does_not_manufacture_partial_free_space():
         hit=False, confidence=.9, observed_at_monotonic_seconds=1.,
     )
     assert not fresh_free_voxels([ray], resolution_m=.25, now_monotonic_seconds=1.)
+
+
+def test_retiring_prediction_keeps_current_depth_hits_occupied():
+    f = fusion()
+    f.ingest(frame(1, 1000, detected=True), now_unix_ms=1000, now_monotonic_seconds=1)
+    scan = frame(2, 2500)
+    for ray in scan.range_rays:
+        ray.hit = True
+        ray.endpoint_m.x = 1.4
+    health = f.ingest(scan, now_unix_ms=2500, now_monotonic_seconds=2.5)
+    assert health.stream_healthy
+    assert not f.latest_frame.dynamic_obstacles
+    assert f.world.is_occupied((5, 0, 0))
+    assert not f.last_dynamic_clearances
+    # If sensing stops, the stale frame still blocks motion.
+    assert not f.health(now_unix_ms=5000).stream_healthy

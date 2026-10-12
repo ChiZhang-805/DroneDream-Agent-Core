@@ -935,7 +935,7 @@ def test_retained_track_does_not_refresh_original_detection():
         fusion.ingest(retained, now_unix_ms=1_220)
 
 
-def test_omitted_dynamic_track_is_not_silently_cleared_by_new_frames():
+def test_missing_prediction_expires_on_new_scan_without_renewing_old_evidence():
     fusion = RuntimePerceptionFusion(world=_world(), accepted_sensor_ids={"front-lidar"})
     first = _tracked_frame(sequence=1, observed_at_unix_ms=1_000,
                            obstacle_x=1.0, obstacle_speed_x=0.2)
@@ -950,16 +950,15 @@ def test_omitted_dynamic_track_is_not_silently_cleared_by_new_frames():
     empty.observed_at_unix_ms = 2_100
     empty.range_rays = _frame(observed_at_unix_ms=2100).range_rays
     health = fusion.ingest(empty, now_unix_ms=2_120)
-    assert not health.stream_healthy
-    assert "DYNAMIC_TRACK_OBSERVATION_STALE:person-1" in health.issue_codes
-    assert fusion.latest_frame.dynamic_obstacles[0].age_seconds == pytest.approx(1.1)
+    assert health.stream_healthy
+    assert not fusion.latest_frame.dynamic_obstacles
     empty.sequence = 4
     empty.observed_at_unix_ms = 40_000
     empty.range_rays = _frame(observed_at_unix_ms=40000).range_rays
-    assert not fusion.ingest(empty, now_unix_ms=40_020).stream_healthy
+    assert fusion.ingest(empty, now_unix_ms=40_020).stream_healthy
     assert fusion.latest_frame.sequence == 4
-    assert fusion.latest_frame.dynamic_obstacles[0].age_seconds == 39
-    assert not fusion.health(now_unix_ms=40_020).stream_healthy
+    assert not fusion.latest_frame.dynamic_obstacles
+    assert not fusion.health(now_unix_ms=42_020).stream_healthy
 
 
 def test_duplicate_dynamic_id_is_rejected_before_fusion():

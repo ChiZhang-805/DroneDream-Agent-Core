@@ -352,6 +352,16 @@ class RuntimePerceptionFusion:
             if sensor_offset > self.maximum_sensor_offset_m:
                 raise ValueError("PERCEPTION_RAY_ORIGIN_OUTSIDE_CALIBRATED_BODY")
         dynamic_tracks, dynamic_issues = self._validated_dynamic_tracks(frame)
+        # Motion extrapolation has a one-second horizon. Once a fresh scan
+        # supersedes it, retire the prediction, not the measured occupancy.
+        # Retaining a lost identity forever globally blocked otherwise healthy
+        # sensing (including ordinary camera/ground segmentation changes).
+        dynamic_tracks = {
+            key: state for key, state in dynamic_tracks.items()
+            if frame.observed_at_unix_ms - state.observed_at_unix_ms <= 1000
+        }
+        dynamic_issues = [issue for issue in dynamic_issues
+                          if issue.rsplit(":", 1)[-1] in dynamic_tracks]
         accepted_at_monotonic = (
             time.monotonic() if now_monotonic_seconds is None else now_monotonic_seconds
         )
