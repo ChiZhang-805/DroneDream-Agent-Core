@@ -51,6 +51,9 @@ The presence of a single action-capable pickup waypoint does NOT make it the use
 destination. A bare request such as "帮我拿个东西" with no prior conversation location,
 no named place, and no item/function clue must ask one short question such as
 "要取什么东西，从哪里取？" via missing_critical_fields and clarification_questions.
+For an entity awaiting clarification, output "__unresolved__", never an empty string
+or null. For that bare request, ask one free-text question with options=[]; do not
+offer unrelated map locations merely because they are present in the catalog.
 Do not silently choose a default pickup point and invite correction afterwards.
 An item such as "化学仪器" can instead ground a destination through the documented
 chemistry-building function. Do not demand coordinates or repeat a place already known
