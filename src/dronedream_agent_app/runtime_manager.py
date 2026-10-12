@@ -1633,7 +1633,11 @@ class RuntimeManager:
         )
         if not executor.is_file() or not checkpoint_executor.is_file():
             raise RuntimeBridgeError("RUNTIME_ADAPTER_RESOURCE_MISSING")
-        context_db = self.store.root / "mission-context.sqlite3"
+        # Windows planning and WSL execution cannot share a live SQLite WAL.
+        # Execution imports the prepared lifecycle sidecar into its own store;
+        # its result and receipts return through the existing file protocol.
+        # The desktop store still consumes each execution authority once.
+        context_db = execution_root / "runtime-context.sqlite3"
         contract_id = str(plan["contract_id"])
         command = [
             "--profile",

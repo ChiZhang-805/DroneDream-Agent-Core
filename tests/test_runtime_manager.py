@@ -975,6 +975,8 @@ def test_execute_keeps_supervisor_files_outside_empty_simulation_run(tmp_path, m
     assert (execution_root / "desktop-runtime.stdout.log").is_file()
     assert (execution_root / "desktop-runtime.stderr.log").is_file()
     launch_script = process.stdin.getvalue()
+    assert "runtime-context.sqlite3" in launch_script
+    assert "mission-context.sqlite3" not in launch_script
     assert "--profile runtime-manager execute-prepared-mission" in launch_script
     assert "--local-navigation-provider local-policy" in launch_script
     assert "--local-navigation-fallback-provider openai" in launch_script
