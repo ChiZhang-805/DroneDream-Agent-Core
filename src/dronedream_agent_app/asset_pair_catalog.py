@@ -23,7 +23,7 @@ _SCHOOL_MAP = {
 # The qualified aircraft is the normalized built-in My Drone package, whose
 # reviewed source model is PX4 x500_depth.
 _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
-    "dronedream-school-map": "asset-qualification-54d4f94f3633bccf433f3f31",
+    "dronedream-school-map": "asset-qualification-57aa3819b5591401b2a92387",
 }
 
 # The public resource identifier names the catalog entry, while the normalized

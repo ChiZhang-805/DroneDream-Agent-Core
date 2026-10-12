@@ -49,7 +49,7 @@ _KUMPULA_CAMPUS = {
     "source": {
         "source_type": "bundled_ddpkg",
         "location": "dronedream://default-assets/school-map.ddpkg",
-        "expected_sha256": ("c1342f272da972827c8d8a89c2dc1112d06605d3a2d1c9c505708a837b5de27c"),
+        "expected_sha256": ("dda0cf79b648531b58964a941c3bc8950822c75e8fa37b6f871482a269d21432"),
         "source_format": "dronedream-ddpkg",
         "expected_kind": "map",
         "real_world_crs": "EPSG:3879",
@@ -78,7 +78,7 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-54d4f94f3633bccf433f3f31",
+        "qualification_id": "asset-qualification-57aa3819b5591401b2a92387",
         "required_inputs": [],
     },
 }

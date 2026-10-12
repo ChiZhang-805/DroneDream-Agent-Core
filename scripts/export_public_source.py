@@ -37,9 +37,9 @@ RUNTIME_GITLINK = "shared/dronedream-runtime-source"
 ROS_RESOURCE_MARKER = "ros_ws/src/dronedream_agent_ros/resource/dronedream_agent_ros"
 APPROVED_ASSETS = {
     "app/desktop/src-tauri/resources/default-assets/school-map.ddpkg":
-        "c1342f272da972827c8d8a89c2dc1112d06605d3a2d1c9c505708a837b5de27c",
+        "dda0cf79b648531b58964a941c3bc8950822c75e8fa37b6f871482a269d21432",
     "app/desktop/src-tauri/resources/default-assets/my-drone.ddpkg":
-        "08d53129a3b65ee9229704098b026b6051ac9d81ee6772dddfd6df99dc5d7fd1",
+        "3e08b48ca41c8b934f2bf10490468e8494b0a922e720bc870c86737e07526e27",
 }
 
 

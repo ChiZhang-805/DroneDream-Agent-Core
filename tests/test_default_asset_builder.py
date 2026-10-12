@@ -2,10 +2,30 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import zipfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
+
+def test_bundled_named_buildings_resolve_to_distinct_outdoor_handoffs(tmp_path: Path) -> None:
+    from dronedream_agent_core.assets import load_map_catalog, resolve_map_entity
+    from dronedream_agent_core.contracts import MapAsset
+
+    package = Path(__file__).parents[1] / "app/desktop/src-tauri/resources/default-assets/school-map.ddpkg"
+    with zipfile.ZipFile(package) as bundle:
+        graph = MapAsset.model_validate_json(bundle.read("normalized/map/navigation-graph.json"))
+        semantic = tmp_path / "semantic.json"
+        semantic.write_bytes(bundle.read("normalized/map/gazebo/semantic.json"))
+    catalog = load_map_catalog(semantic, qualified_graph=graph)
+    resolved = [resolve_map_entity(name, catalog, graph) for name in ("Chemicum", "Dynamicum", "Exactum", "Physicum")]
+    assert len(set(resolved)) == 4
+    assert resolve_map_entity("physicum", catalog, graph) == "physicum-delivery-zone"
+    assert resolve_map_entity("物理楼", catalog, graph) == "physicum-delivery-zone"
+    assert resolve_map_entity("计算机科学楼", catalog, graph) == "exactum-delivery-zone"
+    # Added endpoints do not pretend to be flight-verified route edges.
+    assert all(edge.from_node not in resolved[1:] and edge.to_node not in resolved[1:] for edge in graph.edges)
 
 
 def _load_builder() -> ModuleType:
