@@ -261,6 +261,8 @@ def test_qualified_graph_binding_exposes_topology_without_semantic_invention(
                 "office-launch-pad": "launch",
                 "secondary-pickup-pad": "pickup",
                 "takeout-pickup-pad": "pickup",
+                "Chemicum": "pickup",
+                "化学楼": "pickup",
             },
         }
     )
@@ -282,6 +284,9 @@ def test_qualified_graph_binding_exposes_topology_without_semantic_invention(
     assert secondary_pickup.source_pointer == (
         "qualified-graph/named_entities/secondary-pickup-pad"
     )
+    assert resolve_map_entity("chemicum", bound, graph) == "pickup"
+    assert resolve_map_entity("化学楼", bound, graph) == "pickup"
+    assert map_entity_is_mentioned("去 Chemicum 取仪器", "Chemicum", bound)
 
 
 def test_generic_map_semantics_are_not_tied_to_school_map(tmp_path: Path) -> None:

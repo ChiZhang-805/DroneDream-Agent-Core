@@ -836,7 +836,8 @@ class MapAsset(StrictModel):
 
 
 class CatalogEntity(StrictModel):
-    entity_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    # Map-authored names are graph lookup keys, not package slugs.
+    entity_id: str = Field(min_length=1, max_length=160)
     aliases: list[str] = Field(min_length=1, max_length=24)
     position_m: Vector3
     semantic: str = Field(min_length=1, max_length=96)
@@ -846,7 +847,7 @@ class CatalogEntity(StrictModel):
 class PlanarCatalogLandmark(StrictModel):
     """Map-authored horizontal landmark, not a three-dimensional flight target."""
 
-    entity_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    entity_id: str = Field(min_length=1, max_length=160)
     aliases: list[str] = Field(min_length=1, max_length=24)
     east_m: float
     north_m: float
