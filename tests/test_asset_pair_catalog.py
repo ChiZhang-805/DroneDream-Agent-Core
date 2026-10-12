@@ -18,24 +18,25 @@ def test_catalog_covers_every_builtin_map_aircraft_combination_once() -> None:
     pairs = catalog["pairs"]
     assert catalog["schema_version"] == "dronedream.asset-pair-catalog.v1"
     assert catalog["map_count"] == 1
-    assert catalog["vehicle_count"] == 13
-    assert catalog["pair_count"] == 13
-    assert len({item["pair_id"] for item in pairs}) == 13
+    assert catalog["vehicle_count"] == 1
+    assert catalog["pair_count"] == 1
+    assert len({item["pair_id"] for item in pairs}) == 1
     assert catalog["counts"] == {
         "qualified_builtin": 1,
-        "compatible_requires_qualification": 12,
+        "compatible_requires_qualification": 0,
         "incompatible": 0,
     }
 
 
-def test_vtol_is_admitted_to_the_outdoor_campus_pending_qualification() -> None:
-    catalog = asset_pair_catalog()
-    vtol_pairs = [item for item in catalog["pairs"] if item["vehicle_class"] == "vtol"]
-    compatible = [item for item in vtol_pairs if item["compatible"]]
-    assert len(vtol_pairs) == 3
-    assert len(compatible) == 3
-    assert {item["map_resource_id"] for item in compatible} == {"dronedream-school-map"}
-    assert all(item["status"] == "compatible_requires_qualification" for item in vtol_pairs)
+def test_unqualified_variants_are_not_admitted() -> None:
+    import pytest
+    from dronedream_agent_app.vehicle_resource_catalog import get_vehicle_resource
+
+    for resource_id in ("px4-x500-flow", "px4-standard-vtol", "px4-x500"):
+        with pytest.raises(KeyError):
+            get_vehicle_resource(resource_id)
+        with pytest.raises(KeyError):
+            get_asset_pair("dronedream-school-map", resource_id)
 
 
 def test_only_exact_builtin_x500_depth_pairs_claim_existing_qualification() -> None:
@@ -94,4 +95,4 @@ def test_asset_pair_catalog_api_is_loopback_token_protected(tmp_path) -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
-    assert response.json()["pair_count"] == 13
+    assert response.json()["pair_count"] == 1

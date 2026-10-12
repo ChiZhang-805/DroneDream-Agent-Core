@@ -358,18 +358,22 @@ _RESOURCES = (
 )
 
 
+# Reviewed source variants remain historical metadata, not selectable defaults.
+# Only the normalized X500 Depth package has passed campus pair qualification.
+_ADMITTED_RESOURCES = tuple(item for item in _RESOURCES if item["resource_id"] == "px4-x500-depth")
+
 def vehicle_resource_catalog() -> dict[str, object]:
     """Return detached catalog data so request handlers cannot mutate policy."""
     return {
         "schema_version": "dronedream.vehicle-resource-catalog.v1",
-        "catalog_revision": "2026-10-11.1",
-        "resources": deepcopy(list(_RESOURCES)),
+        "catalog_revision": "2026-10-13.1",
+        "resources": deepcopy(list(_ADMITTED_RESOURCES)),
     }
 
 
 def get_vehicle_resource(resource_id: str) -> dict[str, object]:
     """Resolve only a reviewed identifier; arbitrary sources never enter this path."""
-    for resource in _RESOURCES:
+    for resource in _ADMITTED_RESOURCES:
         if resource["resource_id"] == resource_id:
             return deepcopy(resource)
     raise KeyError(resource_id)

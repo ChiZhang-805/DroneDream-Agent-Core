@@ -91,9 +91,9 @@ def test_agent_installer_bundles_the_qualified_default_asset_repository() -> Non
     ) == [".ddpkg", ".ddpkg"]
 
     verifier = (ROOT / "scripts" / "verify-packaged-sidecar.ps1").read_text(encoding="utf-8-sig")
-    assert "expected 8 qualified map/My Drone pairs" in verifier
-    assert "$pairCatalog.map_count -ne 8" in verifier
-    assert "$pairCatalog.vehicle_count -ne 13" in verifier
-    assert "$pairCatalog.pair_count -ne 104" in verifier
+    assert "expected 1 qualified map/My Drone pair" in verifier
+    assert "$pairCatalog.map_count -ne 1" in verifier
+    assert "$pairCatalog.vehicle_count -ne 1" in verifier
+    assert "$pairCatalog.pair_count -ne 1" in verifier
     assert "dronedream.school-map.v1" in verifier
     assert "dronedream.my-drone.v1" in verifier

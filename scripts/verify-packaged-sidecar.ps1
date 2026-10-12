@@ -69,13 +69,13 @@ $expectedMapIds = @(
     }
 )
 $actualMapIds = @($mapVersions | ForEach-Object { $_.asset_id } | Sort-Object)
-if ($qualifiedPairs.Count -ne 8 -or
+if ($qualifiedPairs.Count -ne 1 -or
     $mapVersions.Count -ne $qualifiedPairs.Count -or
     $vehicleVersions.Count -ne $qualifiedPairs.Count -or
     (Compare-Object ($expectedMapIds | Sort-Object) $actualMapIds) -or
     @($vehicleVersions | Where-Object { $_.asset_id -ne "dronedream.my-drone.v1" }).Count -ne 0 -or
     @($mapVersions + $vehicleVersions | Where-Object { $_.maturity -ne "qualified" }).Count -ne 0) {
-    throw "Packaged default qualification catalog is incomplete: expected 8 qualified map/My Drone pairs."
+    throw "Packaged default qualification catalog is incomplete: expected 1 qualified map/My Drone pair."
 }
 $schoolMap = @($mapVersions | Where-Object { $_.asset_id -eq "dronedream.school-map.v1" })
 $myDrone = @($vehicleVersions | Where-Object { $_.asset_id -eq "dronedream.my-drone.v1" })
@@ -87,12 +87,12 @@ $pairCatalog = Invoke-RestMethod `
     -Uri "http://127.0.0.1:$port/v1/asset-pair-catalog" `
     -Headers $headers `
     -TimeoutSec 10
-if ($pairCatalog.map_count -ne 8 -or
-    $pairCatalog.vehicle_count -ne 13 -or
-    $pairCatalog.pair_count -ne 104 -or
-    $pairCatalog.counts.qualified_builtin -ne 8 -or
-    $pairCatalog.counts.compatible_requires_qualification -ne 78 -or
-    $pairCatalog.counts.incompatible -ne 18) {
+if ($pairCatalog.map_count -ne 1 -or
+    $pairCatalog.vehicle_count -ne 1 -or
+    $pairCatalog.pair_count -ne 1 -or
+    $pairCatalog.counts.qualified_builtin -ne 1 -or
+    $pairCatalog.counts.compatible_requires_qualification -ne 0 -or
+    $pairCatalog.counts.incompatible -ne 0) {
     throw "Packaged map/aircraft compatibility catalog is incomplete."
 }
 Invoke-RestMethod `

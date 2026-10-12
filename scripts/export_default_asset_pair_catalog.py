@@ -19,10 +19,10 @@ def main() -> int:
     args = _parser().parse_args()
     catalog = asset_pair_catalog()
     if (
-        catalog["map_count"] != 8
-        or catalog["vehicle_count"] != 13
-        or catalog["pair_count"] != 104
-        or sum(catalog["counts"].values()) != 104
+        catalog["map_count"] != 1
+        or catalog["vehicle_count"] != 1
+        or catalog["pair_count"] != 1
+        or sum(catalog["counts"].values()) != 1
     ):
         raise RuntimeError("ASSET_PAIR_CATALOG_INCOMPLETE")
     args.output.parent.mkdir(parents=True, exist_ok=True)

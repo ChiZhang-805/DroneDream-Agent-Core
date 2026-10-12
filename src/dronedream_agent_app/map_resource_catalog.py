@@ -78,7 +78,7 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-9e8f76549880788ec9e81ef0",
+        "qualification_id": "asset-qualification-54d4f94f3633bccf433f3f31",
         "required_inputs": [],
     },
 }

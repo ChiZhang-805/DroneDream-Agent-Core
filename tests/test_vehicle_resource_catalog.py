@@ -16,7 +16,8 @@ def test_reviewed_vehicle_catalog_is_pinned_preparsed_and_unqualified() -> None:
     catalog = vehicle_resource_catalog()
     resources = catalog["resources"]
     assert catalog["schema_version"] == "dronedream.vehicle-resource-catalog.v1"
-    assert len(resources) == 13
+    assert len(resources) == 1
+    assert resources[0]["resource_id"] == "px4-x500-depth"
     assert len({item["resource_id"] for item in resources}) == len(resources)
     for resource in resources:
         assert resource["default_resource"] is True
