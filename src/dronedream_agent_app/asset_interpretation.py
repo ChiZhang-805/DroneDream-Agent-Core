@@ -17,6 +17,7 @@ from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.map_reasoning import _semantic_summary
 from dronedream_agent_core.model_harness.model_port import ProviderSettings, StructuredModelPort
 from dronedream_agent_core.model_harness.progress import report_progress
+from dronedream_agent_core.place_index import map_place_context
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 
 from .asset_runtime_resolver import resolve_versioned_map, resolve_versioned_vehicle
@@ -127,6 +128,12 @@ def interpretation_source(
             "preferred_airspace_authority": "geometry-derived preference; not flight permission",
         }
         required_ids = sorted(set(graph.named_entities.values()))
+        places = map_place_context(hashlib.sha256(semantic_raw).hexdigest())
+        if places:
+            facts["map_place_context"] = places
+            required_ids = sorted(set(required_ids) | {
+                building["building_id"] for building in places["buildings"]
+            })
     else:
         selection = resolve_versioned_vehicle(record)
         vehicle = VehicleAsset.model_validate_json(

@@ -15,6 +15,7 @@ from typing import Any
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
 
 from .contracts import CatalogEntity, MapAsset, MapCatalog, PlanarCatalogLandmark, Vector3
+from .place_index import map_place_context
 from .plugin_files import read_plugin_file
 
 SUPPORTED_MAP_SEMANTIC_SCHEMAS = {"dronedream.map-semantic.v1"}
@@ -303,6 +304,7 @@ def load_map_catalog(semantic_path: Path, *, qualified_graph: MapAsset | None = 
                 road_segment_ids=segment_ids,
                 topology_available=False,
                 known_limits=known_limits,
+                place_context=map_place_context(hashlib.sha256(raw_bytes).hexdigest()),
             ),
             qualified_graph,
         )

@@ -865,6 +865,7 @@ class MapCatalog(StrictModel):
     road_segment_ids: list[str] = Field(default_factory=list, max_length=2_000)
     topology_available: bool
     known_limits: list[str] = Field(default_factory=list, max_length=64)
+    place_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttachmentArtifact(StrictModel):

@@ -1,0 +1,56 @@
+{
+  "17105079": {
+    "aliases": ["化学楼", "化学系大楼", "Chemicum"],
+    "uses": ["chemistry research and teaching"],
+    "item_associations": ["化学实验样品", "化学系资料"],
+    "source_refs": ["https://www.helsinki.fi/en/about-us/visit-us/campuses/kumpula-campus"]
+  },
+  "17105641": {
+    "aliases": ["气象楼", "气象研究所", "Dynamicum"],
+    "uses": ["meteorological research", "Finnish Meteorological Institute"],
+    "item_associations": ["气象观测资料"],
+    "source_refs": ["https://www.openstreetmap.org/node/8112547991"]
+  },
+  "16790295": {
+    "aliases": ["信息科学楼", "计算机楼", "计算机科学楼", "数学楼", "数学与统计楼", "Exactum"],
+    "uses": ["computer science", "mathematics and statistics"],
+    "item_associations": ["计算机系文件", "数学系资料"],
+    "source_refs": ["https://www.helsinki.fi/en/about-us/visit-us/campuses/kumpula-campus"]
+  },
+  "16790293": {
+    "aliases": ["物理楼", "地球科学楼", "Physicum"],
+    "uses": ["physics", "geosciences and geography", "atmospheric sciences"],
+    "item_associations": ["物理实验仪器", "地学样品"],
+    "source_refs": ["https://www.helsinki.fi/en/about-us/visit-us/campuses/kumpula-campus"]
+  },
+  "16790294": {
+    "aliases": ["校园图书馆", "昆普拉图书馆", "图书馆", "Kumpula Campus Library"],
+    "uses": ["science library"],
+    "item_associations": ["图书", "借书", "还书"],
+    "source_refs": ["https://www.helsinki.fi/en/about-us/visit-us/campuses/kumpula-campus"]
+  },
+  "17123583": {
+    "aliases": ["体育中心", "运动中心", "UniSport", "Kumpula Sportcenter"],
+    "uses": ["sports centre"],
+    "item_associations": ["运动用品"],
+    "source_refs": ["https://www.helsinki.fi/assets/drupal/2021-01/Helsingin_yliopisto_Kampuskartat.pdf"]
+  },
+  "29032068": {
+    "aliases": ["加速器实验室", "Accelerator Laboratory"],
+    "uses": ["accelerator laboratory"],
+    "item_associations": ["实验室资料"],
+    "source_refs": ["https://www.helsinki.fi/assets/drupal/2021-01/Helsingin_yliopisto_Kampuskartat.pdf"]
+  },
+  "1104124907": {
+    "aliases": ["自然科学高中", "赫尔辛基自然科学高中"],
+    "uses": ["upper secondary school"],
+    "item_associations": ["教学资料"],
+    "source_refs": ["https://www.hel.fi/palvelukarttaws/rest/v4/unit/30854"]
+  },
+  "1049447903": {
+    "aliases": ["Kumpupilvi 幼儿园", "Daycare Kumpupilvi"],
+    "uses": ["daycare"],
+    "item_associations": [],
+    "source_refs": ["https://www.hel.fi/palvelukarttaws/rest/v4/unit/68773"]
+  }
+}

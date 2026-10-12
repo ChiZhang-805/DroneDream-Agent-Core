@@ -7,6 +7,8 @@ must not reappear in the built-in catalog or a release package.
 
 from copy import deepcopy
 
+from dronedream_agent_core.place_index import map_place_context
+
 _KUMPULA_CAMPUS = {
     "schema_version": "dronedream.map-resource.v1",
     "resource_id": "dronedream-school-map",
@@ -80,6 +82,10 @@ _KUMPULA_CAMPUS = {
         "required_inputs": [],
     },
 }
+
+_KUMPULA_CAMPUS["analysis"]["place_index"] = map_place_context(
+    "db46b1f1eae37f1e61df459b1a0da6ce8f9c9d37240a6f138be74cec16ca6529"
+)
 
 _RESOURCES = (_KUMPULA_CAMPUS,)
 

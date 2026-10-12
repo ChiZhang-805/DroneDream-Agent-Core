@@ -762,6 +762,7 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
         "known_limits": list(catalog.known_limits),
         "entity_count": len(catalog.entities),
         "road_segment_count": len(catalog.road_segment_ids),
+        "place_context": catalog.place_context,
         # 二维地标仅提供语义环境；可用于动作绑定的实体仍必须来自下方三维 entities。
         "non_actionable_planar_landmarks": [
             landmark.model_dump(mode="json") for landmark in catalog.planar_landmarks

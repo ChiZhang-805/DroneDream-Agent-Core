@@ -277,6 +277,7 @@ New-Item -ItemType Directory -Force -Path $sidecarDist,$sidecarWork,$sidecarSpec
     --name dronedream-autonomy-core `
     --collect-submodules dronedream_agent_plugins `
     --collect-data dronedream_agent_app `
+    --collect-data dronedream_agent_core `
     --distpath $sidecarDist `
     --workpath $sidecarWork `
     --specpath $sidecarSpec `
