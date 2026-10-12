@@ -97,6 +97,7 @@ class AssetImportService:
         ) = None,
     ) -> None:
         self.store = store
+        self.bundled_asset_replacements: list[dict[str, str]] = []
         self.environment_versions_provider = (
             (lambda: {}) if environment_versions_provider is None else environment_versions_provider
         )
@@ -718,6 +719,22 @@ class AssetImportService:
                 source_content_sha256=str(package["source_content_sha256"]),
                 replacement_content_sha256=str(package["content_sha256"]),
             )
+        # Publish the same release-declared migrations to desktop workspace caches.
+        # User-imported versions are not included and retain their explicit pins.
+        self.bundled_asset_replacements = [
+            {
+                "asset_id": str(replacements[kind]["asset_id"]),
+                "source_content_sha256": str(previous[field]),
+                "replacement_content_sha256": str(replacements[kind]["content_sha256"]),
+            }
+            for previous in superseded_pairs
+            for kind, field in (
+                ("map", "map_content_sha256"),
+                ("map", "map_source_content_sha256"),
+                ("vehicle", "vehicle_content_sha256"),
+                ("vehicle", "vehicle_source_content_sha256"),
+            )
+        ]
         return rows
 
     # 功能：

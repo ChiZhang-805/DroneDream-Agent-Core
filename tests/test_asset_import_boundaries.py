@@ -169,6 +169,23 @@ def test_bundled_index_rejects_ambiguous_root(tmp_path, raw):
         service.seed_bundled_sources(resources)
 
 
+def test_bundled_upgrade_publishes_exact_replacements_for_desktop_pins(tmp_path):
+    resources = Path(__file__).parents[1] / "app/desktop/src-tauri/resources/default-assets"
+    store = AppStore(tmp_path / "store")
+    try:
+        service = imports.AssetImportService(store)
+        service.seed_bundled_sources(resources)
+        replacements = service.bundled_asset_replacements
+        old_map = "56b00dff36c1a33117dfaaf9583c1cdc1eff278c474e9aef7893f6b3429b4e6c"
+        replacement = next(item for item in replacements if item["source_content_sha256"] == old_map)
+        assert replacement["asset_id"] == "dronedream.school-map.v1"
+        current = store.get_asset_version(replacement["asset_id"], replacement["replacement_content_sha256"])
+        assert current["maturity"] == "qualified"
+        assert all(item["asset_id"] in {"dronedream.school-map.v1", "dronedream.my-drone.v1"} for item in replacements)
+    finally:
+        store.close()
+
+
 # 功能：
 #   验证外部本地验收器必须返回字面 True，不能用非空字符串或数字放行。
 # 输入：

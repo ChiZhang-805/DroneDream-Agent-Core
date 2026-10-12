@@ -149,6 +149,26 @@ def test_unknown_source_rejected_and_failed_reinterpretation_preserves_good_cach
     assert service.interpret(**options)["understanding"] == first["understanding"]
 
 
+def test_missing_advisory_descriptions_do_not_discard_source_facts_or_block_planning(setup):
+    service, options = setup
+    options["source"]["required_source_ids"] = ["pickup", "another-building"]
+    options["source"]["facts"]["nodes"].append({"node_id": "another-building", "semantic": "building"})
+
+    class PartialPort(FakePort):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            result.artifact.items = result.artifact.items[:1]
+            return result
+
+    options["port"] = PartialPort()
+    result = service.interpret(**options)
+    assert [item["source_id"] for item in result["understanding"]["items"]] == ["pickup"]
+    assert result["source"]["required_source_ids"] == ["pickup", "another-building"]
+    assert len(result["source"]["facts"]["nodes"]) == 2
+    assert service.interpret(**options)["cached"]
+    assert len(options["port"].calls) == 1
+
+
 def test_cache_corruption_is_not_model_understanding(setup):
     service, options = setup
     result = service.interpret(**options)

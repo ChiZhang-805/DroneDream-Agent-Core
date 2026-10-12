@@ -159,7 +159,7 @@ def interpretation_source(
 
 
 # 功能：
-#   校验模型解释覆盖且只引用真实条目；缓存回读同样重新校验。
+#   校验解释只引用真实条目；辅助说明遗漏不应阻塞使用完整源事实的任务规划。
 # 输入：
 #   understanding：模型结构化输出。
 #   source：这次调用实际读取的源事实。
@@ -168,7 +168,7 @@ def interpretation_source(
 def validate_understanding(understanding: AssetUnderstanding, source: dict) -> AssetUnderstanding:
     checked = AssetUnderstanding.model_validate(understanding.model_dump(mode="json"))
     actual = [item.source_id for item in checked.items]
-    if len(actual) != len(set(actual)) or set(actual) != set(source["required_source_ids"]):
+    if len(actual) != len(set(actual)) or not set(actual).issubset(source["required_source_ids"]):
         raise ValueError("ASSET_INTERPRETATION_REFERENCES_INVALID")
     if any(not item.strip() or len(item) > 400 for item in checked.limitations):
         raise ValueError("ASSET_INTERPRETATION_LIMITATIONS_INVALID")
@@ -310,10 +310,11 @@ class AssetInterpretationService:
                         if candidate["output_sha256"] != sha256_json(old.model_dump(mode="json")):
                             continue
                         unchanged = retained_interpretation_ids(candidate, lineage)
-                        # 只有可验证的完整旧条目集合才有资格作为增量基线。
+                        # 只复用确实存在且依赖未变化的解释，未解释条目仍保留原始事实。
                         ids = [item.source_id for item in old.items]
-                        if len(ids) != len(set(ids)) or set(ids) != set(candidate["lineage"]["items"]):
+                        if len(ids) != len(set(ids)) or not set(ids).issubset(candidate["lineage"]["items"]):
                             continue
+                        unchanged &= set(ids)
                         if len(unchanged) > len(retained):
                             retained, previous = unchanged, candidate
                     except (KeyError, TypeError, ValueError):
