@@ -799,7 +799,6 @@ def _ground_intent_clarification_options(
 
     normalized_questions: list[dict[str, object]] = []
     issues: list[str] = []
-    seen_nodes: set[str] = set()
 
     def mentioned(text: str, candidate: str) -> bool:
         value = candidate.casefold().strip()
@@ -812,6 +811,13 @@ def _ground_intent_clarification_options(
 
     for question in intent.clarification_questions:
         question_data = question.model_dump(mode="json")
+        # 物品、交接方式等问题不是地点，不应被地图实体校验挡住。
+        if not any(
+            token in question.question_id for token in ("entity", "location", "destination")
+        ):
+            normalized_questions.append(question_data)
+            continue
+        seen_nodes: set[str] = set()
         normalized_options: list[dict[str, object]] = []
         for option in question.options:
             text = f"{option.label}\n{option.response}".casefold()
@@ -3528,6 +3534,20 @@ class MissionOrchestrator:
             missing_explicit_constraints = _missing_explicit_constraints(
                 intent, explicit_constraint_hints
             )
+            if (
+                intent_critique.accepted
+                and intent.missing_critical_fields
+                and intent.clarification_questions
+                and not missing_explicit_constraints
+            ):
+                # 已确认是缺用户信息，重复解析不会产生新事实，直接返回追问。
+                evidence.append("intent.clarification-required", {
+                    "fields": intent.missing_critical_fields,
+                    "actuator_authority": False,
+                })
+                raise MissionClarificationRequired(
+                    intent.missing_critical_fields, intent.clarification_questions
+                )
             if (
                 intent_critique.accepted
                 and not intent.missing_critical_fields

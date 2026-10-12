@@ -64,6 +64,12 @@ class _PlanningPort:
             )
             if self.clarification:
                 value["missing_critical_fields"] = ["要送回办公室，还是送到其他位置？"]
+                value["clarification_questions"] = [{
+                    "question_id": "return_entity",
+                    "prompt": "要送回办公室，还是送到其他位置？",
+                    "options": [],
+                    "allow_other": True,
+                }]
         elif role in {"intent_critic", "plan_critic"}:
             value = {"accepted": True}
         elif role == "plugin_router":
@@ -296,6 +302,8 @@ def test_full_preparation_uses_real_plugins_and_geometry(
                 instance.prepare(request, output_dir)
             assert pending.value.fields == ["要送回办公室，还是送到其他位置？"]
             assert "global_planner" not in port.calls
+            assert port.calls.count("intent_parser") == 1
+            assert port.calls.count("intent_critic") == 1
             assert not (output_dir / "prepared-mission.json").exists()
         elif change_asset is True:
             with pytest.raises(MissionPreparationBlocked, match="PREPARATION_ASSET_CHANGED"):

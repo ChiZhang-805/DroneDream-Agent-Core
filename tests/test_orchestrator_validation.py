@@ -168,6 +168,36 @@ def test_clarification_options_bind_one_entity_and_reject_grouped_choice() -> No
     assert "CLARIFICATION_OPTION_ENTITY_NOT_UNIQUE" in issues
 
 
+def test_item_clarification_does_not_require_map_entities() -> None:
+    intent = IntentArtifact(
+        goal="帮我拿个东西",
+        start_entity="office",
+        target_entity="__unresolved__",
+        return_entity="office",
+        payload_action="pickup",
+        missing_critical_fields=["需要拿什么？"],
+        clarification_questions=[{
+            "question_id": "payload_item",
+            "prompt": "需要拿什么？",
+            "options": [
+                {"option_id": "A", "label": "文件", "response": "一份文件"},
+                {"option_id": "B", "label": "包裹", "response": "一个包裹"},
+            ],
+        }],
+    )
+    catalog = MapCatalog(
+        scene_id="office", semantic_sha256="a" * 64, topology_available=True,
+        entities=[{
+            "entity_id": "office", "aliases": ["办公室"],
+            "position_m": {"x": 0, "y": 0, "z": 3},
+            "semantic": "launch", "source_pointer": "test:office",
+        }],
+    )
+    grounded, issues = _ground_intent_clarification_options(intent, catalog, _map())
+    assert not issues
+    assert grounded.clarification_questions == intent.clarification_questions
+
+
 def test_route_exhaustion_keeps_semantic_places_without_authored_edges() -> None:
     graph = MapAsset.model_validate(
         {
