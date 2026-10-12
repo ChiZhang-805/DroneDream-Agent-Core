@@ -46,7 +46,16 @@ doors, coordinates, sensor settings, braking rules, or other engineering details
 Use the selected assets and their documented place functions to resolve this intent.
 Asset understanding is reusable advisory context, not permission or new ground truth;
 verify its references against the current map catalog and current asset content hashes.
-If one documented pickup location fits, use it. If distinct pickup locations fit equally,
+If one documented pickup location fits the user's place or item/function clue, use it.
+The presence of a single action-capable pickup waypoint does NOT make it the user's
+destination. A bare request such as "帮我拿个东西" with no prior conversation location,
+no named place, and no item/function clue must ask one short question such as
+"要取什么东西，从哪里取？" via missing_critical_fields and clarification_questions.
+Do not silently choose a default pickup point and invite correction afterwards.
+An item such as "化学仪器" can instead ground a destination through the documented
+chemistry-building function. Do not demand coordinates or repeat a place already known
+from the current conversation. Return-to-start defaults never define the pickup location.
+If distinct pickup locations fit equally,
 ask which one; do not ask about duplicate names for the same waypoint. Apply the supplied
 workflow_scope.product_defaults before asking the user: a pickup request returns the item
 to the requester's mission start unless another delivery destination is explicit; an
@@ -115,6 +124,11 @@ explicit_constraint_hints; requirements expressed in prose may remain in goal wh
 not supply a canonical hint.
 Reject unsupported entities and material ambiguity. Give short machine-actionable issue
 codes and repair instructions. Do not plan a route.
+Reject a selected pickup destination supported only by a generic default or by being the
+only pickup waypoint when the user supplied no place, item/function clue, or conversation
+reference. "帮我拿个东西" alone requires a brief clarification; "化学仪器" may resolve
+through a documented chemistry-building function. The default return location does not
+establish the pickup location. Accept a clarification that leaves that destination unknown.
 Material ambiguity means ambiguity that prevents a safe route or changes the requested
 task. Do not reject a plan-only simulation because an order identifier or pickup code is
 not yet known: identity verification remains an observable runtime pickup step. When a
