@@ -301,6 +301,16 @@ class MapSurfaceIndex:
                 )
                 triangles.setflags(write=False)
                 self.meshes[len(centers)] = triangles
+                # Visual meshes may be open (terrain) or contain separate buildings.
+                # Only closed surfaces have a physical inside; ray culling still
+                # follows the authored winding for every visible triangle.
+                edges = {}
+                for triangle in triangles:
+                    a, b, c = (tuple(point) for point in triangle)
+                    for edge in ((a, b), (b, c), (c, a)):
+                        edges[edge] = edges.get(edge, 0) + 1
+                closed = all(count == 1 and edges.get((b, a)) == 1
+                             for (a, b), count in edges.items())
                 centered = triangles - triangles[0, 0]
                 volume = float(
                     np.sum(
@@ -313,11 +323,11 @@ class MapSurfaceIndex:
                 double_sided = primitive.get("mesh_double_sided", False)
                 if (
                     not math.isfinite(volume)
-                    or abs(volume) < 1e-12
+                    or (closed and abs(volume) < 1e-12)
                     or type(double_sided) is not bool
                 ):
                     raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
-                self.mesh_optics[len(centers)] = (double_sided, float(np.sign(volume)))
+                self.mesh_optics[len(centers)] = (double_sided, float(np.sign(volume)) if closed else 0.0)
             elif any(k in primitive for k in size_keys):
                 if not all(k in primitive for k in size_keys) or lengths or "radius_m" in primitive:
                     raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")

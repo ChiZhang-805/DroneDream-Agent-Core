@@ -61,9 +61,9 @@ def _pose(node):
     return transform
 
 
-# 功能：从闭合、有向 OBJ 三角网格读取实际表面；不以碰撞胶囊或外包盒代替孔洞。
+# 功能：读取 OBJ 视觉表面，将平面多边形分为三角形；保留开放地面及分离楼宇。
 # 输入：raw：有界 OBJ 内容；scale：三个正缩放因子。
-# 输出：缩放后的三角形数组；开放、反向连接、非三角形或退化表面被明确拒绝。
+# 输出：保留原始绕序的缩放三角形；不把视觉面当作封闭碰撞体。
 def _obj_triangles(raw, scale):
     vertices, faces = [], []
     for line in raw.decode("utf-8").splitlines():
@@ -75,42 +75,22 @@ def _obj_triangles(raw, scale):
             if len(vertices) > 8192:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] == "f":
-            if len(fields) != 4:
-                raise ValueError("OPTICAL_MAP_TRIANGLES_REQUIRED")
+            if len(fields) < 4:
+                raise ValueError("OPTICAL_MAP_FACE_INVALID")
             try:
                 ids = [int(f.split("/")[0]) for f in fields[1:]]
                 ids = [i - 1 if i > 0 else len(vertices) + i for i in ids]
             except ValueError as exc:
                 raise ValueError("OPTICAL_MAP_MESH_INDEX_INVALID") from exc
-            if len(set(ids)) != 3 or any(i < 0 or i >= len(vertices) for i in ids):
+            if len(set(ids)) != len(ids) or any(i < 0 or i >= len(vertices) for i in ids):
                 raise ValueError("OPTICAL_MAP_MESH_INDEX_INVALID")
-            faces.append(ids)
+            faces.extend(_triangulate_face(vertices, ids))
             if len(faces) > 8192:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] not in {"vn", "vt", "o", "g", "s", "usemtl", "mtllib"}:
             raise ValueError("OPTICAL_MAP_OBJ_DIRECTIVE_UNSUPPORTED")
     if not vertices or not faces:
         raise ValueError("OPTICAL_MAP_MESH_EMPTY")
-    edges = {}
-    for a, b, c in faces:
-        for i, j in ((a, b), (b, c), (c, a)):
-            edges[(i, j)] = edges.get((i, j), 0) + 1
-    if any(n != 1 or edges.get((j, i)) != 1 for (i, j), n in edges.items()):
-        raise ValueError("OPTICAL_MAP_CLOSED_ORIENTED_MESH_REQUIRED")
-    adjacency = {}
-    for i, j in edges:
-        adjacency.setdefault(i, set()).add(j)
-    seen, pending = set(), [faces[0][0]]
-    while pending:
-        vertex = pending.pop()
-        if vertex in seen:
-            continue
-        seen.add(vertex)
-        pending.extend(adjacency[vertex] - seen)
-    if len(seen) != len(adjacency):
-        # Nested shells need an explicit solid/void contract. Never guess which
-        # component is a cavity or merge their normals by total signed volume.
-        raise ValueError("OPTICAL_MAP_DISCONNECTED_MESH_REQUIRES_SOLID_CONTRACT")
     triangles = (np.asarray(vertices) * scale)[np.asarray(faces)]
     if np.any(
         np.linalg.norm(
@@ -119,12 +99,6 @@ def _obj_triangles(raw, scale):
         < 1e-12
     ):
         raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
-    centered = triangles - triangles[0, 0]
-    volume = float(
-        np.sum(np.einsum("ij,ij->i", centered[:, 0], np.cross(centered[:, 1], centered[:, 2]))) / 6
-    )
-    if not math.isfinite(volume) or abs(volume) < 1e-12:
-        raise ValueError("OPTICAL_MAP_MESH_VOLUME_INVALID")
     # Preserve authoring winding: single-sided rendering culls its backfaces.
     # Normalizing winding here would change the surface visible to the camera.
     return triangles
@@ -170,6 +144,46 @@ def _mesh_opaque(raw, relative, root, dependencies):
             elif parts[0] not in {"newmtl", "Ka", "Kd", "Ks", "Ns", "Ni", "illum"}:
                 opaque = False
     return bool(opaque)
+
+
+def _triangulate_face(vertices, ids):
+    """Ear-clip an authored planar OBJ polygon, preserving concavities and winding."""
+    if len(ids) == 3:
+        return [ids]
+    polygon = np.asarray([vertices[i] for i in ids])
+    centered = polygon - polygon[0]
+    normal = np.sum(np.cross(centered, np.roll(centered, -1, axis=0)), axis=0)
+    length = np.linalg.norm(normal)
+    if length < 1e-12:
+        raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
+    normal /= length
+    if np.max(np.abs(centered @ normal)) > 1e-5:
+        raise ValueError("OPTICAL_MAP_PLANAR_FACE_REQUIRED")
+    points = np.delete(centered, np.argmax(np.abs(normal)), axis=1)
+    def cross(a, b):
+        return a[0] * b[1] - a[1] * b[0]
+    orientation = np.sign(sum(cross(a, b) for a, b in zip(points, np.roll(points, -1, axis=0))))
+    remaining, triangles = list(range(len(ids))), []
+    while len(remaining) > 3:
+        for slot, b in enumerate(remaining):
+            a, c = remaining[slot - 1], remaining[(slot + 1) % len(remaining)]
+            turn = cross(points[b] - points[a], points[c] - points[b]) * orientation
+            if abs(turn) <= 1e-10:
+                remaining.pop(slot)
+                break
+            if turn < 0:
+                continue
+            if any(all(cross(points[y] - points[x], points[q] - points[x]) * orientation >= -1e-10
+                       for x, y in ((a, b), (b, c), (c, a)))
+                   for q in remaining if q not in (a, b, c)):
+                continue
+            triangles.append([ids[a], ids[b], ids[c]])
+            remaining.pop(slot)
+            break
+        else:
+            raise ValueError("OPTICAL_MAP_SIMPLE_FACE_REQUIRED")
+    triangles.append([ids[i] for i in remaining])
+    return triangles
 
 
 # 功能：从版本绑定的静态 SDF 视觉表面构建定位地图，同时保留透明表面的保守遮挡。

@@ -196,8 +196,9 @@ def test_invalid_optical_geometry_fails_closed(tmp_path, payload):
 def test_mesh_integrity_and_material_binding(tmp_path):
     (tmp_path / "cube.obj").write_bytes(cube().rsplit(b"f ", 1)[0])
     path, digest = world(tmp_path, visual("<mesh><uri>cube.obj</uri></mesh>"))
-    with pytest.raises(ValueError, match="CLOSED_ORIENTED"):
-        compile_optical_map(path, expected_world_sha256=digest)
+    # An open visual mesh still has real observable surfaces.
+    index, _, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert index.mesh_optics[0][1] == 0.0
     with pytest.raises(ValueError, match="DIGEST_MISMATCH"):
         compile_optical_map(path, expected_world_sha256="0" * 64)
     (tmp_path / "cube.obj").write_bytes(b"mtllib cube.mtl\n" + cube())
@@ -205,6 +206,50 @@ def test_mesh_integrity_and_material_binding(tmp_path):
     _, _, receipt = compile_optical_map(path, expected_world_sha256=digest)
     assert receipt["ineligible_occluder_count"] == 1
     assert "cube.mtl" in receipt["resource_dependencies"]
+
+
+def test_open_quad_ground_preserves_front_face_and_double_sided_view(tmp_path):
+    (tmp_path / "ground.obj").write_text(
+        "v -10 -10 0\nv 10 -10 0\nv 10 10 0\nv -10 10 0\nf 1 2 3 4\n"
+    )
+    path, digest = world(tmp_path, visual("<mesh><uri>ground.obj</uri></mesh>"))
+    index, primitives, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert len(primitives[0]["triangles"]) == 2
+    assert index.match([[1, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[1, 2, 3]).valid[0]
+    assert not index.match([[1, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[1, 2, -3]).valid[0]
+    primitives[0]["mesh_double_sided"] = True
+    index = MapSurfaceIndex(primitives)
+    assert index.match([[1, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[1, 2, -3]).valid[0]
+
+
+def test_separate_buildings_share_a_visual_mesh(tmp_path):
+    first = cube().decode()
+    second = []
+    for line in first.splitlines():
+        fields = line.split()
+        if fields[0] == "v":
+            fields[1] = str(float(fields[1]) + 8)
+        elif fields[0] == "f":
+            fields[1:] = [str(int(value) + 8) for value in fields[1:]]
+        second.append(" ".join(fields))
+    (tmp_path / "buildings.obj").write_text(first + "\n".join(second))
+    path, digest = world(tmp_path, visual("<mesh><uri>buildings.obj</uri></mesh>"))
+    index, _, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert index.match([[-1, .2, .1]], MapAlignmentLimits(), sensor_origins_world_m=[-4, .2, .1]).valid[0]
+    assert not index.match([[1, .2, .1]], MapAlignmentLimits(), sensor_origins_world_m=[0, .2, .1]).valid[0]
+
+
+def test_concave_roof_keeps_its_open_notch(tmp_path):
+    (tmp_path / "roof.obj").write_text(
+        "v 0 0 0\nv 4 0 0\nv 4 1 0\nv 1 1 0\nv 1 4 0\nv 0 4 0\nf 1 2 3 4 5 6\n"
+    )
+    path, digest = world(tmp_path, visual("<mesh><uri>roof.obj</uri></mesh>"))
+    index, primitives, _ = compile_optical_map(path, expected_world_sha256=digest)
+    triangles = np.array(primitives[0]["triangles"])
+    area = np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1).sum() / 2
+    assert area == pytest.approx(7)
+    assert index.match([[.5, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[.5, 2, 3]).valid[0]
+    assert not index.match([[2, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[2, 2, 3]).valid[0]
 
 
 # 功能：保留单面网格的绕序剔除规则；反向壳体从外部可见的是远壁，不能擅自翻面。
