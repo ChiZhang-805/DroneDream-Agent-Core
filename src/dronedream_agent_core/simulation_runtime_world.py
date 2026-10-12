@@ -97,6 +97,10 @@ def materialize_runtime_world_plugins(*, world_sdf: Path, server_config: Path,
             "file_count": len(files),
             "total_bytes": total_bytes,
         }
+    from .simulation_visual_surfaces import normalize_runtime_visuals
+
+    visual_surfaces = normalize_runtime_visuals(world, output)
+    world_tree.write(runtime_world, encoding="utf-8", xml_declaration=True)
     result: dict[str, object] = {
         "schema_version": "dronedream.simulation-runtime-world.v1",
         "source_world_sha256": _sha(world_raw),
@@ -106,6 +110,7 @@ def materialize_runtime_world_plugins(*, world_sdf: Path, server_config: Path,
         "required_custom_plugins": required_custom,
         "stock_magnetometer_removed": custom_magnetometer,
         "copied_resources": copied_resources,
+        "visual_surfaces": visual_surfaces,
         "qualification_granted": False,
     }
     (output / "runtime-world.json").write_text(

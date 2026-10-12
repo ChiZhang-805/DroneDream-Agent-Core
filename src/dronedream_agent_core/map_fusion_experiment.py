@@ -120,14 +120,23 @@ class MapFusionExperimentMixin:
         configure_sensor_thread_handoff()
         await super().connect(connection)
         self._fusion_stop, self._fusion_ready = asyncio.Event(), asyncio.Event()
+        self._fusion_configured = asyncio.Event()
         self._fusion_degraded_to_native_localization = False
         self._fusion_task = asyncio.create_task(self._fusion_loop())
 
-    # 功能：不因原生本地位置就绪就提前进入模式，先等待真实地图回读。
+    # 功能：原生 GNSS 模式只等待参数配置；视觉主定位模式仍等待地图回读。
     # 输入：等待上限；输出：真实本地健康，仍不冒充 armable。
     async def wait_until_local_position_ready(self, timeout_seconds):
         async with asyncio.timeout(timeout_seconds):
-            await self._fusion_ready.wait()
+            auxiliary = map_fusion_failure_is_optional(
+                independent_route_control=os.environ.get("DRONEDREAM_INDEPENDENT_ROUTE_CONTROL") == "1",
+                gnss_position_fallback=os.environ.get("DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK") == "1",
+                initialized=self._fusion_ready.is_set(),
+            )
+            # Do not hold healthy GNSS/IMU hostage to eight auxiliary visual
+            # corrections. Finish parameter writes before any mode/arm request;
+            # native estimator health remains the actual readiness condition.
+            await (self._fusion_configured if auxiliary else self._fusion_ready).wait()
             if self._fusion_task.done():
                 await self._fusion_task
                 if not getattr(self, "_fusion_degraded_to_native_localization", False):
@@ -301,6 +310,8 @@ class MapFusionExperimentMixin:
                 if abs(applied - value) > 1e-6:
                     raise RuntimeError("MOVING_FUSION_PARAMETER_READBACK_FAILED")
 
+            self._fusion_configured.set()
+
             from .px4_visual_readback import Px4VisualReadback
             visual_readback = Px4VisualReadback()
 
@@ -406,6 +417,7 @@ class MapFusionExperimentMixin:
             raise
         finally:
             self._fusion_ready.set()
+            self._fusion_configured.set()
             try:
                 if receiver is not None:
                     receiver.close()

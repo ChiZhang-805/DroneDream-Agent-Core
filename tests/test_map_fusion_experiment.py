@@ -112,6 +112,56 @@ class Client(MapFusionExperimentMixin, NativeStub):
     pass
 
 
+@pytest.mark.parametrize("native_ready", [True, False])
+def test_auxiliary_vision_does_not_block_real_native_readiness(monkeypatch, native_ready):
+    monkeypatch.setenv("DRONEDREAM_INDEPENDENT_ROUTE_CONTROL", "1")
+    monkeypatch.setenv("DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK", "1")
+
+    async def check():
+        client = Client()
+        client._fusion_ready = asyncio.Event()  # No visual corrections yet.
+        client._fusion_configured = asyncio.Event()
+        client._fusion_task = asyncio.create_task(asyncio.Event().wait())
+        reader = AsyncMock(return_value=True, side_effect=None if native_ready else TimeoutError("native-unready"))
+        monkeypatch.setattr(NativeStub, "wait_until_local_position_ready", reader)
+        pending = asyncio.create_task(client.wait_until_local_position_ready(1))
+        await asyncio.sleep(0)
+        reader.assert_not_awaited()  # Parameter writes must finish first.
+        client._fusion_configured.set()
+        if native_ready:
+            assert await pending is True
+        else:
+            with pytest.raises(TimeoutError, match="native-unready"):
+                await pending
+        reader.assert_awaited_once_with(1)
+        assert not client._fusion_ready.is_set()
+        await client.close()
+
+    asyncio.run(check())
+
+
+def test_vision_primary_still_waits_for_real_corrections(monkeypatch):
+    monkeypatch.setenv("DRONEDREAM_INDEPENDENT_ROUTE_CONTROL", "1")
+    monkeypatch.delenv("DRONEDREAM_ALLOW_GNSS_POSITION_FALLBACK", raising=False)
+
+    async def check():
+        client = Client()
+        client._fusion_ready = asyncio.Event()
+        client._fusion_configured = asyncio.Event()
+        client._fusion_configured.set()
+        client._fusion_task = asyncio.create_task(asyncio.Event().wait())
+        reader = AsyncMock(return_value=True)
+        monkeypatch.setattr(NativeStub, "wait_until_local_position_ready", reader)
+        pending = asyncio.create_task(client.wait_until_local_position_ready(1))
+        await asyncio.sleep(0)
+        reader.assert_not_awaited()
+        client._fusion_ready.set()
+        assert await pending is True
+        await client.close()
+
+    asyncio.run(check())
+
+
 # 功能：缺失配置必须在连接飞控前失败；输入：隔离环境；输出：不调用连接。
 def test_missing_config_fails_before_connect(monkeypatch):
     monkeypatch.delenv("DRONEDREAM_MAP_FUSION_INPUTS", raising=False)

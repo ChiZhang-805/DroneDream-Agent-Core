@@ -252,10 +252,10 @@ def test_concave_roof_keeps_its_open_notch(tmp_path):
     assert not index.match([[2, 2, 0]], MapAlignmentLimits(), sensor_origins_world_m=[2, 2, 3]).valid[0]
 
 
-# 功能：保留单面网格的绕序剔除规则；反向壳体从外部可见的是远壁，不能擅自翻面。
+# 功能：封闭壳体与运行时渲染一致地朝外，外部相机命中近壁而不是穿透到远壁。
 # 输入：独立临时目录。
 # 输出：无。
-def test_inward_mesh_winding_preserves_backface_culling(tmp_path):
+def test_inward_closed_mesh_matches_normalized_runtime_rendering(tmp_path):
     lines = cube().decode().splitlines()
     inverted = "\n".join(
         "f " + " ".join(line.split()[1:][::-1]) if line.startswith("f ") else line for line in lines
@@ -264,7 +264,7 @@ def test_inward_mesh_winding_preserves_backface_culling(tmp_path):
     path, digest = world(tmp_path, visual("<mesh><uri>cube.obj</uri></mesh>", "4 0 0 0 0 0"))
     index, _, _ = compile_optical_map(path, expected_world_sha256=digest)
     result = index.match(
-        [[5, 0.2, 0.1]], MapAlignmentLimits(), sensor_origins_world_m=[0, 0.2, 0.1]
+        [[3, 0.2, 0.1]], MapAlignmentLimits(), sensor_origins_world_m=[0, 0.2, 0.1]
     )
     assert result.valid[0]
     np.testing.assert_allclose(result.normals[0], [-1, 0, 0])

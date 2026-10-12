@@ -91,6 +91,7 @@ def _obj_triangles(raw, scale):
             raise ValueError("OPTICAL_MAP_OBJ_DIRECTIVE_UNSUPPORTED")
     if not vertices or not faces:
         raise ValueError("OPTICAL_MAP_MESH_EMPTY")
+    faces = _outward_closed_faces(vertices, faces)
     triangles = (np.asarray(vertices) * scale)[np.asarray(faces)]
     if np.any(
         np.linalg.norm(
@@ -99,9 +100,42 @@ def _obj_triangles(raw, scale):
         < 1e-12
     ):
         raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
-    # Preserve authoring winding: single-sided rendering culls its backfaces.
-    # Normalizing winding here would change the surface visible to the camera.
+    # Match the run-owned renderer's closed-surface normalization. Open surfaces
+    # keep their authored winding and single-sided backface behavior.
     return triangles
+
+
+def _outward_closed_faces(vertices, faces):
+    """Orient closed connected shells outward; leave open surfaces untouched."""
+    edges = {}
+    for index, face in enumerate(faces):
+        for a, b in zip(face, face[1:] + face[:1]):
+            edges.setdefault(tuple(sorted((a, b))), []).append(index)
+    neighbors = [set() for _ in faces]
+    for linked in edges.values():
+        for index in linked:
+            neighbors[index].update(linked)
+    result = [list(face) for face in faces]
+    remaining = set(range(len(faces)))
+    points = np.asarray(vertices)
+    while remaining:
+        pending = [remaining.pop()]
+        shell = set(pending)
+        while pending:
+            for index in neighbors[pending.pop()] & remaining:
+                remaining.remove(index)
+                shell.add(index)
+                pending.append(index)
+        closed = all(len(edges[tuple(sorted((a, b)))]) == 2
+                     for index in shell for a, b in zip(faces[index], faces[index][1:] + faces[index][:1]))
+        if closed:
+            triangles = points[np.asarray([faces[index] for index in shell])]
+            volume = np.einsum('ij,ij->i', triangles[:, 0],
+                               np.cross(triangles[:, 1], triangles[:, 2])).sum()
+            if volume < 0:
+                for index in shell:
+                    result[index].reverse()
+    return result
 
 
 # 功能：核验包内资源路径和内容身份；禁止绝对路径、链接、越界读取及累积超额资源。
