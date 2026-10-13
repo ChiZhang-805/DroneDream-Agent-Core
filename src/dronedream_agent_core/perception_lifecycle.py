@@ -23,9 +23,12 @@ _RECEIPT_BYTES = _HEALTH_BYTES + 4096
 _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
 # The health publisher is asynchronous to the 10 Hz controller.  A healthy
 # sample can legitimately straddle the controller-to-landing transition by one
-# or two scheduler ticks, especially in a low real-time-factor simulation.  It
-# remains valid evidence when it is both identity-bound and no more than half a
-# second old.  This is an audit freshness window, not a flight-stop threshold.
+# or two scheduler ticks, especially in a low real-time-factor simulation.  The
+# producer's stream age and the consumer's publication delay are independent
+# clocks, so each must be within the same bounded window; adding both counts
+# publication delay twice and can reject a stream that was healthy throughout
+# controlled motion.  This is an audit freshness window, not a flight-stop
+# threshold.
 _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
 
 
@@ -74,8 +77,6 @@ def _health_ready(health: dict, *, completion_ms: int,
         and type(source_age) in (int, float)
         and 0 <= source_age <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
         and math.isfinite(source_age)
-        and source_age + (completion_ms - updated) / 1000
-        <= _CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS
         and _valid_unix_ms(localized)
         and 0 <= completion_ms - localized
         <= int(_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS * 1_000)

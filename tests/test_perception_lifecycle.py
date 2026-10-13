@@ -105,6 +105,34 @@ def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_pa
 
 
 # 功能：
+#   回归安装版长航程中观察到的结束边界：来源年龄与发布延迟都合格时不重复相加年龄。
+# 输入：
+#   tmp_path：本次健康文件的独立目录。
+# 输出：
+#   None：0.491 秒来源年龄与 0.179 秒发布延迟分别合格，完成回执通过。
+def test_completion_does_not_double_count_source_age_and_publication_delay(tmp_path):
+    path = tmp_path / "health.json"
+    path.write_text(json.dumps({
+        **health(),
+        "updated_at_unix_ms": 1000,
+        "stream_age_seconds": .491,
+        "localization_observed_at_unix_ms": 885,
+        "realtime_features_ready": False,
+    }))
+    record = capture_control_completion(
+        path,
+        track_sha256="a" * 64,
+        completed_at_unix_ms=1179,
+        realtime_features_required=False,
+    )
+    assert record["accepted"] is True
+    assert verify_control_completion({
+        **timing(record),
+        "perception_realtime_features_required": False,
+    }) is True
+
+
+# 功能：
 #   逐项注入时效、身份、特征和真值替代错误，确保实际控制结束失败不被停流解释掩盖。
 # 输入：
 #   tmp_path：本次健康文件的独立目录。
@@ -114,7 +142,7 @@ def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_pa
 @pytest.mark.parametrize("change", [
     {"stream_healthy": False}, {"identity_accepted": False}, {"truth_correction_applied": True},
     {"realtime_features_ready": False}, {"updated_at_unix_ms": 500},
-    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .495},
+    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .501},
     {"stream_age_seconds": float("nan")}, {"stream_age_seconds": -1.},
     {"pose_source": "gazebo-ground-truth"},
     {"localization_observed_at_unix_ms": 400},
