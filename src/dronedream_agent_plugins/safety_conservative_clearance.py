@@ -33,6 +33,7 @@ def _tools(environment: ToolEnvironment) -> list[ToolPlugin]:
                 vehicle_height_m=(
                     environment.vehicle_height_m * CONSERVATIVE_VEHICLE_ENVELOPE_SCALE
                 ),
+                avoid_building_overflight=True,
             ),
         )
     ]

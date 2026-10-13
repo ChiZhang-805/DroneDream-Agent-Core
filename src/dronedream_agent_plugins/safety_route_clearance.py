@@ -26,6 +26,7 @@ def _tools(environment: ToolEnvironment) -> list[ToolPlugin]:
                 environment.semantic_path,
                 vehicle_diameter_m=environment.vehicle_diameter_m,
                 vehicle_height_m=environment.vehicle_height_m,
+                avoid_building_overflight=True,
             ),
         )
     ]

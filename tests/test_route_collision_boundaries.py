@@ -79,6 +79,38 @@ def test_thin_wall_between_samples_cannot_pass_route_clearance(tmp_path):
 
 
 # 功能：
+#   验证校园策略拒绝从建筑屋顶上方直穿，同时保留未启用该策略时的纯三维碰撞语义。
+# 输入：
+#   tmp_path：隔离地图目录。
+# 输出：
+#   None：不返回业务数据。
+def test_building_overflight_policy_rejects_roof_shortcut(tmp_path):
+    path = tmp_path / "building.json"
+    path.write_text(json.dumps({"collision_primitives": [{
+        "name": "building", "semantic": "building",
+        "center_x": 0, "center_y": 0, "center_z": 5,
+        "size_x": 4, "size_y": 4, "size_z": 10,
+    }]}))
+    roof_route = GraphRoute(
+        start_node="a", goal_node="b", node_ids=["a", "b"], edge_ids=["a-b"],
+        positions_m=[Vector3(x=-5, y=0, z=20), Vector3(x=5, y=0, z=20)],
+        route_length_m=10, all_edges_flight_verified=True,
+    )
+
+    collision_only = collision.validate_route_clearance(
+        roof_route, path, vehicle_diameter_m=.4, vehicle_height_m=.3,
+    )
+    campus_policy = collision.validate_route_clearance(
+        roof_route, path, vehicle_diameter_m=.4, vehicle_height_m=.3,
+        avoid_building_overflight=True,
+    )
+
+    assert collision_only.accepted is True
+    assert campus_policy.accepted is False
+    assert campus_policy.minimum_clearance_m < 0
+
+
+# 功能：
 #   验证进度仅反映已检查样本，观察器不改变净空结论。
 # 输入：
 #   tmp_path：隔离地图；monkeypatch：可控时钟。

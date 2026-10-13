@@ -564,6 +564,7 @@ def validate_route_clearance(
     vehicle_height_m: float,
     sample_interval_m: float = 0.1,
     penetration_tolerance_m: float = 0.001,
+    avoid_building_overflight: bool = False,
 ) -> RouteClearanceReport:
     if not all(finite_positive_number(value) for value in (vehicle_diameter_m, vehicle_height_m)):
         raise ValueError("vehicle envelope dimensions must be positive")
@@ -571,6 +572,8 @@ def validate_route_clearance(
         raise ValueError("sample interval must be positive")
     if not _finite(penetration_tolerance_m) or penetration_tolerance_m < 0:
         raise ValueError("penetration tolerance must be finite and non-negative")
+    if type(avoid_building_overflight) is not bool:
+        raise ValueError("building overflight policy must be boolean")
     route = GraphRoute.model_validate(route.model_dump(mode="python"), strict=True)
     semantic, semantic_sha256 = _load(semantic_path)
     primitives = planning_collision_primitives(semantic)
@@ -616,6 +619,31 @@ def validate_route_clearance(
                     )
                     - penalty_m
                 )
+                # Qualified campus missions treat a building footprint as a
+                # horizontal no-overflight area.  A route several metres above
+                # the roof is collision-free in 3-D, but it is still the wrong
+                # operational corridor when streets and spaces between buildings
+                # are available.  Apply the same rotated footprint geometry used
+                # by the metric planner so every candidate, including authored
+                # graph routes, is evaluated under one policy.
+                if avoid_building_overflight and primitive.get("semantic") == "building":
+                    if "size_x" not in primitive:
+                        raise ValueError("building overflight policy requires box geometry")
+                    half_x, half_y, _ = _box_half_sizes(primitive)
+                    delta_x = point[0] - float(primitive["center_x"])
+                    delta_y = point[1] - float(primitive["center_y"])
+                    yaw = float(primitive.get("yaw_rad", 0.0))
+                    cosine, sine = math.cos(yaw), math.sin(yaw)
+                    local_x = cosine * delta_x + sine * delta_y
+                    local_y = -sine * delta_x + cosine * delta_y
+                    outside_x = max(abs(local_x) - half_x, 0.0)
+                    outside_y = max(abs(local_y) - half_y, 0.0)
+                    footprint_clearance = (
+                        math.hypot(outside_x, outside_y)
+                        - vehicle_diameter_m / 2
+                        - penalty_m
+                    )
+                    clearance = min(clearance, footprint_clearance)
                 if not math.isfinite(clearance):
                     raise ValueError("route clearance overflow")
                 segment_minimum = min(segment_minimum, clearance)
