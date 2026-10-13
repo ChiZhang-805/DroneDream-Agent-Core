@@ -61,7 +61,10 @@ def map_place_context(semantic_sha256: str) -> dict:
         "buildings": [
             {key: b[key] for key in building_fields if key in b} for b in index["buildings"]
         ],
-        "facilities": index["facilities"],
+        "facilities": [
+            {key: value for key, value in facility.items() if key != "footprint"}
+            for facility in index["facilities"]
+        ],
         "services": index["services"],
         "entrances": [
             {key: e[key] for key in entrance_fields if key in e} for e in index["entrances"]
@@ -78,7 +81,29 @@ def map_place_context(semantic_sha256: str) -> dict:
                     "entrance_connection_verified",
                 )
             }
-            for h in index["handoff_candidates"]
+            for h in (index["handoff_candidates"] if not index.get("handoff_locations") else [])
+        ],
+        "handoff_locations": [
+            {
+                key: location[key]
+                for key in (
+                    "place_id",
+                    "building_id",
+                    "name",
+                    "node_id",
+                    "entrance_id",
+                    "status",
+                    "flight_target_available",
+                    "flight_verified",
+                    "reason",
+                    "entrance_connection_verified",
+                    "connection_basis",
+                    "building_distance_m",
+                    "entrance_distance_m",
+                )
+                if key in location
+            }
+            for location in index.get("handoff_locations", [])
         ],
         "interpretation_rules": [
             "Use names, addresses, department aliases, documented services and conversation "
@@ -91,6 +116,10 @@ def map_place_context(semantic_sha256: str) -> dict:
             "a complete survey.",
             "Handoff candidates are exterior geometry proposals, not surveyed entrances "
             "or approved flight nodes.",
+            "Use handoff_locations to bind a building or facility to its checked outdoor "
+            "simulation target. A facade-only target is not a documented doorway. "
+            "If a place has no available target, briefly explain this and ask for another "
+            "handoff location; do not invent a point or submit an unresolved building ID.",
             "Only entities bound to the current navigation graph are executable targets; "
             "never substitute a building centre.",
         ],

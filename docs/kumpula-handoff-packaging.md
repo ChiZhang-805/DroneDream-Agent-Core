@@ -25,3 +25,31 @@ New qualification binding: `asset-qualification-57aa3819b5591401b2a92387`.
 Supersession preserves previously installed versions and mission evidence.
 Installed desktop mission checks for the additional destinations are recorded
 separately in the same end-to-end evidence directory.
+
+## Whole-campus geographic review, later on 2026-10-13
+
+The four-name-only graph was insufficient. `build_map_handoffs.py` now audits
+all 41 city building records and 10 facility identities, preserving their public
+source references. All 41 buildings have exterior simulation handoffs with
+collision-free 3-D routes checked for the actual X500 Depth dimensions. Shared
+municipal footprints do not merge Physicum, Exactum and the campus library.
+
+The previous Physicum and Exactum positions were flyable but their straight
+connections to their own doors crossed the building footprint. Their replacement
+positions are `(22.218, 68.372, 2)` and `(-93.680, -24.274, 2)`. Chemicum and
+Dynamicum retain their geographically valid positions. Adjacent collision boxes
+must be considered as a union: this exposes valid exterior spaces for annexes
+29466 and 79952 that sampling each box independently missed.
+
+Recorded doors and facade-only handoffs remain distinct. A generated location
+does not invent a surveyed door, permission, real parcel inventory, or a passed
+flight. Old unverified walkway candidates are retained for source audit but are
+no longer offered to the model as actionable alternatives. Duplicate addresses
+remain ambiguous. A genuinely unbound target returns a natural clarification,
+not an internal preparation failure.
+
+The revised graph has 49 nodes and 177 aliases. World geometry, controller,
+vehicle and the historical qualification exercise are unchanged. New package
+binding: `asset-qualification-e237228f40bdc1c2c50ea411`. `handoff-index-qualified.json`
+contains every point's building/door relationship and route-clearance receipt;
+real desktop flight evidence is recorded separately.

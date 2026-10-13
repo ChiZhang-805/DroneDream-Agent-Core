@@ -266,6 +266,7 @@ def build_index(package: Path, sources: Path) -> dict:
                 {
                     "facility_id": f"osm-facility-{wid}",
                     "building_id": building["building_id"],
+                    "footprint": mapping(_polygon),
                     "name": attributes.get("name", names[0]),
                     "aliases": names,
                     "uses": authored.get("uses", [attributes.get("building")]),

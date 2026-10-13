@@ -1358,10 +1358,26 @@ def _missing_explicit_constraints(
 #   graph：对应的地图拓扑。
 # 输出：
 #   node_id：唯一有效的地图节点标识。
-def _resolve_entity(entity: str, catalog: MapCatalog, graph: MapAsset) -> str:
+def _resolve_entity(
+    entity: str, catalog: MapCatalog, graph: MapAsset, locale: str = "zh-CN"
+) -> str:
     try:
         node_id = resolve_map_entity(entity, catalog, graph)
     except AssetQualificationError as error:
+        if str(error).startswith(("UNRESOLVED_MAP_ENTITY", "AMBIGUOUS_MAP_ENTITY")):
+            ambiguous = str(error).startswith("AMBIGUOUS_MAP_ENTITY")
+            prompt = (
+                (f"{entity}对应不止一个地点，请指明是哪一栋楼。" if ambiguous
+                 else f"{entity}目前没有可到达的交接点，请换一个交接地点。")
+                if locale == "zh-CN" else
+                (f"Which building do you mean by {entity}?" if ambiguous
+                 else f"There is no reachable handoff at {entity}. Where else should we meet?")
+            )
+            raise MissionClarificationRequired([prompt], [{
+                "question_id": "target_entity", "prompt": prompt, "options": [],
+                "allow_other": True,
+                "other_label": "其他地点" if locale == "zh-CN" else "Another place",
+            }]) from error
         raise MissionPreparationBlocked(str(error)) from error
     return node_id
 
@@ -3623,9 +3639,15 @@ class MissionOrchestrator:
             contract_id=f"mission-{uuid4().hex[:24]}",
             conversation_id=request.conversation_id,
             goal=intent.goal,
-            start_node=_resolve_entity(intent.start_entity, self.map_catalog, self.map_graph),
-            target_node=_resolve_entity(intent.target_entity, self.map_catalog, self.map_graph),
-            return_node=_resolve_entity(intent.return_entity, self.map_catalog, self.map_graph),
+            start_node=_resolve_entity(
+                intent.start_entity, self.map_catalog, self.map_graph, request.locale
+            ),
+            target_node=_resolve_entity(
+                intent.target_entity, self.map_catalog, self.map_graph, request.locale
+            ),
+            return_node=_resolve_entity(
+                intent.return_entity, self.map_catalog, self.map_graph, request.locale
+            ),
             payload_action=intent.payload_action,
             domain_ids=domain_actions.domain_ids,
             authorized_actions=sorted(action_ids(domain_actions)),
