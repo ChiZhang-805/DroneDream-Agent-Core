@@ -146,6 +146,44 @@ def test_metric_planner_uses_collision_geometry_instead_of_fixed_graph(tmp_path:
 
 
 # 功能：
+#   校园建筑的屋顶不是默认捷径；路线应沿建筑之间的开放空间绕行。
+# 输入：
+#   tmp_path：隔离测试目录。
+# 输出：
+#   None：即使升高即可满足三维碰撞净空，水平投影也不穿过建筑占地。
+def test_metric_planner_routes_around_building_footprint_instead_of_over_roof(tmp_path: Path):
+    semantic = tmp_path / "building.json"
+    semantic.write_text(json.dumps({"collision_primitives": [{
+        "name": "building", "semantic": "building",
+        "center_x": 3, "center_y": 0, "center_z": 1,
+        "size_x": .4, "size_y": 3, "size_z": 2,
+    }]}), encoding="utf-8")
+    planner = KnownMapMetricPlanner(
+        graph=_graph(), semantic_path=semantic,
+        vehicle_diameter_m=.4, vehicle_height_m=.3,
+        policy=MetricPlannerPolicy(
+            resolution_m=.4,
+            required_clearance_m=.25,
+            search_padding_m=2.5,
+            preferred_airspace_weight=0,
+        ),
+    )
+
+    assert planner._segment_is_free((0., 0., 3.), (6., 0., 3.)) is False
+    route = planner.plan(RouteQuery(start_node="start", goal_node="goal"))
+
+    assert route.route_length_m > 6
+    assert any(abs(point.y) > 1.9 for point in route.positions_m)
+    assert all(
+        planner._segment_is_free(
+            (first.x, first.y, first.z),
+            (second.x, second.y, second.z),
+        )
+        for first, second in zip(route.positions_m, route.positions_m[1:], strict=False)
+    )
+
+
+# 功能：
 #   证明新地图只提供语义地点和碰撞几何时即可规划，不要求作者预先连接路线边。
 # 输入：
 #   tmp_path：隔离测试目录。

@@ -24,7 +24,12 @@ from typing import Any
 from dronedream_plugin_sdk.protocol import decode_json
 
 from .assets import MAX_SEMANTIC_BYTES
-from .collision import _clearance, planning_collision_primitives, primitive_bounds
+from .collision import (
+    _box_half_sizes,
+    _clearance,
+    planning_collision_primitives,
+    primitive_bounds,
+)
 from .contracts import GraphRoute, MapAsset, RouteQuery, Vector3
 from .plugin_files import read_plugin_file
 from .preferred_airspace import PreferredAirspace, checked_point
@@ -47,6 +52,7 @@ class MetricPlannerPolicy:
     preferred_airspace_weight: float = 1.5
     allow_semantic_endpoint_projection: bool = False
     maximum_semantic_endpoint_projection_m: float = 2.5
+    avoid_building_overflight: bool = True
 
     # 功能：
     #   校验规划精度、非负代价和计算预算，禁止 NaN、布尔或负惩罚破坏有界 A* 搜索。
@@ -82,6 +88,8 @@ class MetricPlannerPolicy:
             raise ValueError("maximum search duration must be positive")
         if type(self.allow_semantic_endpoint_projection) is not bool:
             raise ValueError("semantic endpoint projection policy must be boolean")
+        if type(self.avoid_building_overflight) is not bool:
+            raise ValueError("building overflight policy must be boolean")
         if (
             type(self.maximum_semantic_endpoint_projection_m) not in (int, float)
             or not 0 < self.maximum_semantic_endpoint_projection_m <= 5.0
@@ -153,6 +161,8 @@ class KnownMapMetricPlanner:
         self.nodes = {node.node_id: node for node in graph.nodes} if graph is not None else {}
         self._route_cache: dict[tuple[str, str, Point, Point], GraphRoute] = {}
         self._spatial: dict[GridKey, list[int]] = defaultdict(list)
+        self._overflight_spatial: dict[tuple[int, int], list[int]] = defaultdict(list)
+        self._building_footprints: list[tuple[float, float, float, float, float]] = []
         self._clearance_cap_m = self.policy.required_clearance_m + self.policy.resolution_m
         # 圆形障碍检查采用机体外包球，索引必须使用同样的外包半径，不能只取最大半轴。
         expansion = math.hypot(self.vehicle_radius_m, self.vehicle_half_height_m)
@@ -170,6 +180,35 @@ class KnownMapMetricPlanner:
                 raise ValueError("metric planner spatial index budget exceeded")
             for key in bins:
                 self._spatial[key].append(index)
+            if self.policy.avoid_building_overflight and primitive.get("semantic") == "building":
+                if "size_x" not in primitive:
+                    raise ValueError("building overflight policy requires box geometry")
+                half_x, half_y, _ = _box_half_sizes(primitive)
+                footprint_low, footprint_high = _primitive_bounds(
+                    primitive,
+                    self.vehicle_radius_m,
+                )
+                footprint_index = len(self._building_footprints)
+                self._building_footprints.append((
+                    float(primitive["center_x"]),
+                    float(primitive["center_y"]),
+                    half_x,
+                    half_y,
+                    float(primitive.get("yaw_rad", 0.0)),
+                ))
+                outer_low = (
+                    footprint_low[0] - self._clearance_cap_m,
+                    footprint_low[1] - self._clearance_cap_m,
+                )
+                outer_high = (
+                    footprint_high[0] + self._clearance_cap_m,
+                    footprint_high[1] + self._clearance_cap_m,
+                )
+                first = tuple(math.floor(value / self._SPATIAL_BIN_M) for value in outer_low)
+                last = tuple(math.floor(value / self._SPATIAL_BIN_M) for value in outer_high)
+                for x in range(first[0], last[0] + 1):
+                    for y in range(first[1], last[1] + 1):
+                        self._overflight_spatial[(x, y)].append(footprint_index)
 
     # 功能：
     #   将世界坐标映射到粗筛网格，负坐标使用向下取整，不能截断到零。
@@ -209,7 +248,8 @@ class KnownMapMetricPlanner:
     #   clearance_m：不超过真实保守净空及饱和值的有限距离，不代表实时障碍感知。
     def clearance(self, point: Point) -> float:
         point = checked_point(point)
-        candidates = self._spatial.get(self._bin_key(point), ())
+        key = self._bin_key(point)
+        candidates = self._spatial.get(key, ())
         clearance_m = self._clearance_cap_m
         for index in candidates:
             value = _clearance(
@@ -221,6 +261,20 @@ class KnownMapMetricPlanner:
             if not math.isfinite(value):
                 raise ValueError("metric planner clearance overflow")
             clearance_m = min(clearance_m, value)
+        # Building roofs are not ordinary open air for the default campus
+        # mission policy.  Keep the complete vehicle footprint outside the
+        # building's horizontal bounds at every altitude, so a collision-free
+        # climb cannot turn into a socially unsafe roof shortcut.
+        for index in self._overflight_spatial.get((key[0], key[1]), ()):
+            center_x, center_y, half_x, half_y, yaw = self._building_footprints[index]
+            delta_x, delta_y = point[0] - center_x, point[1] - center_y
+            cosine, sine = math.cos(yaw), math.sin(yaw)
+            local_x = cosine * delta_x + sine * delta_y
+            local_y = -sine * delta_x + cosine * delta_y
+            outside_x = max(abs(local_x) - half_x, 0.0)
+            outside_y = max(abs(local_y) - half_y, 0.0)
+            horizontal_clearance = math.hypot(outside_x, outside_y) - self.vehicle_radius_m
+            clearance_m = min(clearance_m, horizontal_clearance)
         return clearance_m
 
     # 功能：
@@ -540,18 +594,50 @@ class KnownMapMetricPlanner:
                 for first, second in zip(cruise, cruise[1:], strict=False)
             ):
                 return finish(cruise)
+        search_start, search_goal = exact_start, exact_goal
+        horizontal_corridor = False
+        if self.policy.avoid_building_overflight and not prior_corridors:
+            # Outdoor campus missions use a low, constant-height corridor between
+            # buildings.  Searching every altitude after roof overflight has been
+            # disabled wastes most of the voxel budget on equivalent XY cells and
+            # can still prefer an unnecessarily high path.  The endpoint climbs
+            # remain explicit and receive the same continuous clearance proof.
+            corridor_z = max(exact_start[2], exact_goal[2]) + max(
+                1.0,
+                self.vehicle_half_height_m
+                + self.policy.required_clearance_m
+                + self.policy.resolution_m,
+            )
+            candidate_start = (exact_start[0], exact_start[1], corridor_z)
+            candidate_goal = (exact_goal[0], exact_goal[1], corridor_z)
+            if (
+                self._segment_is_free(exact_start, candidate_start)
+                and self._segment_is_free(candidate_goal, exact_goal)
+            ):
+                search_start, search_goal = candidate_start, candidate_goal
+                horizontal_corridor = True
         low, high = self._search_bounds(
-            exact_start=exact_start,
-            exact_goal=exact_goal,
+            exact_start=search_start,
+            exact_goal=search_goal,
         )
-        resolution = self.policy.resolution_m
+        # A one-metre class lateral lattice is sufficient for an outdoor
+        # vehicle-plus-clearance corridor and keeps a campus detour responsive.
+        # Every resulting diagonal is still checked continuously against the
+        # original geometry, so this changes search density rather than safety.
+        resolution = (
+            max(self.policy.resolution_m, min(1.0, self.policy.resolution_m * 2))
+            if horizontal_corridor
+            else self.policy.resolution_m
+        )
         axis_counts = [math.floor((high[axis] - low[axis]) / resolution) + 1
                        for axis in range(3)]
         if any(count < 1 or count > 100_000 for count in axis_counts):
             raise ValueError("metric planner axis budget exceeded")
         # 保留起终点每个真实坐标分量，使窄门/楼梯内仍可先竖直调整，而不是强迫斜着接上网格。
         axes = [sorted({*(low[axis] + index * resolution for index in range(axis_counts[axis])),
-                        exact_start[axis], exact_goal[axis]}) for axis in range(3)]
+                        search_start[axis], search_goal[axis]}) for axis in range(3)]
+        if horizontal_corridor:
+            axes[2] = [search_start[2]]
         if math.prod(len(axis) for axis in axes) > 20_000_000:
             raise ValueError("metric planner grid budget exceeded")
 
@@ -582,8 +668,8 @@ class KnownMapMetricPlanner:
             return key
 
         maximum_key = tuple(len(axis) - 1 for axis in axes)
-        start_key = point_to_key(exact_start)
-        goal_key = point_to_key(exact_goal)
+        start_key = point_to_key(search_start)
+        goal_key = point_to_key(search_goal)
         point_cache: dict[GridKey, Point] = {}
         clearance_cache: dict[GridKey, float] = {}
 
@@ -624,11 +710,11 @@ class KnownMapMetricPlanner:
 
         if key_clearance(start_key) < self.policy.required_clearance_m:
             # The exact endpoint is authoritative; retain it as a special grid node.
-            point_cache[start_key] = exact_start
-            clearance_cache[start_key] = self.clearance(exact_start)
+            point_cache[start_key] = search_start
+            clearance_cache[start_key] = self.clearance(search_start)
         if key_clearance(goal_key) < self.policy.required_clearance_m:
-            point_cache[goal_key] = exact_goal
-            clearance_cache[goal_key] = self.clearance(exact_goal)
+            point_cache[goal_key] = search_goal
+            clearance_cache[goal_key] = self.clearance(search_goal)
 
         penalized: set[GridKey] = set()
         for corridor in prior_corridors or []:
@@ -659,7 +745,7 @@ class KnownMapMetricPlanner:
         #   estimate：到目标的基础运动代价下界。
         def heuristic(key: GridKey) -> float:
             position = point(key)
-            dx, dy, dz = (position[i] - exact_goal[i] for i in range(3))
+            dx, dy, dz = (position[i] - search_goal[i] for i in range(3))
             estimate = math.hypot(dx, dy) + abs(dz) * self.policy.vertical_cost_multiplier
             return estimate
 
@@ -724,7 +810,12 @@ class KnownMapMetricPlanner:
         while keys[-1] != start_key:
             keys.append(previous[keys[-1]])
         keys.reverse()
-        raw_points = [exact_start, *(point(key) for key in keys[1:-1]), exact_goal]
+        searched_points = [point(key) for key in keys]
+        raw_points = [exact_start, *searched_points, exact_goal]
+        raw_points = [
+            item for index, item in enumerate(raw_points)
+            if index == 0 or math.dist(item, raw_points[index - 1]) > 1e-9
+        ]
         return finish(raw_points)
 
     # 功能：
