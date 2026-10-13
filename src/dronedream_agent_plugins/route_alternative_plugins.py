@@ -49,7 +49,10 @@ def _planning_clearance_requirement_m(vehicle_diameter_m: float) -> float:
     if not bounded_number(vehicle_diameter_m, 0, math.inf) or vehicle_diameter_m <= 0:
         raise ValueError("ROUTE_ALTERNATIVE_VEHICLE_DIAMETER_INVALID")
     vehicle_radius_m = vehicle_diameter_m / 2.0
-    clearance_m = max(0.35, vehicle_radius_m * 0.75)
+    # Outdoor campus routes must travel through the usable middle of the gap
+    # between buildings.  Keep at least 0.8 m beyond the conservative aircraft
+    # envelope instead of accepting a mathematically collision-free wall skim.
+    clearance_m = max(0.8, vehicle_radius_m * 0.75)
     return clearance_m
 
 
@@ -174,7 +177,7 @@ def _metric_candidate_definition() -> PluginDefinition:
                     resolution_m=0.45,
                     required_clearance_m=planning_clearance_m,
                     vertical_cost_multiplier=2.4,
-                    clearance_cost_weight=0.22,
+                    clearance_cost_weight=0.4,
                     # 起飞前长路线允许充分求解；飞行中改令仍只有短预算，本地安全控制独立运行。
                     maximum_search_seconds=60.0 if planning_phase == "initial" else 8.0,
                     # Imported semantic nodes can be wall/door labels.  Only the

@@ -2,7 +2,7 @@
   "schema_version": "dronedream.map-place-index.v1",
   "scene_id": "kumpula-campus",
   "semantic_sha256": "db46b1f1eae37f1e61df459b1a0da6ce8f9c9d37240a6f138be74cec16ca6529",
-  "map_package_sha256": "dda0cf79b648531b58964a941c3bc8950822c75e8fa37b6f871482a269d21432",
+  "map_package_sha256": "ecf73f37dee5f7f760b303a6a51c980e4889bac02fbe0b0a83c09b5b8d4420eb",
   "coordinate_frame": "ENU",
   "generated_from": [
     {

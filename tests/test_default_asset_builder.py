@@ -67,6 +67,132 @@ def test_qualified_range_rejects_non_finite_track_points(tmp_path: Path) -> None
         builder._verified_track_distance_m(tmp_path)
 
 
+def _write_range_qualification_fixture(tmp_path: Path, builder: ModuleType) -> SimpleNamespace:
+    source = tmp_path / "source"
+    map_source = source / "map"
+    vehicle_source = source / "vehicle"
+    controller_params = source / "controller.json"
+    for path, content in (
+        (map_source / "world.physics.sdf", "world"),
+        (map_source / "semantic.json", "semantic"),
+        (vehicle_source / "model.sdf", "vehicle"),
+        (controller_params, "controller"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    qualification_root = tmp_path / "range-run"
+    simulation = qualification_root / "simulation"
+    plan_root = qualification_root / "plan"
+    simulation.mkdir(parents=True)
+    plan_root.mkdir(parents=True)
+    route = simulation / "mission-route.json"
+    track = simulation / "reference_track.json"
+    clearance = plan_root / "clearance.json"
+    route.write_text('{"route":"corridor"}', encoding="utf-8")
+    track.write_text(
+        json.dumps({"points": [{"x": 0, "y": 0, "z": 1}, {"x": 3, "y": 4, "z": 1}]}),
+        encoding="utf-8",
+    )
+    clearance.write_text(
+        json.dumps({"accepted": True, "collision_count": 0, "minimum_clearance_m": 0.9}),
+        encoding="utf-8",
+    )
+    gates = {
+        "executor_completed": True,
+        "landing_confirmed": True,
+        "static_route_clearance_bound": True,
+    }
+    artifacts = {
+        "world_sha256": builder._sha256(map_source / "world.physics.sdf"),
+        "semantic_sha256": builder._sha256(map_source / "semantic.json"),
+        "vehicle_sha256": builder._sha256(vehicle_source / "model.sdf"),
+        "controller_params_sha256": builder._sha256(controller_params),
+        "route_sha256": builder._sha256(route),
+        "track_sha256": builder._sha256(track),
+        "clearance_sha256": builder._sha256(clearance),
+    }
+    (simulation / "mission_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.generic-px4-gazebo-run.v1",
+                "status": "verified",
+                "gates": gates,
+                "artifacts": artifacts,
+                "measurements": {
+                    "executor_return_code": 0,
+                    "abort_reason": None,
+                    "external_abort_request": None,
+                    "landing_state": "ON_GROUND",
+                    "pose_sample_count": 20,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (qualification_root / "qualification-summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.school-map-depth-qualification-summary.v1",
+                "status": "verified",
+                "gates": gates,
+                "training_data_collection": False,
+                "route_completion_mode": "return-to-launch",
+                "operational_qualification_granted": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plan_root / "qualification-plan.json").write_text(
+        json.dumps(
+            {
+                "mode": "full-round-trip",
+                "operational_qualification_requested": True,
+                "route_length_m": 5.0,
+                "required_clearance_m": 0.8,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return SimpleNamespace(
+        qualification_root=qualification_root,
+        map_source=map_source,
+        vehicle_source=vehicle_source,
+        controller_params=controller_params,
+    )
+
+
+def test_range_qualification_extends_only_from_bound_operational_round_trip(
+    tmp_path: Path,
+) -> None:
+    builder = _load_builder()
+    fixture = _write_range_qualification_fixture(tmp_path, builder)
+
+    receipt, distance = builder._range_qualification_receipt(
+        fixture.qualification_root,
+        map_source=fixture.map_source,
+        vehicle_source=fixture.vehicle_source,
+        controller_params=fixture.controller_params,
+    )
+
+    assert distance == pytest.approx(5.0)
+    assert receipt["qualified_range_m"] == pytest.approx(5.0)
+    assert receipt["minimum_clearance_m"] == pytest.approx(0.9)
+
+
+def test_range_qualification_rejects_a_vehicle_hash_mismatch(tmp_path: Path) -> None:
+    builder = _load_builder()
+    fixture = _write_range_qualification_fixture(tmp_path, builder)
+    (fixture.vehicle_source / "model.sdf").write_text("different vehicle", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="INPUT_BINDING_INVALID"):
+        builder._range_qualification_receipt(
+            fixture.qualification_root,
+            map_source=fixture.map_source,
+            vehicle_source=fixture.vehicle_source,
+            controller_params=fixture.controller_params,
+        )
+
+
 def test_pickup_index_comes_from_matching_checkpoint_and_payload_evidence(
     tmp_path: Path,
 ) -> None:

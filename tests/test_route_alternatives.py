@@ -189,8 +189,9 @@ def test_multi_objective_ranker_excludes_infeasible_route_and_explains_choice():
 # 输出：
 #   None：不返回业务数据。
 def test_metric_candidate_matches_vehicle_scaled_operational_gate():
-    assert _planning_clearance_requirement_m(0.76) == pytest.approx(0.35)
-    assert _planning_clearance_requirement_m(1.20) == pytest.approx(0.45)
+    assert _planning_clearance_requirement_m(0.76) == pytest.approx(0.8)
+    assert _planning_clearance_requirement_m(1.20) == pytest.approx(0.8)
+    assert _planning_clearance_requirement_m(3.0) == pytest.approx(1.125)
 
 
 # 功能：
@@ -250,7 +251,7 @@ def test_metric_candidate_searches_with_the_conservative_validation_envelope(
     assert captured["vehicle_diameter_m"] == pytest.approx(0.912)
     assert captured["vehicle_height_m"] == pytest.approx(0.516)
     policy = captured["policy"]
-    assert policy.required_clearance_m == pytest.approx(0.35)  # type: ignore[union-attr]
+    assert policy.required_clearance_m == pytest.approx(0.8)  # type: ignore[union-attr]
     assert policy.maximum_search_seconds == budget
 
 

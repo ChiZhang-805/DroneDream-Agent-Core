@@ -640,6 +640,24 @@ def test_open_segment_proof_avoids_redundant_samples(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_safe_horizontal_corner_is_rounded_before_flight_track_generation(tmp_path):
+    planner = KnownMapMetricPlanner(
+        graph=None,
+        semantic_path=_semantic(tmp_path / "rounded-corner.json"),
+        vehicle_diameter_m=.4,
+        vehicle_height_m=.3,
+    )
+    rounded = planner._round_horizontal_corners(
+        [(0., 0., 10.), (2., 0., 10.), (2., 2., 10.)]
+    )
+    assert len(rounded) > 3
+    assert (2., 0., 10.) not in rounded
+    assert all(
+        planner._segment_is_free(first, second)
+        for first, second in zip(rounded, rounded[1:], strict=False)
+    )
+
+
 # 功能：
 #   拒绝非有限、布尔及超大坐标，即使该位置没有空间索引候选也不能默认为安全。
 # 输入：

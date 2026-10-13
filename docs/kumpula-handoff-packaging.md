@@ -10,7 +10,8 @@ The current world, collision geometry, semantic bytes, vehicle and controller
 parameters are unchanged. The independent pair qualification exercise is exactly
 unchanged (390.10988842807024 m). Rebuilt with `scripts/build-default-assets.py`
 using the hash-matching source flight in
-`Q:/DroneDream-Workspace/TestRuns/kumpula-campus-release-verification-20261012-r1`
+the dated `kumpula-campus-release-verification` evidence directory under
+`Q:/DroneDream-Workspace/TestRuns`
 and the previous index as `--supersedes-index`. Existing flight evidence applies
 to that exercise only; no added edge is marked flight-verified.
 
@@ -21,10 +22,16 @@ semantic catalog. Reproduction and per-endpoint collision checks are in
 `Q:/DroneDream-Workspace/TestRuns/Natural-Language-E2E-20261013/check-map-destinations.py`
 and `map-destinations/geometry-check.json`.
 
-New qualification binding: `asset-qualification-57aa3819b5591401b2a92387`.
+New qualification binding: `asset-qualification-daa2b60cd02725d65b803eba`.
 Supersession preserves previously installed versions and mission evidence.
 Installed desktop mission checks for the additional destinations are recorded
 separately in the same end-to-end evidence directory.
+
+The packaged vehicle range is additionally bound to a 596.5362349350833 m
+Gazebo/PX4 full round trip from the launch point to the Chemicum handoff and
+back. The run completed with no collision or abort, landed `ON_GROUND`, and
+passed every operational qualification gate. It extends the advertised range
+only; payload handling remains bound to the original pickup-return evidence.
 
 ## Whole-campus geographic review, later on 2026-10-13
 

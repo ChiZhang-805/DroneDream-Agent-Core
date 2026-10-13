@@ -842,14 +842,24 @@ def predictive_safety_decision(
         and not request.dynamic_obstacles
         and nominal_clearance >= request.required_clearance_m
     )
+    nominal_qualified_corridor_motion = bool(
+        nominal_route_motion_is_sufficient
+        and set(nominal_motion_issues) == {"SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"}
+        # The global route contract already requires this clearance beyond the
+        # conservative vehicle envelope.  Keep that requirement here instead
+        # of treating an occluded wall as a newly discovered collision.
+        and nominal_clearance >= max(request.required_clearance_m, 0.8)
+    )
     if (
         nominal_clearance >= request.required_clearance_m + 0.08
         or nominal_route_motion_is_sufficient
-    ) and not nominal_motion_issues:
+    ) and (not nominal_motion_issues or nominal_qualified_corridor_motion):
         # 无动态目标时，确定性路线的原动作只要已经通过完整净空、扫掠覆盖与时效检查，
         # 就无需为了寻找“更优”动作再次枚举几十个三维候选。靠近栏杆时重复覆盖检查
         # 可能耗尽短控制租期，反而把安全的纠偏飞行变成永久悬停。模型动作和存在动态
-        # 目标的周期仍要求 8 cm 额外余量，否则进入完整候选搜索。
+        # 目标的周期仍要求 8 cm 额外余量，否则进入完整候选搜索。对无动态目标的
+        # 已资格化路线，完整静态几何已经证明保守机体包络之外仍有至少 0.8 m 净空时，
+        # 不能因墙面遮挡了局部深度扫掠就永久悬停；低净空、动态目标和其他视觉故障仍会进入完整安全判定。
         decision = PredictiveSafetyDecision(
             action="continue",
             selected_velocity_mps=Vector3(

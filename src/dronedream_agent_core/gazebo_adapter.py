@@ -3676,7 +3676,11 @@ def run_px4_gazebo_track(
     )
     _write_json(run_dir / "simulation-sensor-frames.json", sensor_frames)
     initial_sensor_yaw = None
-    if simulation_fusion_inputs is not None and depth_safety_supported:
+    if (
+        simulation_fusion_inputs is not None
+        and depth_safety_supported
+        and not independent_route_control
+    ):
         from .optical_map import compile_optical_map
         from .simulation_start_view import select_simulation_start_view
 
@@ -3687,6 +3691,9 @@ def run_px4_gazebo_track(
         _write_json(run_dir / "initial-sensor-view.json", start_view)
         initial_sensor_yaw = start_view["selected_yaw_rad"]
         # 预测仅影响生成时朝向，不进入观测通道；原生回读与起飞净空检查完全保留。
+    # 独立路线模式以路线切线确定初始航向，并以 PX4 GNSS/IMU 为主定位。
+    # 地图视觉纠偏仍在受控执行器内启动；若物理 SDF 有碰撞面但没有视觉面，
+    # 该辅助任务会留下明确的降级回执，而不能在仿真启动前阻断合格路线。
     env.update(
         {
             "GZ_PARTITION": partition,

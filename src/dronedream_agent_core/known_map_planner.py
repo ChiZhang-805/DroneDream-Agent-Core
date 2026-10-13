@@ -502,7 +502,7 @@ class KnownMapMetricPlanner:
         # 输出：
         #   route：绑定命名端点且不冒充飞行验证边的路线。
         def finish(points: list[Point]) -> GraphRoute:
-            simplified = self._simplify(points)
+            simplified = self._round_horizontal_corners(self._simplify(points))
             digest = hashlib.sha256(
                 json.dumps(simplified, separators=(",", ":")).encode("utf-8")
             ).hexdigest()[:12]
@@ -817,6 +817,66 @@ class KnownMapMetricPlanner:
             if index == 0 or math.dist(item, raw_points[index - 1]) > 1e-9
         ]
         return finish(raw_points)
+
+    def _round_horizontal_corners(self, points: list[Point]) -> list[Point]:
+        """Replace safe horizontal sharp turns with short collision-checked arcs."""
+
+        if len(points) < 3:
+            return points
+        output = [points[0]]
+        for previous, corner, following in zip(
+            points, points[1:-1], points[2:], strict=False
+        ):
+            incoming = tuple(corner[axis] - previous[axis] for axis in range(3))
+            outgoing = tuple(following[axis] - corner[axis] for axis in range(3))
+            incoming_horizontal = math.hypot(incoming[0], incoming[1])
+            outgoing_horizontal = math.hypot(outgoing[0], outgoing[1])
+            if (
+                incoming_horizontal < 0.5
+                or outgoing_horizontal < 0.5
+                or abs(incoming[2]) > 0.05
+                or abs(outgoing[2]) > 0.05
+            ):
+                output.append(corner)
+                continue
+            trim = min(2.0, incoming_horizontal * 0.2, outgoing_horizontal * 0.2)
+            entry = (
+                corner[0] - incoming[0] / incoming_horizontal * trim,
+                corner[1] - incoming[1] / incoming_horizontal * trim,
+                corner[2],
+            )
+            exit_point = (
+                corner[0] + outgoing[0] / outgoing_horizontal * trim,
+                corner[1] + outgoing[1] / outgoing_horizontal * trim,
+                corner[2],
+            )
+            curve = [entry]
+            for index in range(1, 5):
+                ratio = index / 4
+                inverse = 1 - ratio
+                curve.append(
+                    tuple(
+                        inverse * inverse * entry[axis]
+                        + 2 * inverse * ratio * corner[axis]
+                        + ratio * ratio * exit_point[axis]
+                        for axis in range(3)
+                    )
+                )
+            candidate = [output[-1], *curve]
+            if all(
+                self._segment_is_free(first, second)
+                for first, second in zip(candidate, candidate[1:], strict=False)
+            ):
+                output.extend(curve)
+            else:
+                output.append(corner)
+        output.append(points[-1])
+        if not all(
+            self._segment_is_free(first, second)
+            for first, second in zip(output, output[1:], strict=False)
+        ):
+            raise ValueError("rounded metric route violates operational clearance")
+        return output
 
     # 功能：
     #   贪心选择满足净空的最远可直达点，连相邻点和两点路线也必须复验，不能漏检端点接驳。

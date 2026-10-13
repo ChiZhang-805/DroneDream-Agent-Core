@@ -1826,7 +1826,11 @@ def _seed_qualified_static_map(
         last = world.key_for(high)
         # 写入体素数不能限制遍历成本；细网格或长斜线必须在三重循环前检查计算预算。
         inspected_voxels += math.prod(max(0, last[i] - first[i] + 1) for i in range(3))
-        if inspected_voxels > 8_000_000:
+        # A complete campus round trip can legitimately cross several long,
+        # diagonal corridors.  Their axis-aligned traversal boxes are larger
+        # than the actual two-metre tube even though the retained voxel set
+        # remains below the independent one-million-voxel memory bound.
+        if inspected_voxels > 16_000_000:
             raise ValueError("qualified static route corridor exceeds the traversal safety budget")
         for x in range(first[0], last[0] + 1):
             for y in range(first[1], last[1] + 1):

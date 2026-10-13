@@ -549,6 +549,115 @@ def _verified_track_distance_m(run_dir: Path) -> float:
     return distance_m
 
 
+def _range_qualification_receipt(
+    qualification_root: Path,
+    *,
+    map_source: Path,
+    vehicle_source: Path,
+    controller_params: Path,
+) -> tuple[dict[str, Any], float]:
+    """Validate and bind a longer, real Gazebo/PX4 round-trip range run.
+
+    Payload handling stays bound to the complete pickup-return qualification in
+    ``--run-dir``.  A second completed corridor run may extend only the vehicle
+    range advertised to the planner; it cannot replace payload or pair evidence.
+    """
+
+    simulation = qualification_root / "simulation"
+    evidence_path = simulation / "mission_evidence.json"
+    summary_path = qualification_root / "qualification-summary.json"
+    plan_path = qualification_root / "plan" / "qualification-plan.json"
+    clearance_path = qualification_root / "plan" / "clearance.json"
+    evidence = _json(evidence_path)
+    summary = _json(summary_path)
+    plan = _json(plan_path)
+    clearance = _json(clearance_path)
+    gates = evidence.get("gates")
+    summary_gates = summary.get("gates")
+    artifacts = evidence.get("artifacts")
+    measurements = evidence.get("measurements")
+    if (
+        evidence.get("schema_version") != "dronedream.generic-px4-gazebo-run.v1"
+        or evidence.get("status") != "verified"
+        or not isinstance(gates, dict)
+        or not gates
+        or not all(value is True for value in gates.values())
+        or not isinstance(artifacts, dict)
+        or not isinstance(measurements, dict)
+        or measurements.get("executor_return_code") != 0
+        or measurements.get("abort_reason") is not None
+        or measurements.get("external_abort_request") is not None
+        or measurements.get("landing_state") != "ON_GROUND"
+        or not isinstance(measurements.get("pose_sample_count"), int)
+        or measurements["pose_sample_count"] < 10
+    ):
+        raise ValueError("DEFAULT_ASSET_RANGE_RUN_NOT_VERIFIED")
+    if (
+        summary.get("schema_version")
+        != "dronedream.school-map-depth-qualification-summary.v1"
+        or summary.get("status") != "verified"
+        or summary.get("operational_qualification_granted") is not True
+        or summary.get("training_data_collection") is not False
+        or summary.get("route_completion_mode") != "return-to-launch"
+        or summary_gates != gates
+        or plan.get("mode") != "full-round-trip"
+        or plan.get("operational_qualification_requested") is not True
+        or clearance.get("accepted") is not True
+        or clearance.get("collision_count") != 0
+    ):
+        raise ValueError("DEFAULT_ASSET_RANGE_RUN_NOT_OPERATIONAL")
+    expected_hashes = {
+        "world_sha256": _sha256(map_source / "world.physics.sdf"),
+        "semantic_sha256": _sha256(map_source / "semantic.json"),
+        "vehicle_sha256": _sha256(vehicle_source / "model.sdf"),
+        "controller_params_sha256": _sha256(controller_params),
+        "route_sha256": _sha256(simulation / "mission-route.json"),
+        "track_sha256": _sha256(simulation / "reference_track.json"),
+        "clearance_sha256": _sha256(clearance_path),
+    }
+    if any(artifacts.get(key) != value for key, value in expected_hashes.items()):
+        raise ValueError("DEFAULT_ASSET_RANGE_RUN_INPUT_BINDING_INVALID")
+    distance_m = _verified_track_distance_m(simulation)
+    planned_distance = plan.get("route_length_m")
+    if not isinstance(planned_distance, (int, float)) or not math.isclose(
+        distance_m, float(planned_distance), rel_tol=0.0, abs_tol=1e-6
+    ):
+        raise ValueError("DEFAULT_ASSET_RANGE_RUN_DISTANCE_INVALID")
+    receipt = {
+        "schema_version": "dronedream.vehicle-range-qualification-receipt.v1",
+        "source": "real-gazebo-harmonic-px4-sitl",
+        "qualified_range_m": distance_m,
+        "route_completion_mode": "return-to-launch",
+        "required_clearance_m": plan.get("required_clearance_m"),
+        "minimum_clearance_m": clearance.get("minimum_clearance_m"),
+        "mission_evidence_file": "qualification/range/mission_evidence.json",
+        "mission_evidence_sha256": _sha256(evidence_path),
+        "qualification_summary_file": "qualification/range/qualification-summary.json",
+        "qualification_summary_sha256": _sha256(summary_path),
+        "reference_track_file": "qualification/range/reference_track.json",
+        "reference_track_sha256": _sha256(simulation / "reference_track.json"),
+        "route_clearance_file": "qualification/range/route-clearance.json",
+        "route_clearance_sha256": _sha256(clearance_path),
+        "input_hashes": expected_hashes,
+    }
+    return receipt, distance_m
+
+
+def _copy_range_qualification_evidence(source: Path, destination: Path) -> None:
+    target = destination / "qualification" / "range"
+    target.mkdir(parents=True, exist_ok=True)
+    files = {
+        source / "simulation" / "mission_evidence.json": target / "mission_evidence.json",
+        source / "qualification-summary.json": target / "qualification-summary.json",
+        source / "simulation" / "reference_track.json": target / "reference_track.json",
+        source / "simulation" / "mission-route.json": target / "mission-route.json",
+        source / "plan" / "qualification-plan.json": target / "qualification-plan.json",
+        source / "plan" / "clearance.json": target / "route-clearance.json",
+    }
+    for source_path, target_path in files.items():
+        shutil.copyfile(source_path, target_path)
+
+
 def _artifact_identity(summary: dict[str, Any]) -> dict[str, Any]:
     """Keep export identity separate from post-export runtime qualification.
 
@@ -775,6 +884,8 @@ def _build_vehicle_bundle(
     destination: Path,
     vehicle_source: Path,
     controller_params: Path,
+    range_qualification_run_dir: Path | None = None,
+    map_source: Path | None = None,
 ) -> None:
     _copy_tree(vehicle_source, destination / "gazebo")
     shutil.copyfile(controller_params, destination / "controller_params.json")
@@ -815,6 +926,16 @@ def _build_vehicle_bundle(
     vehicle_summary["maximum_qualified_payload_kg"] = qualified_payload_kg
     _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
     qualified_range_m = _verified_track_distance_m(run_dir)
+    range_qualification = None
+    if range_qualification_run_dir is not None:
+        if map_source is None:
+            raise ValueError("DEFAULT_ASSET_RANGE_MAP_SOURCE_MISSING")
+        range_qualification, qualified_range_m = _range_qualification_receipt(
+            range_qualification_run_dir,
+            map_source=map_source,
+            vehicle_source=vehicle_source,
+            controller_params=controller_params,
+        )
     vehicle = {
         "schema_version": "dronedream.vehicle.v1",
         "asset_id": VEHICLE_ASSET_ID,
@@ -845,6 +966,9 @@ def _build_vehicle_bundle(
     qualification = _qualification_receipt(run_dir)
     _write_json(destination / "qualification" / "receipt.json", qualification)
     _copy_qualification_evidence(run_dir, destination)
+    if range_qualification_run_dir is not None and range_qualification is not None:
+        _copy_range_qualification_evidence(range_qualification_run_dir, destination)
+        _write_json(destination / "qualification" / "range" / "receipt.json", range_qualification)
     _write_json(
         destination / "manifest.json",
         {
@@ -867,7 +991,11 @@ def _build_vehicle_bundle(
                 "mass_and_inertia_from_source_model": True,
                 "rotor_dynamics_from_source_model": True,
                 "qualified_range_m": qualified_range_m,
-                "qualified_range_basis": "completed Gazebo/PX4 pickup-return route",
+                "qualified_range_basis": (
+                    "completed Gazebo/PX4 building-corridor round trip"
+                    if range_qualification is not None
+                    else "completed Gazebo/PX4 pickup-return route"
+                ),
                 "payload_mass_kg": qualified_payload_kg,
                 "loaded_thrust_to_weight": loaded_thrust_to_weight,
                 "perception_sensor": perception,
@@ -1089,6 +1217,7 @@ def _superseded_pair_records(index_path: Path | None) -> list[dict[str, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--range-qualification-run-dir", type=Path)
     parser.add_argument("--map-source", type=Path, required=True)
     parser.add_argument("--map-graph", type=Path, required=True)
     parser.add_argument("--vehicle-source", type=Path, required=True)
@@ -1133,6 +1262,12 @@ def main() -> None:
             vehicle_root,
             temporary / "current-vehicle",
             controller_params,
+            (
+                args.range_qualification_run_dir.resolve()
+                if args.range_qualification_run_dir is not None
+                else None
+            ),
+            map_source,
         )
         output.mkdir(parents=True, exist_ok=True)
         qualified_pair = _build_qualified_pair(

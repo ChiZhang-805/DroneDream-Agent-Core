@@ -49,7 +49,7 @@ _KUMPULA_CAMPUS = {
     "source": {
         "source_type": "bundled_ddpkg",
         "location": "dronedream://default-assets/school-map.ddpkg",
-        "expected_sha256": ("dda0cf79b648531b58964a941c3bc8950822c75e8fa37b6f871482a269d21432"),
+        "expected_sha256": ("ecf73f37dee5f7f760b303a6a51c980e4889bac02fbe0b0a83c09b5b8d4420eb"),
         "source_format": "dronedream-ddpkg",
         "expected_kind": "map",
         "real_world_crs": "EPSG:3879",
@@ -78,7 +78,7 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-57aa3819b5591401b2a92387",
+        "qualification_id": "asset-qualification-daa2b60cd02725d65b803eba",
         "required_inputs": [],
     },
 }
@@ -95,7 +95,7 @@ def map_resource_catalog() -> dict[str, object]:
 
     return {
         "schema_version": "dronedream.map-resource-catalog.v1",
-        "catalog_revision": "2026-10-11.1",
+        "catalog_revision": "2026-10-14.1",
         "resources": deepcopy(list(_RESOURCES)),
     }
 

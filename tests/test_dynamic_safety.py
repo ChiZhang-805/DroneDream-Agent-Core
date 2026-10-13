@@ -688,6 +688,83 @@ def test_positive_static_clearance_deficit_uses_monotonic_escape() -> None:
     assert decision.issue_codes == ["STATIC_CLEARANCE_RECOVERY"]
 
 
+@pytest.mark.parametrize("semantic", ["building", "launch-pad", "pickup-pad"])
+def test_safe_qualified_corridor_continues_when_only_local_depth_sweep_is_occluded(
+    semantic: str,
+) -> None:
+    known_surface = {
+        "name": f"known-{semantic}",
+        "semantic": semantic,
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.04,
+        "size_x": 2.4,
+        "size_y": 2.4,
+        "size_z": 0.08,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.5),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=4.0, y=4.0, z=1.6),
+        vehicle_radius_m=0.38,
+        vehicle_height_m=0.43,
+        max_speed_mps=0.8,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.15,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(
+        request,
+        [known_surface],
+        motion_check=lambda _request, _velocity, _path: [
+            "SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"
+        ],
+    )
+
+    assert decision.action == "continue"
+    assert decision.selected_velocity_mps.x > 0.0
+    assert decision.selected_velocity_mps.y > 0.0
+    assert decision.minimum_predicted_clearance_m >= request.required_clearance_m
+    assert decision.issue_codes == []
+
+
+def test_occluded_corridor_below_global_clearance_still_uses_full_safety_search() -> None:
+    low_clearance_surface = {
+        "name": "known-wall",
+        "semantic": "building",
+        "center_x": 0.0,
+        "center_y": 0.0,
+        "center_z": 0.4,
+        "size_x": 2.4,
+        "size_y": 2.4,
+        "size_z": 0.8,
+    }
+    request = LocalPlannerRequest(
+        current_position_m=Vector3(x=0.0, y=0.0, z=1.5),
+        current_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
+        target_position_m=Vector3(x=4.0, y=4.0, z=1.6),
+        vehicle_radius_m=0.38,
+        vehicle_height_m=0.43,
+        max_speed_mps=0.8,
+        max_acceleration_mps2=0.8,
+        required_clearance_m=0.15,
+        prediction_horizon_seconds=3.0,
+        prediction_step_seconds=0.2,
+    )
+
+    decision = predictive_safety_decision(
+        request,
+        [low_clearance_surface],
+        motion_check=lambda _request, _velocity, _path: [
+            "SWEPT_SPACE_UNOBSERVED_OR_BLOCKED"
+        ],
+    )
+
+    assert decision.evaluated_candidate_count > 1
+
+
 # 功能：
 #   验证轻微进入静态保守包围体时会选择逐点改善的低速脱离，而不是在穿入位置永久悬停。
 # 输入：
