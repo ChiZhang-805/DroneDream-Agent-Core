@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dronedream_agent_core.assets import resolve_map_entity
 from dronedream_agent_core.contracts import (
     ActionDefinition,
     DomainActionCatalog,
@@ -32,6 +33,7 @@ from dronedream_agent_core.orchestrator import (
     _bind_task_graph_action_contracts,
     _decomposition_action_catalog_view,
     _explicit_constraint_hints,
+    _ground_explicit_intent_destination,
     _ground_intent_clarification_options,
     _intent_action_catalog_view,
     _intent_map_catalog_view,
@@ -359,6 +361,138 @@ def test_pickup_product_defaults_preserve_explicit_one_way_destination() -> None
     )
 
     assert _bind_product_intent_defaults(intent, request).return_entity == "pantry"
+
+
+def test_explicit_chinese_building_overrides_model_generic_pickup() -> None:
+    graph = MapAsset.model_validate(
+        {
+            "asset_id": "campus-map",
+            "name": "Campus Map",
+            "nodes": [
+                {
+                    "node_id": "launch",
+                    "label": "Launch",
+                    "position_m": {"x": 0, "y": 0, "z": 2},
+                    "semantic": "launch",
+                },
+                {
+                    "node_id": "takeout",
+                    "label": "Takeout",
+                    "position_m": {"x": 10, "y": 0, "z": 2},
+                    "semantic": "pickup",
+                },
+                {
+                    "node_id": "verified-004",
+                    "label": "Chemicum outdoor handoff",
+                    "position_m": {"x": 43, "y": 55, "z": 2},
+                    "semantic": "delivery",
+                },
+            ],
+            "edges": [],
+            "named_entities": {
+                "office-launch-pad": "launch",
+                "takeout-pickup-pad": "takeout",
+                "chemicum": "verified-004",
+            },
+        }
+    )
+    catalog = MapCatalog(
+        scene_id="campus",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": "office-launch-pad",
+                "aliases": ["办公室"],
+                "position_m": {"x": 0, "y": 0, "z": 2},
+                "semantic": "launch",
+                "source_pointer": "test:launch",
+            },
+            {
+                "entity_id": "takeout-pickup-pad",
+                "aliases": ["外卖取餐点"],
+                "position_m": {"x": 10, "y": 0, "z": 2},
+                "semantic": "pickup",
+                "source_pointer": "test:takeout",
+            },
+            {
+                "entity_id": "chemicum",
+                "aliases": ["化学楼", "化学系大楼", "Chemicum"],
+                "position_m": {"x": 43, "y": 55, "z": 2},
+                "semantic": "delivery",
+                "source_pointer": "test:chemicum",
+            },
+        ],
+    )
+    intent = IntentArtifact(
+        goal="领取实验仪器并送回",
+        start_entity="office-launch-pad",
+        target_entity="takeout-pickup-pad",
+        return_entity="office-launch-pad",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-chemistry",
+        message="帮我去化学楼拿一份实验仪器，拿到后送回来。",
+        start_entity="office-launch-pad",
+    )
+
+    grounded, binding = _ground_explicit_intent_destination(
+        intent, request, catalog, graph
+    )
+
+    assert grounded.target_entity == "chemicum"
+    assert resolve_map_entity(grounded.target_entity, catalog, graph) == "verified-004"
+    assert binding == {
+        "model_target_entity": "takeout-pickup-pad",
+        "bound_target_entity": "chemicum",
+        "bound_target_node": "verified-004",
+        "binding_authority": "explicit-user-map-reference",
+    }
+
+
+def test_multiple_explicit_places_do_not_guess_destination_role() -> None:
+    graph = _map()
+    catalog = MapCatalog(
+        scene_id="school",
+        semantic_sha256="a" * 64,
+        topology_available=True,
+        entities=[
+            {
+                "entity_id": "office",
+                "aliases": ["办公室"],
+                "position_m": {"x": 0, "y": 0, "z": 3},
+                "semantic": "launch",
+                "source_pointer": "test:office",
+            },
+            {
+                "entity_id": "pickup",
+                "aliases": ["物资区"],
+                "position_m": {"x": 10, "y": 0, "z": 1},
+                "semantic": "pickup",
+                "source_pointer": "test:pickup",
+            },
+        ],
+    )
+    intent = IntentArtifact(
+        goal="从办公室去物资区取件",
+        start_entity="office",
+        target_entity="pickup",
+        return_entity="office",
+        payload_action="pickup",
+    )
+    request = MissionRequest(
+        conversation_id="conversation-two-places",
+        message="从办公室去物资区取件再回来",
+        start_entity="office",
+    )
+
+    grounded, binding = _ground_explicit_intent_destination(
+        intent, request, catalog, graph
+    )
+
+    assert grounded == intent
+    assert binding is None
 
 
 def test_delivery_product_defaults_return_to_start_without_requiring_user_to_repeat_it() -> None:

@@ -20,7 +20,12 @@ from pydantic import BaseModel
 
 from dronedream_plugin_sdk.protocol import encode_json
 
-from .assets import AssetQualificationError, read_map_semantic_object, resolve_map_entity
+from .assets import (
+    AssetQualificationError,
+    map_entity_is_mentioned,
+    read_map_semantic_object,
+    resolve_map_entity,
+)
 from .collision import (
     PREFERRED_TRANSIT_CLEARANCE_M,
     build_tracking_corridor_budget,
@@ -1029,6 +1034,59 @@ def _bind_product_intent_defaults(
         {**intent.model_dump(mode="json"), **updates},
         IntentArtifact,
     )
+
+
+# 功能：
+#   当用户原话明确提到当前地图中的唯一地点时，用该地点覆盖模型误选的通用目的地。
+# 输入：
+#   intent：模型候选意图；request：包含用户原话；catalog/graph：当前地图的实体与可执行节点。
+# 输出：
+#   grounded_intent：目的地与用户原话一致的意图；binding：发生修正时的审计记录。
+def _ground_explicit_intent_destination(
+    intent: IntentArtifact,
+    request: MissionRequest,
+    catalog: MapCatalog,
+    graph: MapAsset,
+) -> tuple[IntentArtifact, dict[str, object] | None]:
+    """Honor one explicit mapped place instead of a model-selected generic waypoint."""
+
+    matches: dict[str, list[CatalogEntity]] = {}
+    for entity in catalog.entities:
+        if not map_entity_is_mentioned(request.message, entity.entity_id, catalog):
+            continue
+        try:
+            node_id = resolve_map_entity(entity.entity_id, catalog, graph)
+        except AssetQualificationError:
+            continue
+        matches.setdefault(node_id, []).append(entity)
+    if len(matches) != 1:
+        return intent, None
+
+    node_id, entities = next(iter(matches.items()))
+    try:
+        current_node = resolve_map_entity(intent.target_entity, catalog, graph)
+    except AssetQualificationError:
+        current_node = None
+    if current_node == node_id:
+        return intent, None
+
+    entities.sort(
+        key=lambda entity: (
+            entity.semantic != intent.payload_action,
+            entity.entity_id,
+        )
+    )
+    target_entity = entities[0].entity_id
+    grounded = _artifact_snapshot(
+        {**intent.model_dump(mode="json"), "target_entity": target_entity},
+        IntentArtifact,
+    )
+    return grounded, {
+        "model_target_entity": intent.target_entity,
+        "bound_target_entity": target_entity,
+        "bound_target_node": node_id,
+        "binding_authority": "explicit-user-map-reference",
+    }
 
 
 # 功能：
@@ -3446,6 +3504,12 @@ class MissionOrchestrator:
             intent = _artifact_snapshot(intent, IntentArtifact)
             model_constraints = list(intent.constraints)
             intent = _bind_product_intent_defaults(intent, request)
+            intent, explicit_destination_binding = _ground_explicit_intent_destination(
+                intent,
+                request,
+                self.map_catalog,
+                self.map_graph,
+            )
             intent = _bind_explicit_intent_constraints(intent, explicit_constraint_hints)
             intent, clarification_grounding_issues = _ground_intent_clarification_options(
                 intent,
@@ -3460,6 +3524,11 @@ class MissionOrchestrator:
                         "bound_constraints": intent.constraints,
                         "binding_authority": "deterministic-core",
                     },
+                )
+            if explicit_destination_binding is not None:
+                evidence.append(
+                    "intent.explicit-destination-core-bound",
+                    explicit_destination_binding,
                 )
             if intent.payload_action not in action_ids(domain_actions):
                 prior_intent = intent.model_dump(mode="json")
