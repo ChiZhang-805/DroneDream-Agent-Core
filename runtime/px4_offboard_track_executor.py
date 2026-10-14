@@ -2802,7 +2802,8 @@ class MavsdkOffboardClient:
                     raise RuntimeError(message)
 
     # 功能：
-    #   发送已授权的执行器或关节动作；位置贴合不能替代真实关节事件，发布后不再搬动载荷。
+    #   发送已授权的执行器或关节动作；位置贴合不能替代真实关节事件。
+    #   挂接位姿错误时先执行真实分离，仅允许一次重新对齐和挂接。
     # 输入：
     #   parameters：由外层复制并取得串行所有权的动作参数。
     # 输出：
@@ -2868,68 +2869,149 @@ class MavsdkOffboardClient:
             if not state_publishers:
                 raise RuntimeError(f"Gazebo payload state publisher is unavailable: {output_topic}")
         await asyncio.sleep(GAZEBO_PAYLOAD_STATE_DISCOVERY_SETTLE_SECONDS)
-        alignment: dict[str, Any] | None = None
-        alignment_attempts = 0
-        publish_attempts = 0
-        try:
-            if operation == "attach":
-                if observer.get("state_service"):
-                    await self._refresh_payload_snapshot(observer)
-                if observer["detached"] is not True or observer["error"] is not None:
-                    raise RuntimeError("payload must be observed detached before mount alignment")
-                alignment = await asyncio.wait_for(
-                    self._align_payload_to_mount(parameters, gazebo_node=node), timeout=15.0
-                )
-                alignment_attempts += 1
-            # DetachableJoint consumes the request on Gazebo's simulation
-            # update thread and only then publishes its state transition.  A
-            # render-heavy world can advance that thread well below wall-clock
-            # rate, and a single best-effort Empty publication made a real
-            # attachment intermittently disappear.  Retain one subscription,
-            # repeat the idempotent request inside a strict deadline, and still
-            # require the plugin's own attached/detached state as proof.
+        # DetachableJoint consumes a request on the simulation update thread.
+        # Keep one observer and require a fresh native state transition for each
+        # command.  This helper is also used for one physical detach / realign /
+        # reattach cycle when Gazebo creates a joint at the wrong relative pose.
+        async def request_state_transition(
+            active_publisher: Any, expected_state: bool, command_topic: str
+        ) -> int:
             state_deadline = loop.time() + GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS
             initial_sequence = observer["sequence"]
-            # 发布后即使回执丢失，物理动作也可能已经执行；旧分离状态不能授权再次搬动载荷。
             observer["detached"] = None
             observer["error"] = None
+            attempts = 0
             while loop.time() < state_deadline:
-                if publisher.publish(Empty()) is False:
+                if active_publisher.publish(Empty()) is False:
                     raise RuntimeError("Gazebo payload command publication failed")
-                publish_attempts += 1
+                attempts += 1
                 remaining = state_deadline - loop.time()
                 if remaining <= 0.0:
                     break
                 await asyncio.sleep(min(GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS, remaining))
                 if observer.get("state_service"):
                     try:
-                        await asyncio.wait_for(self._refresh_payload_snapshot(observer),
-                            timeout=max(0.001, state_deadline - loop.time()))
+                        await asyncio.wait_for(
+                            self._refresh_payload_snapshot(observer),
+                            timeout=max(0.001, state_deadline - loop.time()),
+                        )
                     except (RuntimeError, subprocess.TimeoutExpired):
-                        # 状态未知不复用旧事件，也不在发布挂载后再次搬动物品。
                         observer["detached"] = None
                         continue
                 if observer["error"] is not None:
                     raise RuntimeError("Gazebo payload state event is invalid")
                 if (
                     observer["sequence"] > initial_sequence
-                    and observer["detached"] is expected_detached
+                    and observer["detached"] is expected_state
                 ):
-                    break
-            if (
-                observer["sequence"] <= initial_sequence
-                or observer["detached"] is not expected_detached
-            ):
-                raise TimeoutError
-            observed_detached = observer["detached"]
-        except TimeoutError as error:
+                    return attempts
             raise RuntimeError(
                 "Gazebo payload state readback timed out after "
-                f"{publish_attempts} bounded command publications within "
+                f"{attempts} bounded command publications within "
                 f"{GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS:g} seconds: "
-                f"{output_topic}; alignment_attempts={alignment_attempts}; "
-                "post_publication_realignments=0; native joint readback required"
-            ) from error
+                f"{command_topic}; native joint readback required"
+            )
+
+        alignment: dict[str, Any] | None = None
+        alignment_attempts = 0
+        publish_attempts = 0
+        recovery_detach_publish_attempts = 0
+        post_publication_realignments = 0
+        attachment_pose_readback: dict[str, Any] | None = None
+        if operation == "attach":
+            if observer.get("state_service"):
+                await self._refresh_payload_snapshot(observer)
+            if observer["detached"] is not True or observer["error"] is not None:
+                raise RuntimeError("payload must be observed detached before mount alignment")
+            for attach_cycle in range(2):
+                alignment = await asyncio.wait_for(
+                    self._align_payload_to_mount(parameters, gazebo_node=node), timeout=15.0
+                )
+                alignment_attempts += 1
+                publish_attempts += await request_state_transition(publisher, False, topic)
+
+                world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
+                mount_offset = tuple(
+                    float(value) for value in parameters["payload_mount_offset_model_m"]
+                )
+                maximum_error_m = float(parameters["payload_mount_max_alignment_error_m"])
+                settle_deadline = (
+                    time.monotonic() + GAZEBO_PAYLOAD_ATTACHMENT_SETTLE_TIMEOUT_SECONDS
+                )
+                settle_samples = 0
+                while True:
+                    sampled_poses = await self._sample_named_gazebo_poses(
+                        world_name=world_name,
+                        model_names=(
+                            str(parameters["vehicle_model_name"]),
+                            str(parameters["payload_model_name"]),
+                        ),
+                        gazebo_node=node,
+                    )
+                    settle_samples += 1
+                    vehicle_pose = sampled_poses[str(parameters["vehicle_model_name"])]
+                    payload_pose = sampled_poses[str(parameters["payload_model_name"])]
+                    offset_world = _rotate_gazebo_model_vector(vehicle_pose, mount_offset)
+                    expected_position = (
+                        vehicle_pose.x + offset_world[0],
+                        vehicle_pose.y + offset_world[1],
+                        vehicle_pose.z + offset_world[2],
+                    )
+                    alignment_error_m = math.dist(
+                        expected_position,
+                        (payload_pose.x, payload_pose.y, payload_pose.z),
+                    )
+                    if alignment_error_m <= maximum_error_m:
+                        attachment_pose_readback = {
+                            "payload_position_world_enu_m": [
+                                payload_pose.x,
+                                payload_pose.y,
+                                payload_pose.z,
+                            ],
+                            "expected_position_world_enu_m": list(expected_position),
+                            "alignment_error_m": alignment_error_m,
+                            "maximum_alignment_error_m": maximum_error_m,
+                            "settle_samples": settle_samples,
+                            "accepted": True,
+                        }
+                        break
+                    if time.monotonic() >= settle_deadline:
+                        break
+                    await asyncio.sleep(0.05)
+                if attachment_pose_readback is not None:
+                    break
+                if attach_cycle == 1:
+                    raise RuntimeError(
+                        "Gazebo payload attachment pose did not settle inside the qualified "
+                        f"mount tolerance after one physical retry: observed={alignment_error_m:.6f}m "
+                        f"limit={maximum_error_m:.6f}m; samples={settle_samples}; "
+                        "pre_error="
+                        f"{alignment.get('pre_attachment_pose_readback', {}).get('alignment_error_m')}"
+                    )
+
+                if not topic.endswith("/attach"):
+                    raise RuntimeError("Gazebo payload recovery has no paired detach topic")
+                detach_topic = topic[: -len("/attach")] + "/detach"
+                _validate_gazebo_topic(detach_topic)
+                detach_publisher = node.advertise(detach_topic, Empty)
+                recovery_connection_deadline = time.monotonic() + 3.0
+                while (
+                    not detach_publisher.has_connections()
+                    and time.monotonic() < recovery_connection_deadline
+                ):
+                    await asyncio.sleep(0.01)
+                if not detach_publisher.has_connections():
+                    raise RuntimeError(
+                        f"Gazebo payload recovery command has no subscriber: {detach_topic}"
+                    )
+                recovery_detach_publish_attempts += await request_state_transition(
+                    detach_publisher, True, detach_topic
+                )
+                post_publication_realignments += 1
+        else:
+            publish_attempts = await request_state_transition(publisher, True, topic)
+
+        observed_detached = observer["detached"]
         if observed_detached != expected_detached:
             raise RuntimeError(
                 "Gazebo payload state readback did not confirm the requested attachment state"
@@ -2943,73 +3025,17 @@ class MavsdkOffboardClient:
             "detached": expected_detached,
             "command_publish_attempts": publish_attempts,
             "state_transition_timeout_seconds": (GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS),
-            "post_publication_realignments": 0,
+            "post_publication_realignments": post_publication_realignments,
+            "recovery_detach_publish_attempts": recovery_detach_publish_attempts,
             "state_readback_source": observer.get("source", "gazebo-detachable-joint-event"),
             "observed_at_unix_ms": observer["observed_at_unix_ms"],
             "raw_state": f'data: "{"detached" if observed_detached else "attached"}"',
         }
         if alignment is not None:
             alignment["alignment_attempts"] = alignment_attempts
-            world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
-            mount_offset = tuple(
-                float(value) for value in parameters["payload_mount_offset_model_m"]
-            )
-            maximum_error_m = float(parameters["payload_mount_max_alignment_error_m"])
-            settle_deadline = time.monotonic() + GAZEBO_PAYLOAD_ATTACHMENT_SETTLE_TIMEOUT_SECONDS
-            settle_samples = 0
-            while True:
-                sampled_poses = await self._sample_named_gazebo_poses(
-                    world_name=world_name,
-                    model_names=(
-                        str(parameters["vehicle_model_name"]),
-                        str(parameters["payload_model_name"]),
-                    ),
-                    gazebo_node=node,
-                )
-                settle_samples += 1
-                vehicle_pose = sampled_poses[str(parameters["vehicle_model_name"])]
-                payload_pose = sampled_poses[str(parameters["payload_model_name"])]
-                offset_world = _rotate_gazebo_model_vector(vehicle_pose, mount_offset)
-                expected_position = (
-                    vehicle_pose.x + offset_world[0],
-                    vehicle_pose.y + offset_world[1],
-                    vehicle_pose.z + offset_world[2],
-                )
-                alignment_error_m = math.dist(
-                    expected_position,
-                    (payload_pose.x, payload_pose.y, payload_pose.z),
-                )
-                if alignment_error_m <= maximum_error_m:
-                    break
-                if time.monotonic() >= settle_deadline:
-                    break
-                # The native joint event is emitted before Gazebo has necessarily
-                # published the settled constrained pose. Observe fresh physics
-                # frames instead of rejecting the first transitional sample.
-                await asyncio.sleep(0.05)
-            if alignment_error_m > maximum_error_m:
-                raise RuntimeError(
-                    "Gazebo payload attachment pose did not settle inside the qualified mount tolerance: "
-                    f"observed={alignment_error_m:.6f}m limit={maximum_error_m:.6f}m; "
-                    f"samples={settle_samples}; "
-                    "pre_error="
-                    f"{alignment.get('pre_attachment_pose_readback', {}).get('alignment_error_m')}"
-                    "; "
-                    f"expected={expected_position}; "
-                    f"actual={(payload_pose.x, payload_pose.y, payload_pose.z)}"
-                )
-            alignment["attachment_pose_readback"] = {
-                "payload_position_world_enu_m": [
-                    payload_pose.x,
-                    payload_pose.y,
-                    payload_pose.z,
-                ],
-                "expected_position_world_enu_m": list(expected_position),
-                "alignment_error_m": alignment_error_m,
-                "maximum_alignment_error_m": maximum_error_m,
-                "settle_samples": settle_samples,
-                "accepted": True,
-            }
+            if attachment_pose_readback is None:
+                raise RuntimeError("Gazebo payload attachment readback is missing")
+            alignment["attachment_pose_readback"] = attachment_pose_readback
             result["payload_mount_alignment"] = alignment
         return result
 
