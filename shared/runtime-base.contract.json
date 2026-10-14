@@ -1,7 +1,7 @@
 {
   "schema_version": "dronedream.autonomy.shared-runtime-base.v1",
   "source_repository": "https://github.com/ChiZhang-805/DroneDream.git",
-  "source_commit": "2f64796eff6291824de7f577b1632edf622dc691",
+  "source_commit": "19fb40a477e7373779a4ea5c512d0dbce2580d12",
   "submodule_path": "shared/dronedream-runtime-source",
   "runtime_product_id": "DroneDreamRuntime",
   "release_manifest_url": "https://github.com/ChiZhang-805/DroneDream/releases/download/runtime-v0.1.0-beta.2/runtime-release.json",
@@ -14,8 +14,8 @@
     },
     {
       "path": "desktop/src-tauri/src/process.rs",
-      "sha256": "9a43eec1b7cc39a1b921b55ef3a2332a651d7f142194190ba00ab65074b91c3d",
-      "bytes": 15918
+      "sha256": "94c70a29e2ac2f9a236b4a9de956c5e7ee7d0c88fb04a1023feaa55f1066541c",
+      "bytes": 19219
     },
     {
       "path": "desktop/src-tauri/src/runtime.rs",
@@ -24,18 +24,18 @@
     },
     {
       "path": "desktop/src-tauri/src/runtime_cache.rs",
-      "sha256": "114da497c50ff4e4fc24500f315f44f4b66c35793773685ecd7b951de41cf6ae",
-      "bytes": 22366
+      "sha256": "7af1dc334007cf14796af2216770014daeaa5cd4ec4a9cc2a5a274fd0fd6cb8b",
+      "bytes": 27419
     },
     {
       "path": "desktop/src-tauri/src/runtime_installer.rs",
-      "sha256": "f5bb7f4cdcc65e8bdca7dcd80f75adb62810b3a2642520554bc337ae9206e97d",
-      "bytes": 286675
+      "sha256": "2bbd29d70e06d0120b953504351ac2aa746ecf7351495afd81b55b2ac9d1c4b2",
+      "bytes": 289449
     },
     {
       "path": "desktop/src-tauri/src/runtime_keepalive.rs",
-      "sha256": "799ffe8daa38165c31672858b2cbe37a92c4f1b313d5238716c2fce56cde02f5",
-      "bytes": 8676
+      "sha256": "7e0d541156629090572a509a4a92d2c9013d9b105ede435e2ed576adcf01b81b",
+      "bytes": 11711
     },
     {
       "path": "runtime/release-public-keys.json",
