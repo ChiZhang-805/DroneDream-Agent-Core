@@ -236,10 +236,10 @@ def _phase_speed_envelope(
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     default_caps = {
         "launch": 1.5,
-        "transit": 3.0,
+        "transit": 6.0,
         "stairs": 1.2,
         "pickup": 0.8,
-        "return": 3.0,
+        "return": 6.0,
         "land": 0.8,
     }
     raw_caps = configured.get("phase_speed_caps_mps", {})
@@ -267,7 +267,11 @@ def _phase_speed_envelope(
 # 输出：
 #   limited_track：拐点限速收紧后重新校验的独立轨迹。
 def _corner_speed_envelope(
-    *, value: Px4Track, configuration: dict[str, object] | None = None, **_: Any
+    *,
+    value: Px4Track,
+    configuration: dict[str, object] | None = None,
+    semantic_plan: SemanticPlan | None = None,
+    **_: Any,
 ) -> Px4Track:
     value = _validated_copy(value)
     configured = {} if configuration is None else configuration
@@ -296,7 +300,40 @@ def _corner_speed_envelope(
     )
     if min(gentle_speed_mps, right_angle_speed_mps, hairpin_speed_mps) <= 0:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
+    # The model chooses the mission-level route policy.  Convert that bounded
+    # decision into a cruise-speed intent, then let measured geometry tighten
+    # individual turns.  The PX4 executor remains responsible for realizing
+    # each target with its qualified acceleration limit; these values never
+    # become direct actuator commands.
+    policy_cruise_mps = {
+        "balanced": 3.0,
+        "clearance-first": 2.4,
+        "minimum-time": 5.0,
+        "energy-conserving": 2.0,
+        "few-transitions": 3.5,
+    }
     points = list(value.points)
+    if semantic_plan is not None:
+        cruise_mps = policy_cruise_mps[semantic_plan.route_policy]
+        phase_targets = {
+            "launch": 1.5,
+            "transit": cruise_mps,
+            "stairs": 1.0,
+            "pickup": 0.6,
+            "return": cruise_mps,
+            "land": 0.5,
+        }
+        points = [
+            point.model_copy(
+                update={
+                    "target_speed_mps": min(
+                        point.speed_limit_mps,
+                        phase_targets[point.phase],
+                    )
+                }
+            )
+            for point in points
+        ]
     for index in range(1, len(points) - 1):
         previous, current, following = points[index - 1], points[index], points[index + 1]
         incoming = (current.x - previous.x, current.y - previous.y, current.z - previous.z)
@@ -320,8 +357,12 @@ def _corner_speed_envelope(
                 if turn_angle_deg >= 75.0
                 else gentle_speed_mps
             )
-            points[index] = current.model_copy(
-                update={"target_speed_mps": min(current.speed_limit_mps, target_speed_mps)}
+            existing_target = points[index].target_speed_mps
+            corner_target = min(points[index].speed_limit_mps, target_speed_mps)
+            if existing_target is not None:
+                corner_target = min(corner_target, existing_target)
+            points[index] = points[index].model_copy(
+                update={"target_speed_mps": corner_target}
             )
     limited_track = _validated_copy(value.model_copy(update={"points": points}))
     return limited_track
@@ -566,7 +607,7 @@ def plugin_definitions() -> list[PluginDefinition]:
             pipeline_order=20,
             runs_after=["planning.phase-speed-envelope"],
             hooks={"optimize_track": _corner_speed_envelope},
-            default_enabled=False,
+            default_enabled=True,
             failure_mode="fail-closed",
             configuration_schema={
                 "type": "object",

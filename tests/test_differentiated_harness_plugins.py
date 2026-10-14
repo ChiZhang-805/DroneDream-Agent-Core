@@ -12,6 +12,7 @@ from dronedream_agent_core.contracts import (
     Px4Track,
     RoutePoint,
     RouteQuery,
+    SemanticPlan,
     Vector3,
 )
 from dronedream_agent_core.plugin_api import ToolEnvironment
@@ -334,6 +335,47 @@ def test_corner_speed_envelope_brakes_below_qualified_indoor_edge_speed() -> Non
     assert optimized.points[1].speed_limit_mps == 0.55
     assert optimized.points[0].speed_limit_mps == 0.55
     assert optimized.points[2].speed_limit_mps == 0.55
+
+
+# 功能：
+#   验证模型选择的任务级路线策略会生成巡航速度意图，几何转弯仍会进一步减速。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_corner_speed_envelope_combines_model_policy_with_turn_geometry() -> None:
+    track = Px4Track.model_validate(
+        {
+            "coordinate_contract": {
+                "model_root_world_enu_m": [0, 0, 0],
+                "collision_center_offset_model_m": [0.0, 0.0, 0.228],
+            },
+            "points": [
+                {"x": 0, "y": 0, "z": 1, "phase": "launch", "speed_limit_mps": 6},
+                {"x": 20, "y": 0, "z": 1, "phase": "transit", "speed_limit_mps": 6},
+                {"x": 40, "y": 0, "z": 1, "phase": "transit", "speed_limit_mps": 6},
+                {"x": 40, "y": 20, "z": 1, "phase": "return", "speed_limit_mps": 6},
+                {"x": 40, "y": 40, "z": 1, "phase": "land", "speed_limit_mps": 6},
+            ],
+            "source_world_points": [
+                {"east_m": 0, "north_m": 0, "up_m": 1},
+                {"east_m": 0, "north_m": 20, "up_m": 1},
+                {"east_m": 0, "north_m": 40, "up_m": 1},
+                {"east_m": 20, "north_m": 40, "up_m": 1},
+                {"east_m": 40, "north_m": 40, "up_m": 1},
+            ],
+            "waypoint_hold_seconds": 0.4,
+        }
+    )
+    semantic_plan = SemanticPlan(
+        ordered_targets=["destination"],
+        route_policy="minimum-time",
+        rationale_summary="Use the clear long segments efficiently.",
+    )
+
+    optimized = _corner_speed_envelope(value=track, semantic_plan=semantic_plan)
+
+    assert [point.target_speed_mps for point in optimized.points] == [1.5, 5.0, 1.2, 5.0, 0.5]
 
 
 # 功能：

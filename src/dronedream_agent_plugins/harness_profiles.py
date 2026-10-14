@@ -166,6 +166,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                 "safety.route-clearance",
                 "px4.export-track",
                 "simulation.campaign-acceptance",
+                "planning.corner-speed-envelope",
             ],
             True,
         ),

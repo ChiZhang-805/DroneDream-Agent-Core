@@ -211,7 +211,7 @@ def _payload_gate(
 #   validation：速度与停止策略的接受状态及拒绝原因。
 def _stability_gate(*, px4_track: Px4Track, **_: Any) -> dict[str, object]:
     speeds = [point.speed_limit_mps for point in px4_track.points]
-    valid = bool(speeds) and all(bounded_number(speed, 0, 3) for speed in speeds)
+    valid = bool(speeds) and all(bounded_number(speed, 0, 6) for speed in speeds)
     max_speed = max(speeds) if valid else None
     accepted = valid and all(
         point.target_speed_mps is None
@@ -249,10 +249,10 @@ def _clearance_speed_gate(
     }:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     tight_clearance_m = policy_number(configured, "tight_clearance_m", 1.25, 0.3, 10)
-    maximum_tight_speed_mps = policy_number(configured, "maximum_tight_speed_mps", 1, 0.1, 3)
+    maximum_tight_speed_mps = policy_number(configured, "maximum_tight_speed_mps", 1, 0.1, 6)
     valid = bool(flight_plan.segments) and all(
         bounded_number(segment.minimum_clearance_m, 0, math.inf)
-        and bounded_number(segment.speed_limit_mps, 0, 3)
+        and bounded_number(segment.speed_limit_mps, 0, 6)
         for segment in flight_plan.segments
     )
     violations = [
@@ -263,7 +263,7 @@ def _clearance_speed_gate(
         }
         for segment in flight_plan.segments
         if bounded_number(segment.minimum_clearance_m, 0, math.inf)
-        and bounded_number(segment.speed_limit_mps, 0, 3)
+        and bounded_number(segment.speed_limit_mps, 0, 6)
         and segment.minimum_clearance_m < tight_clearance_m
         and segment.speed_limit_mps > maximum_tight_speed_mps
     ]

@@ -9450,6 +9450,11 @@ async def _fly_runtime_replacement(
         )
         schedule = replacement.schedule
         waypoint_arrival_indices = set(replacement.waypoint_arrival_indices)
+        settle_arrival_indices = {
+            replacement.waypoint_arrival_indices[index - 1]
+            for index, point in enumerate(artifact.track.points)
+            if index > 0 and point.phase in {"pickup", "land"}
+        }
         runtime_action_contract = artifact.runtime_actions
         checkpoint_contract = artifact.runtime_checkpoints
         action_checkpoint_ids = {
@@ -9938,7 +9943,7 @@ async def _fly_runtime_replacement(
                             },
                         )
                 last_setpoint = setpoint
-                if index in waypoint_arrival_indices and checkpoint is None:
+                if index in settle_arrival_indices and checkpoint is None:
                     settle_started = loop.time()
                     _atomic_json(
                         phase_path,

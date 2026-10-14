@@ -5131,6 +5131,10 @@ def build_adaptive_waypoint_schedule(
         math.dist((start.x, start.y, start.z), (end.x, end.y, end.z))
         for start, end in zip(points[:-1], points[1:], strict=True)
     ]
+    # Reserve ten percent of the vehicle acceleration authority for changing
+    # direction at polyline nodes; the remaining ninety percent shapes speed
+    # along each segment.
+    profile_accel_limit = params.accel_limit * 0.9
     node_speeds = [0.0] * len(points)
     for index in range(1, len(points) - 1):
         incoming_limit = points[index].speed_limit_mps or params.vel_limit
@@ -5144,14 +5148,46 @@ def build_adaptive_waypoint_schedule(
         )
         if index in stop_points:
             node_speeds[index] = 0.0
+        incoming_distance = distances[index - 1]
+        outgoing_distance = distances[index]
+        if incoming_distance > 1e-12 and outgoing_distance > 1e-12:
+            incoming_unit = (
+                (points[index].x - points[index - 1].x) / incoming_distance,
+                (points[index].y - points[index - 1].y) / incoming_distance,
+                (points[index].z - points[index - 1].z) / incoming_distance,
+            )
+            outgoing_unit = (
+                (points[index + 1].x - points[index].x) / outgoing_distance,
+                (points[index + 1].y - points[index].y) / outgoing_distance,
+                (points[index + 1].z - points[index].z) / outgoing_distance,
+            )
+            direction_change = math.dist(incoming_unit, outgoing_unit)
+            if direction_change > 1e-9:
+                # A polyline corner changes direction at one publication tick.
+                # Tighten the node speed so that this vector change also obeys
+                # the acceleration contract.  Routes that provide a rounded
+                # sequence of small turns naturally retain a higher speed.
+                node_speeds[index] = min(
+                    node_speeds[index],
+                    (params.accel_limit - profile_accel_limit)
+                    / (rate_hz * direction_change),
+                )
+    # Keep a small realization margin below the vehicle's physical acceleration
+    # ceiling.  It gives fixed-rate sampling enough room to preserve the exact
+    # waypoint coordinate without asking the next control tick to exceed the
+    # qualified limit.
     for index, distance in enumerate(distances):
         reachable = math.sqrt(
-            max(0.0, node_speeds[index] ** 2 + 2.0 * params.accel_limit * distance)
+            max(0.0, node_speeds[index] ** 2 + 2.0 * profile_accel_limit * distance)
         )
         node_speeds[index + 1] = min(node_speeds[index + 1], reachable)
     for index in range(len(distances) - 1, -1, -1):
         reachable = math.sqrt(
-            max(0.0, node_speeds[index + 1] ** 2 + 2.0 * params.accel_limit * distances[index])
+            max(
+                0.0,
+                node_speeds[index + 1] ** 2
+                + 2.0 * profile_accel_limit * distances[index],
+            )
         )
         node_speeds[index] = min(node_speeds[index], reachable)
 
@@ -5168,54 +5204,70 @@ def build_adaptive_waypoint_schedule(
         start_speed = node_speeds[index]
         end_speed = node_speeds[index + 1]
         segment_limit = min(params.vel_limit, end.speed_limit_mps or params.vel_limit)
-        peak_speed = min(
-            segment_limit,
-            math.sqrt(
-                max(
-                    0.0,
-                    params.accel_limit * distance
-                    + 0.5 * (start_speed**2 + end_speed**2),
-                )
-            ),
+        # Quantize the segment to whole controller periods, then solve one cubic
+        # distance curve with the already reachable node speeds as its boundary
+        # derivatives.  Unlike rescaling an ideal trapezoid independently on
+        # every segment, this preserves the same physical speed on both sides
+        # of a waypoint and therefore cannot create a one-tick speed jump.
+        minimum_seconds = max(
+            distance / segment_limit,
+            abs(end_speed - start_speed) / params.accel_limit,
+            1.0 / rate_hz,
         )
-        peak_speed = max(peak_speed, start_speed, end_speed)
-        acceleration_distance = max(
-            0.0,
-            (peak_speed**2 - start_speed**2) / (2.0 * params.accel_limit),
-        )
-        deceleration_distance = max(
-            0.0,
-            (peak_speed**2 - end_speed**2) / (2.0 * params.accel_limit),
-        )
-        cruise_distance = max(0.0, distance - acceleration_distance - deceleration_distance)
-        acceleration_seconds = max(0.0, (peak_speed - start_speed) / params.accel_limit)
-        cruise_seconds = cruise_distance / peak_speed if peak_speed > 1e-9 else 0.0
-        deceleration_seconds = max(0.0, (peak_speed - end_speed) / params.accel_limit)
-        total_seconds = acceleration_seconds + cruise_seconds + deceleration_seconds
-        sample_count = max(1, int(math.ceil(total_seconds * rate_hz)))
+        sample_count = max(1, int(math.ceil(minimum_seconds * rate_hz)))
+        while True:
+            total_seconds = sample_count / rate_hz
+            start_tangent = start_speed * total_seconds
+            end_tangent = end_speed * total_seconds
+
+            # For cubic Hermite distance interpolation, velocity is quadratic
+            # and acceleration is linear.  Its extrema therefore occur at the
+            # interval ends or at the single stationary point of velocity.
+            acceleration_start = (
+                6.0 * distance - 4.0 * start_tangent - 2.0 * end_tangent
+            ) / total_seconds**2
+            acceleration_end = (
+                -6.0 * distance + 2.0 * start_tangent + 4.0 * end_tangent
+            ) / total_seconds**2
+            velocity_a = (
+                -6.0 * distance + 3.0 * start_tangent + 3.0 * end_tangent
+            ) / total_seconds
+            velocity_b = (
+                6.0 * distance - 4.0 * start_tangent - 2.0 * end_tangent
+            ) / total_seconds
+            velocity_c = start_speed
+            velocity_candidates = [start_speed, end_speed]
+            if abs(velocity_a) > 1e-12:
+                stationary_u = -velocity_b / (2.0 * velocity_a)
+                if 0.0 < stationary_u < 1.0:
+                    velocity_candidates.append(
+                        velocity_a * stationary_u**2
+                        + velocity_b * stationary_u
+                        + velocity_c
+                    )
+            if (
+                min(velocity_candidates) >= -1e-9
+                and max(velocity_candidates) <= segment_limit + 1e-9
+                and max(abs(acceleration_start), abs(acceleration_end))
+                <= params.accel_limit + 1e-9
+            ):
+                break
+            sample_count += 1
+            if sample_count > max_samples - len(schedule):
+                raise ValueError(f"setpoint schedule exceeds the {MAX_SETPOINTS}-sample limit")
+
         if sample_count > max_samples - len(schedule):
             raise ValueError(f"setpoint schedule exceeds the {MAX_SETPOINTS}-sample limit")
         for sample_index in range(1, sample_count + 1):
-            # 把完整曲线均匀量化到固定发布周期，避免每段末尾的余数采样在下段
-            # 首个完整周期处形成假性速度跳变。
-            sample_time = total_seconds * sample_index / sample_count
-            if sample_time <= acceleration_seconds:
-                progress = (
-                    start_speed * sample_time
-                    + 0.5 * params.accel_limit * sample_time**2
-                )
-            elif sample_time <= acceleration_seconds + cruise_seconds:
-                progress = acceleration_distance + peak_speed * (
-                    sample_time - acceleration_seconds
-                )
-            else:
-                deceleration_time = sample_time - acceleration_seconds - cruise_seconds
-                progress = (
-                    acceleration_distance
-                    + cruise_distance
-                    + peak_speed * deceleration_time
-                    - 0.5 * params.accel_limit * deceleration_time**2
-                )
+            ratio_time = sample_index / sample_count
+            ratio_time_squared = ratio_time**2
+            ratio_time_cubed = ratio_time**3
+            progress = (
+                distance * (-2.0 * ratio_time_cubed + 3.0 * ratio_time_squared)
+                + start_tangent
+                * (ratio_time_cubed - 2.0 * ratio_time_squared + ratio_time)
+                + end_tangent * (ratio_time_cubed - ratio_time_squared)
+            )
             ratio = min(1.0, max(0.0, progress / distance))
             point = TrackPoint(
                 x=start.x + (end.x - start.x) * ratio,

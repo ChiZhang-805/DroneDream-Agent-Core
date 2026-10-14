@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -280,6 +281,47 @@ def test_adaptive_schedule_accelerates_cruises_and_brakes_for_task_points() -> N
         abs(later - earlier) <= 0.2
         for earlier, later in zip(step_speeds[:-1], step_speeds[1:], strict=True)
     )
+
+
+# 功能：
+#   验证短段取整和直角转弯均不会让连续控制周期产生超过车辆上限的速度向量跳变。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+@pytest.mark.parametrize(
+    "points",
+    [
+        [(0, 0), (0.37, 0), (10.13, 0), (10.45, 0)],
+        [(0, 0), (10, 0), (10, 10), (20, 10)],
+    ],
+)
+def test_adaptive_schedule_keeps_fixed_rate_vector_acceleration_continuous(
+    points: list[tuple[float, float]],
+) -> None:
+    base, _ = _modules()
+    rate_hz = 20
+    acceleration_limit = 1.5
+    schedule, _ = base.build_adaptive_waypoint_schedule(
+        [base.TrackPoint(x, y, 1, 3.0, 3.0) for x, y in points],
+        base.ControllerParams(3.0, acceleration_limit),
+        rate_hz,
+        max_samples=100_000,
+    )
+    velocities = [
+        (
+            (later.north_m - earlier.north_m) * rate_hz,
+            (later.east_m - earlier.east_m) * rate_hz,
+            (later.down_m - earlier.down_m) * rate_hz,
+        )
+        for earlier, later in zip(schedule[:-1], schedule[1:], strict=True)
+    ]
+    accelerations = [
+        math.dist(earlier, later) * rate_hz
+        for earlier, later in zip(velocities[:-1], velocities[1:], strict=True)
+    ]
+
+    assert max(accelerations) <= acceleration_limit + 1e-6
 
 
 # 功能：
