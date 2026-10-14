@@ -849,7 +849,7 @@ class RuntimeTrackReplacement(RuntimeError):
 
 # 功能：
 #   1. 从已经稳定的当前位置编译替换轨迹，不重复执行起飞流程。
-#   2. 复用初始轨迹的停稳式调度，统一限速、等待和零距离航点的处理。
+#   2. 复用连续速度调度，只在替换计划的真实任务检查点停稳。
 # 输入：
 #   base：与当前发布配套的飞控执行器模块。
 #   replacement：已经验证并绑定的替换轨迹制品。
@@ -865,20 +865,28 @@ def _compile_replacement_schedule(
     rate_hz: float,
 ) -> tuple[list[Any], tuple[int, ...]]:
     points = [
-        base.TrackPoint(point.x, point.y, point.z, point.speed_limit_mps)
+        base.TrackPoint(
+            point.x,
+            point.y,
+            point.z,
+            point.speed_limit_mps,
+            point.target_speed_mps,
+        )
         for point in replacement.track.points
     ]
     if len(points) < 2:
         raise RuntimeError("runtime replacement track contains fewer than two points")
-    if replacement.track.stop_at_waypoints is not True:
-        raise RuntimeError("runtime replacement requires stopped waypoint execution")
     schedule = [base.enu_point_to_ned_setpoint(points[0], yaw_deg=0.0)]
-    motion, relative_arrivals = base.build_stopped_waypoint_schedule(
+    stop_point_indices = tuple(
+        index
+        for index, point in enumerate(replacement.track.points)
+        if index > 0 and point.phase in {"pickup", "land"}
+    )
+    motion, relative_arrivals = base.build_adaptive_waypoint_schedule(
         points,
         params,
         rate_hz,
-        replacement.track.waypoint_hold_seconds,
-        initial_yaw_deg=0.0,
+        stop_point_indices=stop_point_indices,
         max_samples=base.MAX_SETPOINTS - len(schedule),
     )
     waypoint_arrival_indices = tuple(len(schedule) + index for index in relative_arrivals)
@@ -10255,6 +10263,14 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         args.tracking_corridor_policy,
         track=frozen_track,
     )
+    checkpoint_contract = (
+        RuntimeCheckpointContract.model_validate(read_runtime_object(args.checkpoint_contract))
+        if args.checkpoint_contract is not None
+        else RuntimeCheckpointContract.model_construct(
+            contract_id="local-safety-only",
+            checkpoints=[],
+        )
+    )
     params = base.load_controller_params(args.params)
     plan = base.build_setpoint_schedule_plan(
         reference.points,
@@ -10263,14 +10279,9 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         hover_duration_seconds=reference.hover_duration_seconds,
         stop_at_waypoints=reference.stop_at_waypoints,
         waypoint_hold_seconds=reference.waypoint_hold_seconds,
-    )
-    checkpoint_contract = (
-        RuntimeCheckpointContract.model_validate(read_runtime_object(args.checkpoint_contract))
-        if args.checkpoint_contract is not None
-        else RuntimeCheckpointContract.model_construct(
-            contract_id="local-safety-only",
-            checkpoints=[],
-        )
+        stop_point_indices=tuple(
+            checkpoint.track_point_index for checkpoint in checkpoint_contract.checkpoints
+        ),
     )
     runtime_action_contract = (
         RuntimeActionExecutionContract.model_validate(
@@ -11168,7 +11179,11 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             last_setpoint = setpoint
             if index == plan.track_start_index:
                 timing["track_start_t"] = time.monotonic() - started
-            if index in waypoint_arrival_indices and checkpoint is None:
+            if (
+                reference.stop_at_waypoints
+                and index in waypoint_arrival_indices
+                and checkpoint is None
+            ):
                 settle_started = loop.time()
                 _atomic_json(
                     phase_path,

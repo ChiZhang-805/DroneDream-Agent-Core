@@ -88,7 +88,7 @@ def route_to_px4_track(
     node_by_id = {node.node_id: node for node in graph.nodes}
     synthesized_speed_limit_mps = min(
         vehicle.max_speed_mps,
-        0.6,
+        3.0,
     )
     speed_limits = []
     for edge_id in route.edge_ids:
@@ -170,7 +170,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
     )
     edges = {edge.edge_id: edge for edge in graph.edges}
     nodes = {node.node_id: node for node in graph.nodes}
-    join_speed = min(0.6, vehicle.max_speed_mps)
+    join_speed = min(3.0, vehicle.max_speed_mps)
     points: list[Px4TrackPoint] = []
     world_points: list[WorldTrackPoint] = []
     target_seen = False
@@ -202,7 +202,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
         coordinate_contract=prior_track.coordinate_contract.model_copy(deep=True),
         points=points,
         source_world_points=world_points,
-        stop_at_waypoints=True,
+        stop_at_waypoints=False,
         waypoint_hold_seconds=prior_track.waypoint_hold_seconds,
         waypoint_position_tolerance_m=prior_track.waypoint_position_tolerance_m,
         waypoint_speed_tolerance_mps=prior_track.waypoint_speed_tolerance_mps,

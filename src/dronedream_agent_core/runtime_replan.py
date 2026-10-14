@@ -554,7 +554,7 @@ def _replacement_geometry_gates(
             sha256_json(track.coordinate_contract) == sha256_json(prior_track.coordinate_contract)
         ),
         "replacement_hold_settings_preserved": (
-            track.stop_at_waypoints is True
+            track.stop_at_waypoints is False
             and all(getattr(track, field) == getattr(prior_track, field) for field in settings)
         ),
         "replacement_speed_within_vehicle_envelope": all(

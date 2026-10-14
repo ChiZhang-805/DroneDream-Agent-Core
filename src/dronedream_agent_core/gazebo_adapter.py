@@ -657,6 +657,26 @@ def _effective_local_speed_limit_mps(
     return speed_limit_mps
 
 
+def _physical_speed_envelope_mps(
+    *,
+    preferred_speed_mps: float,
+    vehicle_speed_limit_mps: float,
+    current_velocity_mps: tuple[float, float, float],
+) -> float:
+    """Keep measured momentum inside the hard envelope while braking smoothly."""
+
+    values = (preferred_speed_mps, vehicle_speed_limit_mps, *current_velocity_mps)
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        raise SimulationRuntimeError("local speed envelope inputs must be finite")
+    if preferred_speed_mps <= 0 or vehicle_speed_limit_mps <= 0:
+        raise SimulationRuntimeError("local speed envelope limits must be positive")
+    measured_speed_mps = math.sqrt(sum(float(value) ** 2 for value in current_velocity_mps))
+    return min(
+        float(vehicle_speed_limit_mps),
+        max(float(preferred_speed_mps), measured_speed_mps),
+    )
+
+
 # 功能：
 #   只读取运行链路实际使用的速度与加速度限制，不将旧增益字段当成 PX4 参数注入。
 # 输入：
@@ -4465,6 +4485,11 @@ def run_px4_gazebo_track(
                     )
                     last_local_safety_at = elapsed
                     return
+                physical_speed_envelope_mps = _physical_speed_envelope_mps(
+                    preferred_speed_mps=local_max_speed_mps,
+                    vehicle_speed_limit_mps=selected_vehicle.max_speed_mps,
+                    current_velocity_mps=velocity,
+                )
                 request = LocalPlannerRequest(
                     current_position_m=current,
                     current_velocity_mps=observation.current_velocity_mps,
@@ -4472,7 +4497,7 @@ def run_px4_gazebo_track(
                     dynamic_obstacles=obstacles,
                     vehicle_radius_m=diameter / 2.0,
                     vehicle_height_m=height,
-                    max_speed_mps=local_max_speed_mps,
+                    max_speed_mps=physical_speed_envelope_mps,
                     max_acceleration_mps2=local_max_acceleration_mps2,
                     required_clearance_m=local_required_clearance_m,
                     prediction_horizon_seconds=3.0,
@@ -4481,6 +4506,7 @@ def run_px4_gazebo_track(
                 decision = predictive_safety_decision(
                     request,
                     nearby_primitives((current.x, current.y, current.z)),
+                    preferred_speed_mps=local_max_speed_mps,
                 )
                 estimator_offset = Vector3(x=0.0, y=0.0, z=0.0)
                 if identity_payload is not None and bool(identity_payload.get("accepted")):

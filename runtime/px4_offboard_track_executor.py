@@ -511,6 +511,7 @@ class TrackPoint:
     y: float
     z: float
     speed_limit_mps: float | None = None
+    target_speed_mps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -2981,12 +2982,15 @@ class MavsdkOffboardClient:
                 if attachment_pose_readback is not None:
                     break
                 if attach_cycle == 1:
+                    pre_error = alignment.get("pre_attachment_pose_readback", {}).get(
+                        "alignment_error_m"
+                    )
                     raise RuntimeError(
                         "Gazebo payload attachment pose did not settle inside the qualified "
-                        f"mount tolerance after one physical retry: observed={alignment_error_m:.6f}m "
+                        "mount tolerance after one physical retry: "
+                        f"observed={alignment_error_m:.6f}m "
                         f"limit={maximum_error_m:.6f}m; samples={settle_samples}; "
-                        "pre_error="
-                        f"{alignment.get('pre_attachment_pose_readback', {}).get('alignment_error_m')}"
+                        f"pre_error={pre_error}"
                     )
 
                 if not topic.endswith("/attach"):
@@ -4698,10 +4702,28 @@ def parse_reference_track_plan(payload: object) -> ReferenceTrackPlan:
                     if raw.get("speed_limit_mps") is not None
                     else None
                 ),
+                (
+                    _finite_float(
+                        raw.get("target_speed_mps"),
+                        f"reference point {idx}.target_speed_mps",
+                    )
+                    if raw.get("target_speed_mps") is not None
+                    else None
+                ),
             )
         )
     if not points:
         raise ValueError("reference_track.json points[] cannot be empty")
+    if any(
+        point.target_speed_mps is not None
+        and (
+            point.target_speed_mps < 0
+            or point.speed_limit_mps is None
+            or point.target_speed_mps > point.speed_limit_mps
+        )
+        for point in points
+    ):
+        raise ValueError("reference point target speed exceeds its speed limit")
     track_type_raw = payload.get("track_type")
     track_type = None if track_type_raw is None else str(track_type_raw).strip()
     if track_type not in {None, "hover", "circle", "u_turn", "lemniscate", "custom"}:
@@ -5080,6 +5102,133 @@ def build_stopped_waypoint_schedule(
 
 
 # 功能：
+#   1. 把模型批准的逐点速度意图转换为受加速度约束的连续位置指令。
+#   2. 在任务检查点与最终点降到零速，普通几何节点保持连续飞行。
+#   3. 为每个源航点保留精确到达下标，使检查点绑定和运行期进度仍可验证。
+# 输入：
+#   points：局部航点序列。
+#   params：控制器巡航速度和加速度上限。
+#   rate_hz：位置指令采样频率。
+#   stop_point_indices：必须停稳的源航点下标。
+#   max_samples：调用方尚可使用的采样数量。
+# 输出：
+#   result：连续调度和每个后续航点的精确到达下标。
+def build_adaptive_waypoint_schedule(
+    points: list[TrackPoint],
+    params: ControllerParams,
+    rate_hz: float,
+    *,
+    stop_point_indices: tuple[int, ...] = (),
+    max_samples: int,
+) -> tuple[list[Setpoint], tuple[int, ...]]:
+    if len(points) < 2:
+        return [], ()
+    stop_points = set(stop_point_indices)
+    if any(type(index) is not int or not 1 <= index < len(points) for index in stop_points):
+        raise ValueError("adaptive schedule stop point is outside the reference track")
+    stop_points.add(len(points) - 1)
+    distances = [
+        math.dist((start.x, start.y, start.z), (end.x, end.y, end.z))
+        for start, end in zip(points[:-1], points[1:], strict=True)
+    ]
+    node_speeds = [0.0] * len(points)
+    for index in range(1, len(points) - 1):
+        incoming_limit = points[index].speed_limit_mps or params.vel_limit
+        outgoing_limit = points[index + 1].speed_limit_mps or params.vel_limit
+        target = points[index].target_speed_mps
+        node_speeds[index] = min(
+            params.vel_limit,
+            incoming_limit,
+            outgoing_limit,
+            target if target is not None else params.vel_limit,
+        )
+        if index in stop_points:
+            node_speeds[index] = 0.0
+    for index, distance in enumerate(distances):
+        reachable = math.sqrt(
+            max(0.0, node_speeds[index] ** 2 + 2.0 * params.accel_limit * distance)
+        )
+        node_speeds[index + 1] = min(node_speeds[index + 1], reachable)
+    for index in range(len(distances) - 1, -1, -1):
+        reachable = math.sqrt(
+            max(0.0, node_speeds[index + 1] ** 2 + 2.0 * params.accel_limit * distances[index])
+        )
+        node_speeds[index] = min(node_speeds[index], reachable)
+
+    schedule: list[Setpoint] = []
+    arrivals: list[int] = []
+    for index, (start, end, distance) in enumerate(
+        zip(points[:-1], points[1:], distances, strict=True)
+    ):
+        yaw_deg = compute_yaw_from_segment(start, end)
+        if distance <= 1e-12:
+            schedule.append(enu_point_to_ned_setpoint(end, yaw_deg=yaw_deg))
+            arrivals.append(len(schedule) - 1)
+            continue
+        start_speed = node_speeds[index]
+        end_speed = node_speeds[index + 1]
+        segment_limit = min(params.vel_limit, end.speed_limit_mps or params.vel_limit)
+        peak_speed = min(
+            segment_limit,
+            math.sqrt(
+                max(
+                    0.0,
+                    params.accel_limit * distance
+                    + 0.5 * (start_speed**2 + end_speed**2),
+                )
+            ),
+        )
+        peak_speed = max(peak_speed, start_speed, end_speed)
+        acceleration_distance = max(
+            0.0,
+            (peak_speed**2 - start_speed**2) / (2.0 * params.accel_limit),
+        )
+        deceleration_distance = max(
+            0.0,
+            (peak_speed**2 - end_speed**2) / (2.0 * params.accel_limit),
+        )
+        cruise_distance = max(0.0, distance - acceleration_distance - deceleration_distance)
+        acceleration_seconds = max(0.0, (peak_speed - start_speed) / params.accel_limit)
+        cruise_seconds = cruise_distance / peak_speed if peak_speed > 1e-9 else 0.0
+        deceleration_seconds = max(0.0, (peak_speed - end_speed) / params.accel_limit)
+        total_seconds = acceleration_seconds + cruise_seconds + deceleration_seconds
+        sample_count = max(1, int(math.ceil(total_seconds * rate_hz)))
+        if sample_count > max_samples - len(schedule):
+            raise ValueError(f"setpoint schedule exceeds the {MAX_SETPOINTS}-sample limit")
+        for sample_index in range(1, sample_count + 1):
+            # 把完整曲线均匀量化到固定发布周期，避免每段末尾的余数采样在下段
+            # 首个完整周期处形成假性速度跳变。
+            sample_time = total_seconds * sample_index / sample_count
+            if sample_time <= acceleration_seconds:
+                progress = (
+                    start_speed * sample_time
+                    + 0.5 * params.accel_limit * sample_time**2
+                )
+            elif sample_time <= acceleration_seconds + cruise_seconds:
+                progress = acceleration_distance + peak_speed * (
+                    sample_time - acceleration_seconds
+                )
+            else:
+                deceleration_time = sample_time - acceleration_seconds - cruise_seconds
+                progress = (
+                    acceleration_distance
+                    + cruise_distance
+                    + peak_speed * deceleration_time
+                    - 0.5 * params.accel_limit * deceleration_time**2
+                )
+            ratio = min(1.0, max(0.0, progress / distance))
+            point = TrackPoint(
+                x=start.x + (end.x - start.x) * ratio,
+                y=start.y + (end.y - start.y) * ratio,
+                z=start.z + (end.z - start.z) * ratio,
+            )
+            schedule.append(enu_point_to_ned_setpoint(point, yaw_deg=yaw_deg))
+        schedule[-1] = enu_point_to_ned_setpoint(end, yaw_deg=yaw_deg)
+        arrivals.append(len(schedule) - 1)
+    return schedule, tuple(arrivals)
+
+
+# 功能：
 #   1. 编排起飞保持、接入首点、参考轨迹及末端保持，并标出轨迹阶段的采样范围。
 #   2. 停稳式轨迹保留逐航点到达下标；连续曲线和定点悬停不伪造逐航点停稳记录。
 #   3. 限制采样频率、等待时长和总采样量；此调度本身不代替在线避障和遥测验收。
@@ -5100,6 +5249,7 @@ def build_setpoint_schedule_plan(
     hover_duration_seconds: float | None = None,
     stop_at_waypoints: bool = False,
     waypoint_hold_seconds: float = 0.0,
+    stop_point_indices: tuple[int, ...] = (),
 ) -> SetpointSchedulePlan:
     rate_hz = _native_number(rate_hz, "rate_hz")
     if rate_hz <= 0 or rate_hz > MAX_SETPOINT_RATE_HZ:
@@ -5197,13 +5347,14 @@ def build_setpoint_schedule_plan(
         waypoint_arrival_indices = [len(schedule) + index for index in relative_arrivals]
         schedule.extend(track_motion)
     else:
-        track_motion = _build_motion_setpoints(
-            points[0],
-            points[1:],
+        track_motion, relative_arrivals = build_adaptive_waypoint_schedule(
+            points,
             params,
             rate_hz,
+            stop_point_indices=stop_point_indices,
             max_samples=MAX_SETPOINTS - len(schedule),
         )
+        waypoint_arrival_indices = [len(schedule) + index for index in relative_arrivals]
         schedule.extend(track_motion)
 
     final_hold_samples = max(2, int(rate_hz * 0.5))

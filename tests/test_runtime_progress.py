@@ -243,6 +243,46 @@ def test_stationary_waypoints_keep_distinct_schedule_arrivals(hold_seconds: floa
 
 
 # 功能：
+#   连续调度在普通几何节点保持运动，在任务点减到零并始终遵守巡航和加速度上限。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_adaptive_schedule_accelerates_cruises_and_brakes_for_task_points() -> None:
+    base, _ = _modules()
+    rate_hz = 20
+    points = [
+        base.TrackPoint(0, 0, 1, 3.0),
+        base.TrackPoint(10, 0, 1, 3.0),
+        base.TrackPoint(20, 0, 1, 3.0),
+        base.TrackPoint(30, 0, 1, 3.0),
+    ]
+    plan = base.build_setpoint_schedule_plan(
+        points,
+        base.ControllerParams(3.0, 1.5),
+        rate_hz,
+        stop_at_waypoints=False,
+        stop_point_indices=(2,),
+    )
+    first_arrival, checkpoint_arrival, final_arrival = plan.waypoint_arrival_indices
+    assert plan.schedule[first_arrival - 1].north_m < 10
+    assert plan.schedule[first_arrival + 1].north_m > 10
+    assert plan.schedule[checkpoint_arrival].north_m == 20
+    assert plan.schedule[final_arrival].north_m == 30
+    step_speeds = [
+        abs(later.north_m - earlier.north_m) * rate_hz
+        for earlier, later in zip(plan.schedule[:-1], plan.schedule[1:], strict=True)
+    ]
+    assert max(step_speeds) <= 3.05
+    assert max(step_speeds[first_arrival - 3:first_arrival + 3]) > 1.0
+    assert max(step_speeds[checkpoint_arrival - 1:checkpoint_arrival + 2]) < 0.25
+    assert all(
+        abs(later - earlier) <= 0.2
+        for earlier, later in zip(step_speeds[:-1], step_speeds[1:], strict=True)
+    )
+
+
+# 功能：
 #   真实重规划生成的当前位置与接入锚点重合时，替换调度仍保持航点和到达记录一一对应。
 # 输入：
 #   tmp_path：实际重规划工具使用的独立地图目录。

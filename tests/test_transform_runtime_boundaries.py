@@ -65,7 +65,7 @@ def test_speed_transform_never_increases_incoming_limit_or_mutates_original():
     track.points[0].speed_limit_mps = 0.1
     changed = _phase_speed_envelope(value=track)
     assert changed.points[0].speed_limit_mps == 0.1
-    assert changed.points[1].speed_limit_mps == 0.5
+    assert changed.points[1].speed_limit_mps == 0.8
     assert track.points[1].speed_limit_mps == 1
     changed.points[0].x += 10
     assert track.points[0].x == 0

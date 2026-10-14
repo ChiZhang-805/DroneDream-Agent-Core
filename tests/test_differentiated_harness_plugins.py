@@ -330,7 +330,8 @@ def test_corner_speed_envelope_brakes_below_qualified_indoor_edge_speed() -> Non
 
     optimized = _corner_speed_envelope(value=track)
 
-    assert optimized.points[1].speed_limit_mps == 0.3
+    assert optimized.points[1].target_speed_mps == 0.55
+    assert optimized.points[1].speed_limit_mps == 0.55
     assert optimized.points[0].speed_limit_mps == 0.55
     assert optimized.points[2].speed_limit_mps == 0.55
 
@@ -371,7 +372,7 @@ def test_telemetry_settle_contract_is_distinct_from_speed_shaping() -> None:
         },
     )
 
-    assert optimized.stop_at_waypoints is True
+    assert optimized.stop_at_waypoints is False
     assert optimized.waypoint_position_tolerance_m == 0.18
     assert optimized.waypoint_speed_tolerance_mps == 0.12
     assert optimized.waypoint_stable_window_seconds == 0.7

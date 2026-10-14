@@ -44,6 +44,7 @@ from dronedream_agent_core.gazebo_adapter import (
     _partition_runtime_cpus,
     _payload_spawn_spec,
     _phase_reference_polyline,
+    _physical_speed_envelope_mps,
     _progress_extension_budget_seconds,
     _publish_native_terminal_lifecycle,
     _px4_sitl_actuator_output_absolute_maximum,
@@ -546,6 +547,19 @@ def test_local_safety_speed_is_bounded_by_qualified_track() -> None:
     assert _effective_local_speed_limit_mps(
         controller_speed_limit_mps=1.2, track=track
     ) == pytest.approx(0.34)
+
+
+def test_physical_speed_envelope_preserves_momentum_until_smooth_braking() -> None:
+    assert _physical_speed_envelope_mps(
+        preferred_speed_mps=3.0,
+        vehicle_speed_limit_mps=6.0,
+        current_velocity_mps=(4.0, 0.0, 0.0),
+    ) == pytest.approx(4.0)
+    assert _physical_speed_envelope_mps(
+        preferred_speed_mps=3.0,
+        vehicle_speed_limit_mps=6.0,
+        current_velocity_mps=(7.0, 0.0, 0.0),
+    ) == pytest.approx(6.0)
 
 
 def test_controller_runtime_ignores_retired_gain_shaped_fields(tmp_path: Path) -> None:

@@ -213,7 +213,11 @@ def _stability_gate(*, px4_track: Px4Track, **_: Any) -> dict[str, object]:
     speeds = [point.speed_limit_mps for point in px4_track.points]
     valid = bool(speeds) and all(bounded_number(speed, 0, 3) for speed in speeds)
     max_speed = max(speeds) if valid else None
-    accepted = valid and px4_track.stop_at_waypoints is True
+    accepted = valid and all(
+        point.target_speed_mps is None
+        or 0 <= point.target_speed_mps <= point.speed_limit_mps
+        for point in px4_track.points
+    )
     validation = {
         "validator": "track-stability",
         "accepted": accepted,

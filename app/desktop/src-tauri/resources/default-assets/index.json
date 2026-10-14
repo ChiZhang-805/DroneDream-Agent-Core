@@ -1,26 +1,26 @@
 {
-  "default_qualification_id": "asset-qualification-daa2b60cd02725d65b803eba",
+  "default_qualification_id": "asset-qualification-6221cd88f723cab1e18a70b9",
   "qualified_pair": {
     "packages": [
       {
         "asset_id": "dronedream.school-map.v1",
-        "content_sha256": "893d71f4c58090543dd7cddd5a02f618f09216cdda6cc66435722d37eb1d0cd5",
+        "content_sha256": "b9c378376907f199095c1c65393530f523f6a971bb881997bf852785c1b84124",
         "file": "school-map.ddpkg",
         "kind": "map",
-        "sha256": "ecf73f37dee5f7f760b303a6a51c980e4889bac02fbe0b0a83c09b5b8d4420eb",
-        "source_content_sha256": "067f5edbd2c51a1a404cc55f441c8cff9120cd2614678e12bbafefec22c4788b"
+        "sha256": "84b595496926d116d91e8ae2a9b579b62a938dc4b24066769140acb361c2cd59",
+        "source_content_sha256": "baa6f11e36a9271a8b4fc83da3e9ab4975bc8bea3787f0367d66b87bd18847db"
       },
       {
         "asset_id": "dronedream.my-drone.v1",
-        "content_sha256": "b99d0981031a0a771808a9058b6fec4dbae4becb1aae5ba2fbab87944f5e340b",
+        "content_sha256": "5a4bf301a6cb464aa1c4f65cb35a10d15454406fc1048dce824fbcd22bf95ece",
         "file": "my-drone.ddpkg",
         "kind": "vehicle",
-        "sha256": "a30006a61a9aceed5e9be7c9fa3f523719dd231367c36e503f6e86eaf031d4f1",
-        "source_content_sha256": "92f695534b2f62c8ce9562ec4dec459c5fdddcad7ddd10772901920078effe1f"
+        "sha256": "805dcaaa089bd359bc095c3ab92058a9ef00e4b9868e65e76bdd50157f5496d4",
+        "source_content_sha256": "a0cd6965f81ffb1613652822d485b9a7727e4c5428271945dffa73e85128e4c8"
       }
     ],
-    "qualification_id": "asset-qualification-daa2b60cd02725d65b803eba",
-    "receipt_sha256": "689b8af06362f299f452cae620c17a55f5d23bffcdb3bd409762431ac18096d4",
+    "qualification_id": "asset-qualification-6221cd88f723cab1e18a70b9",
+    "receipt_sha256": "e4fd4bff962c4ed4d14968ddd31ee01cd415644d4cb31a0236b32091fa18a173",
     "resource_id": "dronedream-school-map",
     "schema_version": "dronedream.bundled-qualified-pair.v1"
   },
@@ -29,23 +29,23 @@
       "packages": [
         {
           "asset_id": "dronedream.school-map.v1",
-          "content_sha256": "893d71f4c58090543dd7cddd5a02f618f09216cdda6cc66435722d37eb1d0cd5",
+          "content_sha256": "b9c378376907f199095c1c65393530f523f6a971bb881997bf852785c1b84124",
           "file": "school-map.ddpkg",
           "kind": "map",
-          "sha256": "ecf73f37dee5f7f760b303a6a51c980e4889bac02fbe0b0a83c09b5b8d4420eb",
-          "source_content_sha256": "067f5edbd2c51a1a404cc55f441c8cff9120cd2614678e12bbafefec22c4788b"
+          "sha256": "84b595496926d116d91e8ae2a9b579b62a938dc4b24066769140acb361c2cd59",
+          "source_content_sha256": "baa6f11e36a9271a8b4fc83da3e9ab4975bc8bea3787f0367d66b87bd18847db"
         },
         {
           "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "b99d0981031a0a771808a9058b6fec4dbae4becb1aae5ba2fbab87944f5e340b",
+          "content_sha256": "5a4bf301a6cb464aa1c4f65cb35a10d15454406fc1048dce824fbcd22bf95ece",
           "file": "my-drone.ddpkg",
           "kind": "vehicle",
-          "sha256": "a30006a61a9aceed5e9be7c9fa3f523719dd231367c36e503f6e86eaf031d4f1",
-          "source_content_sha256": "92f695534b2f62c8ce9562ec4dec459c5fdddcad7ddd10772901920078effe1f"
+          "sha256": "805dcaaa089bd359bc095c3ab92058a9ef00e4b9868e65e76bdd50157f5496d4",
+          "source_content_sha256": "a0cd6965f81ffb1613652822d485b9a7727e4c5428271945dffa73e85128e4c8"
         }
       ],
-      "qualification_id": "asset-qualification-daa2b60cd02725d65b803eba",
-      "receipt_sha256": "689b8af06362f299f452cae620c17a55f5d23bffcdb3bd409762431ac18096d4",
+      "qualification_id": "asset-qualification-6221cd88f723cab1e18a70b9",
+      "receipt_sha256": "e4fd4bff962c4ed4d14968ddd31ee01cd415644d4cb31a0236b32091fa18a173",
       "resource_id": "dronedream-school-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1"
     }
@@ -128,6 +128,13 @@
       "qualification_id": "asset-qualification-e237228f40bdc1c2c50ea411",
       "vehicle_content_sha256": "2cb2a2f0c0d16ed5cb80453f5dc84b4099e63f6fb112f31a4654db5fd7152de3",
       "vehicle_source_content_sha256": "3135dfde32c44a8c1ccdca9ea9ef941079a79d261e26c5adcff89666df53bac9"
+    },
+    {
+      "map_content_sha256": "893d71f4c58090543dd7cddd5a02f618f09216cdda6cc66435722d37eb1d0cd5",
+      "map_source_content_sha256": "067f5edbd2c51a1a404cc55f441c8cff9120cd2614678e12bbafefec22c4788b",
+      "qualification_id": "asset-qualification-daa2b60cd02725d65b803eba",
+      "vehicle_content_sha256": "b99d0981031a0a771808a9058b6fec4dbae4becb1aae5ba2fbab87944f5e340b",
+      "vehicle_source_content_sha256": "92f695534b2f62c8ce9562ec4dec459c5fdddcad7ddd10772901920078effe1f"
     }
   ]
 }

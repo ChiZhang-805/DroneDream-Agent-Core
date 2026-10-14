@@ -946,8 +946,8 @@ def _build_vehicle_bundle(
         "body_radius_m": 0.38,
         "body_height_m": 0.43,
         "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
-        "max_speed_mps": 1.2,
-        "max_acceleration_mps2": 0.8,
+        "max_speed_mps": 6.0,
+        "max_acceleration_mps2": 1.5,
         # Bound to the exact successfully completed Gazebo/PX4 pickup-return
         # reference track; no value is inherited from an older route.
         "qualified_range_m": qualified_range_m,

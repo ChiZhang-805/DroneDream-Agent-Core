@@ -1379,6 +1379,13 @@ class Px4TrackPoint(StrictModel):
     z: float
     phase: Literal["launch", "transit", "stairs", "pickup", "return", "land"]
     speed_limit_mps: float = Field(gt=0.0, le=20.0)
+    target_speed_mps: float | None = Field(default=None, ge=0.0, le=20.0)
+
+    @model_validator(mode="after")
+    def target_within_limit(self) -> Px4TrackPoint:
+        if self.target_speed_mps is not None and self.target_speed_mps > self.speed_limit_mps:
+            raise ValueError("target speed exceeds the point speed limit")
+        return self
 
 
 class WorldTrackPoint(StrictModel):

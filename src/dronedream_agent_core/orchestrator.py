@@ -2126,8 +2126,6 @@ def _validate_plugin_track_tightening(
         )
         if not all(gates):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
-    if not track.stop_at_waypoints:
-        raise MissionPreparationBlocked("PLUGIN_TRACK_STOP_POLICY_RELAXED")
     if baseline is not None:
         baseline = _artifact_snapshot(baseline, Px4Track)
         if track.coordinate_contract != baseline.coordinate_contract:
@@ -2137,6 +2135,15 @@ def _validate_plugin_track_tightening(
             for point, prior in zip(track.points, baseline.points, strict=True)
         ):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
+        if any(
+            point.target_speed_mps is not None
+            and (
+                point.target_speed_mps > point.speed_limit_mps
+                or point.target_speed_mps > vehicle.max_speed_mps
+            )
+            for point in track.points
+        ):
+            raise MissionPreparationBlocked("PLUGIN_TRACK_SPEED_INTENT_INVALID")
         if (
             track.waypoint_hold_seconds < baseline.waypoint_hold_seconds
             or track.waypoint_position_tolerance_m > baseline.waypoint_position_tolerance_m

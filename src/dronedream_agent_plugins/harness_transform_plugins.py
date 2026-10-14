@@ -235,12 +235,12 @@ def _phase_speed_envelope(
     if not isinstance(configured, dict):
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     default_caps = {
-        "launch": 1.0,
-        "transit": 2.0,
-        "stairs": 0.8,
-        "pickup": 0.5,
-        "return": 2.0,
-        "land": 0.5,
+        "launch": 1.5,
+        "transit": 3.0,
+        "stairs": 1.2,
+        "pickup": 0.8,
+        "return": 3.0,
+        "land": 0.8,
     }
     raw_caps = configured.get("phase_speed_caps_mps", {})
     if (
@@ -259,10 +259,10 @@ def _phase_speed_envelope(
 
 
 # 功能：
-#   根据三维航迹转角收紧拐点速度，跳过零长度方向，不把计划几何当成实时避障感知。
+#   根据三维航迹转角设置连续速度曲线的节点目标速度，跳过零长度方向。
 # 输入：
 #   value：含各点坐标与速度上限的 PX4 轨迹。
-#   configuration：可选转角阈值（度）和拐点限速（米每秒）。
+#   configuration：可选转角阈值（度）及缓弯、直角、回头弯目标速度（米每秒）。
 #   _：本优化器不使用的扩展参数。
 # 输出：
 #   limited_track：拐点限速收紧后重新校验的独立轨迹。
@@ -272,9 +272,29 @@ def _corner_speed_envelope(
     value = _validated_copy(value)
     configured = {} if configuration is None else configuration
     threshold_deg = policy_number(configured, "minimum_turn_angle_deg", 35.0, 5.0, 175.0)
-    # 拐点到达速度应足够低，并且不得覆盖原轨迹中已经更严格的速度上限。
-    corner_speed_mps = policy_number(configured, "corner_speed_limit_mps", 0.3, 0, 5.0)
-    if corner_speed_mps <= 0:
+    legacy_speed = configured.get("corner_speed_limit_mps")
+    gentle_speed_mps = policy_number(
+        configured,
+        "gentle_corner_speed_mps",
+        1.8 if legacy_speed is None else legacy_speed,
+        0,
+        5.0,
+    )
+    right_angle_speed_mps = policy_number(
+        configured,
+        "right_angle_speed_mps",
+        1.2 if legacy_speed is None else legacy_speed,
+        0,
+        5.0,
+    )
+    hairpin_speed_mps = policy_number(
+        configured,
+        "hairpin_speed_mps",
+        0.8 if legacy_speed is None else legacy_speed,
+        0,
+        5.0,
+    )
+    if min(gentle_speed_mps, right_angle_speed_mps, hairpin_speed_mps) <= 0:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     points = list(value.points)
     for index in range(1, len(points) - 1):
@@ -293,8 +313,15 @@ def _corner_speed_envelope(
         )
         turn_angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
         if turn_angle_deg >= threshold_deg:
+            target_speed_mps = (
+                hairpin_speed_mps
+                if turn_angle_deg >= 120.0
+                else right_angle_speed_mps
+                if turn_angle_deg >= 75.0
+                else gentle_speed_mps
+            )
             points[index] = current.model_copy(
-                update={"speed_limit_mps": min(current.speed_limit_mps, corner_speed_mps)}
+                update={"target_speed_mps": min(current.speed_limit_mps, target_speed_mps)}
             )
     limited_track = _validated_copy(value.model_copy(update={"points": points}))
     return limited_track
@@ -313,7 +340,8 @@ def _telemetry_waypoint_settle(
 ) -> Px4Track:
     value = _validated_copy(value)
     configured = {} if configuration is None else configuration
-    updates: dict[str, object] = {"stop_at_waypoints": True}
+    # 普通折线节点只记录到达，不停车；真正的动作检查点仍由执行器减速、停稳并验收。
+    updates: dict[str, object] = {"stop_at_waypoints": False}
     for key, default, maximum in (
         ("position_tolerance_m", 0.2, 2),
         ("speed_tolerance_mps", 0.15, 2),
@@ -552,7 +580,24 @@ def plugin_definitions() -> list[PluginDefinition]:
                         "type": "number",
                         "exclusiveMinimum": 0,
                         "maximum": 5,
-                        "default": 0.3,
+                    },
+                    "gentle_corner_speed_mps": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 5,
+                        "default": 1.8,
+                    },
+                    "right_angle_speed_mps": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 5,
+                        "default": 1.2,
+                    },
+                    "hairpin_speed_mps": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 5,
+                        "default": 0.8,
                     },
                 },
                 "additionalProperties": False,
