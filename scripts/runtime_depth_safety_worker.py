@@ -4223,7 +4223,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                 center_m=query_center,
                 radius_m=query_radius_m,
                 now_monotonic_seconds=now,
-                maximum_age_seconds=0.5,
+                maximum_age_seconds=LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
                 limit=96,
             )
             nearby_static = static_geometry_index.nearby(

@@ -2,6 +2,8 @@
 
 import math
 
+from .control_timing import LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS
+
 PROFILE = "independent-route-v1"
 
 
@@ -48,7 +50,7 @@ def qualified_simulation_route_fallback_eligible(
     required_clearance_m,
     localization_covariance_m2,
     dynamic_obstacle_count,
-    maximum_stream_age_seconds=0.5,
+    maximum_stream_age_seconds=LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
 ):
     numeric = (
         stream_age_seconds,

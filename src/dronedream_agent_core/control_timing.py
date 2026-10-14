@@ -21,11 +21,11 @@ LOCAL_CONTROL_MAXIMUM_AGE_SECONDS = 0.25
 LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS = 0.35
 # Metric range images are asynchronous environment observations, not vehicle
 # state or actuator commands.  The full School Map renderer can deliver a
-# valid, source-stamped depth frame in 0.35--0.45 s while native PX4 state
-# continues at control cadence.  Give only the range stream the planner's
-# existing 0.5 s freshness window; state alignment and command leases retain
-# the stricter limits above.
-LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS = 0.5
+# valid, source-stamped depth frame about every 0.8 s on supported desktop
+# hardware while native PX4 state continues at control cadence.  Give only the
+# range stream a one-second freshness window; state alignment and command
+# leases retain the stricter limits above.
+LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS = 1.0
 LOCAL_CONTROL_JOINT_P99_TARGET_SECONDS = 0.10
 LOCAL_SETPOINT_PERIOD_SECONDS = 0.05
 # Producer admission reserves the future control period plus transport. Once

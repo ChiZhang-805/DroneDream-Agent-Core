@@ -16,7 +16,10 @@ from .contracts import (
     Vector3,
     VehicleAsset,
 )
-from .control_timing import LOCAL_DISPATCH_RESERVE_MS
+from .control_timing import (
+    LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 from .control_uncertainty import localization_uncertainty_margin_m
 from .dynamic_safety import predictive_braking_decision, predictive_safety_decision
 from .hashing import sha256_json
@@ -441,6 +444,7 @@ def evaluate_runtime_local_safety(
         prediction_step_seconds=prediction_step_seconds,
         perception_stream_healthy=perception_stream_healthy,
         perception_stream_age_seconds=observation.stream_age_seconds,
+        maximum_perception_age_seconds=LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
     source_ms = min(observation.observed_at_unix_ms,

@@ -49,7 +49,7 @@ def test_onboard_evidence_remains_required(source, healthy):
     {},
     {"source": "onboard"},
     {"identity_ok": False},
-    {"stream_age_seconds": 0.51},
+    {"stream_age_seconds": 1.01},
     {"qualified_route_clearance_m": 0.09},
     {"localization_covariance_m2": None},
     {"dynamic_obstacle_count": 1},
@@ -58,7 +58,7 @@ def test_qualified_simulation_static_route_fallback_is_narrow_and_explicit(overr
     context = {
         "source": "simulation-ground-truth",
         "identity_ok": True,
-        "stream_age_seconds": 0.12,
+        "stream_age_seconds": 0.8,
         "qualified_route_clearance_m": 0.24,
         "required_clearance_m": 0.1,
         "localization_covariance_m2": 0.01,
