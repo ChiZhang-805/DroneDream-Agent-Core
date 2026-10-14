@@ -23,7 +23,7 @@ _SCHOOL_MAP = {
 # The qualified aircraft is the normalized built-in My Drone package, whose
 # reviewed source model is PX4 x500_depth.
 _BUILTIN_X500_DEPTH_QUALIFICATIONS = {
-    "dronedream-school-map": "asset-qualification-daa2b60cd02725d65b803eba",
+    "dronedream-school-map": "asset-qualification-6221cd88f723cab1e18a70b9",
 }
 
 # The public resource identifier names the catalog entry, while the normalized
@@ -124,7 +124,7 @@ def asset_pair_catalog() -> dict[str, object]:
     }
     return {
         "schema_version": "dronedream.asset-pair-catalog.v1",
-        "catalog_revision": "2026-10-13.1",
+        "catalog_revision": "2026-10-15.1",
         "map_count": len(maps),
         "vehicle_count": len(vehicles),
         "pair_count": len(pairs),
