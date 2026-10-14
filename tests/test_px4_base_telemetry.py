@@ -1338,6 +1338,93 @@ def test_payload_attach_does_not_realign_when_rigid_mount_is_observed(monkeypatc
     assert alignment_count == 1
 
 
+def test_payload_attach_waits_for_the_native_joint_pose_to_settle(monkeypatch) -> None:
+    base = _base_module()
+
+    class Empty:
+        pass
+
+    class StringMsg:
+        def __init__(self, data: str = "") -> None:
+            self.data = data
+
+    class Publisher:
+        def __init__(self, node) -> None:
+            self.node = node
+            self.publish_count = 0
+
+        def has_connections(self) -> bool:
+            return True
+
+        def publish(self, _message) -> None:
+            self.publish_count += 1
+            if self.publish_count == 1:
+                self.node.callback(StringMsg("attached"))
+
+    class Node:
+        def subscribe(self, _message_type, _topic, callback) -> bool:
+            self.callback = callback
+            return True
+
+        def advertise(self, _topic, _message_type):
+            self.callback(StringMsg("detached"))
+            return Publisher(self)
+
+        def unsubscribe(self, _topic) -> None:
+            pass
+
+    monkeypatch.setattr(
+        base,
+        "_gazebo_transport_bindings",
+        lambda: (Node, object, object, object, Empty, StringMsg),
+    )
+    monkeypatch.setattr(base, "GAZEBO_PAYLOAD_STATE_DISCOVERY_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(base, "GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS", 0.001)
+    monkeypatch.setattr(base, "GAZEBO_PAYLOAD_ATTACHMENT_SETTLE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setenv("PX4_GAZEBO_WORLD_NAME", "school")
+    client = object.__new__(base.MavsdkOffboardClient)
+    client._payload_detached = True
+
+    async def align(_parameters, **_kwargs):
+        return {"binding_sha256": "a" * 64}
+
+    vehicle_pose = base.GazeboModelPose(
+        x=1.0, y=2.0, z=3.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0
+    )
+    transitional_payload_pose = base.GazeboModelPose(
+        x=1.0, y=2.0, z=3.02, qx=0.0, qy=0.0, qz=0.0, qw=1.0
+    )
+    settled_payload_pose = base.GazeboModelPose(
+        x=1.0, y=2.0, z=3.12, qx=0.0, qy=0.0, qz=0.0, qw=1.0
+    )
+    sample_count = 0
+
+    async def sample(**_kwargs):
+        nonlocal sample_count
+        sample_count += 1
+        payload_pose = transitional_payload_pose if sample_count == 1 else settled_payload_pose
+        return {"my_drone": vehicle_pose, "takeout_payload": payload_pose}
+
+    client._align_payload_to_mount = align
+    client._sample_named_gazebo_poses = sample
+    result = asyncio.run(client.execute_payload_command({
+        "protocol": "gazebo-transport",
+        "operation": "attach",
+        "topic": "/payload/attach",
+        "output_topic": "/payload/state",
+        "vehicle_model_name": "my_drone",
+        "payload_model_name": "takeout_payload",
+        "payload_mount_offset_model_m": [0.0, 0.0, 0.12],
+        "payload_mount_max_alignment_error_m": 0.02,
+        "payload_mount_binding_sha256": "a" * 64,
+    }))
+
+    readback = result["payload_mount_alignment"]["attachment_pose_readback"]
+    assert readback["accepted"] is True
+    assert readback["settle_samples"] == 2
+    assert sample_count == 2
+
+
 # 功能：
 #   证明位置连续贴合不能替代关节连接事件，丢失事件时必须拒绝成功且不重复搬动载荷。
 # 输入：

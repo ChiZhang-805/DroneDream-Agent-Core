@@ -105,6 +105,7 @@ BATTERY_TRACK_START_SETTLE_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_DISCOVERY_SETTLE_SECONDS = 0.5
 GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS = 0.1
+GAZEBO_PAYLOAD_ATTACHMENT_SETTLE_TIMEOUT_SECONDS = 3.0
 RUNTIME_EFFECT_SCHEMA_VERSION = "dronedream.scenario_runtime_effects.v1"
 
 _T = TypeVar("_T")
@@ -2950,34 +2951,47 @@ class MavsdkOffboardClient:
         if alignment is not None:
             alignment["alignment_attempts"] = alignment_attempts
             world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
-            sampled_poses = await self._sample_named_gazebo_poses(
-                world_name=world_name,
-                model_names=(
-                    str(parameters["vehicle_model_name"]),
-                    str(parameters["payload_model_name"]),
-                ),
-                gazebo_node=node,
-            )
-            vehicle_pose = sampled_poses[str(parameters["vehicle_model_name"])]
-            payload_pose = sampled_poses[str(parameters["payload_model_name"])]
             mount_offset = tuple(
                 float(value) for value in parameters["payload_mount_offset_model_m"]
             )
-            offset_world = _rotate_gazebo_model_vector(vehicle_pose, mount_offset)
-            expected_position = (
-                vehicle_pose.x + offset_world[0],
-                vehicle_pose.y + offset_world[1],
-                vehicle_pose.z + offset_world[2],
-            )
-            alignment_error_m = math.dist(
-                expected_position,
-                (payload_pose.x, payload_pose.y, payload_pose.z),
-            )
             maximum_error_m = float(parameters["payload_mount_max_alignment_error_m"])
+            settle_deadline = time.monotonic() + GAZEBO_PAYLOAD_ATTACHMENT_SETTLE_TIMEOUT_SECONDS
+            settle_samples = 0
+            while True:
+                sampled_poses = await self._sample_named_gazebo_poses(
+                    world_name=world_name,
+                    model_names=(
+                        str(parameters["vehicle_model_name"]),
+                        str(parameters["payload_model_name"]),
+                    ),
+                    gazebo_node=node,
+                )
+                settle_samples += 1
+                vehicle_pose = sampled_poses[str(parameters["vehicle_model_name"])]
+                payload_pose = sampled_poses[str(parameters["payload_model_name"])]
+                offset_world = _rotate_gazebo_model_vector(vehicle_pose, mount_offset)
+                expected_position = (
+                    vehicle_pose.x + offset_world[0],
+                    vehicle_pose.y + offset_world[1],
+                    vehicle_pose.z + offset_world[2],
+                )
+                alignment_error_m = math.dist(
+                    expected_position,
+                    (payload_pose.x, payload_pose.y, payload_pose.z),
+                )
+                if alignment_error_m <= maximum_error_m:
+                    break
+                if time.monotonic() >= settle_deadline:
+                    break
+                # The native joint event is emitted before Gazebo has necessarily
+                # published the settled constrained pose. Observe fresh physics
+                # frames instead of rejecting the first transitional sample.
+                await asyncio.sleep(0.05)
             if alignment_error_m > maximum_error_m:
                 raise RuntimeError(
-                    "Gazebo payload attachment pose exceeded the qualified mount tolerance: "
+                    "Gazebo payload attachment pose did not settle inside the qualified mount tolerance: "
                     f"observed={alignment_error_m:.6f}m limit={maximum_error_m:.6f}m; "
+                    f"samples={settle_samples}; "
                     "pre_error="
                     f"{alignment.get('pre_attachment_pose_readback', {}).get('alignment_error_m')}"
                     "; "
@@ -2993,6 +3007,7 @@ class MavsdkOffboardClient:
                 "expected_position_world_enu_m": list(expected_position),
                 "alignment_error_m": alignment_error_m,
                 "maximum_alignment_error_m": maximum_error_m,
+                "settle_samples": settle_samples,
                 "accepted": True,
             }
             result["payload_mount_alignment"] = alignment
