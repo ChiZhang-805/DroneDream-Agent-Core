@@ -9,12 +9,12 @@
     {
       "asset_id": "dronedream.school-map.v1",
       "path": "app/desktop/src-tauri/resources/default-assets/school-map.ddpkg",
-      "sha256": "84b595496926d116d91e8ae2a9b579b62a938dc4b24066769140acb361c2cd59"
+      "sha256": "64c9b8011358451332554cdd2acd814045c42d2b74bc2ef7d3eb4dbb2ed5d054"
     },
     {
       "asset_id": "dronedream.my-drone.v1",
       "path": "app/desktop/src-tauri/resources/default-assets/my-drone.ddpkg",
-      "sha256": "805dcaaa089bd359bc095c3ab92058a9ef00e4b9868e65e76bdd50157f5496d4"
+      "sha256": "a063cabf19b3d916fb32ca4454e9f7327cbabc18af52c693701f9df384e57371"
     }
   ]
 }

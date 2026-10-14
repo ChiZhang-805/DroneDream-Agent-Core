@@ -268,6 +268,44 @@ def test_energy_specialist_tolerates_only_serialization_noise() -> None:
 
 
 # 功能：
+#   验证室内速度门控只约束路线实际经过的室内节点，不把室外巡航统一压到步行速度。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_indoor_specialist_only_bounds_track_points_at_indoor_nodes() -> None:
+    contract, graph, vehicle, task_graph, route, clearance, track = _fixtures()
+    vehicle = vehicle.model_copy(update={"max_speed_mps": 6.0})
+    points = list(track.points)
+    points[1] = points[1].model_copy(update={"speed_limit_mps": 3.0})
+    outdoor_cruise = _validation(
+        "indoor",
+        contract=contract,
+        map_graph=graph,
+        vehicle=vehicle,
+        task_graph=task_graph,
+        route=route,
+        clearance=clearance,
+        px4_track=track.model_copy(update={"points": points}),
+    )
+    points[0] = points[0].model_copy(update={"speed_limit_mps": 3.0})
+    indoor_overspeed = _validation(
+        "indoor",
+        contract=contract,
+        map_graph=graph,
+        vehicle=vehicle,
+        task_graph=task_graph,
+        route=route,
+        clearance=clearance,
+        px4_track=track.model_copy(update={"points": points}),
+    )
+
+    assert outdoor_cruise.accepted is True
+    assert indoor_overspeed.accepted is False
+    assert indoor_overspeed.deterministic_gates["indoor_speed_bounded"] is False
+
+
+# 功能：
 #   在完整默认夹具上替换指定字段，单独测试某个边界而保留其他制品。
 # 输入：
 #   layer：需要校验的规划层。
@@ -350,11 +388,7 @@ def test_payload_specialist_accepts_delivery_action_at_the_contract_target():
     contract = contract.model_copy(update={"payload_action": "delivery.release-payload"})
     task_graph = task_graph.model_copy(
         update={
-            "nodes": [
-                task_graph.nodes[0].model_copy(
-                    update={"action": "delivery.release-payload"}
-                )
-            ]
+            "nodes": [task_graph.nodes[0].model_copy(update={"action": "delivery.release-payload"})]
         }
     )
 
@@ -374,11 +408,7 @@ def test_payload_specialist_accepts_delivery_action_at_the_contract_target():
         map_graph=_fixtures()[1],
         vehicle=vehicle,
         task_graph=task_graph.model_copy(
-            update={
-                "nodes": [
-                    task_graph.nodes[0].model_copy(update={"target_node": "start"})
-                ]
-            }
+            update={"nodes": [task_graph.nodes[0].model_copy(update={"target_node": "start"})]}
         ),
         route=route,
         clearance=clearance,

@@ -101,18 +101,14 @@ def _contribution(
         "temporal": [
             "route duration must be finite and holds bounded; deadlines need separate evidence"
         ],
-        "global": [
-            "the tool-generated 3-D route visits the grounded target and return endpoint"
-        ],
+        "global": ["the tool-generated 3-D route visits the grounded target and return endpoint"],
         "local": ["every continuous trajectory segment passes collision-envelope clearance"],
         "indoor": ["door, stair, and corridor transitions respect vehicle envelope and speed"],
         "outdoor": ["outdoor legs retain a reachable return or safe-landing path"],
         "dynamic-obstacle": ["online obstacles can only tighten motion or trigger hold/replan"],
         "energy": ["distance, climb, payload, and reserve remain inside qualified envelope"],
         "link": ["indoor/outdoor transitions retain heartbeat and lost-link behavior"],
-        "payload": [
-            "the requested pickup or delivery action is bound to the grounded target"
-        ],
+        "payload": ["the requested pickup or delivery action is bound to the grounded target"],
         "regulatory": ["real-flight airspace constraints require explicit regulatory evidence"],
     }[layer]
     metrics = {
@@ -220,8 +216,7 @@ def _validation(
         }
     elif layer == "global":
         target_indexes = [
-            index for index, node_id in enumerate(route.node_ids)
-            if node_id == contract.target_node
+            index for index, node_id in enumerate(route.node_ids) if node_id == contract.target_node
         ]
         gates = {
             "route_starts_at_contract_start": route.start_node == contract.start_node,
@@ -243,13 +238,32 @@ def _validation(
             "clearance_report_consistent": clearance_valid,
         }
     elif layer == "indoor":
+        indoor_semantics = {"door", "stairs", "corridor", "office"}
+        indoor_positions = [
+            position
+            for node_id, position in zip(route.node_ids, route.positions_m, strict=True)
+            if node_id
+            in {node.node_id for node in map_graph.nodes if node.semantic in indoor_semantics}
+        ]
+        indoor_track_points = [
+            point
+            for point, world in zip(px4_track.points, px4_track.source_world_points, strict=True)
+            if any(
+                math.dist(
+                    (world.east_m, world.north_m, world.up_m),
+                    (position.x, position.y, position.z),
+                )
+                <= 0.05
+                for position in indoor_positions
+            )
+        ]
         gates = {
             "indoor_transition_clear": (
                 not route_semantics.intersection({"door", "stairs", "corridor"}) or clearance_valid
             ),
             "indoor_speed_bounded": all(
                 point.speed_limit_mps <= min(vehicle.max_speed_mps, 2.0)
-                for point in px4_track.points
+                for point in indoor_track_points
             ),
         }
     elif layer == "outdoor":

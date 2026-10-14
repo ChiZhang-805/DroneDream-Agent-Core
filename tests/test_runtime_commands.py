@@ -35,18 +35,27 @@ from dronedream_agent_core.runtime_commands import build_runtime_command
 # 输出：
 #   command：通过正式字段校验的独立测试指令，不来自实际飞行。
 def _safety_command_fixture(**values):
-    decision = vars(values.pop('decision'))
+    decision = vars(values.pop("decision"))
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
-    zero = Vector3(x=0., y=0., z=0.)
-    data = dict(observation_sha256='f' * 64, observation_sequence=1,
-                generated_at_unix_ms=now_ms, valid_until_unix_ms=now_ms + 1500,
-                source='onboard', command_position_m=zero)
+    zero = Vector3(x=0.0, y=0.0, z=0.0)
+    data = dict(
+        observation_sha256="f" * 64,
+        observation_sequence=1,
+        generated_at_unix_ms=now_ms,
+        valid_until_unix_ms=now_ms + 1500,
+        source="onboard",
+        command_position_m=zero,
+    )
     data.update(values)
-    data['decision'] = dict(selected_velocity_mps=zero, predicted_path_m=[zero],
-        minimum_predicted_clearance_m=2., time_to_minimum_clearance_seconds=0.,
+    data["decision"] = dict(
+        selected_velocity_mps=zero,
+        predicted_path_m=[zero],
+        minimum_predicted_clearance_m=2.0,
+        time_to_minimum_clearance_seconds=0.0,
         evaluated_candidate_count=1,
-        control_source='deterministic-brake' if decision['action'] == 'hold' else 'route-target')
-    data['decision'].update(decision)
+        control_source="deterministic-brake" if decision["action"] == "hold" else "route-target",
+    )
+    data["decision"].update(decision)
     command = RuntimeLocalSafetyCommand.model_validate(data)
     return command
 
@@ -194,16 +203,25 @@ def test_model_body_yaw_rate_is_integrated_and_bounded_at_control_rate() -> None
     assert second.yaw_deg == pytest.approx(1.0)
     assert getattr(args, "_model_body_control_yaw_deg", None) is None
     assert not executor._record_model_control_application(
-        args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
+        args,
+        command,
+        velocity_ned_mps=(0.0, 0.5, 0.0),
+        yaw_deg=second.yaw_deg,
         accepted_at_unix_ms=1501,
     )
     assert getattr(args, "_model_body_control_yaw_deg", None) is None
     executor._record_model_control_application(
-        args, command, velocity_ned_mps=(0., .5, 0.), yaw_deg=second.yaw_deg,
+        args,
+        command,
+        velocity_ned_mps=(0.0, 0.5, 0.0),
+        yaw_deg=second.yaw_deg,
         accepted_at_unix_ms=1100,
     )
     third = executor._setpoint_with_model_body_yaw(
-        base=base, args=args, setpoint=setpoint, command=command,
+        base=base,
+        args=args,
+        setpoint=setpoint,
+        command=command,
     )
     assert third.yaw_deg == pytest.approx(2.0)
     assert args._model_body_control_yaw_deg == pytest.approx(1.0)
@@ -395,9 +413,10 @@ def test_tracking_localization_context_selects_current_measured_corridor() -> No
             {"minimum_route_clearance_m": 0.49},
         )
     )
-    assert executor._tracking_localization_context_for_goal(
-        args, "source-waypoint-0002"
-    ) == (1, pytest.approx(0.49))
+    assert executor._tracking_localization_context_for_goal(args, "source-waypoint-0002") == (
+        1,
+        pytest.approx(0.49),
+    )
     assert executor._tracking_localization_context_for_goal(args, "takeoff") == (None, None)
     with pytest.raises(ValueError, match="MEASURED_CLEARANCE_REQUIRED"):
         executor._tracking_localization_context_for_goal(
@@ -1206,7 +1225,7 @@ def test_local_safety_continue_preserves_controller_rate(
         sleeps.append(seconds)
         clock[0] += seconds
 
-    pacer = executor.ControlTickPacer(20., clock=lambda: clock[0], sleep=record_sleep)
+    pacer = executor.ControlTickPacer(20.0, clock=lambda: clock[0], sleep=record_sleep)
 
     async def ignore_identity_refresh(**_kwargs: Any) -> None:
         return None
@@ -1265,14 +1284,14 @@ def test_local_safety_continue_preserves_controller_rate(
         )
         await executor._apply_local_safety(**kwargs)
         assert not sleeps  # The first command need not wait for an empty tick.
-        clock[0] += .020  # Work in the caller must count toward the same period.
+        clock[0] += 0.020  # Work in the caller must count toward the same period.
         await executor._apply_local_safety(**kwargs)
         return client
 
     client = asyncio.run(exercise())
     assert len(client.commands) == 2
     assert len(sleeps) == 1
-    assert sleeps[0] == pytest.approx(.030)
+    assert sleeps[0] == pytest.approx(0.030)
     assert client.commands[0].east_m == pytest.approx(-0.2)
     assert client.commands[0].north_m == pytest.approx(0.1)
     assert client.commands[0].down_m == pytest.approx(-0.95)
@@ -1525,9 +1544,7 @@ def test_stationary_route_hold_requires_low_speed_and_finite_complete_state() ->
     )
     assert not executor._stationary_route_setpoint_is_complete(
         command=command,
-        observed=SimpleNamespace(
-            north_m_s=float("nan"), east_m_s=0.0, down_m_s=0.0
-        ),
+        observed=SimpleNamespace(north_m_s=float("nan"), east_m_s=0.0, down_m_s=0.0),
         tracking_recovery_active=False,
     )
 
@@ -1650,8 +1667,8 @@ def test_static_corridor_bridge_accepts_only_processing_budget_exhaustion() -> N
 # 输入：
 #   最近健康继续裁决、当前 PX4 状态、相同语义目标和路线净空。
 # 输出：
-    #   短暂计算空窗返回独立副本；真实动作点、目标变化、异常裁决或超时全部拒绝，
-    #   显式仿真身份允许低速接近动作点。
+#   短暂计算空窗返回独立副本；真实动作点、目标变化、异常裁决或超时全部拒绝，
+#   显式仿真身份允许低速接近动作点。
 def test_static_corridor_control_continuity_uses_only_recent_clean_same_goal_seed() -> None:
     executor = _load_executor()
     seed = _safety_command_fixture(
@@ -1797,12 +1814,15 @@ def test_static_corridor_bridge_revalidates_actual_segment(monkeypatch, tmp_path
         "validate_route_clearance",
         lambda *args, **kwargs: SimpleNamespace(accepted=False),
     )
-    assert executor._static_corridor_bridge_clearance(
-        args=args,
-        observed=SimpleNamespace(north_m=1.0, east_m=2.0, down_m=-1.0),
-        target_world=target,
-        coordinate_contract=contract,
-    ) is None
+    assert (
+        executor._static_corridor_bridge_clearance(
+            args=args,
+            observed=SimpleNamespace(north_m=1.0, east_m=2.0, down_m=-1.0),
+            target_world=target,
+            coordinate_contract=contract,
+        )
+        is None
+    )
 
 
 def test_controlled_landing_holds_xy_until_near_ground_handoff(monkeypatch) -> None:
@@ -1840,6 +1860,7 @@ def test_controlled_landing_holds_xy_until_near_ground_handoff(monkeypatch) -> N
             landing_setpoint=terminal,
             rate_hz=100.0,
             timeout_seconds=1.0,
+            collision_center_offset_up_m=0.228,
             timing=timing,
         )
     )
@@ -1847,7 +1868,7 @@ def test_controlled_landing_holds_xy_until_near_ground_handoff(monkeypatch) -> N
     assert len(client.commands) >= 2
     assert all(command.north_m == pytest.approx(1.25) for command in client.commands)
     assert all(command.east_m == pytest.approx(-2.5) for command in client.commands)
-    assert handoff.down_m == pytest.approx(-executor._CONTROLLED_LANDING_HANDOFF_HEIGHT_M)
+    assert handoff.down_m == pytest.approx(-(0.228 + executor._CONTROLLED_LANDING_HANDOFF_HEIGHT_M))
     assert timing["controlled_offboard_landing"]["status"] == "handoff-ready"
 
 
@@ -1858,6 +1879,7 @@ def test_controlled_landing_timeout_scales_with_route_altitude() -> None:
     timeout_seconds = executor._controlled_landing_handoff_timeout_seconds(
         landing_setpoint=terminal,
         landing_timeout_seconds=90.0,
+        collision_center_offset_up_m=0.228,
     )
 
     assert timeout_seconds > 30.0
@@ -1866,6 +1888,7 @@ def test_controlled_landing_timeout_scales_with_route_altitude() -> None:
         executor._controlled_landing_handoff_timeout_seconds(
             landing_setpoint=terminal,
             landing_timeout_seconds=15.0,
+            collision_center_offset_up_m=0.228,
         )
 
 
@@ -2061,6 +2084,7 @@ def test_local_repair_does_not_count_arbitrary_drift_as_progress() -> None:
     assert state["stall_deadline"] == 15.0
     assert state["progress_revision"] == 0
     assert state["last_progress_evidence"] == "repair-started"
+
 
 def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -> None:
     executor = _load_executor()
@@ -2522,9 +2546,7 @@ def test_required_local_safety_staleness_keeps_braking_across_recovery_windows(
     executor._refresh_px4_identity_telemetry = observed_identity
 
     events: list[dict[str, Any]] = []
-    executor._record_local_safety_executor_event = (
-        lambda _args, **event: events.append(event)
-    )
+    executor._record_local_safety_executor_event = lambda _args, **event: events.append(event)
 
     class BrakeObserved(Exception):
         pass
@@ -2559,10 +2581,7 @@ def test_required_local_safety_staleness_keeps_braking_across_recovery_windows(
                 phase_path=tmp_path / "phase.json",
             )
         )
-    assert any(
-        event["status"] == "command-stale-recovery-window-rolled-over"
-        for event in events
-    )
+    assert any(event["status"] == "command-stale-recovery-window-rolled-over" for event in events)
 
 
 def test_runtime_stale_default_holds_through_measured_publication_jitter(
@@ -2843,9 +2862,7 @@ def test_identity_telemetry_replaces_live_but_stalled_stream_after_grace(
     assert client.sample_count == 3
     assert client.restart_count == 1
     recovery = json.loads(
-        (tmp_path / "runtime-state" / "px4-telemetry-recovery.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runtime-state" / "px4-telemetry-recovery.json").read_text(encoding="utf-8")
     )
     assert recovery["last_status"] == "recovered"
     assert recovery["events"][-1]["stream_restarted"] is True
@@ -2861,45 +2878,63 @@ def test_grouped_control_target_reuses_bounded_lookahead_without_crossing_barrie
     executor = _load_executor()
     barriers = {5, 117, 229}
 
-    assert executor._grouped_control_target_index(
-        schedule_index=0,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices=barriers,
-    ) == 5
-    assert executor._grouped_control_target_index(
-        schedule_index=1,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices=barriers,
-    ) == 5
-    assert executor._grouped_control_target_index(
-        schedule_index=6,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices=barriers,
-    ) == 99
-    assert executor._grouped_control_target_index(
-        schedule_index=10,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices=barriers,
-    ) == 99
-    assert executor._grouped_control_target_index(
-        schedule_index=299,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices=barriers,
-    ) == 299
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=0,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices=barriers,
+        )
+        == 5
+    )
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=1,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices=barriers,
+        )
+        == 5
+    )
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=6,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices=barriers,
+        )
+        == 99
+    )
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=10,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices=barriers,
+        )
+        == 99
+    )
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=299,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices=barriers,
+        )
+        == 299
+    )
 
     # The end of takeoff is also a hard direction-change boundary even though
     # it is not one of the source-route waypoint arrivals.
-    assert executor._grouped_control_target_index(
-        schedule_index=115,
-        schedule_length=300,
-        setpoint_rate_hz=50.0,
-        barrier_indices={128, 299},
-    ) == 128
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=115,
+            schedule_length=300,
+            setpoint_rate_hz=50.0,
+            barrier_indices={128, 299},
+        )
+        == 128
+    )
 
 
 # 功能：
@@ -2943,12 +2978,15 @@ def test_schedule_motion_barriers_preserve_hold_and_turn_phases():
     ]
 
     assert executor._schedule_motion_barrier_indices(schedule) == {0, 2, 4, 6, 7}
-    assert executor._grouped_control_target_index(
-        schedule_index=3,
-        schedule_length=len(schedule),
-        setpoint_rate_hz=50.0,
-        barrier_indices=executor._schedule_motion_barrier_indices(schedule),
-    ) == 4
+    assert (
+        executor._grouped_control_target_index(
+            schedule_index=3,
+            schedule_length=len(schedule),
+            setpoint_rate_hz=50.0,
+            barrier_indices=executor._schedule_motion_barrier_indices(schedule),
+        )
+        == 4
+    )
 
 
 # 功能：
@@ -2974,23 +3012,23 @@ def test_schedule_motion_barriers_reject_nonfinite_coordinates():
 #   None：不返回业务数据。
 def test_measured_dense_schedule_catch_up_preserves_group_boundary():
     executor = _load_executor()
-    schedule = [
-        SimpleNamespace(north_m=float(north), east_m=0.0, down_m=0.0)
-        for north in range(5)
-    ]
+    schedule = [SimpleNamespace(north_m=float(north), east_m=0.0, down_m=0.0) for north in range(5)]
     coordinate_contract = Px4CoordinateContract(
         model_root_world_enu_m=[0.0, 0.0, 0.0],
         collision_center_offset_model_m=[0.0, 0.0, 0.2],
     )
 
-    assert executor._measured_dense_schedule_catch_up_index(
-        schedule=schedule,
-        current_index=0,
-        maximum_index=4,
-        coordinate_contract=coordinate_contract,
-        navigation_goal_position_m=Vector3(x=0.0, y=10.0, z=0.2),
-        measured_goal_distance_m=7.2,
-    ) == 2
+    assert (
+        executor._measured_dense_schedule_catch_up_index(
+            schedule=schedule,
+            current_index=0,
+            maximum_index=4,
+            coordinate_contract=coordinate_contract,
+            navigation_goal_position_m=Vector3(x=0.0, y=10.0, z=0.2),
+            measured_goal_distance_m=7.2,
+        )
+        == 2
+    )
 
 
 # 功能：
@@ -3164,9 +3202,7 @@ def test_tracking_gate_accepts_small_settled_recovery_residual(
     assert advanced is True
     assert error_m == pytest.approx(0.082)
     state = json.loads(
-        (tmp_path / "runtime-state" / "closed-loop-tracking.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runtime-state" / "closed-loop-tracking.json").read_text(encoding="utf-8")
     )
     assert state["advance_threshold_m"] == pytest.approx(0.093)
 
@@ -3702,7 +3738,7 @@ def test_model_required_continue_applies_model_command_instead_of_route_setpoint
             self.velocities: list[Any] = []
 
         def latest_dynamics_telemetry(self, _max_age_seconds: float) -> dict[str, Any]:
-            return {"sources": {"attitude": {"yaw_deg": 0., "sample_age_seconds": .01}}}
+            return {"sources": {"attitude": {"yaw_deg": 0.0, "sample_age_seconds": 0.01}}}
 
         async def set_velocity_ned(self, velocity: Any) -> None:
             self.velocities.append(velocity)
@@ -3877,8 +3913,8 @@ def test_model_authority_gap_holds_live_px4_position_not_corrected_gazebo_pose(
             self.velocities: list[Any] = []
 
         def latest_dynamics_telemetry(self, max_age_seconds: float) -> dict[str, Any]:
-            assert max_age_seconds == .25
-            return {"sources": {"attitude": {"yaw_deg": 114., "sample_age_seconds": .02}}}
+            assert max_age_seconds == 0.25
+            return {"sources": {"attitude": {"yaw_deg": 114.0, "sample_age_seconds": 0.02}}}
 
         async def set_position_velocity_ned(self, setpoint: Any, velocity: Any) -> None:
             self.commands.append(setpoint)
@@ -3994,8 +4030,8 @@ def test_model_authority_gap_holds_live_px4_position_not_corrected_gazebo_pose(
             velocity.down_m_s,
         ) == pytest.approx((0.0, 0.0, 0.0))
     assert args._model_authority_hold_setpoint is client.commands[2]
-    assert [item.yaw_deg for item in client.commands] == [114.] * 4
-    assert args._model_body_control_yaw_deg == 114.
+    assert [item.yaw_deg for item in client.commands] == [114.0] * 4
+    assert args._model_body_control_yaw_deg == 114.0
     phase = json.loads((tmp_path / "phase.json").read_text(encoding="utf-8"))
     assert phase["phase"] == "MODEL_AUTHORITY_HOLD"
     assert phase["hold_source"] == "px4-measured-position"
@@ -4756,8 +4792,11 @@ def test_runtime_command_is_hash_bound_executed_and_adopted(
             contract=SimpleNamespace(contract_id=message.contract_id),
             runtime_actions=SimpleNamespace(
                 contract_id=message.contract_id,
-                steps=[SimpleNamespace(driver="gazebo-payload", authority="actuate",
-                                       parameters=dict(parameters))],
+                steps=[
+                    SimpleNamespace(
+                        driver="gazebo-payload", authority="actuate", parameters=dict(parameters)
+                    )
+                ],
             ),
         ),
     )
@@ -4890,7 +4929,7 @@ def test_depth_worker_publishes_safety_command_before_model_orchestration() -> N
     assert early_poll < directive < command_publish < model_poll
     assert command_publish < rgb_encode
     assert 'if local_navigation_output_mode == "normalized-body-velocity":' in loop[:early_poll]
-    helper = worker[worker.index("def _poll_ready_navigation_cycle("):].split("\ndef ", 1)[0]
+    helper = worker[worker.index("def _poll_ready_navigation_cycle(") :].split("\ndef ", 1)[0]
     assert "_fresh_perception_can_finalize_model_cycle(" in helper
     assert "current_health = fusion.health(" in helper
     assert "now_monotonic_seconds=time.monotonic()" in helper
@@ -4937,10 +4976,15 @@ def test_semantic_approach_damping_uses_physical_stopping_envelope() -> None:
 def test_depth_worker_rejects_retired_truth_only_identity(tmp_path: Path) -> None:
     worker = _load_depth_worker()
     telemetry = tmp_path / "px4-identity-telemetry.json"
-    telemetry.write_text(json.dumps({
-        "observed_world_collision_center_m": {"x": 0, "y": 0, "z": 1},
-        "updated_at_unix_ms": 1_000,
-    }), encoding="utf-8")
+    telemetry.write_text(
+        json.dumps(
+            {
+                "observed_world_collision_center_m": {"x": 0, "y": 0, "z": 1},
+                "updated_at_unix_ms": 1_000,
+            }
+        ),
+        encoding="utf-8",
+    )
     tracker = worker._NativeIdentityTracker()
     with pytest.raises(ValueError):
         tracker.evaluate(telemetry, now_unix_ms=1_000)
@@ -4953,14 +4997,16 @@ def test_depth_worker_does_not_time_shift_estimator_to_fit_truth(tmp_path: Path)
     telemetry = tmp_path / "px4-identity-telemetry.json"
     payload = _identity()
     payload["observed_velocity_ned_mps"] = {
-        "north_m_s": -0.0125, "east_m_s": -0.7088, "down_m_s": -0.0314,
+        "north_m_s": -0.0125,
+        "east_m_s": -0.7088,
+        "down_m_s": -0.0314,
     }
-    payload["observed_world_collision_center_m"] = {"x": 46.1017, "y": .8983, "z": 1.3666}
+    payload["observed_world_collision_center_m"] = {"x": 46.1017, "y": 0.8983, "z": 1.3666}
     telemetry.write_text(json.dumps(payload), encoding="utf-8")
     tracker = worker._NativeIdentityTracker()
     native = tracker.evaluate(telemetry, now_unix_ms=1_020)
     assert native.position_world_enu_m == Vector3(x=0, y=0, z=0)
-    assert native.velocity_world_enu_mps == Vector3(x=-.7088, y=-.0125, z=.0314)
+    assert native.velocity_world_enu_mps == Vector3(x=-0.7088, y=-0.0125, z=0.0314)
     assert native.observed_at_unix_ms == 1_000
 
 
