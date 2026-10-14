@@ -1743,6 +1743,139 @@ def _point_segment_distance(point: Point, start: Point, end: Point) -> float:
 
 
 # 功能：
+#   枚举有限线段保守管廊内的体素中心，避免扫描长斜线的完整三维包围盒。
+# 输入：
+#   world：体素地图；start、end：线段端点；padding_m：管廊半径；
+#   maximum_candidates：允许执行精确距离复核的候选上限。
+# 输出：
+#   keys：精确落在管廊内的体素键；inspected：实际复核的候选数量。
+def _qualified_route_corridor_keys(
+    *,
+    world: MetricVoxelMap,
+    start: Point,
+    end: Point,
+    padding_m: float,
+    maximum_candidates: int = 16_000_000,
+) -> tuple[set[tuple[int, int, int]], int]:
+    delta = tuple(end[index] - start[index] for index in range(3))
+    length_squared = sum(component * component for component in delta)
+    minimum = tuple(
+        getattr(world.minimum_bound_m, field) for field in ("x", "y", "z")
+    )
+    maximum = tuple(
+        getattr(world.maximum_bound_m, field) for field in ("x", "y", "z")
+    )
+    resolution = world.resolution_m
+
+    def clipped_key(axis: int, coordinate: float) -> int:
+        bounded = min(
+            maximum[axis] - resolution * 0.01,
+            max(minimum[axis], coordinate),
+        )
+        return int(math.floor((bounded - minimum[axis]) / resolution))
+
+    low = tuple(
+        clipped_key(axis, min(start[axis], end[axis]) - padding_m)
+        for axis in range(3)
+    )
+    high = tuple(
+        clipped_key(axis, max(start[axis], end[axis]) + padding_m)
+        for axis in range(3)
+    )
+    keys: set[tuple[int, int, int]] = set()
+    inspected = 0
+
+    # A zero-length route leg is an endpoint sphere.  Its local cube is small
+    # and still receives the same exact capsule-distance filter as every leg.
+    dominant_axis = max(range(3), key=lambda axis: abs(delta[axis]))
+    if abs(delta[dominant_axis]) <= 1e-12:
+        ranges = tuple(range(low[axis], high[axis] + 1) for axis in range(3))
+        for x in ranges[0]:
+            for y in ranges[1]:
+                for z in ranges[2]:
+                    inspected += 1
+                    if inspected > maximum_candidates:
+                        raise ValueError(
+                            "qualified static route corridor exceeds the traversal safety budget"
+                        )
+                    key = (x, y, z)
+                    center = tuple(
+                        minimum[axis] + (key[axis] + 0.5) * resolution
+                        for axis in range(3)
+                    )
+                    if sum(
+                        (center[axis] - start[axis]) ** 2 for axis in range(3)
+                    ) <= padding_m * padding_m:
+                        keys.add(key)
+        return keys, inspected
+
+    secondary_axes = tuple(axis for axis in range(3) if axis != dominant_axis)
+    padding_squared = padding_m * padding_m
+    for primary_key in range(low[dominant_axis], high[dominant_axis] + 1):
+        primary_center = minimum[dominant_axis] + (primary_key + 0.5) * resolution
+        ratio = max(
+            0.0,
+            min(1.0, (primary_center - start[dominant_axis]) / delta[dominant_axis]),
+        )
+        projection = tuple(start[axis] + delta[axis] * ratio for axis in range(3))
+
+        # A point within padding_m of the segment can shift its nearest
+        # projection by at most padding_m / |dominant delta|.  Expanding each
+        # transverse slab by the corresponding slope keeps the enumeration
+        # complete, while the exact distance test below removes the surplus.
+        secondary_ranges = []
+        for axis in secondary_axes:
+            reach = padding_m * (
+                1.0 + abs(delta[axis] / delta[dominant_axis])
+            )
+            secondary_ranges.append(
+                range(
+                    clipped_key(axis, projection[axis] - reach),
+                    clipped_key(axis, projection[axis] + reach) + 1,
+                )
+            )
+
+        for first_secondary in secondary_ranges[0]:
+            for second_secondary in secondary_ranges[1]:
+                key_values = [0, 0, 0]
+                key_values[dominant_axis] = primary_key
+                key_values[secondary_axes[0]] = first_secondary
+                key_values[secondary_axes[1]] = second_secondary
+                key = tuple(key_values)
+                inspected += 1
+                if inspected > maximum_candidates:
+                    raise ValueError(
+                        "qualified static route corridor exceeds the traversal safety budget"
+                    )
+                center = tuple(
+                    minimum[axis] + (key[axis] + 0.5) * resolution
+                    for axis in range(3)
+                )
+                projection_ratio = max(
+                    0.0,
+                    min(
+                        1.0,
+                        sum(
+                            (center[axis] - start[axis]) * delta[axis]
+                            for axis in range(3)
+                        )
+                        / length_squared,
+                    ),
+                )
+                distance_squared = sum(
+                    (
+                        center[axis]
+                        - (start[axis] + delta[axis] * projection_ratio)
+                    )
+                    ** 2
+                    for axis in range(3)
+                )
+                if distance_squared <= padding_squared:
+                    keys.add(key)
+    return keys, inspected
+
+
+# 功能：
 #   1. 核对静态地图、路线和净空报告的内容绑定，仅栅格化合格路线附近的保守先验。
 #   2. 在遍历前限制计算规模、遍历中限制体素数，全部分类完成后再提交地图。
 # 输入：
@@ -1803,51 +1936,17 @@ def _seed_qualified_static_map(
     corridor_keys: set[tuple[int, int, int]] = set()
     inspected_voxels = 0
     for start, end in route_segments:
-        low = Vector3(
-            x=max(world.minimum_bound_m.x, min(start[0], end[0]) - padding_m),
-            y=max(world.minimum_bound_m.y, min(start[1], end[1]) - padding_m),
-            z=max(world.minimum_bound_m.z, min(start[2], end[2]) - padding_m),
+        segment_keys, inspected = _qualified_route_corridor_keys(
+            world=world,
+            start=start,
+            end=end,
+            padding_m=padding_m,
+            maximum_candidates=16_000_000 - inspected_voxels,
         )
-        high = Vector3(
-            x=min(
-                world.maximum_bound_m.x - world.resolution_m * 0.01,
-                max(start[0], end[0]) + padding_m,
-            ),
-            y=min(
-                world.maximum_bound_m.y - world.resolution_m * 0.01,
-                max(start[1], end[1]) + padding_m,
-            ),
-            z=min(
-                world.maximum_bound_m.z - world.resolution_m * 0.01,
-                max(start[2], end[2]) + padding_m,
-            ),
-        )
-        first = world.key_for(low)
-        last = world.key_for(high)
-        # 写入体素数不能限制遍历成本；细网格或长斜线必须在三重循环前检查计算预算。
-        inspected_voxels += math.prod(max(0, last[i] - first[i] + 1) for i in range(3))
-        # A complete campus round trip can legitimately cross several long,
-        # diagonal corridors.  Their axis-aligned traversal boxes are larger
-        # than the actual two-metre tube even though the retained voxel set
-        # remains below the independent one-million-voxel memory bound.
-        if inspected_voxels > 16_000_000:
-            raise ValueError("qualified static route corridor exceeds the traversal safety budget")
-        for x in range(first[0], last[0] + 1):
-            for y in range(first[1], last[1] + 1):
-                for z in range(first[2], last[2] + 1):
-                    key = (x, y, z)
-                    center = world.center_for(key)
-                    if (
-                        _point_segment_distance(
-                            (center.x, center.y, center.z),
-                            start,
-                            end,
-                        )
-                        <= padding_m
-                    ):
-                        corridor_keys.add(key)
-                        if len(corridor_keys) > 1_000_000:
-                            raise ValueError("qualified static route corridor exceeds voxel budget")
+        inspected_voxels += inspected
+        corridor_keys.update(segment_keys)
+        if len(corridor_keys) > 1_000_000:
+            raise ValueError("qualified static route corridor exceeds voxel budget")
     classifications = []
     for key in sorted(corridor_keys):
         center = world.center_for(key)
