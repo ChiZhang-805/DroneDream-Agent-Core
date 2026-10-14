@@ -14,6 +14,7 @@ from pathlib import Path
 
 from dronedream_plugin_sdk.protocol import copy_json, decode_json
 
+from .control_timing import LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS
 from .hashing import sha256_json
 from .perception_health_channel import PerceptionHealthReceiver
 from .plugin_files import read_plugin_file
@@ -29,7 +30,9 @@ _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
 # publication delay twice and can reject a stream that was healthy throughout
 # controlled motion.  This is an audit freshness window, not a flight-stop
 # threshold.
-_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
+_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = (
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS
+)
 
 
 # 功能：

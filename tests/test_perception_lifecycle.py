@@ -81,7 +81,7 @@ def test_independent_route_completion_does_not_require_unused_model_features(tmp
 # 输入：
 #   tmp_path：本次健康文件的独立目录。
 # 输出：
-#   None：健康、身份和定位均有效且总年龄小于半秒时通过。
+#   None：健康、身份和定位均有效且分别位于一秒窗口内时通过。
 def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_path):
     path = tmp_path / "health.json"
     path.write_text(json.dumps({
@@ -109,13 +109,13 @@ def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_pa
 # 输入：
 #   tmp_path：本次健康文件的独立目录。
 # 输出：
-#   None：0.491 秒来源年龄与 0.179 秒发布延迟分别合格，完成回执通过。
+#   None：安装版实测的 0.787 秒来源年龄与 0.179 秒发布延迟分别合格，完成回执通过。
 def test_completion_does_not_double_count_source_age_and_publication_delay(tmp_path):
     path = tmp_path / "health.json"
     path.write_text(json.dumps({
         **health(),
         "updated_at_unix_ms": 1000,
-        "stream_age_seconds": .491,
+        "stream_age_seconds": .787,
         "localization_observed_at_unix_ms": 885,
         "realtime_features_ready": False,
     }))
@@ -141,11 +141,11 @@ def test_completion_does_not_double_count_source_age_and_publication_delay(tmp_p
 #   None：不返回业务数据。
 @pytest.mark.parametrize("change", [
     {"stream_healthy": False}, {"identity_accepted": False}, {"truth_correction_applied": True},
-    {"realtime_features_ready": False}, {"updated_at_unix_ms": 500},
-    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .501},
+    {"realtime_features_ready": False}, {"updated_at_unix_ms": 0},
+    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": 1.001},
     {"stream_age_seconds": float("nan")}, {"stream_age_seconds": -1.},
     {"pose_source": "gazebo-ground-truth"},
-    {"localization_observed_at_unix_ms": 400},
+    {"localization_observed_at_unix_ms": 0},
     {"localization_observed_at_unix_ms": None},
     {"localization_observed_at_unix_ms": True},
     {"localization_observed_at_unix_ms": 1100},
