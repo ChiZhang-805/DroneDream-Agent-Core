@@ -323,6 +323,13 @@ def test_metric_geometry_route_exports_with_continuous_policy_driven_speed(
         vehicle=vehicle,
         route_policy="minimum-time",
     )
+    clearance_first = route_to_px4_track(
+        route,
+        graph,
+        semantic_path,
+        vehicle=vehicle,
+        route_policy="clearance-first",
+    )
     corner_route = route.model_copy(
         update={
             "positions_m": [
@@ -342,6 +349,7 @@ def test_metric_geometry_route_exports_with_continuous_policy_driven_speed(
     assert [point.speed_limit_mps for point in track.points] == [5.0, 5.0, 5.0]
     assert track.stop_at_waypoints is False
     assert [point.target_speed_mps for point in track.points] == [1.5, 4.0, 0.5]
+    assert [point.target_speed_mps for point in clearance_first.points] == [1.5, 4.0, 0.5]
     assert [point.target_speed_mps for point in urgent.points] == [1.5, 5.0, 0.5]
     assert [point.target_speed_mps for point in corner.points] == [1.5, 1.8, 0.5]
 

@@ -310,7 +310,7 @@ def _corner_speed_envelope(
         # Geometry-aware turn caps and the executor acceleration envelope still
         # slow the aircraft continuously before corners and action zones.
         "balanced": 4.0,
-        "clearance-first": 2.4,
+        "clearance-first": 4.0,
         "minimum-time": 5.0,
         "energy-conserving": 2.0,
         "few-transitions": 4.5,

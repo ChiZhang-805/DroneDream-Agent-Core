@@ -61,7 +61,10 @@ POLICY_CONTROL_REFERENCE_FEATURE_COUNT = 10
 POLICY_REALTIME_FEATURE_COUNT = (
     REALTIME_CONTROL_FEATURE_COUNT + POLICY_CONTROL_REFERENCE_FEATURE_COUNT
 )
-PILOT_CONTROL_PRECISION_SPEED_CAP_MPS = 0.2
+# Precision is a continuously decelerated approach mode, not a crawl command.
+# One metre per second remains controllable at payload and landing approaches
+# while leaving PX4 enough authority to converge without repeated near-stops.
+PILOT_CONTROL_PRECISION_SPEED_CAP_MPS = 1.2
 PILOT_CONTROL_VERTICAL_SPEED_CAP_MPS = 0.75
 PILOT_CONTROL_YAW_RATE_CAP_DPS = 20.0
 _ENCODER_ROLE_ORDER: tuple[FeatureEncoderRole, ...] = (

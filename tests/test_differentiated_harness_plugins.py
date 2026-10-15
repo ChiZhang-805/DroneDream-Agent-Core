@@ -377,12 +377,19 @@ def test_corner_speed_envelope_combines_model_policy_with_turn_geometry() -> Non
         route_policy="balanced",
         rationale_summary="Cruise efficiently while preserving turn margin.",
     )
+    clearance_plan = SemanticPlan(
+        ordered_targets=["destination"],
+        route_policy="clearance-first",
+        rationale_summary="Use the wider corridor without slowing clear straights.",
+    )
 
     optimized = _corner_speed_envelope(value=track, semantic_plan=minimum_time_plan)
     balanced = _corner_speed_envelope(value=track, semantic_plan=balanced_plan)
+    clearance = _corner_speed_envelope(value=track, semantic_plan=clearance_plan)
 
     assert [point.target_speed_mps for point in optimized.points] == [1.5, 5.0, 1.2, 5.0, 0.5]
     assert [point.target_speed_mps for point in balanced.points] == [1.5, 4.0, 1.2, 4.0, 0.5]
+    assert [point.target_speed_mps for point in clearance.points] == [1.5, 4.0, 1.2, 4.0, 0.5]
 
 
 # 功能：

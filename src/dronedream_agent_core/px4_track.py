@@ -56,7 +56,10 @@ def _policy_cruise_speed_mps(route_policy: str) -> float:
     """Translate the model-selected route policy into a useful cruise target."""
     speeds = {
         "balanced": 4.0,
-        "clearance-first": 3.0,
+        # Route policy selects the clear corridor; it must not turn the whole
+        # corridor into a low-speed mode.  Geometry and action checkpoints
+        # still reduce speed where the selected route actually requires it.
+        "clearance-first": 4.0,
         "minimum-time": 5.0,
         "energy-conserving": 2.5,
         "few-transitions": 4.5,

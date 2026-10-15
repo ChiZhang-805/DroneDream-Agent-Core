@@ -1321,7 +1321,7 @@ def test_precision_profile_uses_micro_targets_without_expanding_cruise_bound() -
             action_checkpoint_goal=False,
             observed_goal_distance_m=0.7,
         )
-        == "precision"
+        == "cruise"
     )
     assert (
         _effective_control_profile(
@@ -1348,7 +1348,7 @@ def test_precision_profile_uses_micro_targets_without_expanding_cruise_bound() -
             observed_speed_mps=0.8,
             maximum_acceleration_mps2=0.8,
         )
-        == "precision"
+        == "cruise"
     )
 
 
@@ -1484,7 +1484,10 @@ def test_precision_profile_uses_confined_space_speed_envelope() -> None:
     ) == pytest.approx(0.34)
     assert depth_worker._planner_speed_for_profile(
         profile="precision", route_speed_limit_mps=0.34
-    ) == pytest.approx(0.2)
+    ) == pytest.approx(0.34)
+    assert depth_worker._planner_speed_for_profile(
+        profile="precision", route_speed_limit_mps=5.0
+    ) == pytest.approx(1.2)
     assert depth_worker._planner_speed_for_profile(
         profile="precision", route_speed_limit_mps=0.15
     ) == pytest.approx(0.15)

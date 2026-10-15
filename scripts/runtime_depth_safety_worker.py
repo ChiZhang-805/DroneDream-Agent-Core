@@ -339,14 +339,14 @@ def _effective_control_profile(
         (float(observed_speed_mps) / maximum_acceleration_mps2)
         * (float(observed_speed_mps) * 0.5) + 0.75
     )
-    precision_distance_m = max(
-        4.0 if action_checkpoint_goal else 0.8,
-        braking_entry_distance_m,
-    )
+    precision_distance_m = max(4.0, braking_entry_distance_m)
     if (
         precision_latched
         or requested_profile == "precision"
-        or observed_goal_distance_m <= precision_distance_m
+        or (
+            action_checkpoint_goal
+            and observed_goal_distance_m <= precision_distance_m
+        )
     ):
         return "precision"
     return "cruise"

@@ -4621,7 +4621,7 @@ def _recovery_position_velocity_feedforward(
     target_setpoint: Any,
     gain_s_inverse: float = 0.8,
     velocity_damping: float = 0.5,
-    maximum_speed_mps: float = 0.08,
+    maximum_speed_mps: float = 1.2,
     deadband_m: float = 0.005,
 ) -> tuple[float, float, float]:
     """Provide bounded radial assistance to PX4's precision position loop.
@@ -6838,7 +6838,7 @@ async def _apply_local_safety(
                         getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                     ),
                     maximum_speed_mps=float(
-                        getattr(args, "tracking_recovery_assist_max_speed_mps", 0.08)
+                        getattr(args, "tracking_recovery_assist_max_speed_mps", 1.2)
                     ),
                     deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
                 )
@@ -7354,6 +7354,7 @@ async def _tracking_gate_tick(
     if local_recovery_control_active is None:
         local_recovery_control_active = recovery_active
     args._last_tracking_local_recovery_control_required = False
+    args._last_tracking_reference_clock_hold_required = False
     args._last_px4_control_observation = None
     # Grouped look-ahead targets keep ordinary flight smooth, but a true
     # cross-track recovery must converge on the *current* route reference.
@@ -7801,6 +7802,15 @@ async def _tracking_gate_tick(
             # not need the worker's fixed-target radial-recovery proof. True
             # cross-track deviation still receives that stronger context.
             local_recovery_control_required = route_cross_track_error_m > threshold_m
+            # A vehicle that is physically inside the signed corridor but a
+            # little behind the dense reference only needs the reference clock
+            # to pause. Keep publishing the grouped look-ahead target and its
+            # route-tangent feed-forward so PX4 can catch up at cruise speed.
+            # Calling this tracking recovery switched the controller to a
+            # fixed point and created the observed stop/start, 0.2 m/s flight.
+            args._last_tracking_reference_clock_hold_required = bool(
+                not may_advance and not local_recovery_control_required
+            )
             # Ordinary time lag inside its separate bound is diagnostic, not
             # a corridor violation.  Once it exceeds that bound, expose the
             # full lag to the bounded recovery-progress watchdog.
@@ -7833,11 +7843,18 @@ async def _tracking_gate_tick(
         "state": (
             "tracking"
             if may_advance
+            else "reference-clock-hold"
+            if bool(getattr(args, "_last_tracking_reference_clock_hold_required", False))
             else "model-progress-hold"
             if model_progress_hold
             else "recovering"
         ),
-        "recovery_active": recovery_active or (not may_advance and not model_progress_hold),
+        "recovery_active": (
+            local_recovery_control_required
+            or (recovery_active and not bool(
+                getattr(args, "_last_tracking_reference_clock_hold_required", False)
+            ))
+        ),
         "local_recovery_control_active": local_recovery_control_active,
         "local_recovery_control_required": local_recovery_control_required,
         "position_error_m": position_error_m,
@@ -7927,7 +7944,10 @@ async def _tracking_gate_tick(
     if context:
         evidence.update(context)
     _atomic_json(args.run_dir / "runtime-state" / "closed-loop-tracking.json", evidence)
-    if not may_advance and not model_progress_hold:
+    reference_clock_hold = bool(
+        getattr(args, "_last_tracking_reference_clock_hold_required", False)
+    )
+    if not may_advance and not model_progress_hold and not reference_clock_hold:
         phase = {
             "phase": "TRACKING_RECOVERY",
             "schedule_index": schedule_index,
@@ -7937,7 +7957,7 @@ async def _tracking_gate_tick(
         if context:
             phase.update(context)
         _atomic_json(phase_path, phase)
-    return may_advance, None if model_progress_hold else position_error_m
+    return may_advance, None if (model_progress_hold or reference_clock_hold) else position_error_m
 
 
 # 功能：
@@ -9133,7 +9153,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tracking-recovery-assist-max-speed-mps",
         type=float,
-        default=0.08,
+        default=1.2,
     )
     parser.add_argument(
         "--tracking-recovery-assist-velocity-damping",
@@ -9692,6 +9712,7 @@ async def _fly_runtime_replacement(
                 checkpoint = checkpoint_indices.get(index)
                 recovery_started: float | None = None
                 local_recovery_control_active = False
+                reference_clock_hold_active = False
                 recovery_window: dict[str, Any] | None = None
                 maximum_tracking_error_m = 0.0
                 while True:
@@ -9757,6 +9778,7 @@ async def _fly_runtime_replacement(
                         )
                     sample_now = (
                         recovery_started is not None
+                        or reference_clock_hold_active
                         or index % tracking_sample_interval == 0
                         or index in waypoint_arrival_indices
                         or checkpoint is not None
@@ -9788,25 +9810,31 @@ async def _fly_runtime_replacement(
                         ),
                         (navigation_goal.x, navigation_goal.y, navigation_goal.z),
                     )
-                    semantic_approach_damping_active = _semantic_approach_damping_required(
-                        planned_goal_distance_m=planned_navigation_goal_distance_m,
-                        # The model-authorized controller may legitimately
-                        # run ahead of the slower global reference.  Size
-                        # the braking envelope for that full authorized
-                        # speed, otherwise damping starts after the real
-                        # aircraft has already entered the settle radius.
-                        planned_speed_mps=max(
-                            math.sqrt(sum(value * value for value in planned_velocity_ned_mps)),
-                            float(params.vel_limit),
-                        ),
-                        maximum_acceleration_mps2=float(params.accel_limit),
-                        waypoint_position_tolerance_m=(
-                            artifact.track.waypoint_position_tolerance_m
-                        ),
-                    )
                     navigation_goal_point_index = int(navigation_goal_id.rsplit("-", 1)[-1])
                     action_checkpoint_goal = (
                         navigation_goal_point_index in action_checkpoint_point_indices
+                    )
+                    # Pass-through route vertices describe a continuous curve;
+                    # they are not stop targets. Brake only for a waypoint that
+                    # owns an actual domain action. Ordinary turns already carry
+                    # their geometry-derived speed envelope and PX4 acceleration
+                    # limits, so forcing precision here made the aircraft crawl
+                    # before every smoothing point.
+                    semantic_approach_damping_active = bool(
+                        action_checkpoint_goal
+                        and _semantic_approach_damping_required(
+                            planned_goal_distance_m=planned_navigation_goal_distance_m,
+                            planned_speed_mps=max(
+                                math.sqrt(
+                                    sum(value * value for value in planned_velocity_ned_mps)
+                                ),
+                                float(params.vel_limit),
+                            ),
+                            maximum_acceleration_mps2=float(params.accel_limit),
+                            waypoint_position_tolerance_m=(
+                                artifact.track.waypoint_position_tolerance_m
+                            ),
+                        )
                     )
                     active_navigation_goal = navigation_goal
                     active_navigation_goal_id = navigation_goal_id
@@ -9853,6 +9881,7 @@ async def _fly_runtime_replacement(
                     if tracking_error_m is not None:
                         maximum_tracking_error_m = max(maximum_tracking_error_m, tracking_error_m)
                     if may_advance:
+                        reference_clock_hold_active = False
                         measured_goal_distance_m = getattr(
                             args,
                             "_last_tracking_model_goal_distance_m",
@@ -9899,6 +9928,18 @@ async def _fly_runtime_replacement(
                             )
                         break
                     if tracking_error_m is None:
+                        if bool(
+                            getattr(
+                                args,
+                                "_last_tracking_reference_clock_hold_required",
+                                False,
+                            )
+                        ):
+                            # Keep the same grouped cruise target active until
+                            # the measured vehicle catches the dense reference.
+                            # This is normal control lag, not a recovery episode.
+                            reference_clock_hold_active = True
+                            continue
                         # Model-required control deliberately withholds schedule
                         # authority while no live model path lease exists. This
                         # is a bounded provider wait, not a tracking error and
@@ -11042,6 +11083,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             checkpoint = checkpoint_indices.get(index)
             recovery_started: float | None = None
             local_recovery_control_active = False
+            reference_clock_hold_active = False
             recovery_window: dict[str, Any] | None = None
             maximum_tracking_error_m = 0.0
             while True:
@@ -11103,6 +11145,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                     _atomic_json(phase_path, {"phase": "TRACK", "checkpoint_id": None})
                 sample_now = (
                     recovery_started is not None
+                    or reference_clock_hold_active
                     or index % tracking_sample_interval == 0
                     or index in waypoint_arrival_indices
                     or checkpoint is not None
@@ -11130,20 +11173,25 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                     ),
                     (navigation_goal.x, navigation_goal.y, navigation_goal.z),
                 )
-                semantic_approach_damping_active = _semantic_approach_damping_required(
-                    planned_goal_distance_m=planned_navigation_goal_distance_m,
-                    # Model-required local control is bounded by vel_limit,
-                    # not by the usually slower reference feed-forward.
-                    planned_speed_mps=max(
-                        math.sqrt(sum(value * value for value in planned_velocity_ned_mps)),
-                        float(params.vel_limit),
-                    ),
-                    maximum_acceleration_mps2=float(params.accel_limit),
-                    waypoint_position_tolerance_m=reference.waypoint_position_tolerance_m,
-                )
                 navigation_goal_point_index = int(navigation_goal_id.rsplit("-", 1)[-1])
                 action_checkpoint_goal = (
                     navigation_goal_point_index in action_checkpoint_point_indices
+                )
+                semantic_approach_damping_active = bool(
+                    action_checkpoint_goal
+                    and _semantic_approach_damping_required(
+                        planned_goal_distance_m=planned_navigation_goal_distance_m,
+                        planned_speed_mps=max(
+                            math.sqrt(
+                                sum(value * value for value in planned_velocity_ned_mps)
+                            ),
+                            float(params.vel_limit),
+                        ),
+                        maximum_acceleration_mps2=float(params.accel_limit),
+                        waypoint_position_tolerance_m=(
+                            reference.waypoint_position_tolerance_m
+                        ),
+                    )
                 )
                 active_navigation_goal = navigation_goal
                 active_navigation_goal_id = navigation_goal_id
@@ -11191,6 +11239,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 if tracking_error_m is not None:
                     maximum_tracking_error_m = max(maximum_tracking_error_m, tracking_error_m)
                 if may_advance:
+                    reference_clock_hold_active = False
                     measured_goal_distance_m = getattr(
                         args,
                         "_last_tracking_model_goal_distance_m",
@@ -11228,6 +11277,15 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                         _atomic_json(phase_path, {"phase": "TRACK", "checkpoint_id": None})
                     break
                 if tracking_error_m is None:
+                    if bool(
+                        getattr(
+                            args,
+                            "_last_tracking_reference_clock_hold_required",
+                            False,
+                        )
+                    ):
+                        reference_clock_hold_active = True
+                        continue
                     # See the replacement-track branch above: absence of a
                     # model lease pauses motion without granting route fallback.
                     continue
