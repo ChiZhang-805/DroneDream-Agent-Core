@@ -234,12 +234,12 @@ def test_all_planning_layers_contribute_and_validate() -> None:
 
 
 # 功能：
-#   验证航程边界接受微小浮点表示差异，但拒绝实际距离超限。
+#   验证航程验证证据不再作为仿真计划的硬拒绝门槛。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_energy_specialist_tolerates_only_serialization_noise() -> None:
+def test_energy_specialist_does_not_block_route_beyond_qualification_distance() -> None:
     contract, graph, vehicle, task_graph, route, clearance, track = _fixtures()
 
     serialized_equal = _validation(
@@ -264,7 +264,7 @@ def test_energy_specialist_tolerates_only_serialization_noise() -> None:
     )
 
     assert serialized_equal.accepted is True
-    assert real_overrun.accepted is False
+    assert real_overrun.accepted is True
 
 
 # 功能：

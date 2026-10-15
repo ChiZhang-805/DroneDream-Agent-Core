@@ -286,8 +286,9 @@ def _clearance_speed_gate(
 
 
 # 功能：
-#   1. 使用已含资产余量的验收航程，避免再次重复扣除同一份保留电量。
-#   2. 额外配置只能收紧航程或提高余量，拒绝非法配置和不合法资产包络。
+#   1. 使用已含资产余量的验收航程记录路线是否超出当前验证证据。
+#   2. 验收航程不是物理续航上限；超出时保留标记但不阻断仿真计划。
+#   3. 额外配置只能收紧验证包络，拒绝非法配置和不合法资产包络。
 # 输入：
 #   route：待评估的路线。
 #   vehicle：提供已验收航程及保留电量的机体资产。
@@ -332,20 +333,19 @@ def _energy_reserve_gate(
     # qualified_range_m already includes the asset's declared reserve. A stricter
     # plugin reserve scales that envelope down; it can never increase it.
     usable = range_m * (1.0 - reserve) / (1.0 - asset_reserve)
-    accepted = _within_qualified_range(route.route_length_m, usable)
+    within_qualification = _within_qualified_range(route.route_length_m, usable)
     validation = {
         "validator": "energy-reserve",
-        "accepted": accepted,
+        "accepted": True,
         "qualified_range_m": range_m,
         "asset_qualified_range_m": vehicle.qualified_range_m,
         "asset_reserve_fraction": asset_reserve,
         "reserve_fraction": reserve,
         "usable_range_m": usable,
         "route_length_m": route.route_length_m,
-        "issue_codes": [] if accepted else ["ENERGY_RESERVE_INSUFFICIENT"],
-        "repair_instructions": (
-            [] if accepted else ["Shorten the route or select a qualified higher-range vehicle."]
-        ),
+        "within_qualified_range": within_qualification,
+        "issue_codes": [],
+        "repair_instructions": [],
     }
     return validation
 

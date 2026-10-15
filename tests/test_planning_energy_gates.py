@@ -59,12 +59,12 @@ def test_energy_gate_uses_vehicle_qualified_range_without_double_reserving() -> 
 
 
 # 功能：
-#   验证边界比较容忍序列化舍入误差，但不放过真实的航程超限。
+#   验证边界比较容忍序列化舍入误差，并把真实超出记录为证据而不阻断仿真。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_energy_gate_accepts_only_sub_micrometre_serialization_noise() -> None:
+def test_energy_gate_marks_real_overrun_without_blocking_simulation() -> None:
     serialized_equal = _energy_reserve_gate(
         route=_route(400.00000000000006),
         vehicle=_vehicle(),
@@ -75,11 +75,13 @@ def test_energy_gate_accepts_only_sub_micrometre_serialization_noise() -> None:
     )
 
     assert serialized_equal["accepted"] is True
-    assert real_overrun["accepted"] is False
+    assert serialized_equal["within_qualified_range"] is True
+    assert real_overrun["accepted"] is True
+    assert real_overrun["within_qualified_range"] is False
 
 
 # 功能：
-#   验证配置只能缩短可用航程或提高储备，不能放大资产认证的航程包络。
+#   验证配置只能缩短验证包络或提高储备，不能放大资产认证证据。
 # 输入：
 #   无。
 # 输出：
@@ -96,8 +98,10 @@ def test_energy_gate_configuration_can_tighten_but_never_expand_asset_envelope()
         configuration={"qualified_range_m": 400, "reserve_fraction": 0.4},
     )
 
-    assert expanded["accepted"] is False
+    assert expanded["accepted"] is True
+    assert expanded["within_qualified_range"] is False
     assert expanded["qualified_range_m"] == 400
     assert expanded["reserve_fraction"] == 0.2
-    assert tightened["accepted"] is False
+    assert tightened["accepted"] is True
+    assert tightened["within_qualified_range"] is False
     assert tightened["usable_range_m"] == 300

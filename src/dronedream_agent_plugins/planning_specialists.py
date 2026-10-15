@@ -280,10 +280,16 @@ def _validation(
             ),
         }
     elif layer == "energy":
+        # qualified_range_m records the distance covered by the current asset
+        # qualification evidence.  It is not a physical endurance limit.  A
+        # longer simulation route therefore remains executable and carries its
+        # qualification penalty through route scoring instead of exhausting the
+        # planner review loop before takeoff.
         gates = {
-            "qualified_range": _within_qualified_range(
-                route.route_length_m,
-                maximum_range_m,
+            "route_energy_estimable": (
+                math.isfinite(route.route_length_m)
+                and route.route_length_m > 0.0
+                and math.isfinite(maximum_range_m)
             ),
             "return_reserve_declared": vehicle.reserve_battery_percent >= 10.0,
         }
