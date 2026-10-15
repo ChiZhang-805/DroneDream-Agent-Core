@@ -354,6 +354,7 @@ def evaluate_runtime_local_safety(
     uncertainty_margin_m = localization_uncertainty_margin_m(
         observation.localization_covariance_m2
     )
+    qualified_static_route_continuation = False
     if provided_route_budget_values:
         if provided_route_budget_values != len(route_budget_context):
             raise ValueError("ROUTE_LOCALIZATION_BUDGET_CONTEXT_INCOMPLETE")
@@ -367,39 +368,22 @@ def evaluate_runtime_local_safety(
             qualified_route_clearance_m,
             current_localization_covariance_m2,
         )
-        if not route_budget["funded"]:
-            # A temporary global-localization deficit is not equivalent to a
-            # blind aircraft.  When the signed route still has enough physical
-            # room for its local-safety and tracking reserves, fresh onboard
-            # depth may bridge the deficit at walking speed.  Geometry checks
-            # below still run on every candidate.  An actually narrow route,
-            # stale perception, or non-onboard source remains a hard hold.
-            structurally_navigable = qualified_route_clearance_m >= (
-                route_budget["required_local_clearance_m"]
-                + route_budget["minimum_tracking_allowance_m"]
-            )
-            if (
-                structurally_navigable
-                and observation.source == "onboard"
-                and observation.stream_healthy
-            ):
-                # Absolute-map covariance may temporarily exceed a narrow
-                # route budget even while signed static geometry, fresh body-
-                # relative depth and PX4 tracking all agree.  Continue at a
-                # clearance-scaled speed that can still satisfy the route's
-                # duration contract; a fixed 0.12 m/s ceiling made long but
-                # valid missions mathematically unable to finish before their
-                # own qualified timeout.
-                local_bridge_speed_mps = min(
-                    0.35,
-                    max(0.12, float(qualified_route_clearance_m) * 0.8),
-                )
-                planner_max_speed_mps = min(
-                    planner_max_speed_mps,
-                    local_bridge_speed_mps,
-                )
-            else:
-                perception_stream_healthy = False
+        structurally_navigable = qualified_route_clearance_m >= (
+            route_budget["required_local_clearance_m"]
+            + route_budget["minimum_tracking_allowance_m"]
+        )
+        qualified_static_route_continuation = bool(
+            structurally_navigable
+            and observation.source == "onboard"
+            and observation.stream_healthy
+        )
+        # A temporary global-localization deficit is not equivalent to a
+        # blind aircraft.  A signed, structurally navigable route with a
+        # healthy onboard stream keeps the track's requested cruise profile;
+        # runtime geometry still checks every candidate and a dynamic
+        # observation keeps its independent veto.
+        if not route_budget["funded"] and not qualified_static_route_continuation:
+            perception_stream_healthy = False
         uncertainty_margin_m = float(relative_perception_uncertainty_margin_m)
     preferred_planner_speed_mps = planner_max_speed_mps
     measured_speed_mps = math.hypot(
@@ -475,10 +459,26 @@ def evaluate_runtime_local_safety(
     #   velocity、clearance、yaw：候选动作及其几何证据。
     # 输出：
     #   allowed：候选当前具有实际控制预算时为真。
+    source_age_seconds = max(
+        observation.stream_age_seconds,
+        (generated_at_unix_ms - source_ms) / 1000.0,
+    )
+
+    def static_route_continuation_allowed(clearance):
+        return bool(
+            qualified_static_route_continuation
+            and not observation.dynamic_obstacles
+            and source_age_seconds <= LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS
+            and clearance >= required_clearance_m + uncertainty_margin_m
+        )
+
     def candidate_current(velocity, clearance, yaw):
         nonlocal first_rejected_budget
         validity = candidate_validity(velocity, clearance, yaw)
-        allowed = validity.disposition == "control-eligible"
+        allowed = (
+            validity.disposition == "control-eligible"
+            or static_route_continuation_allowed(clearance)
+        )
         if not allowed and first_rejected_budget is None:
             first_rejected_budget = (validity, max(0., clearance - required_clearance_m))
         return allowed
@@ -576,6 +576,27 @@ def evaluate_runtime_local_safety(
             )
         if validity.disposition == "control-eligible":
             adaptive_deadline_ms = validity.control_deadline_unix_ms
+        elif (
+            not bounded_static_egress
+            and static_route_continuation_allowed(validity_clearance_m)
+        ):
+            # Static-route execution does not need to stop merely because the
+            # local candidate enumeration consumed the source's short response
+            # budget.  The route is signed, the complete static sweep passed,
+            # the onboard stream is healthy, and no dynamic obstacle exists.
+            # Renew only a normal short command lease; collision geometry and
+            # dynamic observations still veto motion on the next cycle.
+            continuation_deadline_ms = generated_at_unix_ms + validity_milliseconds
+            observation_budget = ControlObservationBudget(
+                source_observed_at_unix_ms=validity.source_observed_at_unix_ms,
+                control_deadline_unix_ms=continuation_deadline_ms,
+                disposition="control-eligible",
+                reason="qualified-static-route-continuation",
+                clearance_margin_m=clearance_margin_m,
+                uncertainty_margin_m=uncertainty_margin_m,
+                downstream_reserve_ms=0,
+            )
+            adaptive_deadline_ms = continuation_deadline_ms
         elif not bounded_static_egress:
             # Expired evidence cannot justify forward motion. Retain geometry
             # and its threat forecast when issuing the independent brake; do

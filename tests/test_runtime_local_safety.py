@@ -266,7 +266,7 @@ def test_runtime_grants_short_lease_to_static_penetration_escape() -> None:
 # 输入：
 #   无：复现真实飞行中对齐方差 0.05、原生定位方差 0.011 的保守组合。
 # 输出：
-#   None：充足走廊正常运动，暂时欠定位预算时按净空缩放前进，物理过窄仍悬停。
+#   None：充足走廊正常运动，暂时欠定位预算时仍执行已资格化轨迹，物理过窄仍悬停。
 def test_qualified_route_separates_absolute_localization_from_relative_alignment() -> None:
     from dronedream_agent_core.hashing import sha256_json
 
@@ -316,7 +316,7 @@ def test_qualified_route_separates_absolute_localization_from_relative_alignment
     degraded_speed = math.hypot(
         degraded_velocity.x, degraded_velocity.y, degraded_velocity.z
     )
-    assert 0.12 < degraded_speed <= 0.240001
+    assert degraded_speed == pytest.approx(0.3)
     assert degraded.observation_sha256 == sha256_json(observation)
 
     structurally_narrow = evaluate_runtime_local_safety(
@@ -333,6 +333,41 @@ def test_qualified_route_separates_absolute_localization_from_relative_alignment
         relative_perception_uncertainty_margin_m=relative_margin_m,
     )
     assert structurally_narrow.decision.action == "hold"
+
+
+def test_qualified_static_route_does_not_stop_for_candidate_compute_latency() -> None:
+    observation = RuntimeLocalSafetyObservation(
+        sequence=83,
+        observed_at_unix_ms=10_000,
+        source="onboard",
+        stream_healthy=True,
+        stream_age_seconds=0.30,
+        localization_covariance_m2=0.05,
+        current_position_m=Vector3(x=0.0, y=0.0, z=3.0),
+        current_velocity_mps=Vector3(x=0.5, y=0.0, z=0.0),
+        target_position_m=Vector3(x=20.0, y=0.0, z=3.0),
+    )
+    relative_margin_m = 0.16
+
+    command = evaluate_runtime_local_safety(
+        observation=observation,
+        vehicle=_vehicle(),
+        static_primitives=[],
+        required_clearance_m=0.15,
+        generated_at_unix_ms=10_600,
+        command_horizon_seconds=0.2,
+        validity_milliseconds=500,
+        maximum_speed_mps=2.0,
+        qualified_route_clearance_m=1.15,
+        current_localization_covariance_m2=0.05,
+        relative_perception_uncertainty_margin_m=relative_margin_m,
+    )
+
+    assert command.decision.action != "hold"
+    assert command.observation_budget.disposition == "control-eligible"
+    assert command.observation_budget.reason == "qualified-static-route-continuation"
+    assert command.valid_until_unix_ms == 11_100
+    assert "OBSERVATION_CONTROL_BUDGET_EXHAUSTED" not in command.decision.issue_codes
 
 
 @pytest.mark.parametrize(
