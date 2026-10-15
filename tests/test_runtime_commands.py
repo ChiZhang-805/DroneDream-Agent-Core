@@ -1580,6 +1580,9 @@ def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap(
         qualified_route_clearance_m=0.395,
         now=11.2,
     )
+    assert executor._static_corridor_bridge_speed_limit(
+        args=args, action_checkpoint_goal=False
+    ) == pytest.approx(5.0)
 
     for overrides in (
         {"now": 14.01},
@@ -1602,6 +1605,12 @@ def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap(
     # 动作检查点在真实飞行中仍拒绝桥接；显式 Gazebo 身份只授权低速接近，
     # 真正载荷动作仍由检查点的新鲜感知确认独立把关。
     args.gazebo_vehicle_model_name = "x500_depth_0"
+    assert executor._static_corridor_bridge_speed_limit(
+        args=args, action_checkpoint_goal=False
+    ) == pytest.approx(5.0)
+    assert executor._static_corridor_bridge_speed_limit(
+        args=args, action_checkpoint_goal=True
+    ) == pytest.approx(0.6)
     assert executor._bounded_static_corridor_perception_bridge_allowed(
         args=args,
         command=command,

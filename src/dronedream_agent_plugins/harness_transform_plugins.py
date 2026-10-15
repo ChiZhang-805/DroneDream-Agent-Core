@@ -306,11 +306,14 @@ def _corner_speed_envelope(
     # each target with its qualified acceleration limit; these values never
     # become direct actuator commands.
     policy_cruise_mps = {
-        "balanced": 3.0,
+        # A clear outdoor straight should settle near a useful 4 m/s cruise.
+        # Geometry-aware turn caps and the executor acceleration envelope still
+        # slow the aircraft continuously before corners and action zones.
+        "balanced": 4.0,
         "clearance-first": 2.4,
         "minimum-time": 5.0,
         "energy-conserving": 2.0,
-        "few-transitions": 3.5,
+        "few-transitions": 4.5,
     }
     points = list(value.points)
     if semantic_plan is not None:

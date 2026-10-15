@@ -185,21 +185,21 @@ _INDEPENDENT_ROUTE_TARGET_REFRESH_RATE_HZ = 0.5
 # process is busy.  In an already-qualified static corridor, stopping on every
 # such pause creates a start/stop limit cycle even though the executor still
 # has current PX4 pose and revalidates the remaining segment every tick.  The
-# bridge is deliberately bounded below route cruise speed and cannot advance
-# the schedule or cross an action checkpoint; fresh perception remains
-# mandatory for dynamic evidence and for selecting the next route point.
+# bridge keeps the acceleration-shaped route velocity when the actual short
+# segment is still clear.  It never crosses an action checkpoint; fresh
+# perception remains mandatory for dynamic evidence and for selecting the next
+# route point.  A camera refresh gap must not create a stop/start flight.
 _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_GAP_SECONDS = 4.0
-_STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS = 0.20
+_STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS = 5.0
 # 仿真中的动作检查点仍需先飞抵目标，不能因为相机短暂刷新就永久悬停；
 # 但接近速度必须低于普通走廊桥接，且本许可只覆盖接近，不授权执行载荷动作。
-_STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS = 0.10
+_STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS = 0.60
 # A route controller must not stop merely because an asynchronous local-safety
 # result misses a millisecond-scale dispatch lease.  Between independently
 # healthy assessments, the signed static corridor and current PX4 state own a
 # bounded continuity controller.  New obstacle/localization decisions still
 # preempt it on their next datagram; total producer loss reaches the same
 # finite gap limit and then holds.
-_STATIC_CORRIDOR_CONTROL_CONTINUITY_MAX_SPEED_MPS = 0.35
 _STATIC_CORRIDOR_PERCEPTION_BRIDGE_ISSUES = frozenset(
     {
         "PERCEPTION_STREAM_UNHEALTHY",
@@ -5560,15 +5560,38 @@ def _stationary_route_setpoint_is_complete(
 
 
 # 功能：
-#   在相邻健康帧或一次已完成但错过发令预算的帧之间，允许飞机沿已签名静态走廊低速趋近固定目标。
-#   该桥接只处理短暂感知/处理空窗；定位异常、动态障碍证据异常、无几何复验或长期失联仍保持。
+#   感知刷新空窗继续采用路线速度，动作检查点仍使用取件阶段的低速上限。
+# 输入：
+#   args：可选的桥接速度配置。
+#   action_checkpoint_goal：当前是否为动作检查点。
+# 输出：
+#   speed_limit：本轮静态走廊桥接速度上限，单位米每秒。
+def _static_corridor_bridge_speed_limit(
+    *, args: argparse.Namespace, action_checkpoint_goal: bool
+) -> float:
+    """Select a bridge limit without turning a simulated camera gap into a crawl."""
+
+    if action_checkpoint_goal:
+        return _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
+    return float(
+        getattr(
+            args,
+            "static_corridor_perception_bridge_max_speed_mps",
+            _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS,
+        )
+    )
+
+
+# 功能：
+#   相邻健康帧之间允许飞机沿已签名且重新验证的静态走廊继续趋近目标。
+#   定位异常、动态障碍证据异常、无几何复验或长期失联仍保持。
 # 输入：
 #   args：路线控制模式以及最近一次健康局部感知的单调时刻。
 #   command：本轮已经通过身份、期限和目标上下文校验的安全命令。
 #   observed：本轮 PX4 原生位置速度，必须仍可用。
 #   tracking_recovery_active：是否正在减小固定路线目标的跟踪误差。
-#   action_checkpoint_goal：当前目标是否含载荷动作；仅仿真中的低速接近段可桥接。
-#   qualified_route_clearance_m：当前签名路线段的保守净空。
+#   action_checkpoint_goal：当前目标是否含载荷动作；仅仿真中的接近段可桥接。
+#   qualified_route_clearance_m：当前签名路线段的净空。
 #   now：本控制周期的单调时刻。
 # 输出：
 #   allowed：仅在全部约束成立的短时间窗内为 True。
@@ -6143,12 +6166,17 @@ async def _apply_local_safety(
                 seed_speed_mps = math.sqrt(
                     seed_velocity.x**2 + seed_velocity.y**2 + seed_velocity.z**2
                 )
+                bridge_speed_limit_mps = _static_corridor_bridge_speed_limit(
+                    args=args,
+                    action_checkpoint_goal=action_checkpoint_goal,
+                )
+                planned_bridge_speed_mps = (
+                    math.hypot(*effective_planned_velocity_ned_mps)
+                    if effective_planned_velocity_ned_mps is not None
+                    else 0.0
+                )
                 continuity_speed_mps = min(
-                    (
-                        _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
-                        if action_checkpoint_goal
-                        else _STATIC_CORRIDOR_CONTROL_CONTINUITY_MAX_SPEED_MPS
-                    ),
+                    bridge_speed_limit_mps,
                     max(
                         (
                             _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
@@ -6156,6 +6184,7 @@ async def _apply_local_safety(
                             else _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS
                         ),
                         seed_speed_mps,
+                        planned_bridge_speed_mps,
                     ),
                 )
                 continuity_velocity_ned_mps = _recovery_position_velocity_feedforward(
@@ -6602,6 +6631,10 @@ async def _apply_local_safety(
             else None
         )
         if bridge_clearance is not None:
+            bridge_speed_limit_mps = _static_corridor_bridge_speed_limit(
+                args=args,
+                action_checkpoint_goal=action_checkpoint_goal,
+            )
             corrected_world = Vector3(
                 x=planned_world.x - estimator_offset.x,
                 y=planned_world.y - estimator_offset.y,
@@ -6620,20 +6653,7 @@ async def _apply_local_safety(
                 velocity_damping=float(
                     getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                 ),
-                maximum_speed_mps=min(
-                    float(
-                        getattr(
-                            args,
-                            "static_corridor_perception_bridge_max_speed_mps",
-                            _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS,
-                        )
-                    ),
-                    (
-                        _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
-                        if action_checkpoint_goal
-                        else _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS
-                    ),
-                ),
+                maximum_speed_mps=bridge_speed_limit_mps,
                 deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
             )
             args._last_applied_velocity_feedforward_ned_mps = bridge_velocity_ned_mps
@@ -6655,14 +6675,10 @@ async def _apply_local_safety(
                             _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_GAP_SECONDS,
                         )
                     ),
-                    "maximum_speed_mps": (
-                        _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
-                        if action_checkpoint_goal
-                        else _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS
-                    ),
+                    "maximum_speed_mps": bridge_speed_limit_mps,
                     "qualified_route_clearance_m": qualified_route_clearance_m,
                     "actual_bridge_clearance_m": bridge_clearance.minimum_clearance_m,
-                    "schedule_advancement_authorized": False,
+                    "schedule_advancement_authorized": not action_checkpoint_goal,
                 },
             )
             _record_local_safety_executor_event(
@@ -6676,7 +6692,7 @@ async def _apply_local_safety(
                     "perception_gap_seconds": gap_seconds,
                     "issue_codes": sorted(perception_issue_codes),
                     "velocity_ned_mps": list(bridge_velocity_ned_mps),
-                    "schedule_advancement_authorized": False,
+                    "schedule_advancement_authorized": not action_checkpoint_goal,
                 },
             )
             await _send_position_with_velocity(
