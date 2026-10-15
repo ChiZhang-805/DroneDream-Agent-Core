@@ -78,7 +78,7 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-f3f1b091b23b4b830a0ef4b1",
+        "qualification_id": "asset-qualification-4260cc65446dd95fb0ead2b0",
         "required_inputs": [],
     },
 }
@@ -95,7 +95,7 @@ def map_resource_catalog() -> dict[str, object]:
 
     return {
         "schema_version": "dronedream.map-resource-catalog.v1",
-        "catalog_revision": "2026-10-15.2",
+        "catalog_revision": "2026-10-15.3",
         "resources": deepcopy(list(_RESOURCES)),
     }
 
