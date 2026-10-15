@@ -3829,6 +3829,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--vehicle", required=True)
     parser.add_argument("--world", required=True)
     parser.add_argument("--abort-file", type=Path)
+    parser.add_argument("--runtime-control-file", type=Path)
     parser.add_argument(
         "--connection",
         default=os.environ.get("PX4_OFFBOARD_CONNECTION", "udpin://0.0.0.0:14540"),
