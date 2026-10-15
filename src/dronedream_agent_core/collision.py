@@ -1,4 +1,4 @@
-"""Continuous conservative vehicle-envelope checks against real SDF semantics."""
+"""Continuous vehicle-envelope checks against real SDF semantics."""
 
 from __future__ import annotations
 
@@ -89,7 +89,13 @@ def build_tracking_corridor_budget(
     available_tracking_m = assessment["available_tracking_m"]
     if available_tracking_m < 0.04:
         raise ValueError("route clearance cannot fund local safety and tracking margins")
-    lag_limit_m = min(0.25, available_tracking_m * 0.80)
+    # Spend the clearance that this concrete route actually proved.  The old
+    # 0.25 m global cap made a wide outdoor corridor behave like a doorway:
+    # ordinary crosswind/controller error repeatedly switched cruise into a
+    # fixed-point recovery and reduced a healthy flight to a crawl.  Narrow
+    # corridors still receive narrow limits because ``available_tracking_m``
+    # already subtracts the local obstacle and localization allocations.
+    lag_limit_m = available_tracking_m * 0.80
     rejoin_tolerance_m = max(0.025, lag_limit_m * 0.90)
     budget = {
         "minimum_route_clearance_m": minimum_route_clearance_m,

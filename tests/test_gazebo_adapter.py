@@ -1009,6 +1009,19 @@ def test_full_route_rejoin_tolerance_uses_funded_corridor_without_stalling() -> 
     )
 
 
+def test_wide_route_tracking_limit_uses_proven_clearance_without_global_crawl_cap() -> None:
+    policy = _tracking_corridor_policy(1.2414962006107202)
+
+    assert policy["tracking_lag_limit_m"] > 0.75
+    assert policy["tracking_rejoin_tolerance_m"] > 0.65
+    assert (
+        policy["required_local_clearance_m"]
+        + policy["reserved_uncertainty_m"]
+        + policy["tracking_lag_limit_m"]
+        < policy["minimum_route_clearance_m"]
+    )
+
+
 def test_narrow_route_rejoin_hysteresis_scales_with_funded_corridor() -> None:
     policy = _tracking_corridor_policy(0.16)
 
