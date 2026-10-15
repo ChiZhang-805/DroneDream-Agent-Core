@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 from test_runtime_replan import _replan_inputs
 
-from dronedream_agent_core.contracts import GraphRoute, MapAsset, RuntimeTrackRequest, VehicleAsset
+from dronedream_agent_core.contracts import (
+    GraphRoute,
+    MapAsset,
+    RuntimeTrackRequest,
+    Vector3,
+    VehicleAsset,
+)
 from dronedream_agent_core.px4_track import _load as load_track_semantic
 from dronedream_agent_core.px4_track import route_to_px4_track, runtime_route_to_px4_track
 from dronedream_agent_core.runtime_bindings import (
@@ -283,12 +289,12 @@ def test_current_map_contract_rejects_retired_vehicle_geometry(tmp_path: Path) -
 
 
 # 功能：
-#   验证几何规划生成的中间点可导出，合成路段使用车辆边界内的保守速度。
+#   验证几何规划生成的中间点可导出，并按路线策略连续巡航、转弯减速。
 # 输入：
 #   tmp_path：临时语义文件目录。
 # 输出：
 #   None：不返回业务数据。
-def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
+def test_metric_geometry_route_exports_with_continuous_policy_driven_speed(
     tmp_path: Path,
 ) -> None:
     graph = _graph()
@@ -308,9 +314,36 @@ def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
     semantic_path = tmp_path / "semantic.json"
     semantic_path.write_text(json.dumps(_semantic()), encoding="utf-8")
 
-    track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
+    vehicle = _vehicle().model_copy(update={"max_speed_mps": 6.0})
+    track = route_to_px4_track(route, graph, semantic_path, vehicle=vehicle)
+    urgent = route_to_px4_track(
+        route,
+        graph,
+        semantic_path,
+        vehicle=vehicle,
+        route_policy="minimum-time",
+    )
+    corner_route = route.model_copy(
+        update={
+            "positions_m": [
+                graph.nodes[0].position_m,
+                Vector3(x=16.0, y=22.0, z=8.0),
+                graph.nodes[1].position_m,
+            ]
+        }
+    )
+    corner = route_to_px4_track(
+        corner_route,
+        graph,
+        semantic_path,
+        vehicle=vehicle,
+    )
 
-    assert [point.speed_limit_mps for point in track.points] == [3.0, 3.0, 3.0]
+    assert [point.speed_limit_mps for point in track.points] == [5.0, 5.0, 5.0]
+    assert track.stop_at_waypoints is False
+    assert [point.target_speed_mps for point in track.points] == [1.5, 4.0, 0.5]
+    assert [point.target_speed_mps for point in urgent.points] == [1.5, 5.0, 0.5]
+    assert [point.target_speed_mps for point in corner.points] == [1.5, 1.8, 0.5]
 
 
 def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:

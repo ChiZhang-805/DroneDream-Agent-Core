@@ -52,6 +52,55 @@ def _validate_route_structure(route: GraphRoute) -> None:
         raise ValueError("PX4_ROUTE_STRUCTURE_INVALID")
 
 
+def _policy_cruise_speed_mps(route_policy: str) -> float:
+    """Translate the model-selected route policy into a useful cruise target."""
+    speeds = {
+        "balanced": 4.0,
+        "clearance-first": 3.0,
+        "minimum-time": 5.0,
+        "energy-conserving": 2.5,
+        "few-transitions": 4.5,
+    }
+    try:
+        return speeds[route_policy]
+    except KeyError as error:
+        raise ValueError("PX4_ROUTE_POLICY_INVALID") from error
+
+
+def _corner_target_speed_mps(
+    previous: Px4TrackPoint,
+    current: Px4TrackPoint,
+    following: Px4TrackPoint,
+    cruise_speed_mps: float,
+) -> float:
+    """Keep straight flight fast while continuously slowing for real turns."""
+    incoming = (
+        current.x - previous.x,
+        current.y - previous.y,
+        current.z - previous.z,
+    )
+    outgoing = (
+        following.x - current.x,
+        following.y - current.y,
+        following.z - current.z,
+    )
+    incoming_norm = math.hypot(*incoming)
+    outgoing_norm = math.hypot(*outgoing)
+    if incoming_norm <= 1e-9 or outgoing_norm <= 1e-9:
+        return min(current.speed_limit_mps, cruise_speed_mps)
+    cosine = sum(
+        (left / incoming_norm) * (right / outgoing_norm)
+        for left, right in zip(incoming, outgoing, strict=True)
+    )
+    angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+    turn_target = (
+        1.2 if angle_deg >= 120.0 else 1.8 if angle_deg >= 75.0 else 2.5
+        if angle_deg >= 35.0
+        else cruise_speed_mps
+    )
+    return min(current.speed_limit_mps, cruise_speed_mps, turn_target)
+
+
 # 功能：
 #   1. 用地图出生点和所选车辆碰撞中心，把世界 ENU 路线转换为 PX4 局部轨迹。
 #   2. 要求起点匹配已绑定起飞点，保留楼梯等阶段并把所有速度限制在车辆能力内。
@@ -66,6 +115,7 @@ def _validate_route_structure(route: GraphRoute) -> None:
 def route_to_px4_track(
     route: GraphRoute, graph: MapAsset, semantic_path: Path, *, vehicle: VehicleAsset,
     waypoint_hold_seconds: float = 0.4,
+    route_policy: str = "balanced",
 ) -> Px4Track:
     _validate_route_structure(route)
     semantic = _load(semantic_path)
@@ -88,7 +138,7 @@ def route_to_px4_track(
     node_by_id = {node.node_id: node for node in graph.nodes}
     synthesized_speed_limit_mps = min(
         vehicle.max_speed_mps,
-        3.0,
+        5.0,
     )
     speed_limits = []
     for edge_id in route.edge_ids:
@@ -140,6 +190,22 @@ def route_to_px4_track(
             )
         )
         world_points.append(WorldTrackPoint(east_m=world.x, north_m=world.y, up_m=world.z))
+    cruise_speed_mps = min(vehicle.max_speed_mps, _policy_cruise_speed_mps(route_policy))
+    speed_targets = [min(points[0].speed_limit_mps, 1.5)]
+    speed_targets.extend(
+        _corner_target_speed_mps(
+            points[index - 1],
+            points[index],
+            points[index + 1],
+            cruise_speed_mps,
+        )
+        for index in range(1, len(points) - 1)
+    )
+    speed_targets.append(min(points[-1].speed_limit_mps, 0.5))
+    points = [
+        point.model_copy(update={"target_speed_mps": speed_targets[index]})
+        for index, point in enumerate(points)
+    ]
     track = Px4Track(
         coordinate_contract=Px4CoordinateContract(
             model_root_world_enu_m=list(model_root),
@@ -147,6 +213,7 @@ def route_to_px4_track(
         ),
         points=points,
         source_world_points=world_points,
+        stop_at_waypoints=False,
         waypoint_hold_seconds=waypoint_hold_seconds,
     )
     return track
@@ -170,7 +237,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
     )
     edges = {edge.edge_id: edge for edge in graph.edges}
     nodes = {node.node_id: node for node in graph.nodes}
-    join_speed = min(3.0, vehicle.max_speed_mps)
+    join_speed = min(5.0, vehicle.max_speed_mps)
     points: list[Px4TrackPoint] = []
     world_points: list[WorldTrackPoint] = []
     target_seen = False

@@ -27,6 +27,7 @@ def _tools(environment: ToolEnvironment) -> list[ToolPlugin]:
                 environment.semantic_path,
                 vehicle=environment.vehicle,
                 waypoint_hold_seconds=request.waypoint_hold_seconds,
+                route_policy=request.route_policy,
             ),
         )
     ]

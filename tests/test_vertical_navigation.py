@@ -392,7 +392,7 @@ def test_loaded_braking_checks_current_momentum_and_response_delay():
 #   无：一条已绑定背景的实时观测。
 # 输出：
 #   None：断言真实运行入口执行限制及摘要检查。
-def test_runtime_binding_and_simulated_payload_degradation():
+def test_runtime_binding_keeps_observable_simulated_payload_mobile():
     protection = guard(payload=payload())
     observation = RuntimeLocalSafetyObservation(sequence=1, observed_at_unix_ms=1000,
         source="onboard", stream_healthy=True, stream_age_seconds=.01,
@@ -408,12 +408,12 @@ def test_runtime_binding_and_simulated_payload_degradation():
     assert command.decision.action in {"continue", "slow", "replan"}
     assert command.observation_sha256 == sha256_json(observation)
     assert "LOADED_MOTION_DYNAMICS_UNQUALIFIED" not in command.decision.issue_codes
-    assert command.decision.maximum_acceleration_mps2 == pytest.approx(.2)
+    assert command.decision.maximum_acceleration_mps2 == pytest.approx(1.)
     assert math.hypot(
         command.decision.selected_velocity_mps.x,
         command.decision.selected_velocity_mps.y,
         command.decision.selected_velocity_mps.z,
-    ) <= .12 + 1e-9
+    ) > .12
     observation.current_position_m.x = 1.
     with pytest.raises(ValueError, match="POSITION_BINDING"):
         evaluate_runtime_local_safety(**kwargs, motion_guard=protection)
@@ -442,7 +442,7 @@ def test_qualified_coverage_requires_bound_route_and_every_crossed_cell():
 
 
 # 功能：
-#   将首次负载测量与产品授权分开；缺失包络只在显式仿真采集中豁免且仍限速。
+#   将首次负载测量与产品授权分开；普通仿真不因缺失独立包络被硬性降速。
 # 输入：
 #   无：正常、未知质量、坏遥测及真机越权用例。
 # 输出：
@@ -455,7 +455,7 @@ def test_measurement_mode_is_simulation_only_and_never_production_qualification(
     assert protection.acceleration_limit(1.) == .2
     assert protection.check(request(), (.3, 0., 0.), [(0., 0., 2.)]) == ["MEASUREMENT_SPEED_LIMIT"]
     assert guard(payload=payload()).issues == []
-    assert guard(payload=payload()).acceleration_limit(1.) == .2
+    assert guard(payload=payload()).acceleration_limit(1.) == 1.
     assert "PAYLOAD_MASS_UNKNOWN" in guard(payload=payload(None), measurement_only=True).issues
     bad = payload()
     bad["dynamics"]["ready"] = False

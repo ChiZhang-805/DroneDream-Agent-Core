@@ -4227,6 +4227,7 @@ class MissionOrchestrator:
                         Px4TrackRequest(
                             route=candidate_route,
                             waypoint_hold_seconds=self.config.waypoint_hold_seconds,
+                            route_policy=semantic_plan.route_policy,
                         ),
                     )
                 except ToolExecutionError as error:

@@ -1466,6 +1466,13 @@ class Px4TrackRequest(StrictModel):
     schema_version: Literal["dronedream.px4-track-request.v1"] = "dronedream.px4-track-request.v1"
     route: GraphRoute
     waypoint_hold_seconds: float = Field(default=0.4, ge=0.0, le=30.0)
+    route_policy: Literal[
+        "balanced",
+        "clearance-first",
+        "minimum-time",
+        "energy-conserving",
+        "few-transitions",
+    ] = "balanced"
 
 
 class RuntimeTrackRequest(StrictModel):

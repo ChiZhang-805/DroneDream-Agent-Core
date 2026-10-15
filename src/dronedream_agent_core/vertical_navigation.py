@@ -410,15 +410,6 @@ class VerticalMotionGuard:
     def acceleration_limit(self, maximum: float) -> float:
         limit = (min(maximum, self.envelope.maximum_command_acceleration_mps2)
                  if self.envelope is not None else maximum)
-        loaded = self.payload.get("state") in {
-            "attached", "custody-confirmed", "loaded-stable"
-        }
-        if self.domain == "simulation" and loaded and self.envelope is None:
-            # Missing independent payload qualification is evidence that the
-            # simulator must use a conservative envelope, not a reason to
-            # immobilize an otherwise observable aircraft.  Hardware retains
-            # the explicit qualification requirement above.
-            limit = min(limit, .2)
         if self.measurement_only:
             limit = min(limit, .2)
         return limit

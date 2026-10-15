@@ -117,10 +117,11 @@ def test_delivery_payload_action_is_validated_at_contract_target() -> None:
 #   speeds：需要拒绝的航点速度列表。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize("speeds", [[], [-1], [float("nan")], [True], [4]])
+@pytest.mark.parametrize("speeds", [[], [-1], [float("nan")], [True], [21]])
 def test_stop_policy_does_not_make_bad_track_values_safe(speeds) -> None:
     track = SimpleNamespace(
-        points=[SimpleNamespace(speed_limit_mps=s) for s in speeds], stop_at_waypoints=True
+        points=[SimpleNamespace(speed_limit_mps=s, target_speed_mps=None) for s in speeds],
+        stop_at_waypoints=True,
     )
     assert not _stability_gate(px4_track=track)["accepted"]
 
