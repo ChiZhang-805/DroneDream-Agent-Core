@@ -1581,7 +1581,7 @@ def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap(
         now=11.2,
     )
     assert executor._static_corridor_bridge_speed_limit(
-        args=args, action_checkpoint_goal=False
+        args=args, action_checkpoint_goal=False, control_profile="cruise"
     ) == pytest.approx(5.0)
 
     for overrides in (
@@ -1606,11 +1606,14 @@ def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap(
     # 真正载荷动作仍由检查点的新鲜感知确认独立把关。
     args.gazebo_vehicle_model_name = "x500_depth_0"
     assert executor._static_corridor_bridge_speed_limit(
-        args=args, action_checkpoint_goal=False
+        args=args, action_checkpoint_goal=False, control_profile="cruise"
     ) == pytest.approx(5.0)
     assert executor._static_corridor_bridge_speed_limit(
-        args=args, action_checkpoint_goal=True
-    ) == pytest.approx(0.6)
+        args=args, action_checkpoint_goal=True, control_profile="cruise"
+    ) == pytest.approx(5.0)
+    assert executor._static_corridor_bridge_speed_limit(
+        args=args, action_checkpoint_goal=True, control_profile="precision"
+    ) == pytest.approx(1.2)
     assert executor._bounded_static_corridor_perception_bridge_allowed(
         args=args,
         command=command,
@@ -1634,6 +1637,43 @@ def test_static_corridor_perception_bridge_accepts_only_recent_stale_camera_gap(
         qualified_route_clearance_m=0.395,
         now=11.2,
     )
+
+
+def test_static_corridor_continuity_preserves_cruise_tangent_and_uses_precision_radial() -> None:
+    executor = _load_executor()
+    observed = SimpleNamespace(
+        north_m=0.0,
+        east_m=0.0,
+        down_m=-1.5,
+        north_m_s=0.0,
+        east_m_s=0.0,
+        down_m_s=0.0,
+    )
+    target = SimpleNamespace(north_m=0.5, east_m=0.0, down_m=-1.5)
+
+    cruise = executor._static_corridor_continuity_velocity(
+        observed=observed,
+        target_setpoint=target,
+        planned_velocity_ned_mps=(4.8, 0.0, 0.0),
+        control_profile="cruise",
+        maximum_speed_mps=5.0,
+        gain_s_inverse=0.8,
+        velocity_damping=1.0,
+        deadband_m=0.005,
+    )
+    assert cruise == pytest.approx((4.8, 0.0, 0.0))
+
+    precision = executor._static_corridor_continuity_velocity(
+        observed=observed,
+        target_setpoint=target,
+        planned_velocity_ned_mps=(4.8, 0.0, 0.0),
+        control_profile="precision",
+        maximum_speed_mps=1.2,
+        gain_s_inverse=0.8,
+        velocity_damping=1.0,
+        deadband_m=0.005,
+    )
+    assert precision == pytest.approx((0.4, 0.0, 0.0))
 
 
 # 功能：已完成碰撞预测但错过发令预算的帧可由当前 PX4 状态和静态几何短暂接续。
