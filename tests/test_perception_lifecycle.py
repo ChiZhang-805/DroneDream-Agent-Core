@@ -1,10 +1,13 @@
+import asyncio
 import json
+import time
 
 import pytest
 
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.perception_lifecycle import (
     capture_control_completion,
+    capture_control_completion_when_ready,
     verify_control_completion,
 )
 
@@ -126,6 +129,45 @@ def test_completion_allows_measured_low_realtime_factor_boundary(tmp_path):
         **timing(record),
         "perception_realtime_features_required": False,
     }) is True
+
+
+# 功能：验证结束边界遇到短暂过期包时继续保持 Offboard，并仅接受随后到达的当前健康包。
+# 输入：先返回不健康状态、再返回新鲜健康状态的接收替身；输出：回执通过且保持控制被调用。
+def test_completion_waits_under_control_for_current_healthy_packet(tmp_path):
+    class Receiver:
+        calls = 0
+
+        def latest_snapshot(self):
+            self.calls += 1
+            now = int(time.time() * 1000)
+            if self.calls == 1:
+                return {"schema_version": "dronedream.perception-fusion-health.v1",
+                        "stream_healthy": False,
+                        "issue_codes": ["NATIVE_STATE_STREAM_EXPIRED"],
+                        "updated_at_unix_ms": now}
+            return {**health(), "updated_at_unix_ms": now,
+                    "localization_observed_at_unix_ms": now - 5,
+                    "stream_age_seconds": .01,
+                    "realtime_features_ready": False}
+
+    maintained = []
+
+    async def maintain():
+        maintained.append(True)
+
+    receiver = Receiver()
+    record = asyncio.run(capture_control_completion_when_ready(
+        tmp_path / "missing.json",
+        track_sha256="a" * 64,
+        receiver=receiver,
+        realtime_features_required=False,
+        maintain_control=maintain,
+        timeout_seconds=.2,
+        poll_seconds=.001,
+    ))
+    assert record["accepted"] is True
+    assert receiver.calls >= 2
+    assert maintained
 
 
 # 功能：

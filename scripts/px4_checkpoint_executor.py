@@ -76,7 +76,7 @@ from dronedream_agent_core.flight_command_cleanup import (
 )
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.localization_evidence import native_localization_evidence
-from dronedream_agent_core.perception_lifecycle import capture_control_completion
+from dronedream_agent_core.perception_lifecycle import capture_control_completion_when_ready
 from dronedream_agent_core.plugin_contracts import PluginResourcePolicy
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 from dronedream_agent_core.process_capture import capture_process
@@ -11763,12 +11763,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             # _tracking_gate_tick already completed this control period.
         _assert_all_runtime_actions_completed(runtime_action_contract, completed_action_step_ids)
         timing["track_end_t"] = time.monotonic() - started
-        timing["perception_control_completion"] = capture_control_completion(
+        timing["perception_control_completion"] = await capture_control_completion_when_ready(
             args.run_dir / "depth-perception-health.json",
             track_sha256=active_track_sha256,
-            completed_at_unix_ms=int(time.time() * 1000),
             receiver=getattr(args, "_perception_health_receiver", None),
             realtime_features_required=not args.independent_route_control,
+            maintain_control=lambda: client.set_position_ned(setpoint),
         )
         _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
         timing["controlled_land_start_t"] = time.monotonic() - started
@@ -11814,12 +11814,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             )
             timing["active_track_sha256"] = active_track_sha256
             timing["track_end_t"] = time.monotonic() - started
-            timing["perception_control_completion"] = capture_control_completion(
+            timing["perception_control_completion"] = await capture_control_completion_when_ready(
                 args.run_dir / "depth-perception-health.json",
                 track_sha256=active_track_sha256,
-                completed_at_unix_ms=int(time.time() * 1000),
                 receiver=getattr(args, "_perception_health_receiver", None),
                 realtime_features_required=not args.independent_route_control,
+                maintain_control=lambda: client.set_position_ned(setpoint),
             )
             _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
             timing["controlled_land_start_t"] = time.monotonic() - started
