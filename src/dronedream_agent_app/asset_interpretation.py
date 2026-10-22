@@ -364,7 +364,17 @@ class AssetInterpretationService:
                 timeout_seconds=180,
             )
             required_ids = list(model_source["required_source_ids"])
-            batches = [required_ids[index : index + 32] for index in range(0, len(required_ids), 32)] or [[]]
+            # Keep each response comfortably below the smallest supported provider's
+            # structured-output allowance.  Large maps previously asked one model call
+            # to explain 32 places, which produced truncated JSON (about 7 KB) on Kimi
+            # and made preparation fail before planning.  Eight source IDs still amortize
+            # the fixed prompt while leaving room for the summary, limitations and JSON
+            # syntax required by the validated AssetUnderstanding contract.
+            batch_size = 8
+            batches = [
+                required_ids[index : index + batch_size]
+                for index in range(0, len(required_ids), batch_size)
+            ] or [[]]
             if len(batches) > remaining_calls:
                 raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
             records = []

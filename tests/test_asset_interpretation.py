@@ -253,17 +253,22 @@ def test_large_map_interpretation_is_batched_and_revalidated_as_one_asset(setup)
         "nodes": [{"node_id": item, "semantic": "delivery"} for item in source_ids]
     }
 
-    interpreted = service.interpret(**options, remaining_calls=4)
+    interpreted = service.interpret(**options, remaining_calls=8)
 
-    assert len(options["port"].calls) == 2
+    assert len(options["port"].calls) == 7
     assert [len(call["input_artifact"]["required_source_ids"]) for call in options["port"].calls] == [
-        32,
-        17,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        1,
     ]
     assert {item["source_id"] for item in interpreted["understanding"]["items"]} == set(
         source_ids
     )
-    assert len(interpreted["model_calls"]) == 2
+    assert len(interpreted["model_calls"]) == 7
 
 
 def test_map_without_named_entities_is_not_forced_to_invent_a_place(setup):
