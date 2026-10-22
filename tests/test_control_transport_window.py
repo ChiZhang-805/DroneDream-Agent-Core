@@ -173,6 +173,15 @@ def test_budget_for_one_wait_and_actual_transport_is_not_counted_twice(tmp_path)
     assert accepted_at == 1195 < command.valid_until_unix_ms
 
 
+def test_initial_release_transport_reserve_covers_observed_windows_wsl_spike():
+    executor = _load_executor()
+    assert executor._CONTROL_TRANSPORT_RELEASE_RESERVE_MS == 65
+    assert (
+        executor._CONTROL_TRANSPORT_RELEASE_RESERVE_MS
+        >= 53 + executor._CONTROL_TRANSPORT_HEADROOM_MS
+    )
+
+
 def test_expired_before_dispatch_sends_nothing_and_late_acceptance_is_preserved(tmp_path):
     executor = _load_executor()
     now = [1.1]

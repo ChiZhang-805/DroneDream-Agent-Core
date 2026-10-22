@@ -170,6 +170,11 @@ _LOCAL_CONTROL_PHASES = {
 _ENCLOSING_EXECUTOR_STATE_KEY = "enclosing_executor_state"
 _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS = 0.05
 _CONTROL_TRANSPORT_INITIAL_RESERVE_MS = LOCAL_TRANSPORT_BUDGET_MS
+# Windows/WSL IPC can occasionally take just over one 50 ms controller tick
+# even after a long run of faster sends.  Start a real executor with the largest
+# duration observed in release acceptance plus the existing 12 ms headroom.
+# Unit-level adapters retain the protocol minimum unless they explicitly opt in.
+_CONTROL_TRANSPORT_RELEASE_RESERVE_MS = 65
 _CONTROL_TRANSPORT_HEADROOM_MS = 12
 _STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M = 0.08
 # The actuator transport remains at 20 Hz, but the deterministic local planner
@@ -11969,6 +11974,10 @@ async def _run_with_live_snapshots(args: argparse.Namespace, base: ModuleType) -
 #   exit_code：任务及清理成功时为零，普通执行失败时为二。
 def main() -> int:
     args = _parse_args()
+    # This reserve never extends a source deadline.  It makes the first live
+    # dispatch reject a short remaining lease before transport, after which the
+    # existing adaptive measurement may raise the reserve further.
+    args._measured_transport_reserve_ms = _CONTROL_TRANSPORT_RELEASE_RESERVE_MS
     base = _load_base(args.base_executor)
     try:
         # 先加载真实 SDK 的稳定对象图，再进入专属执行进程的保留作用域。

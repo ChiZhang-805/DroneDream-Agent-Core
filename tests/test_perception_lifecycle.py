@@ -104,6 +104,30 @@ def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_pa
     }) is True
 
 
+# 功能：验证低实时倍率验收中实测的 573 ms 来源到完成边界仍被身份绑定窗口接受。
+# 输入：与发布版证据同量级的来源年龄及完成后调度间隔；输出：总年龄小于 750 ms 时通过。
+def test_completion_allows_measured_low_realtime_factor_boundary(tmp_path):
+    path = tmp_path / "health.json"
+    path.write_text(json.dumps({
+        **health(),
+        "updated_at_unix_ms": 1000,
+        "stream_age_seconds": .405,
+        "localization_observed_at_unix_ms": 935,
+        "realtime_features_ready": False,
+    }))
+    record = capture_control_completion(
+        path,
+        track_sha256="a" * 64,
+        completed_at_unix_ms=1168,
+        realtime_features_required=False,
+    )
+    assert record["accepted"] is True
+    assert verify_control_completion({
+        **timing(record),
+        "perception_realtime_features_required": False,
+    }) is True
+
+
 # 功能：
 #   逐项注入时效、身份、特征和真值替代错误，确保实际控制结束失败不被停流解释掩盖。
 # 输入：
@@ -113,11 +137,11 @@ def test_completion_allows_bounded_asynchronous_health_publication_jitter(tmp_pa
 #   None：不返回业务数据。
 @pytest.mark.parametrize("change", [
     {"stream_healthy": False}, {"identity_accepted": False}, {"truth_correction_applied": True},
-    {"realtime_features_ready": False}, {"updated_at_unix_ms": 500},
-    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .495},
+    {"realtime_features_ready": False}, {"updated_at_unix_ms": 200},
+    {"updated_at_unix_ms": 1100}, {"stream_age_seconds": .745},
     {"stream_age_seconds": float("nan")}, {"stream_age_seconds": -1.},
     {"pose_source": "gazebo-ground-truth"},
-    {"localization_observed_at_unix_ms": 400},
+    {"localization_observed_at_unix_ms": 200},
     {"localization_observed_at_unix_ms": None},
     {"localization_observed_at_unix_ms": True},
     {"localization_observed_at_unix_ms": 1100},

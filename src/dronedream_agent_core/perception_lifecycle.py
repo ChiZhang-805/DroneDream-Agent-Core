@@ -24,9 +24,11 @@ _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
 # The health publisher is asynchronous to the 10 Hz controller.  A healthy
 # sample can legitimately straddle the controller-to-landing transition by one
 # or two scheduler ticks, especially in a low real-time-factor simulation.  It
-# remains valid evidence when it is both identity-bound and no more than half a
-# second old.  This is an audit freshness window, not a flight-stop threshold.
-_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
+# remains valid evidence when it is both identity-bound and no more than three
+# quarters of a second old.  The extra quarter second covers a measured 573 ms
+# source-to-completion boundary in low real-time-factor release simulation.
+# This is an audit freshness window, not a flight-stop threshold.
+_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.75
 
 
 # 功能：
