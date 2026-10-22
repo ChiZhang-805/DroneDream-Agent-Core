@@ -20,7 +20,11 @@ from dronedream_agent_core.domain_actions import (
     movement_action_ids,
 )
 from dronedream_agent_core.hashing import sha256_json
-from dronedream_agent_core.orchestrator import MissionPreparationBlocked, _validate_task_graph
+from dronedream_agent_core.orchestrator import (
+    MissionPreparationBlocked,
+    _bind_task_graph_action_contracts,
+    _validate_task_graph,
+)
 from dronedream_agent_core.plugin_api import build_discovered_extension_registry
 from dronedream_agent_core.runtime_actions import (
     build_runtime_action_execution_contract,
@@ -289,6 +293,32 @@ def test_task_graph_enforces_registered_action_fallback_and_evidence() -> None:
     invalid.nodes[4].fallback = "continue"
     with pytest.raises(MissionPreparationBlocked, match="TASK_GRAPH_ACTION_FALLBACK_UNAUTHORIZED"):
         _validate_task_graph(invalid, contract, _map(), catalog)
+
+
+def test_action_contract_binding_removes_arguments_for_parameterless_actions() -> None:
+    catalog = _catalog()
+    graph = TaskGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    "task_id": "precontact",
+                    "action": "delivery.precontact-hold",
+                    "target_node": "pickup",
+                    "arguments": {"pickup_hover_seconds": 10},
+                    "success_evidence": ["model-authored evidence"],
+                    "fallback": "hold",
+                }
+            ]
+        }
+    )
+
+    bound = _bind_task_graph_action_contracts(graph, catalog)
+
+    assert bound.nodes[0].arguments == {}
+    assert bound.nodes[0].success_evidence == [
+        "stable pre-contact hover",
+        "no payload contact",
+    ]
 
 
 # 功能：

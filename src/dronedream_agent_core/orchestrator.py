@@ -1449,12 +1449,35 @@ def _bind_task_graph_action_contracts(
     """
 
     definitions = {action.action_id: action for action in domain_actions.actions}
+
+    def contract_arguments(task: TaskNode) -> dict[str, Any]:
+        """Keep only arguments declared by a closed action input schema.
+
+        Models occasionally repeat mission-level constraints (for example the
+        required pickup hover duration) on an action whose executor accepts no
+        arguments.  Those values cannot influence execution and should not
+        consume every repair round.  Open schemas retain the model payload;
+        closed schemas are projected onto their declared property names before
+        the normal JSON Schema validation below checks values and required keys.
+        """
+
+        definition = definitions.get(task.action)
+        if definition is None:
+            return dict(task.arguments)
+        schema = definition.input_schema or {}
+        if schema.get("additionalProperties", True) is not False:
+            return dict(task.arguments)
+        properties = schema.get("properties", {})
+        allowed = set(properties) if isinstance(properties, dict) else set()
+        return {key: value for key, value in task.arguments.items() if key in allowed}
+
     bound_graph = graph.model_copy(
         update={
             "nodes": [
                 task.model_copy(
                     update={
-                        "success_evidence": list(definitions[task.action].required_success_evidence)
+                        "success_evidence": list(definitions[task.action].required_success_evidence),
+                        "arguments": contract_arguments(task),
                     }
                 )
                 if task.action in definitions
