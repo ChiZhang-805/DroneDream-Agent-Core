@@ -1219,6 +1219,34 @@ def test_intent_critic_keeps_a_real_target_semantic_mismatch() -> None:
     assert discarded == ["MISSING_PAYLOAD_MASS_CONSTRAINT"]
 
 
+def test_intent_critic_cannot_relabel_explicit_collection_as_delivery() -> None:
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message=(
+            "Take off from the Science High School pickup point, collect the algebra "
+            "notes from Exactum, and return to the Science High School pickup point."
+        ),
+        start_entity="school-pickup",
+    )
+    intent = IntentArtifact(
+        goal="collect the algebra notes and return",
+        start_entity="school-pickup",
+        target_entity="exactum-pickup",
+        return_entity="school-pickup",
+        payload_action="pickup",
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=["PAYLOAD_ACTION_MISMATCH", "MISSING_DELIVERY_RELEASE_ACTION"],
+        repair_instructions=["Change pickup to delivery.release-payload."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(critique, intent, request)
+
+    assert normalized == IntentCritique(accepted=True)
+    assert discarded == critique.issue_codes
+
+
 def test_manifest_conditions_recommend_plugins_without_hardcoded_plugin_ids() -> None:
     catalog = [
         {

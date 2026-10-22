@@ -396,6 +396,27 @@ def _normalize_intent_critique_scope(
         "land there",
         "one-way",
     )
+    pickup_markers = (
+        "pick up",
+        "pickup",
+        "collect",
+        "retrieve",
+        "fetch",
+        "grab",
+        "取回",
+        "拿回",
+        "取一下",
+        "拿一下",
+    )
+    delivery_markers = (
+        "deliver",
+        "drop off",
+        "release the payload",
+        "送到",
+        "投递",
+        "交付",
+    )
+    request_text = request.message.lower()
     normalized_codes = []
     for code in critique.issue_codes:
         normalized = code.strip().upper()
@@ -407,6 +428,16 @@ def _normalize_intent_critique_scope(
             and intent.return_entity == intent.start_entity
             and not any(marker in request.message.lower() for marker in one_way_markers)
         ):
+            continue
+        if (
+            normalized == "PAYLOAD_ACTION_MISMATCH"
+            and intent.payload_action == "pickup"
+            and any(marker in request_text for marker in pickup_markers)
+            and not any(marker in request_text for marker in delivery_markers)
+        ):
+            # “Collect/pick up X from Y and return” is a retrieval mission.
+            # A free-text critic cannot relabel it as delivery merely because
+            # the vehicle later carries the collected item back to its start.
             continue
         normalized_codes.append(normalized)
     normalized_codes = list(dict.fromkeys(normalized_codes))[:16]
