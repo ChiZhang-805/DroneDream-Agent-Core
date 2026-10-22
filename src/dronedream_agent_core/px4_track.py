@@ -23,7 +23,9 @@ from .runtime_bindings import (
     resolve_vehicle_collision_center_offset,
 )
 
-METRIC_ROUTE_CRUISE_SPEED_MPS = 5.0
+# Synthetic metric-geometry joins must satisfy the product's default
+# track-stability gate, which rejects any exported point above 3 m/s.
+METRIC_ROUTE_CRUISE_SPEED_MPS = 3.0
 
 
 # 功能：
