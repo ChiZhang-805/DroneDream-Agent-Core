@@ -105,6 +105,14 @@ BATTERY_TRACK_START_SETTLE_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_DISCOVERY_SETTLE_SECONDS = 0.5
 GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS = 0.1
+# The qualified campus payload is a 0.16 m-high parcel and the delivery pads
+# are on the z=0 ground plane.  A released dynamic parcel must be placed on the
+# receiving surface after the detachable-joint transition is confirmed.  If it
+# is left to free-fall for the rest of a long return leg, DART/ODE can amplify a
+# contact instability until the world's broadphase receives a non-representable
+# AABB and aborts the simulator.
+GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M = 0.081
+GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M = 0.03
 RUNTIME_EFFECT_SCHEMA_VERSION = "dronedream.scenario_runtime_effects.v1"
 
 _T = TypeVar("_T")
@@ -2955,6 +2963,64 @@ class MavsdkOffboardClient:
             raise RuntimeError(
                 "Gazebo payload state readback did not confirm the requested attachment state"
             )
+        release_placement: dict[str, Any] | None = None
+        if operation == "detach" and {
+            "vehicle_model_name",
+            "payload_model_name",
+        }.issubset(parameters):
+            world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
+            if not world_name:
+                raise RuntimeError("Gazebo payload release has no bound world name")
+            payload_model_name = str(parameters["payload_model_name"])
+            sampled = await self._sample_named_gazebo_poses(
+                world_name=world_name,
+                model_names=(payload_model_name,),
+                gazebo_node=node,
+            )
+            observed = sampled[payload_model_name]
+            target = GazeboModelPose(
+                x=observed.x,
+                y=observed.y,
+                z=GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M,
+                qx=0.0,
+                qy=0.0,
+                qz=0.0,
+                qw=1.0,
+            )
+            service = await self._set_named_gazebo_pose(
+                world_name=world_name,
+                model_name=payload_model_name,
+                pose=target,
+                gazebo_node=node,
+            )
+            settled = (await self._sample_named_gazebo_poses(
+                world_name=world_name,
+                model_names=(payload_model_name,),
+                gazebo_node=node,
+            ))[payload_model_name]
+            placement_error_m = math.dist(
+                (target.x, target.y, target.z),
+                (settled.x, settled.y, settled.z),
+            )
+            if placement_error_m > GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M:
+                raise RuntimeError(
+                    "Gazebo released payload did not settle on the qualified delivery surface: "
+                    f"observed={placement_error_m:.6f}m "
+                    f"limit={GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M:.6f}m"
+                )
+            release_placement = {
+                "surface_pose_world_enu": {
+                    "x": target.x,
+                    "y": target.y,
+                    "z": target.z,
+                },
+                "placement_error_m": placement_error_m,
+                "maximum_placement_error_m": (
+                    GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M
+                ),
+                "service": service,
+                "accepted": True,
+            }
         result = {
             "confirmed": True,
             "transport": protocol,
@@ -2969,6 +3035,8 @@ class MavsdkOffboardClient:
             "observed_at_unix_ms": observer["observed_at_unix_ms"],
             "raw_state": f'data: "{"detached" if observed_detached else "attached"}"',
         }
+        if release_placement is not None:
+            result["release_placement"] = release_placement
         if alignment is not None:
             alignment["alignment_attempts"] = alignment_attempts
             world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()

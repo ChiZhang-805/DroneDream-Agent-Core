@@ -1253,6 +1253,82 @@ def test_payload_command_republishes_until_plugin_state_is_observed(monkeypatch)
     assert Node.last_publisher.publish_count == 3
 
 
+def test_payload_release_is_settled_on_delivery_surface_after_native_detach(monkeypatch) -> None:
+    base = _base_module()
+
+    class Empty:
+        pass
+
+    class StringMsg:
+        def __init__(self, data: str = "") -> None:
+            self.data = data
+
+    class Publisher:
+        def __init__(self, node) -> None:
+            self.node = node
+
+        def has_connections(self) -> bool:
+            return True
+
+        def publish(self, _message) -> bool:
+            self.node.callback(StringMsg("detached"))
+            return True
+
+    class Node:
+        def subscribe(self, _message_type, _topic, callback) -> bool:
+            self.callback = callback
+            return True
+
+        def advertise(self, _topic, _message_type):
+            self.callback(StringMsg("attached"))
+            return Publisher(self)
+
+        def unsubscribe(self, _topic) -> None:
+            pass
+
+    monkeypatch.setattr(
+        base,
+        "_gazebo_transport_bindings",
+        lambda: (Node, object, object, object, Empty, StringMsg),
+    )
+    monkeypatch.setenv("PX4_GAZEBO_WORLD_NAME", "school")
+    client = object.__new__(base.MavsdkOffboardClient)
+    placed = []
+
+    async def sample(**_kwargs):
+        z = base.GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M if placed else 1.7
+        return {
+            "takeout_payload": base.GazeboModelPose(
+                x=12.0, y=-116.0, z=z, qx=0.0, qy=0.0, qz=0.0, qw=1.0
+            )
+        }
+
+    async def place(**kwargs):
+        placed.append(kwargs["pose"])
+        return {"accepted": True}
+
+    client._sample_named_gazebo_poses = sample
+    client._set_named_gazebo_pose = place
+
+    result = asyncio.run(
+        client.execute_payload_command(
+            {
+                "protocol": "gazebo-transport",
+                "operation": "detach",
+                "topic": "/payload/detach",
+                "output_topic": "/payload/state",
+                "vehicle_model_name": "my_drone",
+                "payload_model_name": "takeout_payload",
+            }
+        )
+    )
+
+    assert len(placed) == 1
+    assert placed[0].z == pytest.approx(base.GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M)
+    assert result["release_placement"]["accepted"] is True
+    assert result["release_placement"]["placement_error_m"] == pytest.approx(0.0)
+
+
 def test_payload_attach_does_not_realign_when_rigid_mount_is_observed(monkeypatch) -> None:
     base = _base_module()
 
