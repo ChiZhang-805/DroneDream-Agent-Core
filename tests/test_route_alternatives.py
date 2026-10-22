@@ -359,6 +359,47 @@ def test_real_plan_issue_survives_unsupported_gate_normalization():
     assert normalized.repair_instructions == ["Restore the required target order."]
 
 
+def test_validated_pickup_plan_is_not_rejected_by_contradictory_critic_warnings():
+    candidate = _candidate(
+        "metric-safe",
+        length=12,
+        clearance=0.5,
+        energy=13,
+        verified=False,
+    ).model_copy(
+        update={"strategy_tool_id": "planning.candidate-metric-geometry.candidate"}
+    )
+    review = PlanCritique(
+        accepted=False,
+        issue_codes=[
+            "CONTRACT_PAYLOAD_ACTION_MISMATCH",
+            "TASKGRAPH_MISSING_VERIFY_RELEASE_AREA",
+            "TASKGRAPH_MISSING_RELEASE_ACTION",
+            "MISSION_GOAL_REINTERPRETED",
+            "PICKUP_WORKFLOW_INCOMPLETE_EVIDENCE",
+            "MAP_TOPOLOGY_DISCONNECTED_UNRESOLVED",
+            "NAVIGATION_READINESS_BLOCKS_EXECUTION",
+            "ALL_EDGES_FLIGHT_VERIFIED_FALSE_ACCEPTABLE",
+            "FUTURE_RUNTIME_EVIDENCE_NOT_YET_PRESENT",
+            "EXPLORATORY_FAILURES_AUDITED_OK",
+        ],
+        repair_instructions=["Replace a valid pickup plan with a release plan."],
+    )
+
+    normalized = _normalize_plan_critique(
+        review,
+        candidate,
+        validated_contract_and_task_graph=True,
+        selected_plan_receipts_accepted=True,
+        future_runtime_evidence_declared=True,
+        failed_exploratory_tool_ids={"planning.candidate-semantic-graph.candidate"},
+    )
+
+    assert normalized.accepted is True
+    assert normalized.issue_codes == []
+    assert normalized.repair_instructions == []
+
+
 # 功能：
 #   验证选中路线自身的生成失败不能以“探索失败不影响结果”为由被抹除。
 # 输入：

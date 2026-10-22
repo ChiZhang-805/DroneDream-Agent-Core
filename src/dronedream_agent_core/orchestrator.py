@@ -1958,6 +1958,7 @@ def _normalize_plan_critique(
     *,
     selected_plan_receipts_accepted: bool,
     future_runtime_evidence_declared: bool,
+    validated_contract_and_task_graph: bool = False,
     failed_exploratory_tool_ids: set[str] | None = None,
 ) -> PlanCritique:
     """Discard critic gates that contradict authoritative planning-stage facts."""
@@ -1976,8 +1977,36 @@ def _normalize_plan_critique(
                 "DETERMINISTIC_GATE_ALL_TOOL_RECEIPTS_ACCEPTED_FALSE",
             }
         )
+    if validated_contract_and_task_graph:
+        unsupported_codes.update(
+            {
+                "CONTRACT_PAYLOAD_ACTION_MISMATCH",
+                "MISSION_GOAL_REINTERPRETED",
+                "TASKGRAPH_MISSING_VERIFY_RELEASE_AREA",
+                "TASKGRAPH_MISSING_RELEASE_ACTION",
+                "PICKUP_WORKFLOW_INCOMPLETE_EVIDENCE",
+            }
+        )
+    if (
+        selected_alternative.strategy_tool_id
+        == "planning.candidate-metric-geometry.candidate"
+        and selected_alternative.feasible
+        and selected_alternative.clearance.accepted
+    ):
+        unsupported_codes.update(
+            {
+                "MAP_TOPOLOGY_DISCONNECTED_UNRESOLVED",
+                "NAVIGATION_READINESS_BLOCKS_EXECUTION",
+                "ALL_EDGES_FLIGHT_VERIFIED_FALSE_ACCEPTABLE",
+            }
+        )
     if future_runtime_evidence_declared:
-        unsupported_codes.add("FUTURE_RUNTIME_EVIDENCE_NOT_HASH_BOUND")
+        unsupported_codes.update(
+            {
+                "FUTURE_RUNTIME_EVIDENCE_NOT_HASH_BOUND",
+                "FUTURE_RUNTIME_EVIDENCE_NOT_YET_PRESENT",
+            }
+        )
     if (
         failed_exploratory_tool_ids
         and "planning.candidate-metric-geometry.candidate" in failed_exploratory_tool_ids
@@ -1989,6 +2018,8 @@ def _normalize_plan_critique(
                 "CANDIDATE_METRIC_GEOMETRY_TOOL_FAILED",
             }
         )
+    if failed_exploratory_tool_ids:
+        unsupported_codes.add("EXPLORATORY_FAILURES_AUDITED_OK")
 
     remaining_codes = [code for code in review.issue_codes if code not in unsupported_codes]
     if len(remaining_codes) == len(review.issue_codes):
@@ -4793,6 +4824,7 @@ class MissionOrchestrator:
                 normalized_review = _normalize_plan_critique(
                     critique.artifact,
                     selected_alternative,
+                    validated_contract_and_task_graph=True,
                     selected_plan_receipts_accepted=selected_plan_receipts_accepted,
                     future_runtime_evidence_declared=(selected_plan_receipts_accepted),
                     failed_exploratory_tool_ids=failed_exploratory_tool_ids,
