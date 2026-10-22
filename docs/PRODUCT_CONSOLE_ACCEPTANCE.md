@@ -1,43 +1,125 @@
-# 产品命令行验收
+# DroneDream CLI and terminal acceptance
 
-`dronedream-console` 调用桌面共用的账户、任务和 Runtime HTTP 接口。它不启动桌面操作自动化，不调用开发教师飞行脚本，也不自动确认计划。真实模型请求可能消耗账户额度。
+`dronedream` is the terminal interface to the same account, planning, asset,
+Runtime, PX4/Gazebo, telemetry, and evidence services used by the desktop
+application. `dronedream-console` remains an equivalent compatibility command.
 
-## 会话
+The CLI is not a scripted flight demo. A valid mission starts with the
+operator's natural-language request. Agent Core sends that request to the
+selected managed model. The model calls the available map, topology, route,
+trajectory, and validation tools; deterministic product gates then validate
+the model's proposed plan before the operator may execute it. A route embedded
+in CLI source code, a canned response, or a success message without matching
+execution evidence fails acceptance.
 
-由受信任的产品启动流程提供以下环境变量，或使用 `--session-stdin` 输入单行 JSON 会话：
+## Session boundary
 
-- `DRONEDREAM_CONSOLE_CORE_URL`：固定本机 `http://127.0.0.1:端口`。
-- `DRONEDREAM_CONSOLE_SUPABASE_URL`：账户所属 Supabase 项目 HTTPS 根地址。
-- `DRONEDREAM_CONSOLE_LOCAL_TOKEN`：当前本地 Core 会话令牌。
-- `DRONEDREAM_CONSOLE_IDENTITY_TOKEN`：当前账户身份令牌。
-- `DRONEDREAM_CONSOLE_PUBLISHABLE_KEY`：项目公开客户端密钥。
-- `DRONEDREAM_CONSOLE_EDITION`：所使用的产品版本，例如 `autonomy`。
+A trusted product launcher supplies the following values through inherited
+environment variables or one bounded JSON line passed with `--session-stdin`:
 
-不得把秘密放进命令行参数、提交到 Git，或打印进验收日志。命令不会搜索浏览器或桌面数据库来猜测登录凭据。没有有效会话时应完成产品授权，不能用开发 profile 冒充已登录产品用户。
+- `DRONEDREAM_CONSOLE_CORE_URL`
+- `DRONEDREAM_CONSOLE_SUPABASE_URL`
+- `DRONEDREAM_CONSOLE_LOCAL_TOKEN`
+- `DRONEDREAM_CONSOLE_IDENTITY_TOKEN`
+- `DRONEDREAM_CONSOLE_PUBLISHABLE_KEY`
+- `DRONEDREAM_CONSOLE_EDITION`
 
-## 同一任务的工作流
+Secrets are never command-line arguments, persisted CLI settings, or terminal
+output. The CLI does not scrape browser storage or search desktop databases for
+credentials. Use `--json` for automation; an interactive terminal receives the
+pink, purple, and blue product theme plus conventional green, red, yellow, and
+blue status colors.
 
-下面的尖括号是需要从实际响应中选择的值，不是可直接执行的字面参数。
+## Discover before flying
 
 ```text
-dronedream-console catalog
-dronedream-console runtime
-dronedream-console create --model <目录中的模型ID> --title 办公室取餐往返
-dronedream-console prepare <thread-ID> --text "帮我去拿一下外卖，再带回办公室。" --map <地图ID> --map-sha256 <地图内容摘要> --vehicle <飞机ID> --vehicle-sha256 <飞机内容摘要>
-dronedream-console status <thread-ID>
-dronedream-console execute <thread-ID> --confirm-plan <确认过的plan-ID>
-dronedream-console live-sources <thread-ID>
-dronedream-console telemetry <thread-ID>
-dronedream-console frame <thread-ID> --output <新建的PNG路径>
-dronedream-console evidence <thread-ID>
+dronedream doctor
+dronedream models
+dronedream assets maps
+dronedream assets aircraft
+dronedream assets pairs
+dronedream runtime status
 ```
 
-`prepare` 不执行飞行。`execute` 会再次核对账户、最新计划修订、资源和运行准入；不得把旧计划 ID 自动替换为新计划。写请求超时表示结果未知，应先查询任务状态，不能直接重复提交计费或执行请求。
+Catalog admission and execution qualification are different. The pair catalog
+labels combinations as `qualified_builtin` or
+`compatible_requires_qualification`. Only an exact qualified pair, including
+its qualified package hashes, can enter execution. The current release-qualified
+pair is Kumpula Campus with PX4 x500 depth; the remaining aircraft stay visible
+for capability discovery and future qualification.
 
-## 图像与实际动作
+## Guided end-to-end flight
 
-`frame` 保存共享 Runtime 的原始俯视 PNG，并报告文件摘要；不覆盖已有文件，不跟随 HTTP 重定向，拒绝损坏或越界媒体。这个视角用于观察场景，不是无人机前视模型输入。前视图仍须从同次运行的机载相机记录核对，并与来源时钟、动作回执关联。
+```text
+dronedream mission fly \
+  "Please collect the instruments from the chemistry building, deliver them, then return and land." \
+  --model <managed-model-id> \
+  --map dronedream-school-map \
+  --aircraft px4-x500-depth
+```
 
-下载成功不证明画面新鲜、没有碰撞或任务成功。验收还必须核对：真实模型调用、本地模型动作被飞控接纳、路线及取餐动作完成、碰撞与净空证据、返航及安全落地。仅出现路径、成功 HTTP 响应或好看的截图，均不足以认定完整飞行通过。
+The guided command performs these product operations without bypasses:
 
-规划的路线采用经过地图与机体包络验证的有序航点和分段约束。本地模型根据实时观测决定连续速度、升降和偏航；航点不是电机指令，也不能代替局部避障和动作安全约束。
+1. Resolves the selected model, map, aircraft, qualification receipt, and exact
+   qualified package hashes from live product catalogs.
+2. Creates an account-bound task.
+3. Sends the fuzzy request to the real managed model and allows the model to
+   call the planning tools. If the intent is materially ambiguous, the CLI
+   presents the model's clarification questions and resubmits the answers.
+4. Displays the generated goal, task graph, tool-backed planning metadata, and
+   immutable `plan-...` revision.
+5. Requires the operator to type that exact plan revision. No automatic
+   confirmation switch exists.
+6. Starts the shared PX4/Gazebo executor, watches real task state and telemetry,
+   then loads the execution evidence for the same task and execution.
+7. Reports success only when the task completed and the evidence result is
+   `verified`; a verified mission is archived unless `--no-archive` is used.
+
+Use `--plan-only` when the operator wants the real model plan without starting
+simulation.
+
+## Explicit step-by-step workflow
+
+The individual commands are useful for controlled acceptance and automation:
+
+```text
+dronedream mission create --model <model-id> --title "Chemistry delivery"
+dronedream mission plan <thread-id> \
+  --text "Take the instruments to the destination and come back." \
+  --map <qualified-map-asset-id> --map-sha256 <exact-map-hash> \
+  --aircraft <qualified-aircraft-asset-id> --aircraft-sha256 <exact-aircraft-hash>
+dronedream mission show <thread-id>
+dronedream mission execute <thread-id> --confirm-plan <reviewed-plan-id>
+dronedream mission watch <thread-id>
+dronedream mission telemetry <thread-id>
+dronedream mission live-sources <thread-id>
+dronedream mission frame <thread-id> --output <new-png-path>
+dronedream mission evidence <thread-id>
+dronedream mission archive <thread-id>
+```
+
+`mission plan` never starts a flight. `mission execute` rechecks identity,
+current revision, assets, qualification, and runtime admission. If a write
+times out, its outcome is unknown; inspect the task before attempting another
+write.
+
+## History and evidence
+
+```text
+dronedream history list
+dronedream history list --archived-only
+dronedream history show <thread-id>
+dronedream history export <thread-id> --output <new-json-path>
+```
+
+Exports are redacted, hashed, and never overwrite an existing file. A full
+acceptance record must tie the original natural-language message, model plan,
+tool calls, confirmed plan revision, map and aircraft hashes, task ID,
+execution ID, telemetry, gate results, payload actions, return, and landing to
+one run. A downloaded frame is useful observation evidence but is never a
+flight verdict by itself.
+
+Acceptance requires a real model call, actual tool participation, a completed
+PX4/Gazebo run, no failed safety gates, successful mission actions, and a safe
+landing. HTTP success, a rendered route, attractive terminal output, or copied
+evidence from a different run cannot satisfy those requirements.

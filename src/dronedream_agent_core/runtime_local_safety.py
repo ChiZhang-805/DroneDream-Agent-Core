@@ -306,7 +306,7 @@ def evaluate_runtime_local_safety(
     if tracking_recovery_active:
         planner_max_speed_mps = min(
             planner_max_speed_mps,
-            0.35,
+            1.5,
             # Recovery must catch a moving route clock instead of becoming a
             # permanent slower mode. Keep the original 0.45 gain inside the
             # final 0.2 m, then add catch-up authority only outside that
@@ -339,11 +339,11 @@ def evaluate_runtime_local_safety(
             and loaded
             and motion_guard.envelope is None
         ):
-            # Degrade an unqualified simulated payload to a walking-speed
-            # envelope.  The same missing evidence remains a hard restriction
-            # on real hardware, but it must not become a one-vote mission veto
-            # in Gazebo where geometry and telemetry remain available.
-            planner_max_speed_mps = min(planner_max_speed_mps, .12)
+            # Gazebo still has signed static geometry and live telemetry here.
+            # Keep a deliberate approach envelope for an unqualified payload,
+            # but do not turn an otherwise valid campus leg into walking speed.
+            # Real hardware retains its independent hard restriction.
+            planner_max_speed_mps = min(planner_max_speed_mps, 1.5)
     # Absolute map-position uncertainty and image/state alignment uncertainty
     # are different budgets.  A qualified route corridor funds the former;
     # body-relative depth validity only needs the additional displacement that
@@ -391,14 +391,12 @@ def evaluate_runtime_local_safety(
             ):
                 # Absolute-map covariance may temporarily exceed a narrow
                 # route budget even while signed static geometry, fresh body-
-                # relative depth and PX4 tracking all agree.  Continue at a
-                # clearance-scaled speed that can still satisfy the route's
-                # duration contract; a fixed 0.12 m/s ceiling made long but
-                # valid missions mathematically unable to finish before their
-                # own qualified timeout.
+                # relative depth and PX4 tracking all agree. Continue inside
+                # the model-selected limit; local collision prediction still
+                # slows or stops for actual nearby geometry.
                 local_bridge_speed_mps = min(
-                    0.35,
-                    max(0.12, float(qualified_route_clearance_m) * 0.8),
+                    5.0,
+                    max(3.0, float(qualified_route_clearance_m) * 5.0),
                 )
                 planner_max_speed_mps = min(
                     planner_max_speed_mps,

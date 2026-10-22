@@ -29,7 +29,7 @@ def test_bridge_waits_for_actual_transport_not_proposals():
     assert tick(arbiter, 0.4) is None
     assert arbiter.snapshot()["reason"] == "actual-model-execution-not-established"
     arbiter.observe_execution(receipts())
-    assert tick(arbiter, 0.42).maximum_speed_mps == 0.25
+    assert tick(arbiter, 0.42).maximum_speed_mps == 1.5
 
 
 # 功能：过期、异目标和未来回执不能许可；输入：错配三元组；输出：不开始桥接。

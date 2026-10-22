@@ -41,6 +41,13 @@ def _graph() -> MapAsset:
     )
 
 
+def _disconnected_graph() -> MapAsset:
+    """Return named endpoints without an authored route between them."""
+
+    graph = _graph()
+    return graph.model_copy(update={"edges": []}, deep=True)
+
+
 # 功能：
 #   验证软高度偏好确实影响求解路线，且简化不会抹掉爬升，取件端点仍保持原位置。
 # 输入：
@@ -142,6 +149,41 @@ def test_metric_planner_uses_collision_geometry_instead_of_fixed_graph(tmp_path:
     )
     assert route.route_length_m > 6
     assert any(abs(point.y) > 1.8 for point in route.positions_m)
+    assert route.all_edges_flight_verified is False
+
+
+def test_metric_planner_derives_route_for_disconnected_semantic_endpoint(tmp_path: Path):
+    """Geometry-derived destinations must not require a developer-authored edge chain."""
+
+    semantic = _semantic(tmp_path / "semantic.json")
+    graph = _disconnected_graph()
+    planner = KnownMapMetricPlanner(
+        graph=graph,
+        semantic_path=semantic,
+        vehicle_diameter_m=0.4,
+        vehicle_height_m=0.3,
+        policy=MetricPlannerPolicy(
+            resolution_m=0.4,
+            required_clearance_m=0.25,
+            search_padding_m=2.5,
+        ),
+    )
+
+    route = planner.plan(RouteQuery(start_node="start", goal_node="goal"))
+    report = validate_route_clearance(
+        route,
+        semantic,
+        vehicle_diameter_m=0.4,
+        vehicle_height_m=0.3,
+        sample_interval_m=0.05,
+    )
+
+    assert report.accepted
+    assert route.start_node == "start"
+    assert route.goal_node == "goal"
+    assert route.node_ids[0] == "start"
+    assert route.node_ids[-1] == "goal"
+    assert min(point.z for point in route.positions_m) >= 1.0
     assert route.all_edges_flight_verified is False
 
 

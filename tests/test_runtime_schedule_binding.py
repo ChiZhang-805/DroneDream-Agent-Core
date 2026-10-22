@@ -122,6 +122,37 @@ def test_schedule_supports_contract_hold_duration_upper_bound() -> None:
     assert plan.schedule[arrival + 1:arrival + 601] == [plan.schedule[arrival]] * 600
 
 
+def test_model_approach_profile_preserves_cruise_then_slows() -> None:
+    base, _ = _modules()
+    rate_hz = 20
+    points = [
+        base.TrackPoint(0, 0, 1, 3.0),
+        base.TrackPoint(20, 0, 1, 3.0, 0.6, 2.0),
+    ]
+    schedule, arrivals = base.build_stopped_waypoint_schedule(
+        points,
+        base.ControllerParams(3.0, 1.5),
+        rate_hz,
+        0,
+        initial_yaw_deg=0,
+        max_samples=4000,
+    )
+    along_track = [sample.north_m for sample in schedule]
+    interval_speeds = [
+        (current - prior) * rate_hz
+        for prior, current in zip(along_track, along_track[1:], strict=False)
+    ]
+    assert max(interval_speeds) > 2.9
+    approach_speeds = [
+        speed
+        for position, speed in zip(along_track[1:], interval_speeds, strict=True)
+        if position >= 18.0
+    ]
+    assert approach_speeds
+    assert max(approach_speeds) <= 0.68
+    assert arrivals == (len(schedule) - 1,)
+
+
 # 功能：
 #   航向对齐插入转向采样后，检查点必须跟随重映射下标，而不是依旧使用对齐前的位置。
 # 输入：

@@ -2303,6 +2303,68 @@ def _detach_payload_before_flight(
     )
 
 
+# 功能：
+#   起飞前读取推进中的 Gazebo 关节快照，确认随航载荷真实连接在所选机型挂载点。
+# 输入：
+#   gz_binary、state_service、output_topic、env：当前隔离仿真的原生状态入口。
+# 输出：
+#   evidence：连续物理时步中保持连接的挂载状态。
+def _confirm_payload_attached_before_flight(
+    gz_binary: str,
+    *,
+    state_service: str,
+    output_topic: str,
+    env: dict[str, str],
+    timeout: float = 240.0,
+    gazebo_process: subprocess.Popen[str] | None = None,
+) -> dict[str, object]:
+    from .payload_state_query import query_attachment_state
+
+    _runtime_number(timeout, "payload attachment readiness timeout", 0.001, 300)
+    deadline = time.monotonic() + timeout
+    previous_iteration: int | None = None
+    attempts = 0
+    last_error = "no attached snapshot"
+    while (remaining := deadline - time.monotonic()) >= 0.5:
+        if gazebo_process is not None and gazebo_process.poll() is not None:
+            raise SimulationRuntimeError(
+                "GAZEBO_EXITED_DURING_PAYLOAD_PREFLIGHT: "
+                f"exit_code={gazebo_process.returncode}"
+            )
+        attempts += 1
+        try:
+            snapshot = query_attachment_state(
+                gz_binary,
+                service=state_service,
+                env=env,
+                timeout=min(2.5, remaining),
+            )
+            if snapshot["detached"] is not False:
+                last_error = "payload joint is detached"
+                previous_iteration = None
+            elif previous_iteration is not None and snapshot["iteration"] > previous_iteration:
+                return {
+                    "confirmed": True,
+                    "detached": False,
+                    "output_topic": output_topic,
+                    "state_service": state_service,
+                    "state_readback_source": snapshot["source"],
+                    "observed_at_unix_ms": snapshot["observed_at_unix_ms"],
+                    "physics_iteration": snapshot["iteration"],
+                    "attempts": attempts,
+                }
+            else:
+                previous_iteration = snapshot["iteration"]
+                last_error = "waiting for the next attached physics snapshot"
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            last_error = str(error)[-1000:]
+            previous_iteration = None
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    raise SimulationRuntimeError(
+        f"Gazebo did not confirm an attached payload before PX4 startup: {last_error}"
+    )
+
+
 # 功能：重复发送幂等卸载请求，并用两个推进中的物理时步确认真实分离；不依赖一次性事件。
 # 输入：当前运行的主题、只读服务、环境和总时限；输出：逐次命令及原生查询证据。
 def _detach_payload_with_snapshot(
@@ -2400,7 +2462,7 @@ def _require_payload_placement_service(
 #   checkpoint_contract_path：检查点合同。
 #   track：本次已批准的轨迹。
 # 输出：
-#   specification：载荷实体、资产、位置和通信话题；没有取件动作时为 None。
+#   specification：载荷实体、资产、初始挂载状态、位置和通信话题；没有载荷动作时为 None。
 def _payload_spawn_spec(
     *,
     vehicle_sdf: Path,
@@ -2411,9 +2473,9 @@ def _payload_spawn_spec(
     """Resolve a physical payload spawn from the bound runtime-action checkpoint.
 
     A DetachableJoint declaration only describes how two existing Gazebo models
-    connect; it does not create the child model. Spawn only when an accepted
-    runtime-action contract actually contains an attach operation, and bind the
-    location to that action's checkpoint rather than a free-form coordinate.
+    connect; it does not create the child model. A pickup spawns the detached
+    payload at its action checkpoint. A delivery that starts with cargo aboard
+    spawns it at the vehicle mount and keeps the joint attached until release.
     """
 
     if runtime_action_contract_path is None:
@@ -2421,25 +2483,32 @@ def _payload_spawn_spec(
     if checkpoint_contract_path is None:
         raise SimulationRuntimeError("payload runtime action lacks a checkpoint contract")
     actions = _runtime_contract(runtime_action_contract_path, RuntimeActionExecutionContract)
-    attach_steps = [
+    payload_steps = [
         step
         for step in actions.steps
-        if step.driver == "gazebo-payload" and str(step.parameters.get("operation")) == "attach"
+        if step.driver == "gazebo-payload"
+        and str(step.parameters.get("operation")) in {"attach", "detach"}
     ]
-    if not attach_steps:
+    if not payload_steps:
         return None
-    step = attach_steps[0]
-    if step.checkpoint_id is None:
+    attach_steps = [
+        step for step in payload_steps if str(step.parameters.get("operation")) == "attach"
+    ]
+    step = attach_steps[0] if attach_steps else payload_steps[0]
+    initially_detached = bool(attach_steps)
+    if initially_detached and step.checkpoint_id is None:
         raise SimulationRuntimeError("Gazebo payload attach action is not checkpoint-bound")
     checkpoints = _runtime_contract(checkpoint_contract_path, RuntimeCheckpointContract)
     if checkpoints.contract_id != actions.contract_id:
         raise SimulationRuntimeError("payload action and checkpoint contract IDs differ")
-    checkpoint = next(
-        (item for item in checkpoints.checkpoints if item.checkpoint_id == step.checkpoint_id),
-        None,
-    )
-    if checkpoint is None or checkpoint.track_point_index >= len(track.source_world_points):
-        raise SimulationRuntimeError("payload action checkpoint is absent from the PX4 track")
+    checkpoint = None
+    if initially_detached:
+        checkpoint = next(
+            (item for item in checkpoints.checkpoints if item.checkpoint_id == step.checkpoint_id),
+            None,
+        )
+        if checkpoint is None or checkpoint.track_point_index >= len(track.source_world_points):
+            raise SimulationRuntimeError("payload action checkpoint is absent from the PX4 track")
 
     try:
         vehicle_root = ElementTree.parse(vehicle_sdf).getroot()
@@ -2517,7 +2586,10 @@ def _payload_spawn_spec(
     offset_east, offset_north, offset_up = (
         track.coordinate_contract.resolved_collision_center_offset_model_m()
     )
-    target = track.source_world_points[checkpoint.track_point_index]
+    track_point_index = checkpoint.track_point_index if checkpoint is not None else 0
+    if track_point_index >= len(track.source_world_points):
+        raise SimulationRuntimeError("payload spawn point is absent from the PX4 track")
+    target = track.source_world_points[track_point_index]
     pose = (
         target.east_m - offset_east + mount_east,
         target.north_m - offset_north + mount_north,
@@ -2527,9 +2599,10 @@ def _payload_spawn_spec(
         "entity_name": child_model,
         "sdf_path": payload_candidates[0],
         "pose": pose,
-        "checkpoint_id": checkpoint.checkpoint_id,
-        "track_point_index": checkpoint.track_point_index,
+        "checkpoint_id": step.checkpoint_id,
+        "track_point_index": track_point_index,
         "runtime_action_step_id": step.step_id,
+        "initially_detached": initially_detached,
         **topics,
     }
     return specification
@@ -4841,36 +4914,54 @@ def run_px4_gazebo_track(
             )
             _write_json(run_dir / "vehicle_spawn.json", spawn_evidence)
             if payload_spawn is not None:
-                preflight_detach = _detach_payload_before_flight(
-                    gz_binary,
-                    detach_topic=str(payload_spawn["detach_topic"]),
-                    output_topic=str(payload_spawn["output_topic"]),
-                    state_service=f"/world/{world_name}/model/{payload_spawn['entity_name']}/attachment_state",
-                    env=env,
-                    gazebo_process=gazebo,
+                state_service = (
+                    f"/world/{world_name}/model/{payload_spawn['entity_name']}"
+                    "/attachment_state"
                 )
                 placement_service = _require_payload_placement_service(
                     gz_binary,
                     service=f"/world/{world_name}/model/{payload_spawn['entity_name']}/place_detached",
                     env=env,
                 )
+                initially_detached = bool(payload_spawn["initially_detached"])
+                if initially_detached:
+                    payload_preflight = _detach_payload_before_flight(
+                        gz_binary,
+                        detach_topic=str(payload_spawn["detach_topic"]),
+                        output_topic=str(payload_spawn["output_topic"]),
+                        state_service=state_service,
+                        env=env,
+                        gazebo_process=gazebo,
+                    )
+                    initial_attachment_policy = (
+                        "gazebo-harmonic-start-attached-then-verified-preflight-detach"
+                    )
+                else:
+                    payload_preflight = _confirm_payload_attached_before_flight(
+                        gz_binary,
+                        state_service=state_service,
+                        output_topic=str(payload_spawn["output_topic"]),
+                        env=env,
+                        gazebo_process=gazebo,
+                    )
+                    initial_attachment_policy = (
+                        "gazebo-harmonic-start-loaded-with-verified-attached-joint"
+                    )
                 payload_evidence.update(
                     {
-                        "initial_attachment_policy": (
-                            "gazebo-harmonic-start-attached-then-verified-preflight-detach"
-                        ),
-                        "preflight_detach": preflight_detach,
+                        "initial_attachment_policy": initial_attachment_policy,
+                        "preflight_observation": payload_preflight,
                         "placement_service_preflight": placement_service,
                     }
                 )
                 _write_json(run_dir / "payload_spawn.json", payload_evidence)
-                # 跨进程传递真实分离回执，不传可直接冒充物理状态的 attached/detached 常量。
+                # 跨进程传递真实关节回执，不传可直接冒充物理状态的默认常量。
                 payload_preflight_path = run_dir / "payload-preflight-observation.json"
                 _write_json(payload_preflight_path, {
                     "schema_version": "dronedream.payload-preflight-observation",
                     "partition": env.get("GZ_PARTITION", ""), "world": world_name,
                     "observed_at_unix_ms": int(time.time() * 1000),
-                    "observation": preflight_detach,
+                    "observation": payload_preflight,
                 })
                 env["PX4_GAZEBO_PAYLOAD_PREFLIGHT_PATH"] = str(payload_preflight_path)
                 env["PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256"] = _sha256(payload_preflight_path)
@@ -5217,7 +5308,7 @@ def run_px4_gazebo_track(
                     "flight_ready": False,
                     "vehicle_spawn_confirmed": bool(spawn_evidence.get("accepted")),
                     "payload_preflight": (
-                        payload_evidence.get("preflight_detach")
+                        payload_evidence.get("preflight_observation")
                         if payload_spawn is not None
                         else {"status": "not-applicable"}
                     ),

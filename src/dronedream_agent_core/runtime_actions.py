@@ -439,6 +439,31 @@ def _resolved_parameters(
             "arguments": arguments,
         }
         return parameters
+    if driver == "local-safety":
+        protected = {
+            "operation",
+            "minimum_clearance_m",
+            "maximum_age_seconds",
+            "maximum_position_error_m",
+        }
+        if protected & arguments.keys():
+            raise RuntimeActionContractError(
+                f"RUNTIME_ACTION_PROTECTED_PARAMETER_OVERRIDE:{runtime_executor}"
+            )
+        operations = {
+            "native.payload.verify-release-area": "verify-release-area",
+            "native.maintenance.measure-clearance": "measure-clearance",
+        }
+        operation = operations.get(runtime_executor)
+        if operation is None:
+            raise RuntimeActionContractError(
+                f"RUNTIME_ACTION_LOCAL_SAFETY_UNSUPPORTED:{runtime_executor}"
+            )
+        return {
+            **defaults,
+            "operation": operation,
+            "arguments": arguments,
+        }
     if driver == "mavsdk-camera":
         protected = {"command"}
         if protected & arguments.keys():

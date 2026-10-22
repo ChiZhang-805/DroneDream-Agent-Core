@@ -488,6 +488,19 @@ def create_app(
         title = payload.title or ("New task" if payload.locale == "en-US" else "新任务")
         return store.create_thread(title, payload.selected_model, payload.locale)
 
+    # 功能：
+    #   为桌面和产品 CLI 返回同一任务目录；归档任务只在显式请求时出现。
+    # 输入：
+    #   include_archived：是否包含归档任务，FastAPI 严格解析为布尔值。
+    # 输出：
+    #   threads：按置顶和更新时间排序的任务摘要，不包含任何会话秘密。
+    @app.get("/v1/threads", dependencies=[local])
+    def list_threads(include_archived: bool = False) -> dict[str, object]:
+        return {
+            "threads": store.list_threads(include_archived=include_archived),
+            "include_archived": include_archived,
+        }
+
     @app.get("/v1/threads/{thread_id}", dependencies=[local])
     def get_thread(thread_id: str) -> dict[str, object]:
         try:
@@ -1039,8 +1052,9 @@ def create_app(
     # 输出：
     #   snapshot：内容绑定的静态偏好空间。
     @app.post("/v1/assets/preferred-airspace", dependencies=[local])
-    def preferred_airspace(payload: AirspaceRequest,
-                           identity: VerifiedIdentity = verified_identity):
+    def preferred_airspace(
+        payload: AirspaceRequest, identity: VerifiedIdentity = verified_identity
+    ):
         try:
             return airspace_service.snapshot(payload)
         except KeyError as error:
@@ -1170,17 +1184,15 @@ def create_app(
             else:
                 if payload.gateway_base_url is None:
                     raise ValueError("MODEL_GATEWAY_REQUIRED")
-                provider, _plugin_id, capability_id = (
-                    plugin_manager.model_binding_for_model(payload.model_id)
+                provider, _plugin_id, capability_id = plugin_manager.model_binding_for_model(
+                    payload.model_id
                 )
                 connection = ModelConnection(
                     selection_id=payload.model_id,
                     provider=provider,
                     model_id=payload.model_id,
                     api_key=payload.model_grant,
-                    base_url=_validate_gateway(
-                        str(payload.gateway_base_url), identity.issuer
-                    ),
+                    base_url=_validate_gateway(str(payload.gateway_base_url), identity.issuer),
                     api_style="chat-completions",
                     capability_id=capability_id,
                     source="default",
@@ -1315,27 +1327,30 @@ def create_app(
                 thread_id,
                 payload.progress_request_id,
             )
-            result = preparation_progress.run(progress_key, lambda: mission_service.prepare(
-                thread_id=thread_id,
-                message=payload.message,
-                map_id=payload.map_id,
-                map_content_sha256=payload.map_content_sha256,
-                vehicle_id=payload.vehicle_id,
-                vehicle_content_sha256=payload.vehicle_content_sha256,
-                connection=connection,
-                role_connections=role_connections,
-                locale=payload.locale,
-                start_entity=payload.start_entity,
-                attachment_ids=payload.attachment_ids,
-                input_channel=payload.input_channel,
-                input_metadata=payload.input_metadata,
-                owner_account_id=identity.owner_account_id,
-                tenant_id=identity.tenant_id,
-                organization_id=identity.organization_id,
-                source_edition=payload.source_edition,
-                memory_projection_credentials=projection_credentials,
-                memory_projection_configuration_issue=projection_configuration_issue,
-            ))
+            result = preparation_progress.run(
+                progress_key,
+                lambda: mission_service.prepare(
+                    thread_id=thread_id,
+                    message=payload.message,
+                    map_id=payload.map_id,
+                    map_content_sha256=payload.map_content_sha256,
+                    vehicle_id=payload.vehicle_id,
+                    vehicle_content_sha256=payload.vehicle_content_sha256,
+                    connection=connection,
+                    role_connections=role_connections,
+                    locale=payload.locale,
+                    start_entity=payload.start_entity,
+                    attachment_ids=payload.attachment_ids,
+                    input_channel=payload.input_channel,
+                    input_metadata=payload.input_metadata,
+                    owner_account_id=identity.owner_account_id,
+                    tenant_id=identity.tenant_id,
+                    organization_id=identity.organization_id,
+                    source_edition=payload.source_edition,
+                    memory_projection_credentials=projection_credentials,
+                    memory_projection_configuration_issue=projection_configuration_issue,
+                ),
+            )
             notifications = result.get("notifications")
             if not isinstance(notifications, list) or not notifications:
                 notifications = [
@@ -1926,7 +1941,10 @@ def create_app(
             require_runtime_thread_scope(thread_id, identity)
             return runtime_manager.execution_evidence(thread_id)
         except KeyError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            detail = str(error.args[0]) if error.args else "EXECUTION_EVIDENCE_NOT_FOUND"
+            if detail != "EXECUTION_EVIDENCE_NOT_FOUND":
+                detail = "THREAD_NOT_FOUND"
+            raise HTTPException(status_code=404, detail=detail) from error
         except RuntimeBridgeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -1944,12 +1962,17 @@ def create_app(
     #   thread_id：任务标识；identity：登录身份；source_id：仿真相机标识。
     # 输出：
     #   response：禁止缓存的真实 PNG；尚无帧时返回 404。
-    def live_frame(thread_id: str, identity: VerifiedIdentity = verified_identity,
-                   source_id: Literal["gazebo-render", "gazebo-onboard"] = "gazebo-render"
-                   ) -> Response:
+    def live_frame(
+        thread_id: str,
+        identity: VerifiedIdentity = verified_identity,
+        source_id: Literal["gazebo-render", "gazebo-onboard"] = "gazebo-render",
+    ) -> Response:
         require_runtime_thread_scope(thread_id, identity)
-        path = (runtime_manager.live_frame(thread_id) if source_id == "gazebo-render"
-                else runtime_manager.live_frame(thread_id, source_id=source_id))
+        path = (
+            runtime_manager.live_frame(thread_id)
+            if source_id == "gazebo-render"
+            else runtime_manager.live_frame(thread_id, source_id=source_id)
+        )
         if path is None:
             raise HTTPException(status_code=404, detail="LIVE_FRAME_NOT_READY")
         try:

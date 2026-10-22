@@ -64,6 +64,8 @@ dronedream-agent = "dronedream_agent_core.cli:main"
 dronedream-plugin = "dronedream_agent_core.plugin_cli:main"
 dronedream-autonomy-core = "dronedream_agent_app.server:main"
 dronedream-console = "dronedream_agent_app.console:main"
+dronedream = "dronedream_agent_app.console:main"
+dronedream-live = "dronedream_agent_app.live_console:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

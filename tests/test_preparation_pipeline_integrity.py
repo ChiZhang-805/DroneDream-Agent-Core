@@ -105,6 +105,20 @@ class _PlanningPort:
             value = {
                 "ordered_targets": ["b", "a"],
                 "route_policy": "balanced",
+                "speed_preferences": [
+                    {
+                        "target_node": "b",
+                        "cruise_speed_mps": 3.6,
+                        "approach_speed_mps": 0.9,
+                        "rationale": "Controlled destination approach.",
+                    },
+                    {
+                        "target_node": "a",
+                        "cruise_speed_mps": 4.5,
+                        "approach_speed_mps": 0.7,
+                        "rationale": "Open return then landing.",
+                    },
+                ],
                 "rationale_summary": "Offline test intent; route geometry remains tool-owned.",
             }
         else:

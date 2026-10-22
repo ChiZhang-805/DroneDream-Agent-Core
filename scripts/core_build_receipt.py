@@ -19,6 +19,7 @@ RECEIPT = "artifacts/desktop/core-components-build.json"
 BINARIES = (
     "dronedream-autonomy-core-x86_64-pc-windows-msvc.exe",
     "dronedream-plugin-isolator-x86_64-pc-windows-msvc.exe",
+    "dronedream-live-x86_64-pc-windows-msvc.exe",
 )
 
 

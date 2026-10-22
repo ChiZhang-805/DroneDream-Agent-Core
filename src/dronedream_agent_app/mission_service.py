@@ -168,6 +168,41 @@ def _output_receipt_references(output_dir: Path, evidence: list[EvidenceRecord],
 
 
 # 功能：
+#   投影模型实际生成的任务图与工具回执，供所有客户端验证计划来源。
+# 输入：
+#   prepared：已验证任务。
+# 输出：
+#   proof：不依赖公开网页资产绑定的模型与工具证明。
+def _model_tool_proof(prepared) -> dict[str, object]:
+    return {
+        "schema_version": "dronedream.model-tool-proof.v1",
+        "task_graph": {
+            "nodes": [
+                {
+                    "node_id": node.task_id,
+                    "action": node.action,
+                    "target": node.target_node,
+                    "depends_on": list(node.depends_on),
+                    "success_evidence": list(node.success_evidence),
+                }
+                for node in prepared.task_graph.nodes
+            ]
+        },
+        "tool_requests": [
+            {
+                "call_id": receipt.call_id,
+                "tool_id": receipt.tool_id,
+                "plugin_id": receipt.plugin_id,
+            }
+            for receipt in prepared.tool_receipts
+        ],
+        "tool_receipts": [
+            receipt.model_dump(mode="json") for receipt in prepared.tool_receipts
+        ],
+    }
+
+
+# 功能：
 #   将已准备的任务投影到界面协议，保留插件动作和实际规划预算，不赋予飞行权限。
 # 输入：
 #   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本；maximum_planning_rounds：配置上限。
@@ -190,17 +225,7 @@ def _public_planner_artifact(
         character not in "0123456789abcdef" for character in context_sha256
     ):
         raise ValueError("PUBLIC_HARNESS_CONTEXT_SHA256_INVALID")
-    nodes = [
-        {
-            "node_id": node.task_id,
-            "action": node.action,
-            "target": node.target_node,
-            "depends_on": list(node.depends_on),
-            "success_evidence": list(node.success_evidence),
-        }
-        for node in prepared.task_graph.nodes
-    ]
-    tool_receipts = [receipt.model_dump(mode="json") for receipt in prepared.tool_receipts]
+    proof = _model_tool_proof(prepared)
     return {
         "schema_version": "dronedream.autonomy.planner-response.v1",
         "status": "draft",
@@ -217,16 +242,9 @@ def _public_planner_artifact(
             {"role": "target", "entity": prepared.intent.target_entity},
             {"role": "return", "entity": prepared.intent.return_entity},
         ],
-        "task_graph": {"nodes": nodes},
-        "tool_requests": [
-            {
-                "call_id": receipt.call_id,
-                "tool_id": receipt.tool_id,
-                "plugin_id": receipt.plugin_id,
-            }
-            for receipt in prepared.tool_receipts
-        ],
-        "tool_receipts": tool_receipts,
+        "task_graph": proof["task_graph"],
+        "tool_requests": proof["tool_requests"],
+        "tool_receipts": proof["tool_receipts"],
         "assumptions": list(prepared.intent.assumptions),
         "blockers": [],
         "repair": {
@@ -1274,6 +1292,7 @@ class MissionService:
                 ],
             },
         }
+        summary["model_tool_proof"] = _model_tool_proof(prepared)
         public_bindings = effective_input_metadata.get("public_asset_bindings")
         if isinstance(public_bindings, dict):
             planner_artifact = _public_planner_artifact(

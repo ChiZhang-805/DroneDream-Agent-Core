@@ -85,7 +85,31 @@ def test_additional_pickup_outside_contract_target_is_rejected() -> None:
     graph.nodes.append(SimpleNamespace(action="pickup", target_node="other"))
     assert not _payload_gate(contract=contract, task_graph=graph)["accepted"]
     contract.payload_action = "none"
-    assert not _payload_gate(contract=contract, task_graph=graph)["accepted"]
+    rejected = _payload_gate(contract=contract, task_graph=graph)
+    assert not rejected["accepted"]
+    assert rejected["repair_instructions"] == [
+        "Remove pickup, precontact-hold, confirm-custody, and loaded-stability tasks "
+        "because the contract does not request pickup."
+    ]
+
+
+def test_delivery_requires_release_at_target_and_rejects_pickup_custody() -> None:
+    contract = SimpleNamespace(payload_action="delivery.release-payload", target_node="dynamicum")
+    graph = SimpleNamespace(
+        nodes=[SimpleNamespace(action="delivery.release-payload", target_node="dynamicum")]
+    )
+    assert _payload_gate(contract=contract, task_graph=graph)["accepted"]
+
+    graph.nodes = [SimpleNamespace(action="delivery.confirm-custody", target_node="dynamicum")]
+    rejected = _payload_gate(contract=contract, task_graph=graph)
+    assert not rejected["accepted"]
+    assert rejected["issue_codes"] == ["PAYLOAD_WORKFLOW_INVALID"]
+    assert rejected["repair_instructions"] == [
+        "Remove pickup, precontact-hold, confirm-custody, and loaded-stability tasks "
+        "because the contract does not request pickup.",
+        "Create exactly one delivery.release-payload task at the contract target node, "
+        "after delivery.verify-release-area.",
+    ]
 
 
 # 功能：
@@ -135,6 +159,22 @@ def test_clearance_gate_rejects_empty_and_nonfinite_segments() -> None:
         _clearance_speed_gate(flight_plan=plan, configuration={"tight_clearance_m": "2"})
 
 
+def test_clearance_gate_allows_campus_cruise_outside_tight_corridors() -> None:
+    plan = SimpleNamespace(
+        segments=[
+            SimpleNamespace(segment_id="outdoor", minimum_clearance_m=0.55, speed_limit_mps=3.0)
+        ]
+    )
+    validation = _clearance_speed_gate(flight_plan=plan)
+    assert validation["accepted"] is True
+    assert validation["tight_clearance_m"] == 0.5
+
+    plan.segments[0].minimum_clearance_m = 0.45
+    validation = _clearance_speed_gate(flight_plan=plan)
+    assert validation["accepted"] is False
+    assert validation["violations"][0]["segment_id"] == "outdoor"
+
+
 # 功能：
 #   验证空的错误类型或未知配置键不能被缺省合并吞掉，直接调用同样遵守设置契约。
 # 输入：
@@ -161,7 +201,24 @@ def test_falsey_or_unknown_policy_is_not_an_omitted_configuration(policy, gate):
 @pytest.mark.parametrize("mutation", ["contract", "clearance", "accepted_type", "count_type"])
 def test_route_binding_requires_plan_identity_and_consistent_clearance(mutation):
     contract, _, _, _, route, clearance, _ = _fixtures()
-    semantic = SemanticPlan(ordered_targets=["target", "start"], rationale_summary="test")
+    semantic = SemanticPlan(
+        ordered_targets=["target", "start"],
+        speed_preferences=[
+            {
+                "target_node": "target",
+                "cruise_speed_mps": 3.5,
+                "approach_speed_mps": 0.8,
+                "rationale": "Target approach.",
+            },
+            {
+                "target_node": "start",
+                "cruise_speed_mps": 4.0,
+                "approach_speed_mps": 0.7,
+                "rationale": "Return approach.",
+            },
+        ],
+        rationale_summary="test",
+    )
     plan = FlightPlan(
         revision=1,
         contract_id=contract.contract_id,

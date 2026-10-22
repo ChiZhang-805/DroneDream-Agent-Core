@@ -311,13 +311,31 @@ class MapSurfaceIndex:
                     / 6
                 )
                 double_sided = primitive.get("mesh_double_sided", False)
+                mesh_closed = primitive.get("mesh_closed", True)
                 if (
                     not math.isfinite(volume)
-                    or abs(volume) < 1e-12
                     or type(double_sided) is not bool
+                    or type(mesh_closed) is not bool
                 ):
                     raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
-                self.mesh_optics[len(centers)] = (double_sided, float(np.sign(volume)))
+                if mesh_closed:
+                    if abs(volume) < 1e-12:
+                        raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
+                    winding_sign = float(np.sign(volume))
+                else:
+                    normal = np.cross(triangles[0, 1] - triangles[0, 0],
+                                      triangles[0, 2] - triangles[0, 0])
+                    normal /= np.linalg.norm(normal)
+                    span = max(float(np.ptp(triangles, axis=(0, 1)).max()), 1.0)
+                    if (
+                        abs(volume) >= 1e-12
+                        or np.max(np.abs((triangles.reshape(-1, 3) - triangles[0, 0]) @ normal))
+                        > 1e-10 * span
+                    ):
+                        raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
+                    # An open planar rendering surface has no physical interior.
+                    winding_sign = 0.0
+                self.mesh_optics[len(centers)] = (double_sided, winding_sign)
             elif any(k in primitive for k in size_keys):
                 if not all(k in primitive for k in size_keys) or lengths or "radius_m" in primitive:
                     raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")

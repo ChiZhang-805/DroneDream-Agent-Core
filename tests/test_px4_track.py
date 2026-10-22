@@ -288,7 +288,7 @@ def test_current_map_contract_rejects_retired_vehicle_geometry(tmp_path: Path) -
 #   tmp_path：临时语义文件目录。
 # 输出：
 #   None：不返回业务数据。
-def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
+def test_metric_geometry_route_exports_with_campus_cruise_speed(
     tmp_path: Path,
 ) -> None:
     graph = _graph()
@@ -310,7 +310,7 @@ def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
 
     track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
-    assert [point.speed_limit_mps for point in track.points] == [0.6, 0.6, 0.6]
+    assert [point.speed_limit_mps for point in track.points] == [4.0, 4.0, 4.0]
 
 
 def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:

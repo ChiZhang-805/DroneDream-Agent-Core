@@ -172,19 +172,55 @@ def _payload_gate(
     *, contract: MissionContract, task_graph: TaskGraph, **_: Any
 ) -> dict[str, object]:
     pickup_tasks = [task for task in task_graph.nodes if task.action == "pickup"]
-    accepted = (
+    release_tasks = [
+        task for task in task_graph.nodes if task.action == "delivery.release-payload"
+    ]
+    pickup_transition_actions = {
+        "delivery.precontact-hold",
+        "delivery.confirm-custody",
+        "delivery.verify-loaded-stability",
+    }
+    pickup_transition_tasks = [
+        task for task in task_graph.nodes if task.action in pickup_transition_actions
+    ]
+    pickup_required = contract.payload_action == "pickup"
+    release_required = contract.payload_action == "delivery.release-payload"
+    pickup_valid = (
         len(pickup_tasks) == 1 and pickup_tasks[0].target_node == contract.target_node
-        if contract.payload_action == "pickup"
-        else not pickup_tasks
+        if pickup_required
+        else not pickup_tasks and not pickup_transition_tasks
     )
+    release_valid = (
+        len(release_tasks) == 1 and release_tasks[0].target_node == contract.target_node
+        if release_required
+        else not release_tasks
+    )
+    accepted = pickup_valid and release_valid
+    repair_instructions: list[str] = []
+    if not pickup_valid:
+        repair_instructions.append(
+            "Create exactly one pickup task at the contract target node."
+            if pickup_required
+            else (
+                "Remove pickup, precontact-hold, confirm-custody, and loaded-stability tasks "
+                "because the contract does not request pickup."
+            )
+        )
+    if not release_valid:
+        repair_instructions.append(
+            "Create exactly one delivery.release-payload task at the contract target node, "
+            "after delivery.verify-release-area."
+            if release_required
+            else "Remove delivery.release-payload because the contract does not request release."
+        )
     validation = {
         "validator": "payload-workflow",
         "accepted": accepted,
         "pickup_task_count": len(pickup_tasks),
-        "issue_codes": [] if accepted else ["PAYLOAD_PICKUP_TASK_INVALID"],
-        "repair_instructions": (
-            [] if accepted else ["Create exactly one pickup task at the contract target node."]
-        ),
+        "release_task_count": len(release_tasks),
+        "pickup_transition_task_count": len(pickup_transition_tasks),
+        "issue_codes": [] if accepted else ["PAYLOAD_WORKFLOW_INVALID"],
+        "repair_instructions": repair_instructions,
     }
     return validation
 
@@ -231,11 +267,11 @@ def _clearance_speed_gate(
         "maximum_tight_speed_mps",
     }:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
-    tight_clearance_m = policy_number(configured, "tight_clearance_m", 1.25, 0.3, 10)
+    tight_clearance_m = policy_number(configured, "tight_clearance_m", 0.5, 0.3, 10)
     maximum_tight_speed_mps = policy_number(configured, "maximum_tight_speed_mps", 1, 0.1, 3)
     valid = bool(flight_plan.segments) and all(
         bounded_number(segment.minimum_clearance_m, 0, math.inf)
-        and bounded_number(segment.speed_limit_mps, 0, 3)
+        and bounded_number(segment.speed_limit_mps, 0, 5)
         for segment in flight_plan.segments
     )
     violations = [
@@ -246,7 +282,7 @@ def _clearance_speed_gate(
         }
         for segment in flight_plan.segments
         if bounded_number(segment.minimum_clearance_m, 0, math.inf)
-        and bounded_number(segment.speed_limit_mps, 0, 3)
+        and bounded_number(segment.speed_limit_mps, 0, 5)
         and segment.minimum_clearance_m < tight_clearance_m
         and segment.speed_limit_mps > maximum_tight_speed_mps
     ]
@@ -497,7 +533,7 @@ def plugin_definitions() -> list[PluginDefinition]:
                         "type": "number",
                         "minimum": 0.3,
                         "maximum": 10.0,
-                        "default": 1.25,
+                        "default": 0.5,
                     },
                     "maximum_tight_speed_mps": {
                         "type": "number",

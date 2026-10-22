@@ -63,6 +63,7 @@ from .contracts import (
     RuntimeCheckpoint,
     RuntimeCheckpointContract,
     SemanticPlan,
+    SemanticSpeedPreference,
     TaskGraph,
     TaskGraphArtifact,
     ToolReceipt,
@@ -167,6 +168,7 @@ EXPLICIT_CONSTRAINT_PHRASES = {
 
 _Artifact = TypeVar("_Artifact", bound=BaseModel)
 MAX_PREPARATION_ARTIFACT_BYTES = 64 * 1024 * 1024
+VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS = 5.0
 
 
 # 功能：
@@ -1507,6 +1509,28 @@ def _validate_task_graph(
         task.action == "pickup" and task.target_node == contract.target_node for task in graph.nodes
     ):
         raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PICKUP")
+    pickup_only_actions = {
+        "pickup",
+        "delivery.precontact-hold",
+        "delivery.confirm-custody",
+        "delivery.verify-loaded-stability",
+    }
+    if contract.payload_action != "pickup" and pickup_only_actions.intersection(actions):
+        raise MissionPreparationBlocked("TASK_GRAPH_UNREQUESTED_PICKUP_WORKFLOW")
+    if contract.payload_action == "delivery.release-payload":
+        releases = [task for task in graph.nodes if task.action == "delivery.release-payload"]
+        if len(releases) != 1:
+            raise MissionPreparationBlocked("TASK_GRAPH_RELEASE_COUNT_INVALID")
+        if releases[0].target_node != contract.target_node:
+            raise MissionPreparationBlocked("TASK_GRAPH_RELEASE_TARGET_INVALID")
+    elif "delivery.release-payload" in actions:
+        raise MissionPreparationBlocked("TASK_GRAPH_UNREQUESTED_PAYLOAD_RELEASE")
+    elif contract.payload_action != "none":
+        requested = [task for task in graph.nodes if task.action == contract.payload_action]
+        if len(requested) != 1:
+            raise MissionPreparationBlocked("TASK_GRAPH_REQUESTED_ACTION_COUNT_INVALID")
+        if requested[0].target_node != contract.target_node:
+            raise MissionPreparationBlocked("TASK_GRAPH_REQUESTED_ACTION_TARGET_INVALID")
     if contract.payload_action == "pickup":
         by_id = {task.task_id: task for task in graph.nodes}
         if actions.count("pickup") != 1:
@@ -1682,6 +1706,14 @@ def _validate_semantic_plan(plan: SemanticPlan, contract: MissionContract, graph
         for first, second in zip(plan.ordered_targets, plan.ordered_targets[1:], strict=False)
     ):
         raise MissionPreparationBlocked("SEMANTIC_PLAN_CONSECUTIVE_DUPLICATE")
+    if [item.target_node for item in plan.speed_preferences] != plan.ordered_targets:
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_ORDER_MISMATCH")
+    if any(
+        item.cruise_speed_mps > VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS
+        or item.approach_speed_mps > item.cruise_speed_mps
+        for item in plan.speed_preferences
+    ):
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_OUTSIDE_ENVELOPE")
 
 
 # 功能：
@@ -2061,7 +2093,17 @@ def _validate_plugin_track_tightening(
         if track.coordinate_contract != baseline.coordinate_contract:
             raise MissionPreparationBlocked("PLUGIN_TRACK_COORDINATE_BINDING_CHANGED")
         if len(track.points) != len(baseline.points) or any(
-            point.phase != prior.phase or point.speed_limit_mps > prior.speed_limit_mps
+            point.phase != prior.phase
+            or point.speed_limit_mps > prior.speed_limit_mps
+            or (
+                prior.approach_speed_limit_mps is not None
+                and (
+                    point.approach_speed_limit_mps is None
+                    or point.approach_speed_limit_mps > prior.approach_speed_limit_mps
+                    or point.approach_distance_m is None
+                    or point.approach_distance_m < prior.approach_distance_m
+                )
+            )
             for point, prior in zip(track.points, baseline.points, strict=True)
         ):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
@@ -2104,8 +2146,14 @@ def _flight_plan(
     movement_tasks = [task for task in task_graph.nodes if task.action in allowed_movement_actions]
     used_task_ids: set[str] = set()
     segments: list[PlanSegment] = []
-    for index, (target, route) in enumerate(
-        zip(semantic_plan.ordered_targets, routes, strict=True), start=1
+    for index, (target, route, speed_preference) in enumerate(
+        zip(
+            semantic_plan.ordered_targets,
+            routes,
+            semantic_plan.speed_preferences,
+            strict=True,
+        ),
+        start=1,
     ):
         task = next(
             (
@@ -2120,11 +2168,12 @@ def _flight_plan(
         used_task_ids.add(task.task_id)
         route_edges = [edges[edge_id] for edge_id in route.edge_ids if edge_id in edges]
         metric_geometry_route = len(route_edges) != len(route.edge_ids)
-        speed_limit_mps = (
+        tool_speed_limit_mps = (
             min(edge.speed_limit_mps for edge in route_edges)
             if route_edges and not metric_geometry_route
-            else 0.5
+            else VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS
         )
+        speed_limit_mps = min(tool_speed_limit_mps, speed_preference.cruise_speed_mps)
         segments.append(
             PlanSegment(
                 segment_id=f"segment-{index:03d}",
@@ -2151,6 +2200,50 @@ def _flight_plan(
         semantic_plan_sha256=sha256_json(semantic_plan),
     )
     return flight_plan
+
+
+# 功能：
+#   将模型按航段选择的期望速度收紧到工具生成轨迹；实时感知仍可继续减速或停车。
+# 输入：
+#   track：工具导出的车辆能力与地图边界内轨迹。
+#   routes：与语义目标一一对应的分段几何。
+#   speed_preferences：模型按相同目标顺序生成的巡航与进近速度。
+# 输出：
+#   limited_track：只收紧、不提高任何工具限速的独立轨迹。
+def _apply_model_speed_preferences(
+    track: Px4Track,
+    routes: list[GraphRoute],
+    speed_preferences: list[SemanticSpeedPreference],
+) -> Px4Track:
+    if len(routes) != len(speed_preferences):
+        raise MissionPreparationBlocked("MODEL_SPEED_ROUTE_COUNT_MISMATCH")
+    points = [point.model_copy(deep=True) for point in track.points]
+    cursor = 0
+    for route, preference in zip(routes, speed_preferences, strict=True):
+        end = cursor + len(route.positions_m) - 1
+        if end >= len(points):
+            raise MissionPreparationBlocked("MODEL_SPEED_TRACK_BINDING_INVALID")
+        for index in range(cursor + 1, end + 1):
+            points[index].speed_limit_mps = min(
+                points[index].speed_limit_mps,
+                preference.cruise_speed_mps,
+            )
+        points[end] = points[end].model_copy(
+            update={
+                "approach_speed_limit_mps": min(
+                    points[end].speed_limit_mps,
+                    preference.approach_speed_mps,
+                ),
+                "approach_distance_m": min(
+                    3.0,
+                    max(1.0, route.route_length_m * 0.1),
+                ),
+            }
+        )
+        cursor = end
+    if cursor != len(points) - 1:
+        raise MissionPreparationBlocked("MODEL_SPEED_TRACK_BINDING_INVALID")
+    return _artifact_snapshot(track.model_copy(update={"points": points}), Px4Track)
 
 
 # 功能：
@@ -3934,6 +4027,15 @@ class MissionOrchestrator:
                     "available_node_ids": [node.node_id for node in self.map_graph.nodes],
                     "structured_map_context": semantic_planning_map_context,
                     "navigation_readiness": navigation_readiness.model_dump(mode="json"),
+                    "vehicle_speed_envelope": {
+                        "vehicle_max_speed_mps": self.vehicle.max_speed_mps,
+                        "vehicle_max_acceleration_mps2": self.vehicle.max_acceleration_mps2,
+                        "verified_cruise_min_mps": 3.0,
+                        "verified_cruise_max_mps": VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS,
+                        "approach_min_mps": 0.5,
+                        "approach_max_mps": 2.5,
+                        "runtime_may_reduce_speed": True,
+                    },
                     "hard_output_rules": {
                         "first_target_must_not_equal": contract.start_node,
                         "must_include_target": contract.target_node,
@@ -4244,24 +4346,18 @@ class MissionOrchestrator:
                     evidence=evidence,
                 )
             except MissionPreparationBlocked as error:
-                alternative_decision = _fallback_route_alternative_decision(
-                    route_alternatives
-                )
+                alternative_decision = _fallback_route_alternative_decision(route_alternatives)
                 decision_receipt = None
                 evidence.append(
                     "planning.alternative-ranker-degraded",
                     {
                         "issue": str(error),
-                        "selected_alternative_id": (
-                            alternative_decision.selected_alternative_id
-                        ),
+                        "selected_alternative_id": (alternative_decision.selected_alternative_id),
                         "outcome": "continued-with-core-deterministic-ranking",
                     },
                 )
             else:
-                alternative_decision = _artifact_snapshot(
-                    decision_value, RouteAlternativeDecision
-                )
+                alternative_decision = _artifact_snapshot(decision_value, RouteAlternativeDecision)
                 attempt_receipts.append(decision_receipt)
             feasible_ids = {
                 candidate.alternative_id for candidate in route_alternatives if candidate.feasible
@@ -4301,6 +4397,11 @@ class MissionOrchestrator:
             px4_track, track_receipt = alternative_tracks[selected_alternative.alternative_id]
             px4_track = _artifact_snapshot(px4_track, Px4Track)
             _validate_plugin_track_tightening(px4_track, execution_route, self.vehicle)
+            px4_track = _apply_model_speed_preferences(
+                px4_track,
+                routes,
+                semantic_plan.speed_preferences,
+            )
             baseline_track = _artifact_snapshot(px4_track, Px4Track)
             px4_track = self._invoke_extension_pipeline(
                 "planning.track-optimizers",
@@ -4566,8 +4667,11 @@ class MissionOrchestrator:
                     "future_runtime_evidence_is_expected_after_confirmation": True,
                     "future_runtime_evidence": [
                         "telemetry-continuity",
-                        "payload-identity",
-                        "payload-mass-and-attachment",
+                        *(
+                            ["payload-identity", "payload-mass-and-attachment"]
+                            if contract.payload_action != "none"
+                            else []
+                        ),
                         "runtime-checkpoints",
                         "execution-confirmation",
                         "landing-confirmation",
@@ -4578,6 +4682,26 @@ class MissionOrchestrator:
                     ),
                 },
                 "verification_plan": verification_plan.model_dump(mode="json"),
+                "task_execution_chain": [
+                    {
+                        "task_id": task.task_id,
+                        "action": task.action,
+                        "target_node": task.target_node,
+                        "depends_on": task.depends_on,
+                        "movement_segment_id": next(
+                            (
+                                segment.segment_id
+                                for segment in flight_plan.segments
+                                if segment.task_id == task.task_id
+                            ),
+                            None,
+                        ),
+                        "runtime_action_outside_flight_plan": (
+                            task.action not in movement_action_ids(domain_actions)
+                        ),
+                    }
+                    for task in task_graph.nodes
+                ],
                 "plugin_validation_results": validation_results,
                 "route_alternative_decision": alternative_decision.model_dump(mode="json"),
                 "route_alternative_evidence": {

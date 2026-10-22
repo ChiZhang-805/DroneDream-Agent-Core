@@ -363,18 +363,82 @@ class AssetInterpretationService:
                 max_attempts=1,
                 timeout_seconds=180,
             )
+            required_ids = list(model_source["required_source_ids"])
+            batches = [required_ids[index : index + 32] for index in range(0, len(required_ids), 32)] or [[]]
+            if len(batches) > remaining_calls:
+                raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
+            records = []
+            batch_results = []
+            physical_calls = 0
             try:
-                called = active_port.call(
-                    role="context_summarizer",
-                    output_type=AssetUnderstanding,
-                    instructions=INTERPRETATION_PROMPT,
-                    input_artifact={"purpose": "asset_interpretation", "locale": locale, **model_source},
-                    maximum_physical_attempts=1,
-                )
+                for batch_index, batch_ids in enumerate(batches, start=1):
+                    calls_left = remaining_calls - physical_calls
+                    batches_left = len(batches) - batch_index + 1
+                    attempts_for_batch = min(2, calls_left - (batches_left - 1))
+                    if attempts_for_batch < 1:
+                        raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
+                    batch_source = {
+                        **model_source,
+                        "required_source_ids": batch_ids,
+                        "interpretation_batch": {
+                            "index": batch_index,
+                            "total": len(batches),
+                        },
+                    }
+                    validation_repair = None
+                    attempt_budget = attempts_for_batch
+                    while attempt_budget > 0:
+                        input_artifact = {
+                            "purpose": "asset_interpretation",
+                            "locale": locale,
+                            **batch_source,
+                        }
+                        if validation_repair is not None:
+                            input_artifact["validation_repair"] = validation_repair
+                        called = active_port.call(
+                            role="context_summarizer",
+                            output_type=AssetUnderstanding,
+                            instructions=INTERPRETATION_PROMPT,
+                            input_artifact=input_artifact,
+                            maximum_physical_attempts=attempt_budget,
+                        )
+                        model_record = called.record.model_dump(mode="json")
+                        records.append(model_record)
+                        used_attempts = int(model_record.get("attempt", 1))
+                        physical_calls += used_attempts
+                        attempt_budget -= used_attempts
+                        try:
+                            checked_batch = validate_understanding(called.artifact, batch_source)
+                        except ValueError as error:
+                            if (
+                                str(error)
+                                not in {
+                                    "ASSET_INTERPRETATION_REFERENCES_INVALID",
+                                    "ASSET_INTERPRETATION_LIMITATIONS_INVALID",
+                                }
+                                or attempt_budget < 1
+                            ):
+                                raise
+                            validation_repair = {
+                                "reason": str(error),
+                                "instruction": (
+                                    "Return exactly one items entry for every required_source_id "
+                                    "and no other source_id. Keep every limitation non-empty and "
+                                    "within 400 characters."
+                                ),
+                            }
+                            continue
+                        batch_results.append(checked_batch)
+                        break
             finally:
                 if owned:
                     active_port.close()
-            checked = validate_understanding(called.artifact, model_source)
+            checked = AssetUnderstanding(
+                summary=batch_results[0].summary,
+                limitations=batch_results[0].limitations,
+                items=[item for result in batch_results for item in result.items],
+            )
+            checked = validate_understanding(checked, model_source)
             if previous and retained:
                 checked = AssetUnderstanding(summary=checked.summary, limitations=checked.limitations, items=[*checked.items, *(InterpretedItem.model_validate(item) for item in previous["understanding"]["items"] if item["source_id"] in retained)])
             checked = validate_understanding(checked, source)
@@ -383,7 +447,8 @@ class AssetInterpretationService:
                 "binding": binding,
                 "understanding": output,
                 "output_sha256": sha256_json(output),
-                "model_call": called.record.model_dump(mode="json"),
+                "model_call": records[-1],
+                "model_calls": records,
                 "lineage": lineage,
             }
             with sqlite3.connect(self.path) as db:
@@ -399,7 +464,7 @@ class AssetInterpretationService:
                 "cached": False,
                 "source": source,
                 "understanding": output,
-                "model_calls": [called.record.model_dump(mode="json")],
+                "model_calls": records,
                 "reuse_mode": "incremental" if retained else "full",
                 "retained_items": len(retained),
             }
@@ -434,6 +499,7 @@ def interpret_mission_assets(
     if tuple(source["kind"] for source in sources) != ("map", "vehicle"):
         raise ValueError("ASSET_INTERPRETATION_PAIR_REQUIRED")
     calls = []
+    physical_calls = 0
     interpretations = {}
     for source in sources:
         interpreted = service.interpret(
@@ -442,9 +508,12 @@ def interpret_mission_assets(
             connection=connection,
             locale=locale,
             port=port,
-            remaining_calls=maximum_model_calls - len(calls) - 8,
+            remaining_calls=maximum_model_calls - physical_calls - 8,
         )
         calls.extend(interpreted["model_calls"])
+        physical_calls += sum(
+            int(record.get("attempt", 1)) for record in interpreted["model_calls"]
+        )
         interpretations[source["kind"]] = {
             "asset_id": source["asset_id"],
             "content_sha256": source["content_sha256"],
@@ -457,5 +526,5 @@ def interpret_mission_assets(
     return {
         "interpretations": interpretations,
         "model_calls": calls,
-        "remaining_model_calls": maximum_model_calls - len(calls),
+        "remaining_model_calls": maximum_model_calls - physical_calls,
     }

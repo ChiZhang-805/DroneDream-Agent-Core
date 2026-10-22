@@ -142,7 +142,22 @@ def _artifacts():
         ]
     )
     semantic_plan = SemanticPlan(
-        ordered_targets=["target", "office"], rationale_summary="Visit and return."
+        ordered_targets=["target", "office"],
+        speed_preferences=[
+            {
+                "target_node": "target",
+                "cruise_speed_mps": 3.7,
+                "approach_speed_mps": 1.0,
+                "rationale": "Open transit followed by precise arrival.",
+            },
+            {
+                "target_node": "office",
+                "cruise_speed_mps": 4.5,
+                "approach_speed_mps": 0.8,
+                "rationale": "Clear return with a controlled landing approach.",
+            },
+        ],
+        rationale_summary="Visit and return.",
     )
     office = Vector3(x=0.0, y=0.0, z=1.0)
     target = Vector3(x=2.0, y=0.0, z=1.0)
@@ -306,9 +321,7 @@ def test_verification_plan_rejects_semantically_negated_task_evidence() -> None:
     values[2].nodes[0].success_evidence = ["not airborne"]
     values[9] = values[9].model_copy(update={"task_graph_sha256": sha256_json(values[2])})
 
-    with pytest.raises(
-        MissionVerificationPlanError, match="task_evidence_matches_catalog"
-    ):
+    with pytest.raises(MissionVerificationPlanError, match="task_evidence_matches_catalog"):
         _build(values)
 
 
@@ -320,10 +333,7 @@ def test_execution_binding_rejects_a_verification_plan_with_an_omitted_task_obli
             "requirements": [
                 requirement
                 for requirement in plan.requirements
-                if not (
-                    requirement.phase == "runtime"
-                    and requirement.subject_id == "outbound"
-                )
+                if not (requirement.phase == "runtime" and requirement.subject_id == "outbound")
             ]
         }
     )
@@ -362,30 +372,55 @@ def _action_artifacts():
     """Add one non-motion action so duplicate and swapped step bindings are observable."""
     values = list(_artifacts())
     for action_id in ("photo", "inspect"):
-        values[1].actions.append(ActionDefinition(
-            action_id=action_id, domain_id="core.flight", label=action_id,
-            description="Observe target without granting navigation authority.",
-            runtime_executor=f"native.{action_id}", simulator_executor=f"native.{action_id}",
-            required_success_evidence=[f"{action_id} observed"],
-            allowed_fallbacks=["hold"], authority="control",
-        ))
+        values[1].actions.append(
+            ActionDefinition(
+                action_id=action_id,
+                domain_id="core.flight",
+                label=action_id,
+                description="Observe target without granting navigation authority.",
+                runtime_executor=f"native.{action_id}",
+                simulator_executor=f"native.{action_id}",
+                required_success_evidence=[f"{action_id} observed"],
+                allowed_fallbacks=["hold"],
+                authority="control",
+            )
+        )
     values[0].authorized_actions.extend(["photo", "inspect"])
     values[0].action_catalog_sha256 = sha256_json(values[1])
-    values[2].nodes.append(TaskNode(
-        task_id="photo", action="photo", target_node="target", depends_on=["outbound"],
-        success_evidence=["photo observed"], fallback="hold",
-    ))
-    values[9] = values[9].model_copy(update={
-        "task_graph_sha256": sha256_json(values[2]),
-        "domain_action_catalog_sha256": sha256_json(values[1]),
-        "steps": [RuntimeActionExecutionStep(
-            step_id="action-001", task_id="photo", action="photo", target_node="target",
-            trigger="checkpoint", checkpoint_id="checkpoint-001",
-            runtime_executor="native.photo", adapter_id="camera", driver="mavsdk-camera",
-            required_success_evidence=["photo observed"], max_attempts=1, fallback="hold",
-            timeout_seconds=1, authority="control",
-        )],
-    })
+    values[2].nodes.append(
+        TaskNode(
+            task_id="photo",
+            action="photo",
+            target_node="target",
+            depends_on=["outbound"],
+            success_evidence=["photo observed"],
+            fallback="hold",
+        )
+    )
+    values[9] = values[9].model_copy(
+        update={
+            "task_graph_sha256": sha256_json(values[2]),
+            "domain_action_catalog_sha256": sha256_json(values[1]),
+            "steps": [
+                RuntimeActionExecutionStep(
+                    step_id="action-001",
+                    task_id="photo",
+                    action="photo",
+                    target_node="target",
+                    trigger="checkpoint",
+                    checkpoint_id="checkpoint-001",
+                    runtime_executor="native.photo",
+                    adapter_id="camera",
+                    driver="mavsdk-camera",
+                    required_success_evidence=["photo observed"],
+                    max_attempts=1,
+                    fallback="hold",
+                    timeout_seconds=1,
+                    authority="control",
+                )
+            ],
+        }
+    )
     return values
 
 
@@ -393,12 +428,19 @@ def test_runtime_action_verification_accepts_exact_task_binding():
     assert _build(_action_artifacts()).deterministic_gates
 
 
-@pytest.mark.parametrize("change", [
-    {"action": "inspect", "required_success_evidence": ["inspect observed"],
-     "runtime_executor": "native.inspect"},
-    {"target_node": "office"}, {"runtime_executor": "native.inspect"},
-    {"fallback": "land"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {
+            "action": "inspect",
+            "required_success_evidence": ["inspect observed"],
+            "runtime_executor": "native.inspect",
+        },
+        {"target_node": "office"},
+        {"runtime_executor": "native.inspect"},
+        {"fallback": "land"},
+    ],
+)
 def test_runtime_action_verification_rejects_swapped_execution_semantics(change):
     values = _action_artifacts()
     values[9].steps[0] = values[9].steps[0].model_copy(update=change)

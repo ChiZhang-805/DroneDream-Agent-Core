@@ -288,6 +288,21 @@ New-Item -ItemType Directory -Force -Path $binaryRoot | Out-Null
 $targetBinary = Join-Path $binaryRoot "dronedream-autonomy-core-x86_64-pc-windows-msvc.exe"
 Copy-Item -LiteralPath (Join-Path $sidecarDist "dronedream-autonomy-core.exe") -Destination $targetBinary -Force
 
+& $python -m PyInstaller `
+    --noconfirm `
+    --clean `
+    --onefile `
+    --name dronedream-live `
+    --collect-data dronedream_agent_app `
+    --distpath $sidecarDist `
+    --workpath $sidecarWork `
+    --specpath $sidecarSpec `
+    (Join-Path $repoRoot "app\console_entry.py")
+if ($LASTEXITCODE -ne 0) { throw "DroneDream live console build failed" }
+$consoleTarget = Join-Path $binaryRoot "dronedream-live-x86_64-pc-windows-msvc.exe"
+Copy-Item -LiteralPath (Join-Path $sidecarDist "dronedream-live.exe") `
+    -Destination $consoleTarget -Force
+
 $tauriManifest = Join-Path $repoRoot "app\desktop\src-tauri\Cargo.toml"
 $previousTauriBundleType = [Environment]::GetEnvironmentVariable(
     "__TAURI_BUNDLE_TYPE",

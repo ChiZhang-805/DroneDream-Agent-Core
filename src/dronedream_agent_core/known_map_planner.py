@@ -274,11 +274,24 @@ class KnownMapMetricPlanner:
     ) -> tuple[Point, Point]:
         if self.graph is None:
             raise ValueError("topology graph is required for bounded global planning")
-        baseline = shortest_route(
-            self.graph,
-            query.model_copy(update={"require_flight_verified_edges": False}),
-        )
-        points = [(point.x, point.y, point.z) for point in baseline.positions_m]
+        topology_bounded = True
+        try:
+            baseline = shortest_route(
+                self.graph,
+                query.model_copy(update={"require_flight_verified_edges": False}),
+            )
+        except ValueError:
+            topology_bounded = False
+            # A semantic operation point can intentionally be disconnected
+            # from the historical, flight-evidence graph.  In that case the
+            # named endpoints still bound a finite metric search; the current
+            # collision geometry, vehicle envelope and clearance validator own
+            # the route itself.  This is the path used by imported maps whose
+            # delivery zones were derived from geometry rather than authored
+            # as fixed waypoint chains.
+            points = [exact_start, exact_goal]
+        else:
+            points = [(point.x, point.y, point.z) for point in baseline.positions_m]
         # The graph supplies a broad search corridor, never an instruction to
         # snap a live vehicle or a revised semantic action pose back onto an
         # old route node.
@@ -288,16 +301,31 @@ class KnownMapMetricPlanner:
             (band.preferred_upper_z_m for point in points
              if (band := self.preferred_airspace.band_at(point)) is not None),
             default=max(point[2] for point in points))
+        known_transit_upper = max(
+            (node.position_m.z for node in self.graph.nodes),
+            default=max(point[2] for point in points),
+        )
+        minimum_z = min(point[2] for point in points) - padding
+        if not topology_bounded:
+            # With no authored corridor there is no map fact that permits a
+            # shortcut below both named outdoor operation poses.  Keep the
+            # free-space search at or above the lower endpoint; obstacles can
+            # still make it climb or move laterally.
+            minimum_z = min(exact_start[2], exact_goal[2])
         return (
             (
                 min(point[0] for point in points) - padding,
                 min(point[1] for point in points) - padding,
-                min(point[2] for point in points) - padding,
+                minimum_z,
             ),
             (
                 max(point[0] for point in points) + padding,
                 max(point[1] for point in points) + padding,
-                max(max(point[2] for point in points) + padding, preferred_upper),
+                max(
+                    max(point[2] for point in points) + padding,
+                    preferred_upper,
+                    known_transit_upper,
+                ),
             ),
         )
 

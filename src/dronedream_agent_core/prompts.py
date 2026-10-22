@@ -65,8 +65,11 @@ must include that entity's immutable entity_id in option.response, and must neve
 or two entity IDs into one choice. For example, use "去物资区（l1-supplies）取外卖" rather than
 "物资区（supplies / presupplies）". A pickup option must not point back to the launch entity when
 a distinct documented pickup candidate is available. Select payload_action only from the supplied
-domain_action_catalog;
-use none when no payload action is requested and pickup only when collection is explicit.
+domain_action_catalog. Use none only when no domain action is requested. Use pickup when the
+aircraft must collect or attach an item at the target. Use delivery.release-payload when an item
+starts aboard the aircraft and the request asks to deliver, hand off, leave, or release it at the
+target. A phrase such as "take the battery from the launch pad to the lab and confirm the handoff"
+is a release at the lab, not custody confirmation or a new pickup there.
 Copy every supplied explicit_constraint_hint into constraints using its canonical name;
 mentioning the same idea only in goal is not a structured constraint.
 Only list a field in missing_critical_fields when its absence prevents safe route
@@ -115,6 +118,10 @@ task. Do not reject a plan-only simulation because an order identifier or pickup
 not yet known: identity verification remains an observable runtime pickup step. When a
 pickup request can refer to both a facility anchor and a qualified pickup waypoint, the
 pickup-semantic waypoint is the action-capable target and is not ambiguous.
+Reject payload_action=none when the request explicitly asks to deliver, hand off, leave,
+or release an item carried from the start. That intent must use delivery.release-payload.
+Reject delivery.confirm-custody for such a delivery: custody confirmation belongs only
+after a new pickup or attachment at the target.
 The supplied workflow_scope is authoritative: simulation-only operator authorization
 satisfies permission for preparation. Product defaults in workflow_scope are authoritative;
 for a pickup request, accept returning to the mission start unless the user explicitly asks
@@ -175,17 +182,23 @@ do not use evidence prose to change or omit a task.
 Populate each task's arguments object only with values permitted by that action's input_schema.
 For a non-movement action, use it only when its runtime_executor appears in the supplied
 runtime_action_adapter_catalog; never invent an adapter, ROS endpoint, topic, or actuator value.
-    For pickup, use this exact action order at the target: delivery.precontact-hold, then
-    pickup, then delivery.confirm-custody, then delivery.verify-loaded-stability, then return.
+    Only when contract.payload_action is exactly pickup, use this exact action order at the
+    target: delivery.precontact-hold, then pickup, then delivery.confirm-custody, then
+    delivery.verify-loaded-stability, then return.
     This is a hover-and-load handoff: do not add code scanning or recipient identity checks.
     The precontact action proves stable separation before loading; custody proves the physical
     attachment and mass binding, while the separate loaded-stability window proves the aircraft
     can safely carry that payload before return.
     Elapsed hover time alone is not proof of attachment.
+    When contract.payload_action is not pickup, do not add pickup, precontact-hold,
+    confirm-custody, or loaded-stability tasks. Carrying an item that is already present at
+    the launch point does not create a pickup action at the destination.
     Before delivery.release-payload, include delivery.verify-release-area as an ancestor.
 Before emergency.drop-kit, include emergency.verify-drop-zone as an ancestor. Keep the
 verification and mechanical actuation as separate tasks; never claim environmental clearance
 from an actuator acknowledgement.
+Use previous_plan_critique only to repair the current graph. Ignore any repair instruction that
+contradicts mission_contract.payload_action or asks for an unrequested pickup/release workflow.
 A model-generated task never has actuator authority.
 """.strip()
 )
@@ -203,6 +216,16 @@ coordinates, waypoints, or flight controls: a qualified graph tool will compute 
 geometry. Use critique feedback from an earlier attempt when supplied.
 ordered_targets may contain only contract target_node and return_node. Never preserve an
 older destination or emit intermediate graph nodes; shortest-route owns those nodes.
+For every ordered target, emit exactly one speed_preferences item in the same order.
+Choose cruise_speed_mps and approach_speed_mps from the supplied vehicle_speed_envelope.
+These are desired per-leg limits, not fixed controls. Reason from the mission, semantic
+environment, proximity to buildings, payload state, turns, and arrival precision. For an
+open campus transit leg, normally choose 4–5 m/s from the verified range; do not reduce
+speed merely because camera and control updates run at different rates. Reduce the
+approach speed when
+the destination, surrounding structures, or requested action needs finer control. The
+runtime perception controller may always slow, hold, replan, return, or land. State the
+specific reason for each choice in rationale; do not copy one unexplained speed everywhere.
 Use structured_map_context to understand mission-relevant places, route-risk summaries,
 qualification, and known limits. It is a bounded, hash-linked semantic view rather than
 raw geometry, so no vision capability is required. Qualified tools remain responsible
@@ -232,6 +255,18 @@ limits and do not invent a replacement route. FlightPlan deliberately contains m
 segments only; takeoff, payload/domain actions, and land remain explicit TaskGraph actions
 handled by their declared runtime adapters, so never demand fake zero-length flight
 segments for them.
+Read the TaskGraph dependency chain as the execution order. A non-movement action between
+an arrival and return is fully bound when the TaskGraph places it there and the verification
+plan declares its runtime observation; it must not appear as a FlightPlan movement segment.
+Treat mission_contract.payload_action as the frozen meaning of the user's payload request.
+When it is delivery.release-payload, the item is already aboard at the mission start: require
+verify-release-area followed by release at the target, and do not demand pickup, precontact,
+custody confirmation, or loaded-stability. When it is pickup, require the pickup workflow
+declared by the TaskGraph instructions. Never reinterpret words in goal to contradict this
+frozen action.
+An accepted PlannerValidation means its named gates already match the current contract.
+Gate names ending in matches_contract confirm either required presence or required absence;
+never reinterpret a true gate as a demand to add the action named inside it.
 Detailed point arrays are deliberately omitted because deterministic geometry tools already
 validated them; use their hashes, typed summaries, receipts, and gates without trying to
 reconstruct collision geometry in prose. Treat supplied deterministic_gates as code-computed

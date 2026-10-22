@@ -92,10 +92,19 @@ FunctionEnd
   !insertmacro AUTONOMY_MIGRATE_DISPLAY_SHORTCUT "$DESKTOP\${PRODUCTNAME}.lnk" "$DESKTOP\DroneDream · AGENT.lnk"
   !insertmacro AUTONOMY_MIGRATE_DISPLAY_SHORTCUT "$SMPROGRAMS\DroneDream\${PRODUCTNAME}.lnk" "$SMPROGRAMS\DroneDream\DroneDream · AGENT.lnk"
   !insertmacro AUTONOMY_MIGRATE_DISPLAY_SHORTCUT "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$SMPROGRAMS\DroneDream · AGENT.lnk"
+  CreateDirectory "$SMPROGRAMS\DroneDream"
+  CreateShortcut "$SMPROGRAMS\DroneDream\DroneDream CLI.lnk" "$INSTDIR\dronedream-live.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
+  CreateDirectory "$LOCALAPPDATA\Microsoft\WindowsApps"
+  FileOpen $0 "$LOCALAPPDATA\Microsoft\WindowsApps\dronedream-live.cmd" w
+  FileWrite $0 "@echo off$\r$\n"
+  FileWrite $0 '"$INSTDIR\dronedream-live.exe" %*$\r$\n'
+  FileClose $0
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
   !insertmacro AUTONOMY_REMOVE_OWNED_DISPLAY_SHORTCUT "$DESKTOP\DroneDream · AGENT.lnk"
   !insertmacro AUTONOMY_REMOVE_OWNED_DISPLAY_SHORTCUT "$SMPROGRAMS\DroneDream\DroneDream · AGENT.lnk"
   !insertmacro AUTONOMY_REMOVE_OWNED_DISPLAY_SHORTCUT "$SMPROGRAMS\DroneDream · AGENT.lnk"
+  Delete "$SMPROGRAMS\DroneDream\DroneDream CLI.lnk"
+  Delete "$LOCALAPPDATA\Microsoft\WindowsApps\dronedream-live.cmd"
 !macroend

@@ -55,3 +55,23 @@ def test_ros_arguments_cannot_serialize_non_finite_json():
             driver="ros2-service", runtime_executor="native.payload.verify",
             defaults={}, arguments={"amount": float("nan")}, vehicle_sdf=Path("unused.sdf"),
         )
+
+
+def test_clearance_measurement_uses_local_safety_driver_parameters():
+    parameters = runtime_actions._resolved_parameters(
+        driver="local-safety",
+        runtime_executor="native.maintenance.measure-clearance",
+        defaults={
+            "maximum_age_seconds": 1.0,
+            "maximum_position_error_m": 0.35,
+        },
+        arguments={},
+        vehicle_sdf=Path("unused.sdf"),
+    )
+
+    assert parameters == {
+        "operation": "measure-clearance",
+        "maximum_age_seconds": 1.0,
+        "maximum_position_error_m": 0.35,
+        "arguments": {},
+    }

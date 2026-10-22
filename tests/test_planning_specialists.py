@@ -187,7 +187,22 @@ def test_all_planning_layers_contribute_and_validate() -> None:
         vehicle=vehicle,
         task_graph=task_graph,
         semantic_plan=SemanticPlan(
-            ordered_targets=["target", "start"], rationale_summary="Bound route"
+            ordered_targets=["target", "start"],
+            speed_preferences=[
+                {
+                    "target_node": "target",
+                    "cruise_speed_mps": 3.5,
+                    "approach_speed_mps": 0.8,
+                    "rationale": "Target approach.",
+                },
+                {
+                    "target_node": "start",
+                    "cruise_speed_mps": 4.0,
+                    "approach_speed_mps": 0.7,
+                    "rationale": "Return approach.",
+                },
+            ],
+            rationale_summary="Bound route",
         ),
         flight_plan=FlightPlan(
             revision=1,
@@ -327,6 +342,44 @@ def test_specialists_reject_mutated_nested_track_and_unknown_layer():
         _validate_fixture("unknown")
 
 
+def test_indoor_speed_gate_does_not_cap_outdoor_cruise() -> None:
+    contract, graph, vehicle, tasks, route, report, track = _fixtures()
+    graph.nodes[0].semantic = "outdoor"
+    graph.nodes[1].semantic = "outdoor"
+    vehicle = vehicle.model_copy(update={"max_speed_mps": 6.0})
+    track = track.model_copy(
+        update={
+            "points": [point.model_copy(update={"speed_limit_mps": 3.0}) for point in track.points]
+        }
+    )
+
+    result = _validation(
+        "indoor",
+        contract=contract,
+        map_graph=graph,
+        vehicle=vehicle,
+        task_graph=tasks,
+        route=route,
+        clearance=report,
+        px4_track=track,
+    )
+    assert result.accepted
+
+    graph.nodes[0].semantic = "door"
+    result = _validation(
+        "indoor",
+        contract=contract,
+        map_graph=graph,
+        vehicle=vehicle,
+        task_graph=tasks,
+        route=route,
+        clearance=report,
+        px4_track=track,
+    )
+    assert not result.accepted
+    assert result.issue_codes == ["PLANNER_INDOOR_INDOOR_SPEED_BOUNDED"]
+
+
 # 功能：
 #   验证取件动作必须发生在合同目标，而非仅存在任意一个 pickup 动作就通过。
 # 输入：
@@ -348,6 +401,57 @@ def test_payload_specialist_requires_pickup_at_the_contract_target():
 def test_graph_reachability_does_not_accept_same_unknown_endpoint():
     graph = _fixtures()[1]
     assert not _reachable(graph, "unknown", "unknown")
+
+
+# 功能：
+#   验证没有预制拓扑边时，已由碰撞几何工具生成的连续路线仍能证明合同端点可达。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_global_specialist_accepts_metric_geometry_route_without_authored_edges():
+    contract, graph, vehicle, tasks, route, report, track = _fixtures()
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                MapNode(
+                    node_id="isolated",
+                    label="Isolated",
+                    position_m=Vector3(x=1, y=5, z=1),
+                    semantic="outdoor",
+                ),
+            ],
+            "edges": [
+                MapEdge(
+                    edge_id="start-isolated",
+                    from_node="start",
+                    to_node="isolated",
+                    distance_m=5,
+                    minimum_clearance_m=1,
+                    speed_limit_mps=1,
+                    qualification="flight-verified",
+                    evidence_sha256="8" * 64,
+                )
+            ],
+        }
+    )
+    route.all_edges_flight_verified = False
+
+    result = _validation(
+        "global",
+        contract=contract,
+        map_graph=graph,
+        vehicle=vehicle,
+        task_graph=tasks,
+        route=route,
+        clearance=report,
+        px4_track=track,
+    )
+
+    assert result.accepted
+    assert result.deterministic_gates["start_to_target_reachable"]
+    assert result.deterministic_gates["target_to_return_reachable"]
 
 
 # 功能：

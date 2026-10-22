@@ -18,6 +18,7 @@ from dronedream_agent_core.model_harness.model_port import (
     FailoverStructuredModelPort,
     ModelConfigurationError,
     ModelInvocationError,
+    ModelOutputValidationError,
     ProviderSettings,
     StructuredModelPort,
     _safe_attempt_diagnostic,
@@ -55,6 +56,17 @@ def test_model_invocation_reason_code_is_machine_safe() -> None:
             attempts_used=1,
             reason_code="1_non-machine-code",
         )
+
+
+def test_model_output_diagnostic_records_shape_without_content() -> None:
+    secret = "sensitive-model-text"
+    error = ModelOutputValidationError('{"summary":"' + secret)
+    diagnostic = _safe_attempt_diagnostic(error)
+
+    assert secret not in diagnostic
+    assert '"prefix":"object"' in diagnostic
+    assert '"suffix":"text"' in diagnostic
+    assert '"brace_delta":1' in diagnostic
 
 
 # 功能：
@@ -165,6 +177,7 @@ def test_text_only_port_rejects_image_before_provider_invocation() -> None:
 
 def test_failover_port_routes_timeout_recovery_to_text_only_peer() -> None:
     """Recovery uses a bounded peer streak and removes images unsupported by that peer."""
+
     class FakePort:
         def __init__(self, name: str, timeout_seconds: float) -> None:
             self.settings = SimpleNamespace(name=name)
@@ -201,6 +214,7 @@ def test_failover_port_routes_timeout_recovery_to_text_only_peer() -> None:
 
 def test_failed_fallback_reenters_primary_instead_of_sticking_to_peer() -> None:
     """A failed recovery port must not trap subsequent calls on the same failed peer."""
+
     class FakePort:
         def __init__(self, name: str, timeout_seconds: float) -> None:
             self.settings = SimpleNamespace(name=name)
@@ -229,6 +243,7 @@ def test_failed_fallback_reenters_primary_instead_of_sticking_to_peer() -> None:
 
 def test_returned_primary_failure_can_retry_real_time_primary_without_failover() -> None:
     """After a recovery streak, primary failure restores the intended retry state."""
+
     class FakePort:
         def __init__(self, name: str, timeout_seconds: float) -> None:
             self.settings = SimpleNamespace(name=name)
@@ -260,6 +275,7 @@ def test_returned_primary_failure_can_retry_real_time_primary_without_failover()
 
 def test_failover_forwards_visual_prefetch_only_to_multimodal_active_port() -> None:
     """Prefetch follows current capability/ownership and does not leak media to text-only peers."""
+
     class FakePort:
         def __init__(self, name: str) -> None:
             self.settings = SimpleNamespace(name=name)
@@ -426,6 +442,7 @@ def test_retry_diagnostics_exclude_failed_model_payload(monkeypatch) -> None:
 
 def test_custom_validator_message_cannot_echo_secret_into_retry_diagnostics() -> None:
     """User-defined validator text is untrusted even when wrapped by Pydantic."""
+
     class Output(BaseModel):
         value: str
 
@@ -459,6 +476,7 @@ def test_length_repair_diagnostic_includes_bound_without_rejected_values() -> No
 @pytest.mark.parametrize("timeout", [True, 0.0, -1.0, float("nan"), float("inf"), 10**400])
 def test_invalid_timeout_rejected_before_transport_creation(monkeypatch, timeout) -> None:
     """Invalid deadlines cannot create a network client before validation fails."""
+
     def forbidden_client(**kwargs):
         raise AssertionError("Invalid configuration must not construct a transport")
 
@@ -665,3 +683,95 @@ def test_kimi_k2_6_disables_default_thinking_for_bounded_json_calls() -> None:
 
     assert artifact.goal == "inspect gate"
     assert completions.request["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.parametrize("language", ["json", "JSON", ""])
+def test_chat_call_accepts_one_complete_json_code_fence(language) -> None:
+    port = StructuredModelPort(
+        "fixture",
+        settings=ProviderSettings(
+            name="fixture",
+            model="fixture-model",
+            api_key_env="FIXTURE_API_KEY",
+            base_url="https://example.invalid/v1",
+            api_style="chat-completions",
+        ),
+        api_key="not-a-real-secret",
+    )
+    content = IntentArtifact(
+        goal="inspect gate",
+        start_entity="office",
+        target_entity="gate",
+        return_entity="office",
+        payload_action="none",
+    ).model_dump_json()
+
+    class FakeCompletions:
+        def create(self, **_request):
+            return SimpleNamespace(
+                id="fenced-response",
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=f"```{language}\n{content}\n```")
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8),
+            )
+
+    port._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions()),
+        with_options=lambda **_options: port._client,
+    )
+
+    artifact, *_ = port._chat_call(
+        output_type=IntentArtifact,
+        instructions="Return the bounded intent.",
+        input_json="{}",
+        repair_errors=[],
+        multimodal=[],
+    )
+
+    assert artifact.goal == "inspect gate"
+
+
+def test_chat_call_rejects_json_surrounded_by_prose() -> None:
+    port = StructuredModelPort(
+        "fixture",
+        settings=ProviderSettings(
+            name="fixture",
+            model="fixture-model",
+            api_key_env="FIXTURE_API_KEY",
+            base_url="https://example.invalid/v1",
+            api_style="chat-completions",
+        ),
+        api_key="not-a-real-secret",
+    )
+    content = IntentArtifact(
+        goal="inspect gate",
+        start_entity="office",
+        target_entity="gate",
+        return_entity="office",
+        payload_action="none",
+    ).model_dump_json()
+
+    class FakeCompletions:
+        def create(self, **_request):
+            return SimpleNamespace(
+                id="prose-response",
+                choices=[SimpleNamespace(message=SimpleNamespace(content=f"Result:\n{content}"))],
+                usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8),
+            )
+
+    port._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=FakeCompletions()),
+        with_options=lambda **_options: port._client,
+    )
+
+    with pytest.raises(ModelOutputValidationError):
+        port._chat_call(
+            output_type=IntentArtifact,
+            instructions="Return the bounded intent.",
+            input_json="{}",
+            repair_errors=[],
+            multimodal=[],
+        )

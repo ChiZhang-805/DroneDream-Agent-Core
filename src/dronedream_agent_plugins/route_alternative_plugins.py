@@ -171,7 +171,7 @@ def _metric_candidate_definition() -> PluginDefinition:
                     environment.vehicle_height_m * CONSERVATIVE_VEHICLE_ENVELOPE_SCALE
                 ),
                 policy=MetricPlannerPolicy(
-                    resolution_m=0.45,
+                    resolution_m=0.9 if planning_phase == "initial" else 0.45,
                     required_clearance_m=planning_clearance_m,
                     vertical_cost_multiplier=2.4,
                     clearance_cost_weight=0.22,

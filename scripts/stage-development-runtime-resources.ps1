@@ -24,12 +24,23 @@ param(
     [string]$PayloadPlacementRuntime,
 
     [Parameter(Mandatory = $true)]
-    [string]$CameraClockRuntime
+    [string]$CameraClockRuntime,
+
+    [Parameter(Mandatory = $false)]
+    [string]$PythonExecutable
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$buildRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "..\..\Build"))
+$workspaceRoot = $repoRoot
+while ($workspaceRoot -and
+    [System.IO.Path]::GetFileName($workspaceRoot) -ne 'DroneDream-Workspace') {
+    $workspaceRoot = [System.IO.Directory]::GetParent($workspaceRoot).FullName
+}
+if (-not $workspaceRoot) {
+    throw "Repository must be contained by DroneDream-Workspace"
+}
+$buildRoot = [System.IO.Path]::GetFullPath((Join-Path $workspaceRoot "Build"))
 $output = [System.IO.Path]::GetFullPath($OutputRoot)
 $allowedPrefix = $buildRoot.TrimEnd('\') + '\'
 if (-not $output.StartsWith($allowedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -39,7 +50,11 @@ if (Test-Path -LiteralPath $output) {
     throw "Development Runtime resource output already exists: $output"
 }
 
-$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$python = if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    Join-Path $repoRoot ".venv\Scripts\python.exe"
+} else {
+    [System.IO.Path]::GetFullPath($PythonExecutable)
+}
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "Python virtual environment is missing: $python"
 }

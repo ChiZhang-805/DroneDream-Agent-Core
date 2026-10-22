@@ -58,7 +58,7 @@ def test_small_live_localization_deficit_enters_recovery_instead_of_veto():
     )
     assert budget["motion_mode"] == "local-perception-recovery"
     assert budget["local_perception_revalidation_required"] is True
-    assert .05 <= budget["maximum_speed_mps"] < .12
+    assert 3.0 <= budget["maximum_speed_mps"] <= 5.0
     assert budget["localization_deficit_m"] == pytest.approx(.0279496162784093)
     assert budget["tracking_lag_limit_m"] > budget["tracking_rejoin_tolerance_m"] > 0
 
@@ -70,7 +70,7 @@ def test_extreme_localization_loss_enters_slow_perception_recovery():
     budget = build_localization_recovery_budget(.435, localization_covariance_m2=.0535)
     assert budget["motion_mode"] == "local-perception-recovery"
     assert budget["local_perception_revalidation_required"] is True
-    assert .05 <= budget["maximum_speed_mps"] <= .12
+    assert 3.0 <= budget["maximum_speed_mps"] <= 5.0
 
 
 # 功能：
@@ -120,7 +120,7 @@ def test_executor_applies_recoverable_preflight_budget_without_route_veto():
         "tracking_budget": budget,
     })
     assert result["motion_mode"] == "local-perception-recovery"
-    assert .05 <= result["maximum_speed_mps"] < .12
+    assert 3.0 <= result["maximum_speed_mps"] <= 5.0
     assert args._preflight_localization_recovery_active is True
     assert args.tracking_lag_limit_m == pytest.approx(.07572065511159097)
 

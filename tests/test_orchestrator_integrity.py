@@ -170,6 +170,97 @@ def test_task_order_and_location_are_causal(defect):
         module._validate_task_graph(graph, _contract(), _map())
 
 
+def test_delivery_graph_releases_existing_payload_at_target() -> None:
+    contract = _contract().model_copy(
+        update={
+            "goal": "deliver the onboard battery and return",
+            "payload_action": "delivery.release-payload",
+            "authorized_actions": [
+                "takeoff",
+                "navigate",
+                "delivery.verify-release-area",
+                "delivery.release-payload",
+                "return",
+                "land",
+            ],
+        }
+    )
+    graph = TaskGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    "task_id": "takeoff",
+                    "action": "takeoff",
+                    "target_node": "office",
+                    "success_evidence": ["airborne"],
+                    "fallback": "abort",
+                },
+                {
+                    "task_id": "go-target",
+                    "action": "navigate",
+                    "target_node": "pickup",
+                    "depends_on": ["takeoff"],
+                    "success_evidence": ["arrived"],
+                    "fallback": "return",
+                },
+                {
+                    "task_id": "check-release",
+                    "action": "delivery.verify-release-area",
+                    "target_node": "pickup",
+                    "depends_on": ["go-target"],
+                    "success_evidence": ["release area clear"],
+                    "fallback": "return",
+                },
+                {
+                    "task_id": "release",
+                    "action": "delivery.release-payload",
+                    "target_node": "pickup",
+                    "depends_on": ["check-release"],
+                    "success_evidence": ["payload released"],
+                    "fallback": "return",
+                },
+                {
+                    "task_id": "return",
+                    "action": "return",
+                    "target_node": "office",
+                    "depends_on": ["release"],
+                    "success_evidence": ["office reached"],
+                    "fallback": "land",
+                },
+                {
+                    "task_id": "land",
+                    "action": "land",
+                    "target_node": "office",
+                    "depends_on": ["return"],
+                    "success_evidence": ["landed"],
+                    "fallback": "abort",
+                },
+            ]
+        }
+    )
+
+    module._validate_task_graph(graph, contract, _map())
+
+
+def test_delivery_graph_rejects_custody_confirmation_without_pickup() -> None:
+    contract = _contract().model_copy(
+        update={
+            "payload_action": "delivery.release-payload",
+            "authorized_actions": [
+                *_contract().authorized_actions,
+                "delivery.confirm-custody",
+                "delivery.release-payload",
+            ],
+        }
+    )
+    graph = _task_graph(include_stale_gate=False)
+    by_id = {task.task_id: task for task in graph.nodes}
+    by_id["pickup"].action = "delivery.confirm-custody"
+
+    with pytest.raises(module.MissionPreparationBlocked, match="UNREQUESTED_PICKUP_WORKFLOW"):
+        module._validate_task_graph(graph, contract, _map())
+
+
 # 功能：
 #   验证同名公共节点但世界坐标不连续的路线不能拼接为可执行路线。
 # 输入：

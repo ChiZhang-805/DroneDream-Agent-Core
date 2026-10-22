@@ -127,7 +127,7 @@ def build_localization_recovery_budget(
             ),
             "motion_mode": "nominal",
             "local_perception_revalidation_required": False,
-            "maximum_speed_mps": 1.0,
+            "maximum_speed_mps": 5.0,
             "localization_deficit_m": 0.0,
         }
     structural_room = (
@@ -139,8 +139,9 @@ def build_localization_recovery_budget(
     # Global-localization covariance is not a collision observation and must
     # not become a one-vote mission veto.  When the already validated physical
     # corridor still has room for local perception plus a tracking allowance,
-    # keep flying slowly and revalidate every frame.  A larger covariance
-    # merely lowers the speed; it does not command a stop or landing.
+    # keep flying within a bounded operational envelope and revalidate every
+    # frame. Covariance alone must not collapse an otherwise clear route to
+    # walking speed; actual local geometry still slows or stops the aircraft.
     if structural_room <= 0:
         raise ValueError("route cannot support bounded localization recovery")
     # Controller tracking is relative to the same live estimator frame.  Keep
@@ -151,7 +152,7 @@ def build_localization_recovery_budget(
         **planned,
         "motion_mode": "local-perception-recovery",
         "local_perception_revalidation_required": True,
-        "maximum_speed_mps": max(0.05, min(0.12, structural_room * 0.8)),
+        "maximum_speed_mps": min(5.0, max(3.0, structural_room * 5.0)),
         "localization_deficit_m": float(deficit),
         "measured_uncertainty_m": float(assessment["reserved_uncertainty_m"]),
     }

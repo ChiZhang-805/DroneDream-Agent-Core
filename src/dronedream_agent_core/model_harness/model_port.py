@@ -27,6 +27,16 @@ from .progress import progress_sink, report_model_progress
 
 ProviderName: TypeAlias = str
 OutputT = TypeVar("OutputT", bound=BaseModel)
+_JSON_CODE_FENCE = re.compile(
+    r"\A\s*```(?:json)?[ \t]*\r?\n(?P<body>[\s\S]*?)\r?\n```\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _bounded_json_payload(content: str) -> str:
+    """Unwrap one complete JSON code fence; never extract JSON from surrounding prose."""
+    match = _JSON_CODE_FENCE.fullmatch(content)
+    return match.group("body") if match else content
 
 
 class ModelConfigurationError(RuntimeError):
@@ -86,6 +96,47 @@ class ModelInvocationError(RuntimeError):
         self.diagnostic_metrics = metrics
 
 
+class ModelOutputValidationError(ValueError):
+    """Schema failure with output-shape diagnostics that never retain model text."""
+
+    def __init__(self, content: str) -> None:
+        stripped = content.strip()
+        payload = _bounded_json_payload(content).strip()
+        if not stripped:
+            prefix = suffix = "empty"
+        else:
+            prefix = (
+                "fence"
+                if stripped.startswith("```")
+                else "object"
+                if stripped.startswith("{")
+                else "array"
+                if stripped.startswith("[")
+                else "xml"
+                if stripped.startswith("<")
+                else "text"
+            )
+            suffix = (
+                "fence"
+                if stripped.endswith("```")
+                else "object"
+                if stripped.endswith("}")
+                else "array"
+                if stripped.endswith("]")
+                else "text"
+            )
+        super().__init__("MODEL_OUTPUT_VALIDATION_FAILED")
+        self.shape = {
+            "content_length": len(content),
+            "payload_length": len(payload),
+            "line_count": content.count("\n") + 1,
+            "prefix": prefix,
+            "suffix": suffix,
+            "unwrapped_fence": payload != stripped,
+            "brace_delta": payload.count("{") - payload.count("}"),
+        }
+
+
 @dataclass(frozen=True)
 class ProviderSettings:
     name: ProviderName
@@ -122,7 +173,8 @@ class ProviderSettings:
                 name=name,
                 model=os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash",
                 api_key_env="DEEPSEEK_API_KEY",
-                base_url=(os.getenv("DEEPSEEK_BASE_URL") or "").strip() or "https://api.deepseek.com",
+                base_url=(os.getenv("DEEPSEEK_BASE_URL") or "").strip()
+                or "https://api.deepseek.com",
                 api_style="chat-completions",
                 supports_image_input=False,
             )
@@ -170,7 +222,11 @@ class StructuredCallResult(Generic[OutputT]):
 # 输出：
 #   diagnostic：用于受限重试的诊断文本。
 def _safe_attempt_diagnostic(error: Exception) -> str:
-    if isinstance(error, ValidationError):
+    if isinstance(error, ModelOutputValidationError):
+        diagnostic = "ModelOutputValidationError:" + json.dumps(
+            error.shape, ensure_ascii=True, separators=(",", ":")
+        )
+    elif isinstance(error, ValidationError):
         # Custom validator messages can interpolate the rejected secret/prompt.
         # Error kinds and locations support repair without retaining those messages.
         details = [
@@ -646,6 +702,7 @@ class StructuredModelPort:
                     record.latency_ms,
                 )
                 from .progress import report_artifact_progress
+
                 report_artifact_progress(getattr(self, "_progress_sink", None), artifact)
                 return result
         raise AssertionError("unreachable bounded model loop")
@@ -706,7 +763,12 @@ class StructuredModelPort:
             )
             if not response.output_text:
                 raise ValueError("Responses API returned no JSON artifact")
-            artifact = output_type.model_validate_json(response.output_text)
+            try:
+                artifact = output_type.model_validate_json(
+                    _bounded_json_payload(response.output_text)
+                )
+            except ValidationError as error:
+                raise ModelOutputValidationError(response.output_text) from error
         usage = getattr(response, "usage", None)
         response_result = (
             artifact,
@@ -766,7 +828,10 @@ class StructuredModelPort:
         content = response.choices[0].message.content
         if not content:
             raise ValueError("provider returned empty JSON content")
-        artifact = output_type.model_validate_json(content)
+        try:
+            artifact = output_type.model_validate_json(_bounded_json_payload(content))
+        except ValidationError as error:
+            raise ModelOutputValidationError(content) from error
         usage = response.usage
         response_result = (
             artifact,

@@ -23,6 +23,8 @@ from .runtime_bindings import (
     resolve_vehicle_collision_center_offset,
 )
 
+METRIC_ROUTE_CRUISE_SPEED_MPS = 5.0
+
 
 # 功能：
 #   复用资产层的单次有界语义读取，拒绝链接替换、重复字段、非有限值及过深结构。
@@ -88,7 +90,7 @@ def route_to_px4_track(
     node_by_id = {node.node_id: node for node in graph.nodes}
     synthesized_speed_limit_mps = min(
         vehicle.max_speed_mps,
-        0.6,
+        METRIC_ROUTE_CRUISE_SPEED_MPS,
     )
     speed_limits = []
     for edge_id in route.edge_ids:
@@ -170,7 +172,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
     )
     edges = {edge.edge_id: edge for edge in graph.edges}
     nodes = {node.node_id: node for node in graph.nodes}
-    join_speed = min(0.6, vehicle.max_speed_mps)
+    join_speed = min(METRIC_ROUTE_CRUISE_SPEED_MPS, vehicle.max_speed_mps)
     points: list[Px4TrackPoint] = []
     world_points: list[WorldTrackPoint] = []
     target_seen = False

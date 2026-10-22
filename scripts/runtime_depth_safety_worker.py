@@ -4349,7 +4349,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     # fixed-position hold and then a bounded landing.
                     validity_milliseconds=600,
                     maximum_speed_mps=(
-                        min(active_planner_speed_mps, 0.12)
+                        min(active_planner_speed_mps, 1.5)
                         if qualified_static_route_fallback
                         else active_planner_speed_mps
                     ),

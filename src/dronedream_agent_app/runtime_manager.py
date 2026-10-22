@@ -252,6 +252,40 @@ class RuntimeManager:
         return result
 
     # 功能：
+    #   以 Runtime 发行版的 root 身份执行产品管理器生成的安装脚本。
+    # 输入：
+    #   self：指定 Runtime 发行版的管理器。
+    #   script：仅由产品代码构造的基础环境安装脚本。
+    #   timeout：宿主等待秒数。
+    # 输出：
+    #   result：进程退出码及文本输出。
+    def _bash_root(self, script: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
+        try:
+            result = subprocess.run(
+                [
+                    "wsl.exe",
+                    "-d",
+                    self.distribution,
+                    "-u",
+                    "root",
+                    "--",
+                    "bash",
+                    "-s",
+                    "--",
+                ],
+                check=False,
+                capture_output=True,
+                input=script,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            raise RuntimeBridgeError("DRONEDREAM_RUNTIME_UNAVAILABLE") from error
+        return result
+
+    # 功能：
     #   检查必需资源、完整发布索引和原生传感器契约，不把文件存在当作版本一致。
     # 输入：
     #   self：持有产品资源目录的运行管理器。
@@ -1100,7 +1134,49 @@ class RuntimeManager:
         checkpoint("checkingBaseRuntime", 12)
         current = self.status()
         if not current["runtime_available"]:
-            raise RuntimeBridgeError(str(current["issue"]))
+            # Runtime v0.1.0 ships PX4 and Gazebo but predates the ROS 2 layer
+            # required by the current Agent Core. Repair that released base
+            # through the product Runtime manager rather than by hand.
+            base_probe = self._bash(
+                "set -e; command -v gz >/dev/null; "
+                "test -x /opt/PX4-Autopilot/build/px4_sitl_default/bin/px4",
+                timeout=15,
+            )
+            if base_probe.returncode != 0:
+                raise RuntimeBridgeError(str(current["issue"]))
+            checkpoint("installingRos", 20)
+            ros_install = self._bash_root(
+                "set -eo pipefail; export DEBIAN_FRONTEND=noninteractive; "
+                "apt-get update; "
+                "apt-get install -y --no-install-recommends curl ca-certificates gnupg; "
+                "install -d -m 0755 /usr/share/keyrings; "
+                "curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key "
+                "-o /usr/share/keyrings/ros-archive-keyring.gpg; "
+                ". /etc/os-release; test \"$UBUNTU_CODENAME\" = noble; "
+                "printf '%s\\n' "
+                "'deb [arch=amd64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] "
+                "http://packages.ros.org/ros2/ubuntu noble main' "
+                ">/etc/apt/sources.list.d/ros2.list; "
+                "apt-get update; "
+                "apt-get install -y --no-install-recommends "
+                "ros-jazzy-ros-base ros-jazzy-ros-gz-bridge "
+                "ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-rosidl-default-generators "
+                "python3-colcon-common-extensions; "
+                "test -f /opt/ros/jazzy/setup.bash; command -v colcon >/dev/null; "
+                "printf 'DRONEDREAM_ROS_BASE_READY\\n'",
+                timeout=1_800,
+            )
+            if (
+                ros_install.returncode != 0
+                or "DRONEDREAM_ROS_BASE_READY" not in ros_install.stdout
+            ):
+                detail = (ros_install.stderr or ros_install.stdout)[-1_000:]
+                raise RuntimeBridgeError(
+                    f"RUNTIME_PROVISION_FAILED:installingRos:{detail}"
+                )
+            current = self.status()
+            if not current["runtime_available"]:
+                raise RuntimeBridgeError("RUNTIME_PROVISION_FAILED:installingRos:probe")
         wheels_wsl = shlex.quote(_wsl_path(wheels))
         requirements_wsl = shlex.quote(_wsl_path(requirements))
         ros_source_wsl = shlex.quote(_wsl_path(ros_source))
@@ -1635,6 +1711,13 @@ class RuntimeManager:
             raise RuntimeBridgeError("RUNTIME_ADAPTER_RESOURCE_MISSING")
         context_db = self.store.root / "mission-context.sqlite3"
         contract_id = str(plan["contract_id"])
+        camera_capture_required = bool(
+            getattr(prepared_mission, "runtime_actions", None) is not None
+            and any(
+                step.runtime_executor == "native.sensor.capture-rgb"
+                for step in prepared_mission.runtime_actions.steps
+            )
+        )
         command = [
             "--profile",
             "runtime-manager",
@@ -1691,6 +1774,17 @@ class RuntimeManager:
             "--maximum-yaw-rate-deg-s",
             "20",
         ]
+        if camera_capture_required:
+            command.extend(
+                [
+                    "--multimodal-dataset-root",
+                    _wsl_path(run_dir / "multimodal-dataset"),
+                    "--multimodal-flight-id",
+                    f"{contract_id}-{execution_id}".lower(),
+                    "--multimodal-record-period-seconds",
+                    "0.1",
+                ]
+            )
         if local_navigation_fallback_provider is not None:
             command.extend(
                 [
@@ -2103,6 +2197,14 @@ class RuntimeManager:
                 "workflow_result_sha256": hashlib.sha256(raw_result).hexdigest(),
                 "workflow_evidence_chain_head": result.workflow_evidence_chain_head,
                 "completion_assessment": result.completion_assessment.model_dump(mode="json"),
+                "completion_model_call": result.completion_model_call.model_dump(mode="json"),
+                "checkpoint_model_calls": [
+                    decision.model_call.model_dump(mode="json")
+                    for decision in result.checkpoint_decisions
+                ],
+                "runtime_action_receipts": [
+                    receipt.model_dump(mode="json") for receipt in result.runtime_action_receipts
+                ],
                 "gates": runtime.gates.model_dump(mode="json"),
                 "measurements": runtime.measurements.model_dump(mode="json"),
                 "artifact_hashes": {

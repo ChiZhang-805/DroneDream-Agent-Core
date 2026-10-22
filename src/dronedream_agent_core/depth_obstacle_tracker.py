@@ -475,6 +475,9 @@ class DepthMotionTracker:
             if 0.0
             < observed_at_monotonic_seconds - track.observed_at_seconds
             <= self.maximum_track_age_seconds
+            and 0.0
+            < (frame.observed_at_unix_ms - track.observed_at_unix_ms) / 1_000
+            <= self.maximum_track_age_seconds
         }
         available = set(previous)
         updated: dict[int, _Track] = {}
