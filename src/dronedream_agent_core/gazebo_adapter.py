@@ -4208,6 +4208,11 @@ def run_px4_gazebo_track(
                     "east_m": east,
                     "north_m": north,
                     "up_m": up,
+                    # The desktop 2D live view must show the qualified route as
+                    # well as the current vehicle pose.  These are the exact
+                    # ENU points used by the active Gazebo/PX4 execution, so the
+                    # overlay cannot drift from the route under test.
+                    "route_points_m": [list(point) for point in route_points],
                     "updated_at_unix_ms": now_unix_ms,
                 },
                 ensure_ascii=False,
