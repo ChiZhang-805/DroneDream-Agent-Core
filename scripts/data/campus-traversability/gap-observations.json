@@ -1,0 +1,70 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "corridors": [
+    {
+      "id": "gap-vaino15-south-parking-aisle",
+      "kind": "path",
+      "centerline_xy_m": [[-128, -7.442], [-126.5, -8.7], [-123.5, -9.1], [-120.5, -9.1], [-117.955, -8.437]],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Clear paved parking aisle south of the parked black and white cars, linking the existing southwest perimeter path to the main road bend. The shorter link from east -120.625, north -0.312 to the road is deliberately omitted because it crosses the visible white parked car. Reviewed at east -130..-108, north -12..9 metres."
+      }
+    },
+    {
+      "id": "gap-limingantie40-paved-junction",
+      "kind": "path",
+      "centerline_xy_m": [[-180.722, 230.599], [-182, 232.5], [-182, 234], [-180.625, 235.938]],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible paved junction between the frontage V-shaped path and Limingantie, east of the parked white vehicle and south of the northern building. Reviewed at east -215..-160, north 205..250 metres."
+      }
+    },
+    {
+      "id": "gap-vaino10-courtyard-path-junction",
+      "kind": "path",
+      "centerline_xy_m": [[144.375, 218.438], [146.5, 218.438], [148.4, 218.8], [149.6, 220.2], [150.3, 222]],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Short visible path junction east of the courtyard play area. Connects the existing courtyard path to the north-south internal path. Do not join to the southern graph vertex with a diagonal across the white canopy or trees. Reviewed at east 100..170, north 185..250 metres."
+      }
+    },
+    {
+      "id": "gap-utility8038-west-paved-access",
+      "kind": "path",
+      "centerline_xy_m": [[90.298, -25.959], [86, -25], [81, -21], [79.4, -17], [80, -12], [81, -9], [84, -5.8], [87, -2.7], [88, -0.3], [87.5, 2.5], [89, 5], [91.2, 7.5]],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "From the existing utility shed handoff on its south paved apron, follows the visible parking aisle west of the shed and the paved strip along the adjacent large building to the northern crossing. Avoids the central lawn/tree cluster, western parked vans and the dark parked object near east 90, north 1. The handoff itself is unchanged. Reviewed at east 72..108, north -30..12 metres."
+      }
+    }
+  ],
+  "remove_corridor_ids": [],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": [
+    {
+      "node_id": "osm-facility-1104124907-handoff",
+      "old_position_m": {"x": 8.767, "y": -79.129, "z": 2},
+      "new_position_m": {"x": 12.354, "y": -115.962, "z": 2},
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
+        "note": "This OSM school record and city-79951 describe the same school footprint. Reuse that school's already reviewed southern paved frontage handoff instead of its duplicate marker on the shadowed northern side. No destination building is changed and no entrance door is claimed. Reviewed at east -30..45, north -130..-50 metres."
+      }
+    }
+  ]
+}

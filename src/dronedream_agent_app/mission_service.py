@@ -27,6 +27,7 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.evidence import EvidenceChain
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.mission_map_refinement import prepare_ground_routes
 from dronedream_agent_core.model_harness.boundary import (
     HARD_MAXIMUM_REPAIR_CYCLES,
     HarnessInputEnvelope,
@@ -76,6 +77,7 @@ from .asset_runtime_resolver import (
 )
 from .custom_models import ModelConnection
 from .harness_design_service import HarnessDesignService
+from .map_refinement_source import map_observation_source
 from .plugin_manager import PluginManager
 from .storage import AppStore
 
@@ -836,19 +838,18 @@ class MissionService:
             mode="json"
         )
         effective_input_metadata["model_harness_runtime"] = runtime_envelope.model_dump(mode="json")
-        tool_registry = self.plugin_manager.build_tool_registry(
-            environment=ToolEnvironment(
-                map_graph=graph,
-                semantic_path=semantic_path,
-                vehicle_diameter_m=vehicle.body_radius_m * 2,
-                vehicle_height_m=vehicle.body_height_m,
-                waypoint_hold_seconds=0.4,
-                vehicle=vehicle,
-                broker_factory=broker_factory,
-                planning_phase="initial",
-            ),
-            snapshot=plugin_snapshot,
-        )
+        def build_map_tools(path: Path):
+            return self.plugin_manager.build_tool_registry(
+                environment=ToolEnvironment(
+                    map_graph=graph, semantic_path=path,
+                    vehicle_diameter_m=vehicle.body_radius_m * 2,
+                    vehicle_height_m=vehicle.body_height_m,
+                    waypoint_hold_seconds=0.4, vehicle=vehicle,
+                    broker_factory=broker_factory, planning_phase="initial",
+                ), snapshot=plugin_snapshot,
+            )
+
+        tool_registry = build_map_tools(semantic_path)
         extension_registry = self.plugin_manager.build_extension_registry(
             snapshot=plugin_snapshot,
             broker_factory=broker_factory,
@@ -1007,6 +1008,13 @@ class MissionService:
                 ],
                 harness_topology_override=harness_topology_override,
                 harness_revision_binding=harness_revision_binding,
+                map_refinement=lambda focus, directory, budget: prepare_ground_routes(
+                    graph=graph, vehicle=vehicle, semantic_path=semantic_path,
+                    source_loader=lambda: map_observation_source(
+                        self.store.get_asset_version(map_id, map_content_sha256)),
+                    model_ports=list(model_ports.values()), focus_nodes=focus,
+                    output_dir=directory, maximum_model_calls=budget),
+                tool_registry_factory=build_map_tools,
             )
             resources.callback(orchestrator.close)
             prepared = orchestrator.prepare(

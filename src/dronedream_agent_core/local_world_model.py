@@ -37,6 +37,7 @@ from .navigation_sectors import (
 )
 from .occupancy_collision import bounded_occupied_cell_boxes
 from .perception_evidence import FrozenVector3
+from .traversability import TraversableAirspace
 
 VoxelKey = tuple[int, int, int]
 Point = tuple[float, float, float]
@@ -385,6 +386,8 @@ class MetricVoxelMap:
         self._static_invalidation_owner = self._evidence_owner
         self._non_static_evidence_count = 0
         self._known_static_source_sha256: str | None = None
+        self._operating_airspace: TraversableAirspace | None = None
+        self._operating_airspace_sha256: str | None = None
         self._qualified_route_points: tuple[Vector3, ...] = ()
         self._qualified_route_sha256: str | None = None
         self._qualified_route_minimum_clearance_m: float | None = None
@@ -974,6 +977,8 @@ class MetricVoxelMap:
             raise ValueError("known static map source must be a lowercase SHA-256 digest")
         if self._known_static_source_sha256 not in (None, source_sha256):
             raise ValueError("METRIC_STATIC_SOURCE_CHANGED: construct a new map for new assets")
+        if self._operating_airspace_sha256 not in (None, source_sha256):
+            raise ValueError("METRIC_TRAVERSABILITY_SOURCE_CHANGED")
         free: set[VoxelKey] = set()
         occupied: set[VoxelKey] = set()
         for point, is_occupied in _bounded_items(
@@ -1005,6 +1010,23 @@ class MetricVoxelMap:
         self._static_invalidation_owner = self._evidence_owner
         counts = len(free - occupied), len(occupied)
         return counts
+
+    def bind_traversable_airspace(self, airspace: TraversableAirspace, *, source_sha256: str):
+        """Bind a point-domain mask; local clearance subsequently inflates the body.
+
+        Live range rays cannot promote roofs, canopy or unparsed land to free
+        operating space. The immutable binding is preserved in model snapshots.
+        """
+        if re.fullmatch(r"[0-9a-f]{64}", source_sha256) is None:
+            raise ValueError("invalid traversability source digest")
+        if (self._known_static_source_sha256 not in (None, source_sha256)
+                or self._operating_airspace_sha256 not in (None, source_sha256)):
+            raise ValueError("METRIC_TRAVERSABILITY_SOURCE_CHANGED")
+        if airspace.radius_m != 0. or airspace.half_height_m != 0.:
+            raise ValueError("voxel traversability mask must use point geometry")
+        self._operating_airspace = airspace
+        self._operating_airspace_sha256 = source_sha256
+        self._navigation_blocks.clear()
 
     # 功能：
     #   冻结上游已完成净空核验的当前路线，不借用可变坐标对象。
@@ -1170,6 +1192,8 @@ class MetricVoxelMap:
         clone._non_static_evidence_count = len(keys.difference(
             clone._known_static_occupied_keys, clone._known_static_free_keys))
         clone._known_static_source_sha256 = self._known_static_source_sha256
+        clone._operating_airspace = self._operating_airspace
+        clone._operating_airspace_sha256 = self._operating_airspace_sha256
         clone._qualified_route_points = self._qualified_route_points
         clone._qualified_route_sha256 = self._qualified_route_sha256
         clone._qualified_route_minimum_clearance_m = self._qualified_route_minimum_clearance_m
@@ -1198,6 +1222,10 @@ class MetricVoxelMap:
     # 输出：
     #   occupied：按当前策略得到的阻塞标志。
     def is_occupied(self, key: VoxelKey) -> bool:
+        if (self._operating_airspace is not None
+                and self._operating_airspace.clearance(self._center_point_for_key(key))[0]
+                < math.sqrt(3.) * self.resolution_m / 2):
+            return True
         if key in self._known_static_occupied_keys:
             return True
         probability = self.occupancy_probability(key)
@@ -1215,6 +1243,10 @@ class MetricVoxelMap:
     # 输出：
     #   free：具有空地依据的标志。
     def is_observed_free(self, key: VoxelKey) -> bool:
+        if (self._operating_airspace is not None
+                and self._operating_airspace.clearance(self._center_point_for_key(key))[0]
+                < math.sqrt(3.) * self.resolution_m / 2):
+            return False
         if key in self._known_static_occupied_keys:
             return False
         probability = self.occupancy_probability(key)
@@ -1424,6 +1456,10 @@ class MetricVoxelMap:
         points = [_frozen_vector(point) for point in _bounded_items(path_m, 200_000, "metric path")]
         if not points:
             return False
+        if (self._operating_airspace is not None
+                and self._operating_airspace.path_clearance([_point(p) for p in points])[0]
+                < required_clearance_m):
+            return False
         sample_spacing_m = self.resolution_m / 2.0
         radius = math.ceil(required_clearance_m / self.resolution_m) + 1
         neighborhood = (2 * radius + 1) ** 3
@@ -1536,6 +1572,8 @@ class MetricVoxelMap:
                     "latest_source_seconds": self.latest_observation_monotonic_seconds,
                     "pruned_count": self.pruned_live_evidence_count,
                     "invalidated_static_cells": len(self._invalidated_static_free_keys)}
+        if self._operating_airspace is not None:
+            identity["traversability_source_sha256"] = self._operating_airspace_sha256
         return identity
 
     # 功能：
@@ -2380,6 +2418,11 @@ class MetricVoxelMap:
     #   classified：按所选证据顺序输出体素键和分类的迭代器，1 为空地，2 为占用。
     def _classified_navigation_evidence(self, evidence_keys=None):
         for key in (self._evidence if evidence_keys is None else evidence_keys):
+            if (self._operating_airspace is not None
+                    and self._operating_airspace.clearance(self._center_point_for_key(key))[0]
+                    < math.sqrt(3.) * self.resolution_m / 2):
+                yield key, 2
+                continue
             kind = 2 if key in self._known_static_occupied_keys else (
                 1 if key in self._observed_free_keys else (2 if key in self._occupied_keys else 0))
             if kind:

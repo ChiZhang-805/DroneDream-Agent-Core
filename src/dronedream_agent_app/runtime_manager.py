@@ -68,6 +68,7 @@ from .asset_runtime_resolver import (
     resolve_versioned_vehicle,
 )
 from .custom_models import ModelConnection
+from .live_map import LiveMap, resolve_live_map
 from .plugin_manager import PluginManager, PluginManagerError
 from .runtime_control_records import (
     RuntimeControlRecordError,
@@ -92,6 +93,8 @@ class ActiveRun:
     process: subprocess.Popen[str]
     started_at: str
     tracking_error: str | None = None
+    map_asset_id: str | None = None
+    map_content_sha256: str | None = None
 
 
 @dataclass
@@ -152,6 +155,7 @@ class RuntimeManager:
         self._lock = threading.RLock()
         self._provision_lock = threading.Lock()
         self._active_runs: dict[str, ActiveRun] = {}
+        self._live_maps: dict[tuple[str, str], LiveMap] = {}
         self._active_asset_qualification_runs: dict[str, ActiveAssetQualificationRun] = {}
         self._takeover_grants: dict[str, ActiveTakeoverGrant] = {}
         self._setup_thread: threading.Thread | None = None
@@ -732,7 +736,39 @@ class RuntimeManager:
         except (OSError, ValueError):
             return telemetry
         telemetry = value if isinstance(value, dict) else None
+        if telemetry is not None:
+            telemetry["map_id"] = active.map_asset_id
+            telemetry["map_content_sha256"] = active.map_content_sha256
         return telemetry
+
+    def live_map(self, thread_id: str, expected_hash: str | None = None) -> LiveMap:
+        """Bind the preview to the execution map, falling back to thread selection before flight."""
+        with self._lock:
+            active = self._active_runs.get(thread_id)
+        if active is not None and active.process.poll() is None:
+            asset_id, content_hash = active.map_asset_id, active.map_content_sha256
+        else:
+            thread = self.store.get_thread(thread_id)
+            asset_id = thread.get("selected_map_id")
+            content_hash = thread.get("selected_map_content_sha256")
+        if not asset_id or not content_hash:
+            raise RuntimeBridgeError("LIVE_MAP_SELECTION_REQUIRED")
+        if expected_hash is not None and expected_hash != content_hash:
+            raise RuntimeBridgeError("LIVE_MAP_VERSION_MISMATCH")
+        key = str(asset_id), str(content_hash)
+        with self._lock:
+            cached = self._live_maps.get(key)
+        if cached is not None:
+            return cached
+        try:
+            result = resolve_live_map(self.store.get_asset_version(*key))
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise RuntimeBridgeError(str(error)) from error
+        with self._lock:
+            if len(self._live_maps) >= 4:
+                self._live_maps.pop(next(iter(self._live_maps)))
+            self._live_maps[key] = result
+        return result
 
     # 功能：
     #   实际探测 ROS、Gazebo、PX4 版本及本地资源摘要，不接受客户端自报环境。
@@ -1572,6 +1608,19 @@ class RuntimeManager:
                 limit=64 * 1024 * 1024,
                 node_limit=2_000_000,
             )
+            # A visual ground supplement is a separate immutable planning input.
+            # Its evidence is already covered by the prepared-mission authority;
+            # verify the original qualified world and exact observed delta before
+            # handing the same semantic bytes to the Linux executor.
+            from dronedream_agent_core.mission_map_refinement import resolve_execution_semantic
+
+            from .map_refinement_source import map_observation_source
+
+            semantic = resolve_execution_semantic(
+                prepared=prepared_mission, output_dir=prepared.parent,
+                base_semantic_path=semantic, graph=bound_map,
+                source_loader=lambda: map_observation_source(map_record),
+            )
             if (
                 authority.prepared_mission_sha256 != prepared_sha256
                 or prepared_mission.contract.conversation_id != thread_id
@@ -1921,6 +1970,8 @@ class RuntimeManager:
                                 run_dir=run_dir,
                                 process=process,
                                 started_at=datetime.now(UTC).isoformat(),
+                                map_asset_id=map_selection.asset_id,
+                                map_content_sha256=map_selection.content_sha256,
                             )
                         raise RuntimeBridgeError("EXECUTION_CLEANUP_FAILED") from error
             finally:
@@ -1940,6 +1991,8 @@ class RuntimeManager:
                 run_dir=run_dir,
                 process=process,
                 started_at=started_at,
+                map_asset_id=map_selection.asset_id,
+                map_content_sha256=map_selection.content_sha256,
             )
 
         # 功能：

@@ -22,10 +22,11 @@ import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from dronedream_agent_core.asset_packages import AssetPackageError
 from dronedream_agent_core.asset_policy import asset_qualification_policy
+from dronedream_agent_core.mission_map_refinement import MapObservationPending
 from dronedream_agent_core.model_harness.design import (
     HarnessEditOperation,
     HarnessTopologyCandidate,
@@ -1387,6 +1388,19 @@ def create_app(
                 )
             store.set_thread_state(thread_id, "awaiting_confirmation")
             return result
+        except MapObservationPending as error:
+            store.set_thread_state(thread_id, "planning")
+            private_fields = {"candidate_semantic", "patches", "model_calls", "pending_artifact"}
+            details = {key: value for key, value in error.details.items() if key not in private_fields}
+            text = ("正在补全地图观察；任务已保留，等待可用的视觉模型或补充视图。"
+                    if payload.locale == "zh-CN" else
+                    "Map observation is incomplete. The task is retained for a vision model "
+                    "or an additional registered view.")
+            store.append_message(thread_id, role="assistant", kind="status", content=text,
+                                 metadata={"map_refinement_pending": True, **details})
+            return JSONResponse(status_code=202, content={
+                "status": "map_refinement_pending", "thread_id": thread_id,
+                "message": text, "actuator_authority": False, **details})
         except MissionClarificationRequired as error:
             # 追问不是计划；不进入 awaiting_confirmation，也不签发执行权限。
             store.set_thread_state(thread_id, "planning")
@@ -1985,6 +1999,33 @@ def create_app(
             headers={"Cache-Control": "no-store, max-age=0"},
         )
         return response
+
+    @app.get("/v1/threads/{thread_id}/live-map", dependencies=[local])
+    def live_map(
+        thread_id: str, identity: VerifiedIdentity = verified_identity
+    ) -> dict[str, object]:
+        require_runtime_thread_scope(thread_id, identity)
+        try:
+            return runtime_manager.live_map(thread_id).metadata
+        except (KeyError, RuntimeBridgeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/v1/threads/{thread_id}/live-map-image", dependencies=[local])
+    def live_map_image(
+        thread_id: str,
+        map_content_sha256: str,
+        identity: VerifiedIdentity = verified_identity,
+    ) -> Response:
+        require_runtime_thread_scope(thread_id, identity)
+        try:
+            value = runtime_manager.live_map(thread_id, expected_hash=map_content_sha256)
+        except (KeyError, RuntimeBridgeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return Response(
+            content=value.image,
+            media_type=value.media_type,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.get("/v1/threads/{thread_id}/live-telemetry", dependencies=[local])
     def live_telemetry(

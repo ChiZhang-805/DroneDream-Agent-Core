@@ -23,6 +23,7 @@ from .hashing import sha256_json
 from .motion_envelope import RUNTIME_PREDICTION_HORIZON_SECONDS, prediction_query_radius_m
 from .observation_validity import observation_validity, publication_deadline
 from .realtime_feature_encoders import body_to_world_enu
+from .traversability import TraversableAirspace
 from .vertical_navigation import VerticalMotionGuard
 from .yaw_command_envelope import YawCommandEnvelope
 
@@ -182,6 +183,7 @@ def evaluate_runtime_local_safety(
     qualified_route_clearance_m: float | None = None,
     current_localization_covariance_m2: float | None = None,
     relative_perception_uncertainty_margin_m: float | None = None,
+    operating_airspace: TraversableAirspace | None = None,
 ) -> RuntimeLocalSafetyCommand:
     if not _finite_scalar(command_horizon_seconds) or not 0.05 <= command_horizon_seconds <= 1.0:
         raise ValueError("command horizon must be in [0.05, 1.0] seconds")
@@ -441,6 +443,11 @@ def evaluate_runtime_local_safety(
         perception_stream_age_seconds=observation.stream_age_seconds,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
+    if operating_airspace is not None and (
+        operating_airspace.radius_m + 1e-9 < request.vehicle_radius_m
+        or operating_airspace.half_height_m * 2 + 1e-9 < request.vehicle_height_m
+    ):
+        raise ValueError("runtime traversability envelope is smaller than the controlled aircraft")
     source_ms = min(observation.observed_at_unix_ms,
                     generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000))
     ego_speed = math.hypot(observation.current_velocity_mps.x,
@@ -480,17 +487,33 @@ def evaluate_runtime_local_safety(
     #   allowed：候选当前具有实际控制预算时为真。
     def candidate_current(velocity, clearance, yaw):
         nonlocal first_rejected_budget
+        if operating_airspace is not None:
+            origin = tuple(getattr(observation.current_position_m, axis) for axis in "xyz")
+            end = tuple(origin[i] + velocity[i] * request.prediction_horizon_seconds
+                        for i in range(3))
+            clearance = min(clearance, operating_airspace.path_clearance([origin, end])[0])
         validity = candidate_validity(velocity, clearance, yaw)
         allowed = validity.disposition == "control-eligible"
         if not allowed and first_rejected_budget is None:
             first_rejected_budget = (validity, max(0., clearance - required_clearance_m))
         return allowed
 
+    def check_motion(candidate_request, velocity, path):
+        issues = motion_guard.check(candidate_request, velocity, path) if motion_guard else []
+        if operating_airspace is not None:
+            gap, _ = operating_airspace.path_clearance(path)
+            if gap < candidate_request.required_clearance_m:
+                issues = [*issues, "TRAVERSABLE_AIRSPACE_BOUNDARY"]
+        return issues
+
+    # The map's permitted ground volumes remain mandatory even when live depth
+    # sees empty space above a roof or the local model proposes a shortcut.
     # 已知负载资格不满足时无需枚举几十个必败候选，直接走同一条保留惯性证据的制动路径。
     if motion_guard is None:
         decision = predictive_safety_decision(
             request,
             static_primitives,
+            motion_check=check_motion if operating_airspace is not None else None,
             candidate_check=candidate_current,
             preferred_speed_mps=preferred_planner_speed_mps,
         )
@@ -501,10 +524,17 @@ def evaluate_runtime_local_safety(
         decision = predictive_safety_decision(
             request,
             static_primitives,
-            motion_check=motion_guard.check,
+            motion_check=check_motion,
             candidate_check=candidate_current,
             preferred_speed_mps=preferred_planner_speed_mps,
         )
+    if operating_airspace is not None:
+        path = [tuple(getattr(observation.current_position_m, axis) for axis in "xyz"),
+                *(tuple(getattr(p, axis) for axis in "xyz") for p in decision.predicted_path_m)]
+        gap, name = operating_airspace.path_clearance(path)
+        if gap < decision.minimum_predicted_clearance_m:
+            decision = decision.model_copy(update={"minimum_predicted_clearance_m": gap,
+                                                  "threat_obstacle_id": name})
     adaptive_deadline_ms = None
     observation_budget = None
     if (decision.action == "hold" and first_rejected_budget is not None

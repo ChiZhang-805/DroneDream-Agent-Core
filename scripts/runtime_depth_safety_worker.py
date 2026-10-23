@@ -23,6 +23,7 @@ from typing import Any
 from uuid import uuid4
 
 from dronedream_agent_core.assets import _load_object as _read_semantic_snapshot
+from dronedream_agent_core.collision import planning_collision_primitives
 from dronedream_agent_core.collision import primitive_bounds as _primitive_bounds
 from dronedream_agent_core.contracts import (
     ControlledVehicleIdentityEvidence,
@@ -158,6 +159,7 @@ from dronedream_agent_core.simulation_teacher import (
 )
 from dronedream_agent_core.simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from dronedream_agent_core.static_geometry_index import StaticGeometryIndex
+from dronedream_agent_core.traversability import TraversableAirspace
 from dronedream_agent_core.vertical_navigation import (
     CeilingTransition,
     VerticalMotionGuard,
@@ -2775,6 +2777,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
     if not isinstance(primitives, list) or not primitives:
         raise SystemExit("semantic artifact has no runtime collision primitives")
+    all_map_primitives = planning_collision_primitives(semantic)
+    operating_airspace = TraversableAirspace(
+        semantic, all_map_primitives, radius_m=control_vehicle.body_radius_m,
+        half_height_m=control_vehicle.body_height_m / 2)
     static_geometry_index = StaticGeometryIndex(primitives, bounds=_primitive_bounds)
     minimum, maximum = _map_bounds(primitives)
     world = MetricVoxelMap(
@@ -2783,6 +2789,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         maximum_bound_m=maximum,
         unknown_is_occupied=True,
     )
+    if operating_airspace.active:
+        world.bind_traversable_airspace(
+            TraversableAirspace(semantic, all_map_primitives, radius_m=0., half_height_m=0.),
+            source_sha256=active_semantic_sha256)
     _atomic_json(args.command.with_name('metric-scan-kernel.json'),
         {'contract': metric_scan_backend.CONTRACT,
          'depth_contract': getattr(metric_scan_backend, 'DEPTH_CONTRACT', None),
@@ -4339,6 +4349,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     vehicle=control_vehicle,
                     motion_guard=motion_guard,
                     static_primitives=static,
+                    operating_airspace=operating_airspace if operating_airspace.active else None,
                     required_clearance_m=args.required_clearance,
                     # 接管许可在较晚的配对时钟签发，命令不得反向早于租期起点。
                     # 只更新命令签发时间；观测和深度来源时间保持原样参与预算校验。
@@ -4445,6 +4456,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         vehicle=control_vehicle,
                         motion_guard=motion_guard,
                         static_primitives=static,
+                        operating_airspace=(
+                            operating_airspace if operating_airspace.active else None),
                         required_clearance_m=args.required_clearance,
                         generated_at_unix_ms=published_at_unix_ms,
                         command_horizon_seconds=0.2,

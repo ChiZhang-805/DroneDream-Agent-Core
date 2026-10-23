@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,12 @@ from pydantic import BaseModel
 
 from dronedream_plugin_sdk.protocol import encode_json
 
-from .assets import AssetQualificationError, read_map_semantic_object, resolve_map_entity
+from .assets import (
+    AssetQualificationError,
+    load_map_catalog,
+    read_map_semantic_object,
+    resolve_map_entity,
+)
 from .collision import (
     PREFERRED_TRANSIT_CLEARANCE_M,
     build_tracking_corridor_budget,
@@ -75,6 +81,7 @@ from .extensions import ExtensionExecutionError, ExtensionRegistry
 from .hashing import sha256_json
 from .lifecycle import LifecycleTransitionError
 from .map_reasoning import build_map_reasoning_context
+from .mission_map_refinement import GroundMapPreparation
 from .model_harness.boundary import HarnessInputEnvelope
 from .model_harness.graph import (
     HarnessGraphError,
@@ -789,13 +796,13 @@ def _intent_map_catalog_view(
 
     normalized_request = (request_message or "").casefold()
 
-    def compact_aliases(entity_id: str, aliases: list[str]) -> list[str]:
-        # The entity id remains authoritative. Keep a small, deterministic alias
+    def compact_aliases(aliases: list[str]) -> list[str]:
+        # The entity id remains authoritative in its own field. Keep a small alias
         # window plus every alias explicitly present in the current request so a
         # large campus catalog cannot crowd the user's actual destination out of
         # the model call.
         mentioned = [alias for alias in aliases if alias.casefold() in normalized_request]
-        return list(dict.fromkeys([*mentioned, *aliases[:4], entity_id]))[:8]
+        return list(dict.fromkeys([*mentioned, *aliases[:4]]))[:8]
 
     mentioned_planar_landmarks = [
         landmark
@@ -824,7 +831,7 @@ def _intent_map_catalog_view(
         "non_actionable_planar_landmarks": [
             {
                 "entity_id": landmark.entity_id,
-                "aliases": compact_aliases(landmark.entity_id, landmark.aliases),
+                "aliases": compact_aliases(landmark.aliases),
                 "semantic": landmark.semantic,
                 "flight_target_available": False,
             }
@@ -833,7 +840,7 @@ def _intent_map_catalog_view(
         "entities": [
             {
                 "entity_id": entity.entity_id,
-                "aliases": compact_aliases(entity.entity_id, entity.aliases),
+                "aliases": compact_aliases(entity.aliases),
                 "semantic": entity.semantic,
             }
             for entity in catalog.entities
@@ -1223,6 +1230,7 @@ def _semantic_planning_map_view(
         "schema_version": "dronedream.semantic-planning-map-view.v1",
         "source_context_sha256": sha256_json(context),
         "source_of_truth": context.get("source_of_truth"),
+        "observed_ground_refinement": context.get("observed_ground_refinement"),
         "graph_sha256": context.get("graph_sha256"),
         "semantic_sha256": context.get("semantic_sha256"),
         "coordinate_frame": context.get("coordinate_frame"),
@@ -2471,12 +2479,18 @@ class MissionOrchestrator:
         initial_hook_receipts: list[PluginHookReceipt] | None = None,
         harness_topology_override: HarnessTopology | None = None,
         harness_revision_binding: dict[str, object] | None = None,
+        map_refinement: Callable[[list[str], Path, int], GroundMapPreparation] | None = None,
+        tool_registry_factory: Callable[[Path], ToolRegistry] | None = None,
     ) -> None:
         self.config = config
         config.__post_init__()
         self.map_catalog = _artifact_snapshot(map_catalog, MapCatalog)
         self.map_graph = _artifact_snapshot(map_graph, MapAsset)
         self.semantic_path = semantic_path
+        if map_refinement is not None and tool_registry_factory is None:
+            raise ValueError("MAP_REFINEMENT_TOOL_REBINDING_REQUIRED")
+        self.map_refinement = map_refinement
+        self.tool_registry_factory = tool_registry_factory
         self.vehicle_sdf = vehicle_sdf
         self.vehicle_asset_id = vehicle_asset_id
         if vehicle.asset_id != vehicle_asset_id:
@@ -3116,6 +3130,8 @@ class MissionOrchestrator:
         explicit_constraint_hints = _explicit_constraint_hints(request)
         _validate_explicit_payload_capacity(explicit_constraint_hints, self.vehicle)
         semantic_sha256 = _file_sha256(self.semantic_path)
+        original_semantic_path = self.semantic_path
+        original_semantic_sha256 = semantic_sha256
         vehicle_sha256 = _file_sha256(self.vehicle_sdf)
         if semantic_sha256 != self.map_catalog.semantic_sha256:
             raise MissionPreparationBlocked("PREPARATION_SEMANTIC_CATALOG_MISMATCH")
@@ -3822,13 +3838,43 @@ class MissionOrchestrator:
             )
             raise MissionPreparationBlocked(str(error)) from error
 
+        resolved_nodes = [
+            _resolve_entity(entity, self.map_catalog, self.map_graph)
+            for entity in (intent.start_entity, intent.target_entity, intent.return_entity)
+        ]
+        # Observation/replanning happens before the contract freezes the semantic
+        # digest. Never edit the selected asset or leave tools on the old snapshot.
+        map_refinement_receipt = None
+        if self.map_refinement is not None:
+            refined = self.map_refinement(resolved_nodes, output_dir,
+                max(0, self._model_call_budget - self._model_call_count - 4))
+            self._model_call_count += refined.physical_calls
+            for raw_call in refined.model_calls:
+                call = ModelCallRecord.model_validate(raw_call)
+                model_calls.append(call)
+                evidence.append("model.map-observation", call.model_dump(mode="json"))
+            if refined.receipt is not None:
+                map_refinement_receipt = refined.receipt
+                evidence.append("mission.map-refinement", refined.receipt)
+                self.semantic_path = refined.semantic_path
+                semantic_sha256 = _file_sha256(self.semantic_path)
+                self.map_catalog = load_map_catalog(
+                    self.semantic_path, qualified_graph=self.map_graph)
+                assert self.tool_registry_factory is not None
+                self.tool_registry = self.tool_registry_factory(self.semantic_path)
+                self.tool_registry.configure_extensions(self.extension_registry,
+                    receipt_sink=lambda receipts: self._record_hook_receipts(receipts, evidence))
+                navigation_readiness = assess_navigation_readiness(
+                    self.map_graph, self.map_catalog, self.semantic_path, self.vehicle)
+                evidence.append("mission.refined-navigation-readiness",
+                                navigation_readiness.model_dump(mode="json"))
         contract = MissionContract(
             contract_id=f"mission-{uuid4().hex[:24]}",
             conversation_id=request.conversation_id,
             goal=intent.goal,
-            start_node=_resolve_entity(intent.start_entity, self.map_catalog, self.map_graph),
-            target_node=_resolve_entity(intent.target_entity, self.map_catalog, self.map_graph),
-            return_node=_resolve_entity(intent.return_entity, self.map_catalog, self.map_graph),
+            start_node=resolved_nodes[0],
+            target_node=resolved_nodes[1],
+            return_node=resolved_nodes[2],
             payload_action=intent.payload_action,
             domain_ids=domain_actions.domain_ids,
             authorized_actions=sorted(action_ids(domain_actions)),
@@ -3849,6 +3895,19 @@ class MissionOrchestrator:
             self.semantic_path,
             focus_nodes=[contract.start_node, contract.target_node, contract.return_node],
         )
+        if map_refinement_receipt is not None:
+            focused_map_context["source_of_truth"] = (
+                "qualified-physical-world-with-observed-ground-supplement")
+            focused_map_context["observed_ground_refinement"] = {
+                "state": "route-ready",
+                "semantic_sha256": semantic_sha256,
+                "qualification": map_refinement_receipt["qualification"],
+                "topology_note": "Graph edges may be incomplete; ground geometry routes are checked.",
+                "routes": [{"start_node": item["start_node"], "goal_node": item["goal_node"],
+                    "route_sha256": item["route_sha256"],
+                    "minimum_clearance_m": item["clearance"]["minimum_clearance_m"]}
+                    for item in map_refinement_receipt["route_checks"]],
+            }
         semantic_planning_map_context = _semantic_planning_map_view(
             focused_map_context,
             contract,
@@ -5147,6 +5206,7 @@ class MissionOrchestrator:
         # 规划可能持续数分钟；最终冻结不能換用期间被替换的地图或机型内容。
         if (
             _file_sha256(self.semantic_path) != semantic_sha256
+            or _file_sha256(original_semantic_path) != original_semantic_sha256
             or _file_sha256(self.vehicle_sdf) != vehicle_sha256
         ):
             raise MissionPreparationBlocked("PREPARATION_ASSET_CHANGED")

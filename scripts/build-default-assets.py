@@ -734,7 +734,11 @@ def _build_map_bundle(
     evidence_sha256 = _sha256(run_dir / "mission_evidence.json")
     graph["asset_id"] = MAP_ASSET_ID
     graph["name"] = "Kumpula Campus"
-    _synchronize_verified_route_graph(run_dir=run_dir, graph=graph)
+    # An acceptance flight is evidence about that run, never the source of a
+    # campus road network. Keep every authored junction and surface constraint.
+    _validate_ground_route_graph(
+        graph=graph, semantic_path=destination / "gazebo" / "semantic.json"
+    )
     for edge in graph["edges"]:
         if edge.get("qualification") == "flight-verified":
             edge["evidence_sha256"] = evidence_sha256
@@ -764,6 +768,30 @@ def _build_map_bundle(
             "qualification": qualification,
         },
     )
+
+
+def _validate_ground_route_graph(*, graph: dict[str, Any], semantic_path: Path) -> None:
+    """Reject a stale elevated graph without rewriting any of its geometry."""
+    from dronedream_agent_core.contracts import MapAsset
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner
+
+    semantic = _json(semantic_path)
+    if not isinstance(semantic.get("traversability"), dict):
+        raise ValueError("DEFAULT_MAP_GROUND_TRAVERSABILITY_REQUIRED")
+    model = MapAsset.model_validate(graph)
+    # Full bundled X500 envelope, not a zero-radius point. The separate pair
+    # qualifier still validates the actual selected vehicle and physical run.
+    planner = KnownMapMetricPlanner(
+        graph=model, semantic_path=semantic_path,
+        vehicle_diameter_m=0.76, vehicle_height_m=0.6,
+    )
+    positions = {
+        node.node_id: (node.position_m.x, node.position_m.y, node.position_m.z)
+        for node in model.nodes
+    }
+    for edge in model.edges:
+        if not planner._segment_is_free(positions[edge.from_node], positions[edge.to_node]):
+            raise ValueError(f"DEFAULT_MAP_EDGE_OUTSIDE_TRAVERSABLE_GROUND:{edge.edge_id}")
 
 
 def _build_vehicle_bundle(

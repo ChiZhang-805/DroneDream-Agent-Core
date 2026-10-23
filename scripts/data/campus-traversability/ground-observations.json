@@ -1,0 +1,533 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "source_image": "gazebo/materials/textures/kumpula-orthophoto.jpg",
+  "source_crs": "EPSG:3879",
+  "origin": [
+    25497920,
+    6676880
+  ],
+  "corridors": [
+    {
+      "id": "south-launch-apron",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -41,
+          -83
+        ],
+        [
+          -41.875,
+          -84.688
+        ],
+        [
+          -43.75,
+          -87.188
+        ]
+      ],
+      "width_m": 5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "dynamicum-paved-entry",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -56.666,
+          -83.016
+        ],
+        [
+          -54.375,
+          -80.625
+        ],
+        [
+          -50.938,
+          -77.687
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "chemicum-south-paved-entry",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          43,
+          55
+        ],
+        [
+          44.656,
+          56.625
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "exactum-west-paved-access",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -93.68,
+          -24.274
+        ],
+        [
+          -98.438,
+          -28.125
+        ],
+        [
+          -101.563,
+          -31.25
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "physicum-north-paved-access",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          22.218,
+          68.372
+        ],
+        [
+          25.313,
+          65
+        ],
+        [
+          30.313,
+          60.313
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "sports-paved-entry",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -21.453,
+          112.816
+        ],
+        [
+          -16.563,
+          116.563
+        ],
+        [
+          -12.384,
+          119.313
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "hoas-paved-entry",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          148.725,
+          74.247
+        ],
+        [
+          153.697,
+          77.563
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    },
+    {
+      "id": "school-south-entry",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          12.353,
+          -115.962
+        ],
+        [
+          15.313,
+          -118.75
+        ],
+        [
+          17.6,
+          -121.666
+        ]
+      ],
+      "width_m": 4,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "pixel_frame": "1600x1600 north-up display; source 2048x2048",
+        "note": "Visually observed paved access; independent collision/clearance checks still required"
+      }
+    }
+  ],
+  "areas": [
+    {
+      "id": "central-crossing-plaza",
+      "kind": "open-space",
+      "polygon_xy_m": [
+        [
+          -5,
+          109.688
+        ],
+        [
+          3.125,
+          118.125
+        ],
+        [
+          10.938,
+          115.313
+        ],
+        [
+          25.313,
+          97.188
+        ],
+        [
+          19.063,
+          85
+        ],
+        [
+          8.75,
+          90.313
+        ]
+      ],
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Open visible surface boundary; obstacle exclusions remain mandatory"
+      }
+    },
+    {
+      "id": "south-school-parking",
+      "kind": "parking",
+      "polygon_xy_m": [
+        [
+          7.188,
+          -128.125
+        ],
+        [
+          30,
+          -107.813
+        ],
+        [
+          41.563,
+          -97.188
+        ],
+        [
+          50.313,
+          -88.438
+        ],
+        [
+          63.125,
+          -97.188
+        ],
+        [
+          55.313,
+          -116.875
+        ],
+        [
+          38.75,
+          -133.75
+        ],
+        [
+          20.625,
+          -144.688
+        ]
+      ],
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Open visible surface boundary; obstacle exclusions remain mandatory"
+      }
+    },
+    {
+      "id": "south-main-parking",
+      "kind": "parking",
+      "polygon_xy_m": [
+        [
+          -103.438,
+          -171.875
+        ],
+        [
+          -91.563,
+          -158.438
+        ],
+        [
+          -72.5,
+          -139.688
+        ],
+        [
+          -55,
+          -126.25
+        ],
+        [
+          -42.188,
+          -139.375
+        ],
+        [
+          -18.75,
+          -161.563
+        ],
+        [
+          -39.688,
+          -176.875
+        ],
+        [
+          -56.563,
+          -189.375
+        ],
+        [
+          -78.438,
+          -185
+        ]
+      ],
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Open visible surface boundary; obstacle exclusions remain mandatory"
+      }
+    },
+    {
+      "id": "west-open-lawn",
+      "kind": "lawn",
+      "polygon_xy_m": [
+        [
+          -165.313,
+          -53.438
+        ],
+        [
+          -157.188,
+          -46.875
+        ],
+        [
+          -148.125,
+          -46.875
+        ],
+        [
+          -139.375,
+          -55.938
+        ],
+        [
+          -144.063,
+          -64.375
+        ],
+        [
+          -154.688,
+          -67.5
+        ]
+      ],
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Open visible surface boundary; obstacle exclusions remain mandatory"
+      }
+    },
+    {
+      "id": "school-west-apron",
+      "kind": "open-space",
+      "polygon_xy_m": [
+        [
+          -43.125,
+          -80
+        ],
+        [
+          -35,
+          -75
+        ],
+        [
+          -27.5,
+          -82.5
+        ],
+        [
+          -34.063,
+          -90.625
+        ],
+        [
+          -41.563,
+          -89.063
+        ]
+      ],
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Open visible surface boundary; obstacle exclusions remain mandatory"
+      }
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "northwest-central-canopy",
+      "kind": "tree-canopy",
+      "polygon_xy_m": [
+        [
+          -137.5,
+          153.125
+        ],
+        [
+          -114.063,
+          162.5
+        ],
+        [
+          -92.188,
+          153.438
+        ],
+        [
+          -71.25,
+          137.813
+        ],
+        [
+          -89.375,
+          120.625
+        ],
+        [
+          -100.938,
+          101.25
+        ],
+        [
+          -123.75,
+          111.25
+        ],
+        [
+          -136.875,
+          130.313
+        ]
+      ]
+    },
+    {
+      "id": "east-forest-interior",
+      "kind": "tree-canopy",
+      "polygon_xy_m": [
+        [
+          135.938,
+          -5.937
+        ],
+        [
+          159.375,
+          28.438
+        ],
+        [
+          184.688,
+          52.5
+        ],
+        [
+          197.813,
+          43.75
+        ],
+        [
+          178.125,
+          -8.75
+        ],
+        [
+          155.313,
+          -63.125
+        ],
+        [
+          129.063,
+          -110.313
+        ],
+        [
+          103.125,
+          -152.813
+        ],
+        [
+          85.625,
+          -168.75
+        ],
+        [
+          71.875,
+          -150
+        ],
+        [
+          88.125,
+          -121.875
+        ],
+        [
+          100.313,
+          -70.313
+        ]
+      ]
+    },
+    {
+      "id": "southwest-forest-interior",
+      "kind": "tree-canopy",
+      "polygon_xy_m": [
+        [
+          -219.063,
+          -98.438
+        ],
+        [
+          -191.563,
+          -78.125
+        ],
+        [
+          -175.313,
+          -93.125
+        ],
+        [
+          -158.125,
+          -112.5
+        ],
+        [
+          -137.188,
+          -133.438
+        ],
+        [
+          -128.438,
+          -152.188
+        ],
+        [
+          -150.625,
+          -174.375
+        ],
+        [
+          -180,
+          -175.938
+        ],
+        [
+          -203.438,
+          -150.938
+        ]
+      ]
+    }
+  ]
+}

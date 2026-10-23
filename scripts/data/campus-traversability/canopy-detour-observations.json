@@ -1,0 +1,35 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "corridors": [
+    {
+      "id": "canopy-detour-vaino7-building-frontage-path",
+      "kind": "path",
+      "centerline_xy_m": [[24.77, 152.885], [24.8, 154.5], [27.6, 157.8], [30.1, 160.3], [33.1, 163.2], [34.5, 164.5], [36.553, 163.856]],
+      "width_m": 2,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Paved frontage path beside the residential building links the two existing handoffs without crossing the continuous street-side tree belt. Follows the building-side edge around the northeast corner, avoiding the planted courtyard to its southeast. Reviewed at east 10..65, north 130..180 metres."
+      }
+    },
+    {
+      "id": "canopy-detour-vaino7-north-paved-junction",
+      "kind": "path",
+      "centerline_xy_m": [[36.553, 163.856], [39.5, 163], [42, 165.5], [45, 168.4], [48, 171.1], [51, 173.8], [54, 174.8], [57, 173.6], [59, 171.8], [62, 169.5]],
+      "width_m": 2,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Narrow paved strip on the building side of HSY canopy feature 351523, continuing to the visible open driveway gap between that feature's northern tip and canopy feature 352284. Does not remove or cut any canopy polygon. Reviewed at east 32..75, north 155..200 metres."
+      }
+    }
+  ],
+  "remove_corridor_ids": [],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": []
+}

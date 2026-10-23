@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -94,6 +95,72 @@ def _read_bound_json(record: dict, root: Path, path: Path) -> bytes:
     return raw
 
 
+# 功能：保留所有命名地点，把密集道路采样图压缩为绑定完整图摘要的解释视图。
+# 输入：graph：已验证的完整地图；几何与逐段路径继续由地图工具读取。
+# 输出：facts：地点角色、真实直接连接和弱连通分组，不生成跨建筑的捷径边。
+def _map_interpretation_facts(graph: MapAsset) -> dict:
+    if len(graph.nodes) <= 96 and len(graph.edges) <= 192:
+        return graph.model_dump(mode="json")
+    named = set(graph.named_entities.values())
+    parents = {node.node_id: node.node_id for node in graph.nodes}
+    inbound: Counter[str] = Counter()
+    outbound: Counter[str] = Counter()
+
+    def component(node: str) -> str:
+        while parents[node] != node:
+            parents[node] = parents[parents[node]]
+            node = parents[node]
+        return node
+
+    for edge in graph.edges:
+        parents[component(edge.to_node)] = component(edge.from_node)
+        outbound[edge.from_node] += 1
+        inbound[edge.to_node] += 1
+        if edge.bidirectional:
+            outbound[edge.to_node] += 1
+            inbound[edge.from_node] += 1
+    groups: dict[str, list[str]] = {}
+    for node_id in sorted(named):
+        groups.setdefault(component(node_id), []).append(node_id)
+    special = [node for node in graph.nodes
+               if node.node_id not in named and node.semantic not in {"corridor", "outdoor"}]
+    included = named | {node.node_id for node in special[:96]}
+    direct_edges = [edge for edge in graph.edges
+                    if edge.from_node in included and edge.to_node in included]
+    return {
+        "schema_version": graph.schema_version,
+        "asset_id": graph.asset_id,
+        "name": graph.name,
+        "coordinate_frame": graph.coordinate_frame,
+        "named_entities": dict(graph.named_entities),
+        "nodes": [node.model_dump(mode="json") for node in graph.nodes if node.node_id in included],
+        "edges": [edge.model_dump(mode="json") for edge in direct_edges[:192]],
+        "topology_summary": {
+            "source_graph_sha256": sha256_json(graph),
+            "complete_node_count": len(graph.nodes),
+            "complete_edge_count": len(graph.edges),
+            "node_semantic_counts": dict(sorted(
+                Counter(node.semantic for node in graph.nodes).items()
+            )),
+            "weak_component_count": len({component(node_id) for node_id in parents}),
+            "named_place_weak_components": sorted(groups.values()),
+            "named_place_degrees": [
+                {"node_id": node_id, "incoming": inbound[node_id], "outgoing": outbound[node_id]}
+                for node_id in sorted(named)
+            ],
+            "omitted_geometry_node_count": len(graph.nodes) - len(included),
+            "omitted_special_node_count": max(0, len(special) - 96),
+            "omitted_edge_count": len(graph.edges) - min(192, len(direct_edges)),
+            "scope": (
+                "All named places are included. Edges list only actual direct links among "
+                "included nodes; road sampling nodes and other edges remain in the map tools. "
+                "Weak connectivity ignores travel direction and does not establish a direct "
+                "connection, ground clearance, or flight permission. Use route tools for paths."
+            ),
+        },
+    }
+
+
 # 功能：
 #   将真实地图图结构或飞机物理契约编码为模型输入，超出容量时明确拒绝而非假装全量解析。
 # 输入：
@@ -112,7 +179,7 @@ def interpretation_source(
         graph = MapAsset.model_validate_json(
             _read_bound_json(record, selection.root, selection.graph)
         )
-        facts = graph.model_dump(mode="json")
+        facts = _map_interpretation_facts(graph)
         semantic_raw = _read_bound_json(record, selection.root, selection.semantic)
         semantic = json.loads(semantic_raw)
         entities = semantic.get("entities", [])
@@ -233,7 +300,16 @@ class AssetInterpretationService:
         if source["kind"] == "map":
             facts = source["facts"]
             names = list(facts.get("named_entities", {}))[:8]
-            report_progress("assets", f"当前地图提供 {len(facts.get('nodes', []))} 个节点、{len(facts.get('edges', []))} 条连接，地点标签包括：{'、'.join(names)}。这些是地图事实，不代表路线已经通过安全检查。", f"Map contains {len(facts.get('nodes', []))} nodes and {len(facts.get('edges', []))} connections. Documented labels: {', '.join(names)}. These facts do not establish route safety.")
+            topology = facts.get("topology_summary", {})
+            node_count = topology.get("complete_node_count", len(facts.get("nodes", [])))
+            edge_count = topology.get("complete_edge_count", len(facts.get("edges", [])))
+            report_progress(
+                "assets",
+                f"当前地图提供 {node_count} 个节点、{edge_count} 条连接，"
+                f"地点标签包括：{'、'.join(names)}。这些是地图事实，不代表路线已经通过安全检查。",
+                f"Map contains {node_count} nodes and {edge_count} connections. "
+                f"Documented labels: {', '.join(names)}. These facts do not establish route safety.",
+            )
         if not self._lock.acquire(blocking=False):
             raise ValueError("ASSET_INTERPRETATION_BUSY")
         try:

@@ -1,0 +1,4683 @@
+{
+  "schema_version": "dronedream.manual.route-aware-map.v1",
+  "coordinate_frame": "ENU metres, Kumpula campus origin",
+  "building_count": 26,
+  "pickup_count": 25,
+  "road_segment_count": 302,
+  "building_pickup_pairs": [
+    {
+      "building_id": "city-29466-0",
+      "name": "Building 29466",
+      "display_name": "Accelerator Laboratory Annex",
+      "importance": "standard",
+      "building": {
+        "x": -34.789,
+        "y": -190.797
+      },
+      "pickup_id": "city-29466-handoff",
+      "pickup": {
+        "x": -34.513,
+        "y": -185.506
+      }
+    },
+    {
+      "building_id": "city-33188-0",
+      "name": "Dynamicum",
+      "display_name": "Dynamicum",
+      "importance": "key",
+      "building": {
+        "x": -91.306,
+        "y": -103.016
+      },
+      "pickup_id": "dynamicum-delivery-zone",
+      "pickup": {
+        "x": -56.665,
+        "y": -83.016
+      }
+    },
+    {
+      "building_id": "city-33270-0",
+      "name": "Chemicum",
+      "display_name": "Chemicum",
+      "importance": "key",
+      "building": {
+        "x": 75.097,
+        "y": 92.193
+      },
+      "pickup_id": "verified-004",
+      "pickup": {
+        "x": 43.0,
+        "y": 55.0
+      }
+    },
+    {
+      "building_id": "city-33857-0",
+      "name": "Kumpula Sports Centre",
+      "display_name": "Kumpula Sports Centre",
+      "importance": "key",
+      "building": {
+        "x": -50.515,
+        "y": 101.299
+      },
+      "pickup_id": "osm-facility-17123583-handoff",
+      "pickup": {
+        "x": -21.453,
+        "y": 112.815
+      }
+    },
+    {
+      "building_id": "city-33940-0",
+      "name": "Building 33940",
+      "display_name": "13 Väinö Auer Street",
+      "importance": "standard",
+      "building": {
+        "x": -104.227,
+        "y": 59.358
+      },
+      "pickup_id": "city-33940-handoff",
+      "pickup": {
+        "x": -94.081,
+        "y": 68.403
+      }
+    },
+    {
+      "building_id": "city-35321-0",
+      "name": "Building 35321",
+      "display_name": "1 Gadolin Street",
+      "importance": "standard",
+      "building": {
+        "x": 129.47,
+        "y": 147.262
+      },
+      "pickup_id": "city-35321-handoff",
+      "pickup": {
+        "x": 108.447,
+        "y": 167.749
+      }
+    },
+    {
+      "building_id": "city-35635-0",
+      "name": "Building 35635",
+      "display_name": "7 Väinö Auer Street — Northeast Building",
+      "importance": "standard",
+      "building": {
+        "x": 56.404,
+        "y": 212.814
+      },
+      "pickup_id": "city-35635-handoff",
+      "pickup": {
+        "x": 62.001,
+        "y": 188.94
+      }
+    },
+    {
+      "building_id": "city-36104-0",
+      "name": "Building 36104",
+      "display_name": "7 Väinö Auer Street — Southwest Building",
+      "importance": "standard",
+      "building": {
+        "x": 2.0,
+        "y": 166.179
+      },
+      "pickup_id": "city-36104-handoff",
+      "pickup": {
+        "x": 24.77,
+        "y": 152.885
+      }
+    },
+    {
+      "building_id": "city-36723-0",
+      "name": "Building 36723",
+      "display_name": "15 Väinö Auer Street — North Building",
+      "importance": "standard",
+      "building": {
+        "x": -153.271,
+        "y": 13.942
+      },
+      "pickup_id": "city-36723-handoff",
+      "pickup": {
+        "x": -127.93,
+        "y": -13.672
+      }
+    },
+    {
+      "building_id": "city-36723-1",
+      "name": "Building 36723",
+      "display_name": "15 Väinö Auer Street — South Building",
+      "importance": "standard",
+      "building": {
+        "x": -175.459,
+        "y": -5.79
+      },
+      "pickup_id": "city-36723-handoff",
+      "pickup": {
+        "x": -127.93,
+        "y": -13.672
+      }
+    },
+    {
+      "building_id": "city-38289-0",
+      "name": "Building 38289",
+      "display_name": "Parking Garage",
+      "importance": "standard",
+      "building": {
+        "x": 33.113,
+        "y": 183.922
+      },
+      "pickup_id": "city-38289-handoff",
+      "pickup": {
+        "x": 36.553,
+        "y": 163.856
+      }
+    },
+    {
+      "building_id": "city-42870-0",
+      "name": "Building 42870",
+      "display_name": "4 Gadolin Street — Northeast Building",
+      "importance": "standard",
+      "building": {
+        "x": 210.162,
+        "y": 209.406
+      },
+      "pickup_id": "city-42870-handoff",
+      "pickup": {
+        "x": 202.482,
+        "y": 198.62
+      }
+    },
+    {
+      "building_id": "city-43058-0",
+      "name": "Building 43058",
+      "display_name": "4 Gadolin Street — Southeast Building",
+      "importance": "standard",
+      "building": {
+        "x": 209.589,
+        "y": 174.219
+      },
+      "pickup_id": "city-43058-handoff",
+      "pickup": {
+        "x": 202.311,
+        "y": 185.327
+      }
+    },
+    {
+      "building_id": "city-45774-0",
+      "name": "Building 45774",
+      "display_name": "4 Gadolin Street — Northwest Building",
+      "importance": "standard",
+      "building": {
+        "x": 125.624,
+        "y": 198.678
+      },
+      "pickup_id": "city-45774-handoff",
+      "pickup": {
+        "x": 132.083,
+        "y": 203.039
+      }
+    },
+    {
+      "building_id": "city-45881-0",
+      "name": "Building 45881",
+      "display_name": "4 Gadolin Street — Central Building",
+      "importance": "standard",
+      "building": {
+        "x": 174.408,
+        "y": 173.989
+      },
+      "pickup_id": "city-45881-handoff",
+      "pickup": {
+        "x": 178.626,
+        "y": 167.414
+      }
+    },
+    {
+      "building_id": "city-45907-0",
+      "name": "Building 45907",
+      "display_name": "4 Gadolin Street — Southwest Building",
+      "importance": "standard",
+      "building": {
+        "x": 147.971,
+        "y": 175.65
+      },
+      "pickup_id": "city-45907-handoff",
+      "pickup": {
+        "x": 152.391,
+        "y": 182.113
+      }
+    },
+    {
+      "building_id": "city-50834-0",
+      "name": "Building 50834",
+      "display_name": "Apartment Building",
+      "importance": "standard",
+      "building": {
+        "x": -206.286,
+        "y": 192.03
+      },
+      "pickup_id": "city-50834-handoff",
+      "pickup": {
+        "x": -195.17,
+        "y": 190.714
+      }
+    },
+    {
+      "building_id": "city-61860-0",
+      "name": "Building 61860",
+      "display_name": "35 Liminka Road",
+      "importance": "standard",
+      "building": {
+        "x": -185.287,
+        "y": 213.147
+      },
+      "pickup_id": "city-61860-handoff",
+      "pickup": {
+        "x": -188.853,
+        "y": 205.872
+      }
+    },
+    {
+      "building_id": "city-72987-0",
+      "name": "HOAS Kumpula",
+      "display_name": "HOAS Kumpula",
+      "importance": "key",
+      "building": {
+        "x": 202.26,
+        "y": 103.022
+      },
+      "pickup_id": "osm-facility-509799015-handoff",
+      "pickup": {
+        "x": 148.725,
+        "y": 74.247
+      }
+    },
+    {
+      "building_id": "city-74578-0",
+      "name": "Accelerator Laboratory",
+      "display_name": "Accelerator Laboratory",
+      "importance": "key",
+      "building": {
+        "x": -16.886,
+        "y": -196.063
+      },
+      "pickup_id": "osm-facility-29032068-handoff",
+      "pickup": {
+        "x": 5.665,
+        "y": -204.202
+      }
+    },
+    {
+      "building_id": "city-7772-0",
+      "name": "Building 7772",
+      "display_name": "4 Ernst Lindelöf Street",
+      "importance": "standard",
+      "building": {
+        "x": -70.947,
+        "y": -203.791
+      },
+      "pickup_id": "city-7772-handoff",
+      "pickup": {
+        "x": -68.368,
+        "y": -199.949
+      }
+    },
+    {
+      "building_id": "city-79951-0",
+      "name": "Science High School",
+      "display_name": "Science High School",
+      "importance": "key",
+      "building": {
+        "x": 1.807,
+        "y": -96.972
+      },
+      "pickup_id": "city-79951-handoff",
+      "pickup": {
+        "x": 12.354,
+        "y": -115.962
+      }
+    },
+    {
+      "building_id": "city-79952-0",
+      "name": "Building 79952",
+      "display_name": "School Annex",
+      "importance": "standard",
+      "building": {
+        "x": -29.035,
+        "y": -82.108
+      },
+      "pickup_id": "city-79952-handoff",
+      "pickup": {
+        "x": -37.061,
+        "y": -82.655
+      }
+    },
+    {
+      "building_id": "city-8038-0",
+      "name": "Building 8038",
+      "display_name": "Utility Shed",
+      "importance": "standard",
+      "building": {
+        "x": 88.456,
+        "y": -18.098
+      },
+      "pickup_id": "city-8038-handoff",
+      "pickup": {
+        "x": 90.298,
+        "y": -25.959
+      }
+    },
+    {
+      "building_id": "exactum",
+      "name": "Exactum",
+      "display_name": "Exactum",
+      "importance": "key",
+      "building": {
+        "x": -43.945,
+        "y": -25.307
+      },
+      "pickup_id": "exactum-delivery-zone",
+      "pickup": {
+        "x": -75.122,
+        "y": -43.307
+      }
+    },
+    {
+      "building_id": "physicum",
+      "name": "Physicum",
+      "display_name": "Physicum",
+      "importance": "key",
+      "building": {
+        "x": 38.629,
+        "y": 7.581
+      },
+      "pickup_id": "physicum-delivery-zone",
+      "pickup": {
+        "x": 54.629,
+        "y": 35.294
+      }
+    }
+  ],
+  "pickup_road_snaps": [
+    {
+      "pickup_id": "city-29466-handoff",
+      "pickup": {
+        "x": -34.513,
+        "y": -185.506
+      },
+      "road_projection": {
+        "x": -15.676,
+        "y": -156.29
+      },
+      "segment_fraction": 1.0,
+      "perpendicular_distance_m": 34.762,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-33940-handoff",
+      "pickup": {
+        "x": -94.081,
+        "y": 68.403
+      },
+      "road_projection": {
+        "x": -81.586,
+        "y": 80.638
+      },
+      "segment_fraction": 0.531454,
+      "perpendicular_distance_m": 17.487,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-35321-handoff",
+      "pickup": {
+        "x": 108.447,
+        "y": 167.749
+      },
+      "road_projection": {
+        "x": 102.233,
+        "y": 174.181
+      },
+      "segment_fraction": 0.526082,
+      "perpendicular_distance_m": 8.943,
+      "highway": "footway"
+    },
+    {
+      "pickup_id": "city-35635-handoff",
+      "pickup": {
+        "x": 62.001,
+        "y": 188.94
+      },
+      "road_projection": {
+        "x": 71.504,
+        "y": 179.205
+      },
+      "segment_fraction": 0.610669,
+      "perpendicular_distance_m": 13.604,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-36104-handoff",
+      "pickup": {
+        "x": 24.77,
+        "y": 152.885
+      },
+      "road_projection": {
+        "x": 34.545,
+        "y": 142.813
+      },
+      "segment_fraction": 0.891067,
+      "perpendicular_distance_m": 14.035,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-36723-handoff",
+      "pickup": {
+        "x": -127.93,
+        "y": -13.672
+      },
+      "road_projection": {
+        "x": -126.436,
+        "y": -15.207
+      },
+      "segment_fraction": 0.992045,
+      "perpendicular_distance_m": 2.142,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-38289-handoff",
+      "pickup": {
+        "x": 36.553,
+        "y": 163.856
+      },
+      "road_projection": {
+        "x": 45.942,
+        "y": 154.244
+      },
+      "segment_fraction": 0.985553,
+      "perpendicular_distance_m": 13.437,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-42870-handoff",
+      "pickup": {
+        "x": 202.482,
+        "y": 198.62
+      },
+      "road_projection": {
+        "x": 196.304,
+        "y": 192.724
+      },
+      "segment_fraction": 0.869839,
+      "perpendicular_distance_m": 8.54,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-43058-handoff",
+      "pickup": {
+        "x": 202.311,
+        "y": 185.327
+      },
+      "road_projection": {
+        "x": 196.956,
+        "y": 188.08
+      },
+      "segment_fraction": 0.807295,
+      "perpendicular_distance_m": 6.021,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-45774-handoff",
+      "pickup": {
+        "x": 132.083,
+        "y": 203.039
+      },
+      "road_projection": {
+        "x": 132.335,
+        "y": 201.931
+      },
+      "segment_fraction": 0.412227,
+      "perpendicular_distance_m": 1.136,
+      "highway": "footway"
+    },
+    {
+      "pickup_id": "city-45881-handoff",
+      "pickup": {
+        "x": 178.626,
+        "y": 167.414
+      },
+      "road_projection": {
+        "x": 183.263,
+        "y": 162.806
+      },
+      "segment_fraction": 0.201018,
+      "perpendicular_distance_m": 6.537,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-45907-handoff",
+      "pickup": {
+        "x": 152.391,
+        "y": 182.113
+      },
+      "road_projection": {
+        "x": 155.95,
+        "y": 185.917
+      },
+      "segment_fraction": 0.754557,
+      "perpendicular_distance_m": 5.209,
+      "highway": "footway"
+    },
+    {
+      "pickup_id": "city-50834-handoff",
+      "pickup": {
+        "x": -195.17,
+        "y": 190.714
+      },
+      "road_projection": {
+        "x": -208.183,
+        "y": 204.303
+      },
+      "segment_fraction": 0.356213,
+      "perpendicular_distance_m": 18.815,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-61860-handoff",
+      "pickup": {
+        "x": -188.853,
+        "y": 205.872
+      },
+      "road_projection": {
+        "x": -197.315,
+        "y": 214.709
+      },
+      "segment_fraction": 0.215247,
+      "perpendicular_distance_m": 12.236,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-7772-handoff",
+      "pickup": {
+        "x": -68.368,
+        "y": -199.949
+      },
+      "road_projection": {
+        "x": -77.265,
+        "y": -181.702
+      },
+      "segment_fraction": 0.0,
+      "perpendicular_distance_m": 20.3,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "city-79951-handoff",
+      "pickup": {
+        "x": 12.354,
+        "y": -115.962
+      },
+      "road_projection": {
+        "x": 17.601,
+        "y": -121.667
+      },
+      "segment_fraction": 0.6669,
+      "perpendicular_distance_m": 7.751,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-79952-handoff",
+      "pickup": {
+        "x": -37.061,
+        "y": -82.655
+      },
+      "road_projection": {
+        "x": -41.869,
+        "y": -87.294
+      },
+      "segment_fraction": 0.048931,
+      "perpendicular_distance_m": 6.682,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "city-8038-handoff",
+      "pickup": {
+        "x": 90.298,
+        "y": -25.959
+      },
+      "road_projection": {
+        "x": 103.093,
+        "y": -39.615
+      },
+      "segment_fraction": 0.793243,
+      "perpendicular_distance_m": 18.714,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "dynamicum-delivery-zone",
+      "pickup": {
+        "x": -56.665,
+        "y": -83.016
+      },
+      "road_projection": {
+        "x": -51.14,
+        "y": -77.686
+      },
+      "segment_fraction": 0.030958,
+      "perpendicular_distance_m": 7.677,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "exactum-delivery-zone",
+      "pickup": {
+        "x": -75.122,
+        "y": -43.307
+      },
+      "road_projection": {
+        "x": -79.881,
+        "y": -47.898
+      },
+      "segment_fraction": 0.560383,
+      "perpendicular_distance_m": 6.612,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "osm-facility-17123583-handoff",
+      "pickup": {
+        "x": -21.453,
+        "y": 112.815
+      },
+      "road_projection": {
+        "x": -12.384,
+        "y": 119.312
+      },
+      "segment_fraction": 0.061245,
+      "perpendicular_distance_m": 11.156,
+      "highway": "cycleway"
+    },
+    {
+      "pickup_id": "osm-facility-29032068-handoff",
+      "pickup": {
+        "x": 5.665,
+        "y": -204.202
+      },
+      "road_projection": {
+        "x": 8.603,
+        "y": -176.749
+      },
+      "segment_fraction": 1.0,
+      "perpendicular_distance_m": 27.61,
+      "highway": "service"
+    },
+    {
+      "pickup_id": "osm-facility-509799015-handoff",
+      "pickup": {
+        "x": 148.725,
+        "y": 74.247
+      },
+      "road_projection": {
+        "x": 153.696,
+        "y": 77.561
+      },
+      "segment_fraction": 0.529983,
+      "perpendicular_distance_m": 5.975,
+      "highway": "pedestrian"
+    },
+    {
+      "pickup_id": "physicum-delivery-zone",
+      "pickup": {
+        "x": 54.629,
+        "y": 35.294
+      },
+      "road_projection": {
+        "x": 60.251,
+        "y": 40.843
+      },
+      "segment_fraction": 0.486422,
+      "perpendicular_distance_m": 7.899,
+      "highway": "residential"
+    },
+    {
+      "pickup_id": "verified-004",
+      "pickup": {
+        "x": 43.0,
+        "y": 55.0
+      },
+      "road_projection": {
+        "x": 44.66,
+        "y": 56.639
+      },
+      "segment_fraction": 0.72473,
+      "perpendicular_distance_m": 2.333,
+      "highway": "residential"
+    }
+  ],
+  "selected_road_segments": [
+    {
+      "from": {
+        "x": 165.345,
+        "y": 124.59
+      },
+      "to": {
+        "x": 171.615,
+        "y": 131.138
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 165.345,
+        "y": 124.59
+      },
+      "to": {
+        "x": 140.362,
+        "y": 99.735
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -147.274,
+        "y": 229.331
+      },
+      "to": {
+        "x": -161.55,
+        "y": 243.69
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -147.274,
+        "y": 229.331
+      },
+      "to": {
+        "x": -139.011,
+        "y": 221.025
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -88.672,
+        "y": -3.296
+      },
+      "to": {
+        "x": -58.32,
+        "y": 27.147
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -88.672,
+        "y": -3.296
+      },
+      "to": {
+        "x": -87.137,
+        "y": -4.946
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -88.672,
+        "y": -3.296
+      },
+      "to": {
+        "x": -94.547,
+        "y": 2.946
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 184.198,
+        "y": 207.529
+      },
+      "to": {
+        "x": 187.915,
+        "y": 211.171
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 184.198,
+        "y": 207.529
+      },
+      "to": {
+        "x": 183.1,
+        "y": 206.56
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 187.915,
+        "y": 211.171
+      },
+      "to": {
+        "x": 198.34,
+        "y": 221.549
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": -3.243,
+        "y": 105.596
+      },
+      "to": {
+        "x": -10.551,
+        "y": 116.753
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": -3.243,
+        "y": 105.596
+      },
+      "to": {
+        "x": -11.698,
+        "y": 97.635
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -3.243,
+        "y": 105.596
+      },
+      "to": {
+        "x": 3.904,
+        "y": 113.08
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -3.243,
+        "y": 105.596
+      },
+      "to": {
+        "x": 2.616,
+        "y": 100.156
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 80.909,
+        "y": 139.008
+      },
+      "to": {
+        "x": 74.395,
+        "y": 120.683
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 80.909,
+        "y": 139.008
+      },
+      "to": {
+        "x": 91.381,
+        "y": 153.497
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 98.782,
+        "y": 201.669
+      },
+      "to": {
+        "x": 90.289,
+        "y": 204.615
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 98.782,
+        "y": 201.669
+      },
+      "to": {
+        "x": 102.047,
+        "y": 198.815
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 61.312,
+        "y": 169.257
+      },
+      "to": {
+        "x": 45.716,
+        "y": 154.024
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 61.312,
+        "y": 169.257
+      },
+      "to": {
+        "x": 78.001,
+        "y": 185.548
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 45.716,
+        "y": 154.024
+      },
+      "to": {
+        "x": 37.249,
+        "y": 145.438
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 88.055,
+        "y": 196.06
+      },
+      "to": {
+        "x": 90.289,
+        "y": 204.615
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 88.055,
+        "y": 196.06
+      },
+      "to": {
+        "x": 85.125,
+        "y": 192.507
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -57.806,
+        "y": 52.705
+      },
+      "to": {
+        "x": -65.602,
+        "y": 45.078
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -57.806,
+        "y": 52.705
+      },
+      "to": {
+        "x": -55.809,
+        "y": 54.654
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 3.346,
+        "y": -137.193
+      },
+      "to": {
+        "x": 4.685,
+        "y": -132.348
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 3.346,
+        "y": -137.193
+      },
+      "to": {
+        "x": -0.578,
+        "y": -142.617
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -78.009,
+        "y": 32.952
+      },
+      "to": {
+        "x": -65.602,
+        "y": 45.078
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -78.009,
+        "y": 32.952
+      },
+      "to": {
+        "x": -104.554,
+        "y": 7.008
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 120.386,
+        "y": 96.871
+      },
+      "to": {
+        "x": 109.227,
+        "y": 103.54
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 120.386,
+        "y": 96.871
+      },
+      "to": {
+        "x": 123.595,
+        "y": 93.494
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": -22.075,
+        "y": 75.948
+      },
+      "to": {
+        "x": -28.166,
+        "y": 81.679
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 12.421,
+        "y": 121.342
+      },
+      "to": {
+        "x": 37.249,
+        "y": 145.438
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 12.421,
+        "y": 121.342
+      },
+      "to": {
+        "x": 7.255,
+        "y": 116.331
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -117.753,
+        "y": -31.021
+      },
+      "to": {
+        "x": -119.657,
+        "y": -43.945
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -117.753,
+        "y": -31.021
+      },
+      "to": {
+        "x": -109.365,
+        "y": -17.322
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -119.657,
+        "y": -43.945
+      },
+      "to": {
+        "x": -129.687,
+        "y": -68.327
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -119.657,
+        "y": -43.945
+      },
+      "to": {
+        "x": -108.033,
+        "y": -61.388
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -129.687,
+        "y": -68.327
+      },
+      "to": {
+        "x": -129.428,
+        "y": -70.834
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -109.365,
+        "y": -17.322
+      },
+      "to": {
+        "x": -105.203,
+        "y": -21.648
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -109.365,
+        "y": -17.322
+      },
+      "to": {
+        "x": -112.147,
+        "y": -14.435
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 114.812,
+        "y": -111.551
+      },
+      "to": {
+        "x": 106.824,
+        "y": -105.163
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 69.761,
+        "y": -97.221
+      },
+      "to": {
+        "x": 66.884,
+        "y": -105.776
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 69.761,
+        "y": -97.221
+      },
+      "to": {
+        "x": 72.467,
+        "y": -97.111
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 69.761,
+        "y": -97.221
+      },
+      "to": {
+        "x": 68.359,
+        "y": -88.867
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 66.884,
+        "y": -105.776
+      },
+      "to": {
+        "x": 60.149,
+        "y": -119.811
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 44.009,
+        "y": -143.678
+      },
+      "to": {
+        "x": 29.388,
+        "y": -167.58
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 44.009,
+        "y": -143.678
+      },
+      "to": {
+        "x": 60.149,
+        "y": -119.811
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 226.058,
+        "y": 228.198
+      },
+      "to": {
+        "x": 223.894,
+        "y": 235.909
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 226.058,
+        "y": 228.198
+      },
+      "to": {
+        "x": 228.966,
+        "y": 221.912
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 251.0,
+        "y": 194.66
+      },
+      "to": {
+        "x": 247.141,
+        "y": 195.921
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -10.551,
+        "y": 116.753
+      },
+      "to": {
+        "x": -40.477,
+        "y": 158.529
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -34.786,
+        "y": 179.149
+      },
+      "to": {
+        "x": -29.513,
+        "y": 189.407
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -34.786,
+        "y": 179.149
+      },
+      "to": {
+        "x": -37.745,
+        "y": 174.226
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -113.224,
+        "y": 188.376
+      },
+      "to": {
+        "x": -120.97,
+        "y": 197.739
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -113.224,
+        "y": 188.376
+      },
+      "to": {
+        "x": -108.163,
+        "y": 184.429
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -30.144,
+        "y": 200.382
+      },
+      "to": {
+        "x": -33.04,
+        "y": 207.102
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -30.144,
+        "y": 200.382
+      },
+      "to": {
+        "x": -29.054,
+        "y": 195.334
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -243.275,
+        "y": 48.941
+      },
+      "to": {
+        "x": -228.576,
+        "y": 46.67
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -162.491,
+        "y": 100.822
+      },
+      "to": {
+        "x": -167.033,
+        "y": 100.958
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -162.491,
+        "y": 100.822
+      },
+      "to": {
+        "x": -160.806,
+        "y": 100.375
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -220.374,
+        "y": 108.155
+      },
+      "to": {
+        "x": -212.259,
+        "y": 103.493
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -220.374,
+        "y": 108.155
+      },
+      "to": {
+        "x": -227.646,
+        "y": 113.731
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -120.97,
+        "y": 197.739
+      },
+      "to": {
+        "x": -121.945,
+        "y": 198.921
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -180.722,
+        "y": 230.599
+      },
+      "to": {
+        "x": -257.813,
+        "y": 156.779
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -180.722,
+        "y": 230.599
+      },
+      "to": {
+        "x": -170.096,
+        "y": 240.787
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -110.816,
+        "y": -189.18
+      },
+      "to": {
+        "x": -96.173,
+        "y": -177.635
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -110.816,
+        "y": -189.18
+      },
+      "to": {
+        "x": -117.013,
+        "y": -194.057
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -77.265,
+        "y": -181.702
+      },
+      "to": {
+        "x": -88.206,
+        "y": -170.61
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -96.173,
+        "y": -177.635
+      },
+      "to": {
+        "x": -92.6,
+        "y": -174.674
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -88.206,
+        "y": -170.61
+      },
+      "to": {
+        "x": -82.99,
+        "y": -165.644
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -88.206,
+        "y": -170.61
+      },
+      "to": {
+        "x": -90.397,
+        "y": -172.692
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 29.388,
+        "y": -167.58
+      },
+      "to": {
+        "x": 22.496,
+        "y": -175.554
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -82.99,
+        "y": -165.644
+      },
+      "to": {
+        "x": -70.571,
+        "y": -153.841
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -8.645,
+        "y": -158.734
+      },
+      "to": {
+        "x": 1.519,
+        "y": -170.06
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -8.645,
+        "y": -158.734
+      },
+      "to": {
+        "x": -15.676,
+        "y": -156.29
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -4.662,
+        "y": -146.314
+      },
+      "to": {
+        "x": -15.676,
+        "y": -156.29
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -4.662,
+        "y": -146.314
+      },
+      "to": {
+        "x": -0.578,
+        "y": -142.617
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -56.893,
+        "y": -140.546
+      },
+      "to": {
+        "x": -55.795,
+        "y": -139.477
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -56.893,
+        "y": -140.546
+      },
+      "to": {
+        "x": -70.571,
+        "y": -153.841
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -55.795,
+        "y": -139.477
+      },
+      "to": {
+        "x": -43.066,
+        "y": -127.307
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 6.416,
+        "y": -131.535
+      },
+      "to": {
+        "x": 8.13,
+        "y": -130.467
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 6.416,
+        "y": -131.535
+      },
+      "to": {
+        "x": 4.685,
+        "y": -132.348
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 1.131,
+        "y": -131.109
+      },
+      "to": {
+        "x": 4.685,
+        "y": -132.348
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 1.131,
+        "y": -131.109
+      },
+      "to": {
+        "x": -2.61,
+        "y": -127.987
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 8.13,
+        "y": -130.467
+      },
+      "to": {
+        "x": 10.999,
+        "y": -127.739
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -34.154,
+        "y": -118.777
+      },
+      "to": {
+        "x": -29.405,
+        "y": -114.346
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -34.154,
+        "y": -118.777
+      },
+      "to": {
+        "x": -43.066,
+        "y": -127.307
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 60.976,
+        "y": -79.434
+      },
+      "to": {
+        "x": 65.503,
+        "y": -74.846
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 60.976,
+        "y": -79.434
+      },
+      "to": {
+        "x": 40.667,
+        "y": -99.979
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 60.976,
+        "y": -79.434
+      },
+      "to": {
+        "x": 64.209,
+        "y": -82.764
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -136.443,
+        "y": -24.949
+      },
+      "to": {
+        "x": -158.139,
+        "y": -46.083
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -136.443,
+        "y": -24.949
+      },
+      "to": {
+        "x": -126.355,
+        "y": -15.128
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -112.774,
+        "y": -13.777
+      },
+      "to": {
+        "x": -117.955,
+        "y": -8.437
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -112.774,
+        "y": -13.777
+      },
+      "to": {
+        "x": -112.147,
+        "y": -14.435
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -79.472,
+        "y": -13.218
+      },
+      "to": {
+        "x": -80.636,
+        "y": -12.081
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -80.636,
+        "y": -12.081
+      },
+      "to": {
+        "x": -87.137,
+        "y": -4.946
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -118.209,
+        "y": -6.499
+      },
+      "to": {
+        "x": -118.565,
+        "y": -7.367
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -118.209,
+        "y": -6.499
+      },
+      "to": {
+        "x": -115.429,
+        "y": -3.681
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -87.137,
+        "y": -4.946
+      },
+      "to": {
+        "x": -98.018,
+        "y": -15.067
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -112.278,
+        "y": -0.575
+      },
+      "to": {
+        "x": -107.472,
+        "y": 4.157
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -112.278,
+        "y": -0.575
+      },
+      "to": {
+        "x": -115.429,
+        "y": -3.681
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -143.391,
+        "y": 39.197
+      },
+      "to": {
+        "x": -147.781,
+        "y": 43.5
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -143.391,
+        "y": 39.197
+      },
+      "to": {
+        "x": -119.455,
+        "y": 15.774
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -28.166,
+        "y": 81.679
+      },
+      "to": {
+        "x": -55.809,
+        "y": 54.654
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -28.166,
+        "y": 81.679
+      },
+      "to": {
+        "x": -14.334,
+        "y": 95.197
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -165.807,
+        "y": 92.534
+      },
+      "to": {
+        "x": -159.331,
+        "y": 99.628
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -165.807,
+        "y": 92.534
+      },
+      "to": {
+        "x": -169.353,
+        "y": 87.946
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -174.458,
+        "y": 82.067
+      },
+      "to": {
+        "x": -183.402,
+        "y": 74.072
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -174.458,
+        "y": 82.067
+      },
+      "to": {
+        "x": -169.353,
+        "y": 87.946
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -98.04,
+        "y": -164.665
+      },
+      "to": {
+        "x": -105.073,
+        "y": -157.285
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -98.04,
+        "y": -164.665
+      },
+      "to": {
+        "x": -94.715,
+        "y": -168.155
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 189.181,
+        "y": 171.818
+      },
+      "to": {
+        "x": 191.413,
+        "y": 177.298
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 189.181,
+        "y": 171.818
+      },
+      "to": {
+        "x": 188.708,
+        "y": 168.286
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 191.413,
+        "y": 177.298
+      },
+      "to": {
+        "x": 198.28,
+        "y": 190.654
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 183.1,
+        "y": 206.56
+      },
+      "to": {
+        "x": 198.28,
+        "y": 190.654
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 183.1,
+        "y": 206.56
+      },
+      "to": {
+        "x": 178.86,
+        "y": 211.008
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 236.232,
+        "y": 204.104
+      },
+      "to": {
+        "x": 247.141,
+        "y": 195.921
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 236.232,
+        "y": 204.104
+      },
+      "to": {
+        "x": 233.661,
+        "y": 207.025
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 228.49,
+        "y": 213.166
+      },
+      "to": {
+        "x": 231.217,
+        "y": 209.845
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 228.49,
+        "y": 213.166
+      },
+      "to": {
+        "x": 224.102,
+        "y": 219.653
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 198.34,
+        "y": 221.549
+      },
+      "to": {
+        "x": 204.474,
+        "y": 223.596
+      },
+      "highway": "path"
+    },
+    {
+      "from": {
+        "x": 204.474,
+        "y": 223.596
+      },
+      "to": {
+        "x": 215.833,
+        "y": 229.083
+      },
+      "highway": "path"
+    },
+    {
+      "from": {
+        "x": 215.833,
+        "y": 229.083
+      },
+      "to": {
+        "x": 218.323,
+        "y": 230.341
+      },
+      "highway": "path"
+    },
+    {
+      "from": {
+        "x": 223.894,
+        "y": 235.909
+      },
+      "to": {
+        "x": 222.943,
+        "y": 242.472
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -33.04,
+        "y": 207.102
+      },
+      "to": {
+        "x": -37.112,
+        "y": 214.202
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -42.393,
+        "y": 220.823
+      },
+      "to": {
+        "x": -21.846,
+        "y": 243.807
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -42.393,
+        "y": 220.823
+      },
+      "to": {
+        "x": -50.327,
+        "y": 211.903
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -42.393,
+        "y": 220.823
+      },
+      "to": {
+        "x": -37.112,
+        "y": 214.202
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -55.809,
+        "y": 54.654
+      },
+      "to": {
+        "x": -62.016,
+        "y": 61.142
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -67.06,
+        "y": 65.802
+      },
+      "to": {
+        "x": -94.393,
+        "y": 93.717
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -67.06,
+        "y": 65.802
+      },
+      "to": {
+        "x": -62.016,
+        "y": 61.142
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -183.402,
+        "y": 74.072
+      },
+      "to": {
+        "x": -191.054,
+        "y": 66.924
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -163.904,
+        "y": 246.71
+      },
+      "to": {
+        "x": -161.55,
+        "y": 243.69
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -163.904,
+        "y": 246.71
+      },
+      "to": {
+        "x": -168.737,
+        "y": 242.078
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -163.904,
+        "y": 246.71
+      },
+      "to": {
+        "x": -168.155,
+        "y": 251.092
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -255.132,
+        "y": 13.585
+      },
+      "to": {
+        "x": -232.699,
+        "y": 33.047
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -221.905,
+        "y": 45.719
+      },
+      "to": {
+        "x": -228.576,
+        "y": 46.67
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -221.905,
+        "y": 45.719
+      },
+      "to": {
+        "x": -224.486,
+        "y": 42.913
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -221.905,
+        "y": 45.719
+      },
+      "to": {
+        "x": -218.438,
+        "y": 47.533
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -159.331,
+        "y": 99.628
+      },
+      "to": {
+        "x": -156.063,
+        "y": 103.046
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -159.331,
+        "y": 99.628
+      },
+      "to": {
+        "x": -160.806,
+        "y": 100.375
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -114.504,
+        "y": 143.365
+      },
+      "to": {
+        "x": -149.765,
+        "y": 109.571
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -114.504,
+        "y": 143.365
+      },
+      "to": {
+        "x": -99.739,
+        "y": 158.297
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -56.049,
+        "y": 204.497
+      },
+      "to": {
+        "x": -50.327,
+        "y": 211.903
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -56.049,
+        "y": 204.497
+      },
+      "to": {
+        "x": -65.492,
+        "y": 194.576
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -167.033,
+        "y": 100.958
+      },
+      "to": {
+        "x": -173.039,
+        "y": 100.349
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -196.091,
+        "y": 99.205
+      },
+      "to": {
+        "x": -189.115,
+        "y": 99.0
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -196.091,
+        "y": 99.205
+      },
+      "to": {
+        "x": -206.111,
+        "y": 100.993
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -212.259,
+        "y": 103.493
+      },
+      "to": {
+        "x": -206.111,
+        "y": 100.993
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -227.646,
+        "y": 113.731
+      },
+      "to": {
+        "x": -248.656,
+        "y": 134.133
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -88.015,
+        "y": 170.155
+      },
+      "to": {
+        "x": -108.163,
+        "y": 184.429
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -88.015,
+        "y": 170.155
+      },
+      "to": {
+        "x": -75.964,
+        "y": 163.374
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -88.015,
+        "y": 170.155
+      },
+      "to": {
+        "x": -65.492,
+        "y": 194.576
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -88.015,
+        "y": 170.155
+      },
+      "to": {
+        "x": -99.739,
+        "y": 158.297
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 90.289,
+        "y": 204.615
+      },
+      "to": {
+        "x": 92.059,
+        "y": 216.558
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 78.001,
+        "y": 185.548
+      },
+      "to": {
+        "x": 81.885,
+        "y": 189.345
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -118.565,
+        "y": -7.367
+      },
+      "to": {
+        "x": -117.955,
+        "y": -8.437
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 159.255,
+        "y": 143.266
+      },
+      "to": {
+        "x": 161.622,
+        "y": 141.026
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 159.255,
+        "y": 143.266
+      },
+      "to": {
+        "x": 146.602,
+        "y": 155.206
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 101.091,
+        "y": 0.128
+      },
+      "to": {
+        "x": 109.569,
+        "y": 8.223
+      },
+      "highway": "unclassified"
+    },
+    {
+      "from": {
+        "x": 101.091,
+        "y": 0.128
+      },
+      "to": {
+        "x": 92.073,
+        "y": 8.601
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 101.091,
+        "y": 0.128
+      },
+      "to": {
+        "x": 111.449,
+        "y": -12.512
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 173.08,
+        "y": 68.778
+      },
+      "to": {
+        "x": 165.801,
+        "y": 62.175
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 173.08,
+        "y": 68.778
+      },
+      "to": {
+        "x": 177.218,
+        "y": 71.171
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 165.801,
+        "y": 62.175
+      },
+      "to": {
+        "x": 163.221,
+        "y": 59.702
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 165.801,
+        "y": 62.175
+      },
+      "to": {
+        "x": 160.645,
+        "y": 67.627
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": -22.319,
+        "y": -107.676
+      },
+      "to": {
+        "x": -29.405,
+        "y": -114.346
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -22.319,
+        "y": -107.676
+      },
+      "to": {
+        "x": -27.856,
+        "y": -102.091
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -22.319,
+        "y": -107.676
+      },
+      "to": {
+        "x": -19.631,
+        "y": -110.34
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 109.569,
+        "y": 8.223
+      },
+      "to": {
+        "x": 115.872,
+        "y": 14.27
+      },
+      "highway": "unclassified"
+    },
+    {
+      "from": {
+        "x": 163.221,
+        "y": 59.702
+      },
+      "to": {
+        "x": 122.641,
+        "y": 20.773
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -129.681,
+        "y": 207.761
+      },
+      "to": {
+        "x": -121.945,
+        "y": 198.921
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -129.681,
+        "y": 207.761
+      },
+      "to": {
+        "x": -139.011,
+        "y": 221.025
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 14.403,
+        "y": 87.559
+      },
+      "to": {
+        "x": 2.616,
+        "y": 100.156
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 14.403,
+        "y": 87.559
+      },
+      "to": {
+        "x": 26.652,
+        "y": 74.885
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -11.698,
+        "y": 97.635
+      },
+      "to": {
+        "x": -14.334,
+        "y": 95.197
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 22.496,
+        "y": -175.554
+      },
+      "to": {
+        "x": 20.543,
+        "y": -177.814
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -75.964,
+        "y": 163.374
+      },
+      "to": {
+        "x": -71.6,
+        "y": 162.001
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 3.904,
+        "y": 113.08
+      },
+      "to": {
+        "x": 7.255,
+        "y": 116.331
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -168.737,
+        "y": 242.078
+      },
+      "to": {
+        "x": -170.096,
+        "y": 240.787
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 92.073,
+        "y": 8.601
+      },
+      "to": {
+        "x": 26.652,
+        "y": 74.885
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -67.48,
+        "y": 161.821
+      },
+      "to": {
+        "x": -64.508,
+        "y": 161.919
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -67.48,
+        "y": 161.821
+      },
+      "to": {
+        "x": -71.6,
+        "y": 162.001
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -43.375,
+        "y": 161.951
+      },
+      "to": {
+        "x": -40.477,
+        "y": 158.529
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -43.375,
+        "y": 161.951
+      },
+      "to": {
+        "x": -48.13,
+        "y": 166.255
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -43.375,
+        "y": 161.951
+      },
+      "to": {
+        "x": -40.943,
+        "y": 168.1
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -173.039,
+        "y": 100.349
+      },
+      "to": {
+        "x": -189.115,
+        "y": 99.0
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -224.486,
+        "y": 42.913
+      },
+      "to": {
+        "x": -226.256,
+        "y": 40.385
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -213.884,
+        "y": 49.48
+      },
+      "to": {
+        "x": -199.432,
+        "y": 59.788
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -213.884,
+        "y": 49.48
+      },
+      "to": {
+        "x": -218.438,
+        "y": 47.533
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -156.063,
+        "y": 103.046
+      },
+      "to": {
+        "x": -149.765,
+        "y": 109.571
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 102.047,
+        "y": 198.815
+      },
+      "to": {
+        "x": 115.653,
+        "y": 185.739
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 181.2,
+        "y": 72.807
+      },
+      "to": {
+        "x": 177.218,
+        "y": 71.171
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 111.449,
+        "y": -12.512
+      },
+      "to": {
+        "x": 117.08,
+        "y": -18.765
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 115.872,
+        "y": 14.27
+      },
+      "to": {
+        "x": 122.641,
+        "y": 20.773
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -29.054,
+        "y": 195.334
+      },
+      "to": {
+        "x": -29.513,
+        "y": 189.407
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 109.227,
+        "y": 103.54
+      },
+      "to": {
+        "x": 81.579,
+        "y": 117.192
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 65.503,
+        "y": -74.846
+      },
+      "to": {
+        "x": 75.779,
+        "y": -65.293
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 234.013,
+        "y": 212.907
+      },
+      "to": {
+        "x": 228.966,
+        "y": 221.912
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 234.013,
+        "y": 212.907
+      },
+      "to": {
+        "x": 233.661,
+        "y": 207.025
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 222.943,
+        "y": 242.472
+      },
+      "to": {
+        "x": 221.615,
+        "y": 248.288
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 20.543,
+        "y": -177.814
+      },
+      "to": {
+        "x": 8.603,
+        "y": -176.749
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 1.519,
+        "y": -170.06
+      },
+      "to": {
+        "x": 8.603,
+        "y": -176.749
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 188.708,
+        "y": 168.286
+      },
+      "to": {
+        "x": 161.622,
+        "y": 141.026
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 178.86,
+        "y": 211.008
+      },
+      "to": {
+        "x": 169.023,
+        "y": 221.531
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 141.106,
+        "y": 249.4
+      },
+      "to": {
+        "x": 143.135,
+        "y": 247.382
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 92.059,
+        "y": 216.558
+      },
+      "to": {
+        "x": 93.06,
+        "y": 222.084
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 85.125,
+        "y": 192.507
+      },
+      "to": {
+        "x": 81.885,
+        "y": 189.345
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -107.472,
+        "y": 4.157
+      },
+      "to": {
+        "x": -113.819,
+        "y": 9.999
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -107.472,
+        "y": 4.157
+      },
+      "to": {
+        "x": -104.554,
+        "y": 7.008
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -119.455,
+        "y": 15.774
+      },
+      "to": {
+        "x": -113.819,
+        "y": 9.999
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -105.203,
+        "y": -21.648
+      },
+      "to": {
+        "x": -99.66,
+        "y": -16.559
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -105.203,
+        "y": -21.648
+      },
+      "to": {
+        "x": -103.746,
+        "y": -23.164
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -98.018,
+        "y": -15.067
+      },
+      "to": {
+        "x": -99.66,
+        "y": -16.559
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -41.479,
+        "y": -87.699
+      },
+      "to": {
+        "x": -27.856,
+        "y": -102.091
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -41.479,
+        "y": -87.699
+      },
+      "to": {
+        "x": -49.46,
+        "y": -79.427
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 30.818,
+        "y": -109.511
+      },
+      "to": {
+        "x": 10.999,
+        "y": -127.739
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 30.818,
+        "y": -109.511
+      },
+      "to": {
+        "x": 40.667,
+        "y": -99.979
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -2.61,
+        "y": -127.987
+      },
+      "to": {
+        "x": -6.257,
+        "y": -124.208
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 72.467,
+        "y": -97.111
+      },
+      "to": {
+        "x": 87.862,
+        "y": -97.153
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 130.179,
+        "y": 201.441
+      },
+      "to": {
+        "x": 135.409,
+        "y": 202.63
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 161.622,
+        "y": 141.026
+      },
+      "to": {
+        "x": 171.615,
+        "y": 131.138
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 161.622,
+        "y": 141.026
+      },
+      "to": {
+        "x": 156.494,
+        "y": 133.545
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -61.053,
+        "y": 162.73
+      },
+      "to": {
+        "x": -53.509,
+        "y": 165.801
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -61.053,
+        "y": 162.73
+      },
+      "to": {
+        "x": -64.508,
+        "y": 161.919
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -53.509,
+        "y": 165.801
+      },
+      "to": {
+        "x": -51.064,
+        "y": 166.513
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -90.397,
+        "y": -172.692
+      },
+      "to": {
+        "x": -94.715,
+        "y": -168.155
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -90.397,
+        "y": -172.692
+      },
+      "to": {
+        "x": -92.6,
+        "y": -174.674
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -146.087,
+        "y": -116.393
+      },
+      "to": {
+        "x": -105.073,
+        "y": -157.285
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 74.395,
+        "y": 120.683
+      },
+      "to": {
+        "x": 81.579,
+        "y": 117.192
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 109.679,
+        "y": 181.375
+      },
+      "to": {
+        "x": 95.526,
+        "y": 167.7
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 231.217,
+        "y": 209.845
+      },
+      "to": {
+        "x": 233.661,
+        "y": 207.025
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 135.409,
+        "y": 202.63
+      },
+      "to": {
+        "x": 138.68,
+        "y": 202.272
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 215.704,
+        "y": 237.874
+      },
+      "to": {
+        "x": 213.873,
+        "y": 245.161
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 215.704,
+        "y": 237.874
+      },
+      "to": {
+        "x": 218.323,
+        "y": 230.341
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 213.671,
+        "y": 251.59
+      },
+      "to": {
+        "x": 213.873,
+        "y": 245.161
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 218.323,
+        "y": 230.341
+      },
+      "to": {
+        "x": 224.102,
+        "y": 219.653
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 145.331,
+        "y": 195.851
+      },
+      "to": {
+        "x": 159.404,
+        "y": 182.685
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 145.331,
+        "y": 195.851
+      },
+      "to": {
+        "x": 142.61,
+        "y": 198.404
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 138.68,
+        "y": 202.272
+      },
+      "to": {
+        "x": 142.61,
+        "y": 198.404
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 142.61,
+        "y": 198.404
+      },
+      "to": {
+        "x": 154.967,
+        "y": 235.644
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 154.967,
+        "y": 235.644
+      },
+      "to": {
+        "x": 143.135,
+        "y": 247.382
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 154.967,
+        "y": 235.644
+      },
+      "to": {
+        "x": 157.799,
+        "y": 232.678
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 169.023,
+        "y": 221.531
+      },
+      "to": {
+        "x": 157.799,
+        "y": 232.678
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 199.693,
+        "y": 157.963
+      },
+      "to": {
+        "x": 171.615,
+        "y": 131.138
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 171.615,
+        "y": 131.138
+      },
+      "to": {
+        "x": 182.096,
+        "y": 121.005
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -48.13,
+        "y": 166.255
+      },
+      "to": {
+        "x": -51.064,
+        "y": 166.513
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 87.862,
+        "y": -97.153
+      },
+      "to": {
+        "x": 106.824,
+        "y": -105.163
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 182.096,
+        "y": 121.005
+      },
+      "to": {
+        "x": 188.92,
+        "y": 117.503
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 206.855,
+        "y": 108.279
+      },
+      "to": {
+        "x": 188.92,
+        "y": 117.503
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 91.381,
+        "y": 153.497
+      },
+      "to": {
+        "x": 95.862,
+        "y": 164.302
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 95.526,
+        "y": 167.7
+      },
+      "to": {
+        "x": 95.862,
+        "y": 164.302
+      },
+      "highway": "footway"
+    },
+    {
+      "from": {
+        "x": 95.526,
+        "y": 167.7
+      },
+      "to": {
+        "x": 96.68,
+        "y": 160.889
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 115.653,
+        "y": 185.739
+      },
+      "to": {
+        "x": 146.602,
+        "y": 155.206
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -126.355,
+        "y": -15.128
+      },
+      "to": {
+        "x": -124.192,
+        "y": -13.403
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -124.192,
+        "y": -13.403
+      },
+      "to": {
+        "x": -117.955,
+        "y": -8.437
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 92.469,
+        "y": -49.57
+      },
+      "to": {
+        "x": 75.779,
+        "y": -65.293
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 92.469,
+        "y": -49.57
+      },
+      "to": {
+        "x": 105.862,
+        "y": -37.021
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 117.854,
+        "y": -23.523
+      },
+      "to": {
+        "x": 117.927,
+        "y": -21.384
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 117.854,
+        "y": -23.523
+      },
+      "to": {
+        "x": 116.721,
+        "y": -25.751
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -199.432,
+        "y": 59.788
+      },
+      "to": {
+        "x": -191.054,
+        "y": 66.924
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -232.699,
+        "y": 33.047
+      },
+      "to": {
+        "x": -228.837,
+        "y": 37.256
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -228.837,
+        "y": 37.256
+      },
+      "to": {
+        "x": -226.256,
+        "y": 40.385
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": -40.943,
+        "y": 168.1
+      },
+      "to": {
+        "x": -37.745,
+        "y": 174.226
+      },
+      "highway": "cycleway"
+    },
+    {
+      "from": {
+        "x": 124.137,
+        "y": 70.185
+      },
+      "to": {
+        "x": 99.398,
+        "y": 47.971
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 109.805,
+        "y": 34.696
+      },
+      "to": {
+        "x": 111.95,
+        "y": 32.243
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 109.805,
+        "y": 34.696
+      },
+      "to": {
+        "x": 99.398,
+        "y": 47.971
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 116.96,
+        "y": 26.87
+      },
+      "to": {
+        "x": 111.95,
+        "y": 32.243
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 116.96,
+        "y": 26.87
+      },
+      "to": {
+        "x": 122.641,
+        "y": 20.773
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 97.998,
+        "y": 74.377
+      },
+      "to": {
+        "x": 85.315,
+        "y": 61.939
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 97.998,
+        "y": 74.377
+      },
+      "to": {
+        "x": 101.562,
+        "y": 79.346
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 85.315,
+        "y": 61.939
+      },
+      "to": {
+        "x": 99.398,
+        "y": 47.971
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": -19.631,
+        "y": -110.34
+      },
+      "to": {
+        "x": -6.257,
+        "y": -124.208
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 105.862,
+        "y": -37.021
+      },
+      "to": {
+        "x": 116.721,
+        "y": -25.751
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": -49.46,
+        "y": -79.427
+      },
+      "to": {
+        "x": -103.746,
+        "y": -23.164
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 93.06,
+        "y": 222.084
+      },
+      "to": {
+        "x": 97.343,
+        "y": 246.537
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 117.08,
+        "y": -18.765
+      },
+      "to": {
+        "x": 117.927,
+        "y": -21.384
+      },
+      "highway": "residential"
+    },
+    {
+      "from": {
+        "x": 128.906,
+        "y": 112.061
+      },
+      "to": {
+        "x": 124.512,
+        "y": 106.934
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 128.906,
+        "y": 112.061
+      },
+      "to": {
+        "x": 135.742,
+        "y": 115.234
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 128.906,
+        "y": 112.061
+      },
+      "to": {
+        "x": 119.873,
+        "y": 118.652
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 128.906,
+        "y": 112.061
+      },
+      "to": {
+        "x": 134.033,
+        "y": 106.445
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 124.512,
+        "y": 106.934
+      },
+      "to": {
+        "x": 119.873,
+        "y": 101.074
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 119.873,
+        "y": 101.074
+      },
+      "to": {
+        "x": 114.746,
+        "y": 94.971
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 114.746,
+        "y": 94.971
+      },
+      "to": {
+        "x": 109.863,
+        "y": 89.6
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 109.863,
+        "y": 89.6
+      },
+      "to": {
+        "x": 105.225,
+        "y": 84.229
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 105.225,
+        "y": 84.229
+      },
+      "to": {
+        "x": 101.562,
+        "y": 79.346
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 64.209,
+        "y": -82.764
+      },
+      "to": {
+        "x": 68.359,
+        "y": -88.867
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 156.494,
+        "y": 133.545
+      },
+      "to": {
+        "x": 149.902,
+        "y": 125.977
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 149.902,
+        "y": 125.977
+      },
+      "to": {
+        "x": 142.578,
+        "y": 119.385
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 142.578,
+        "y": 119.385
+      },
+      "to": {
+        "x": 135.742,
+        "y": 115.234
+      },
+      "highway": "service"
+    },
+    {
+      "from": {
+        "x": 96.68,
+        "y": 160.889
+      },
+      "to": {
+        "x": 100.342,
+        "y": 151.123
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 100.342,
+        "y": 151.123
+      },
+      "to": {
+        "x": 104.492,
+        "y": 142.578
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 104.492,
+        "y": 142.578
+      },
+      "to": {
+        "x": 108.887,
+        "y": 134.033
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 108.887,
+        "y": 134.033
+      },
+      "to": {
+        "x": 113.77,
+        "y": 125.488
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 113.77,
+        "y": 125.488
+      },
+      "to": {
+        "x": 119.873,
+        "y": 118.652
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 134.033,
+        "y": 106.445
+      },
+      "to": {
+        "x": 138.916,
+        "y": 100.342
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 138.916,
+        "y": 100.342
+      },
+      "to": {
+        "x": 143.555,
+        "y": 94.238
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 143.555,
+        "y": 94.238
+      },
+      "to": {
+        "x": 147.461,
+        "y": 87.891
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 147.461,
+        "y": 87.891
+      },
+      "to": {
+        "x": 151.367,
+        "y": 81.055
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 151.367,
+        "y": 81.055
+      },
+      "to": {
+        "x": 155.762,
+        "y": 74.463
+      },
+      "highway": "pedestrian"
+    },
+    {
+      "from": {
+        "x": 155.762,
+        "y": 74.463
+      },
+      "to": {
+        "x": 160.645,
+        "y": 67.627
+      },
+      "highway": "pedestrian"
+    }
+  ],
+  "terminal_route_tree": [
+    {
+      "from": "city-29466-handoff",
+      "to": "city-79951-handoff",
+      "distance_m": 91.4636733082777,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-29466-handoff",
+        "2537914867",
+        "479803067",
+        "1306593922",
+        "34729878",
+        "2537914878",
+        "2537914880",
+        "466975059",
+        "pickup::city-79951-handoff"
+      ]
+    },
+    {
+      "from": "city-29466-handoff",
+      "to": "osm-facility-29032068-handoff",
+      "distance_m": 94.77580721973183,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-29466-handoff",
+        "466975033",
+        "2537914864",
+        "465203627",
+        "465203629",
+        "pickup::osm-facility-29032068-handoff"
+      ]
+    },
+    {
+      "from": "city-33940-handoff",
+      "to": "city-36723-handoff",
+      "distance_m": 156.62947871045588,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-33940-handoff",
+        "2868242558",
+        "2868242567",
+        "2868242557",
+        "1306593914",
+        "2537914970",
+        "1306593938",
+        "773584818",
+        "466975020",
+        "2537914944",
+        "773584824",
+        "2537914938",
+        "34729092",
+        "613062362",
+        "613062361",
+        "613062358",
+        "pickup::city-36723-handoff"
+      ]
+    },
+    {
+      "from": "city-33940-handoff",
+      "to": "osm-facility-17123583-handoff",
+      "distance_m": 155.47402029699015,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-33940-handoff",
+        "2868242558",
+        "2868242567",
+        "2868242557",
+        "2537914971",
+        "773584819",
+        "353713781",
+        "11755712774",
+        "2522166211",
+        "pickup::osm-facility-17123583-handoff"
+      ]
+    },
+    {
+      "from": "city-35321-handoff",
+      "to": "city-45881-handoff",
+      "distance_m": 169.30597481865627,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-35321-handoff",
+        "613056086",
+        "visual::gadolin-west-1",
+        "visual::gadolin-west-2",
+        "visual::gadolin-west-3",
+        "visual::gadolin-west-4",
+        "visual::gadolin-west-5",
+        "visual::gadolin-west-6",
+        "visual::central-garden-junction",
+        "visual::gadolin-east-4",
+        "visual::gadolin-east-3",
+        "visual::gadolin-east-2",
+        "visual::gadolin-east-1",
+        "471524084",
+        "pickup::city-45881-handoff"
+      ]
+    },
+    {
+      "from": "city-35321-handoff",
+      "to": "osm-facility-509799015-handoff",
+      "distance_m": 137.69348702177328,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-35321-handoff",
+        "613056086",
+        "visual::gadolin-west-1",
+        "visual::gadolin-west-2",
+        "visual::gadolin-west-3",
+        "visual::gadolin-west-4",
+        "visual::gadolin-west-5",
+        "visual::gadolin-west-6",
+        "visual::central-garden-junction",
+        "visual::hoas-garden-1",
+        "visual::hoas-garden-2",
+        "visual::hoas-garden-3",
+        "visual::hoas-garden-4",
+        "visual::hoas-garden-5",
+        "pickup::osm-facility-509799015-handoff"
+      ]
+    },
+    {
+      "from": "city-35635-handoff",
+      "to": "city-36104-handoff",
+      "distance_m": 79.50930574261793,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-35635-handoff",
+        "1306580081",
+        "1306580226",
+        "773584822",
+        "pickup::city-36104-handoff"
+      ]
+    },
+    {
+      "from": "city-35635-handoff",
+      "to": "city-38289-handoff",
+      "distance_m": 62.76870355218132,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-35635-handoff",
+        "1306580081",
+        "pickup::city-38289-handoff"
+      ]
+    },
+    {
+      "from": "city-35635-handoff",
+      "to": "city-45881-handoff",
+      "distance_m": 179.66060903787405,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-35635-handoff",
+        "34729090",
+        "773584820",
+        "466974992",
+        "1306580229",
+        "34729089",
+        "12205320845",
+        "420485898",
+        "613056087",
+        "7141131046",
+        "34729295",
+        "471524084",
+        "pickup::city-45881-handoff"
+      ]
+    },
+    {
+      "from": "city-36104-handoff",
+      "to": "city-38289-handoff",
+      "distance_m": 43.613632224537405,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-36104-handoff",
+        "773584822",
+        "1306580226",
+        "pickup::city-38289-handoff"
+      ]
+    },
+    {
+      "from": "city-36104-handoff",
+      "to": "osm-facility-17123583-handoff",
+      "distance_m": 95.25310232823607,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-36104-handoff",
+        "1413054156",
+        "773584823",
+        "364552622",
+        "11755712774",
+        "2522166211",
+        "pickup::osm-facility-17123583-handoff"
+      ]
+    },
+    {
+      "from": "city-36723-handoff",
+      "to": "dynamicum-delivery-zone",
+      "distance_m": 116.89650542381256,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-36723-handoff",
+        "613062358",
+        "613062361",
+        "613062362",
+        "2537914927",
+        "9192945897",
+        "14201499525",
+        "466975026",
+        "772801263",
+        "pickup::dynamicum-delivery-zone"
+      ]
+    },
+    {
+      "from": "city-36723-handoff",
+      "to": "exactum-delivery-zone",
+      "distance_m": 74.44031014412987,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-36723-handoff",
+        "613062358",
+        "613062361",
+        "613062362",
+        "2537914927",
+        "9192945897",
+        "14201499525",
+        "466975026",
+        "772801263",
+        "pickup::exactum-delivery-zone"
+      ]
+    },
+    {
+      "from": "city-42870-handoff",
+      "to": "city-43058-handoff",
+      "distance_m": 20.316734839385283,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-42870-handoff",
+        "465806884",
+        "pickup::city-43058-handoff"
+      ]
+    },
+    {
+      "from": "city-42870-handoff",
+      "to": "city-45774-handoff",
+      "distance_m": 133.9161161159763,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-42870-handoff",
+        "2741640672",
+        "465806915",
+        "5569585567",
+        "585140641",
+        "5569585564",
+        "5569585563",
+        "5569585562",
+        "5569585551",
+        "pickup::city-45774-handoff"
+      ]
+    },
+    {
+      "from": "city-42870-handoff",
+      "to": "city-45881-handoff",
+      "distance_m": 50.161888893259196,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-42870-handoff",
+        "465806884",
+        "2741640669",
+        "2741640668",
+        "465806877",
+        "pickup::city-45881-handoff"
+      ]
+    },
+    {
+      "from": "city-42870-handoff",
+      "to": "city-45907-handoff",
+      "distance_m": 142.8829193903128,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-42870-handoff",
+        "2741640672",
+        "465806915",
+        "5569585567",
+        "585140641",
+        "5569585564",
+        "5569585563",
+        "5569585560",
+        "pickup::city-45907-handoff"
+      ]
+    },
+    {
+      "from": "city-43058-handoff",
+      "to": "city-45881-handoff",
+      "distance_m": 41.886816073233724,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-43058-handoff",
+        "2741640669",
+        "2741640668",
+        "465806877",
+        "pickup::city-45881-handoff"
+      ]
+    },
+    {
+      "from": "city-45774-handoff",
+      "to": "city-45907-handoff",
+      "distance_m": 40.08475862041175,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-45774-handoff",
+        "5569585551",
+        "5569585562",
+        "5569585563",
+        "5569585560",
+        "pickup::city-45907-handoff"
+      ]
+    },
+    {
+      "from": "city-45881-handoff",
+      "to": "osm-facility-509799015-handoff",
+      "distance_m": 131.85784053994186,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-45881-handoff",
+        "471524084",
+        "visual::gadolin-east-1",
+        "visual::gadolin-east-2",
+        "visual::gadolin-east-3",
+        "visual::gadolin-east-4",
+        "visual::central-garden-junction",
+        "visual::hoas-garden-1",
+        "visual::hoas-garden-2",
+        "visual::hoas-garden-3",
+        "visual::hoas-garden-4",
+        "visual::hoas-garden-5",
+        "pickup::osm-facility-509799015-handoff"
+      ]
+    },
+    {
+      "from": "city-50834-handoff",
+      "to": "city-61860-handoff",
+      "distance_m": 92.04531291529833,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-50834-handoff",
+        "2537696609",
+        "pickup::city-61860-handoff"
+      ]
+    },
+    {
+      "from": "city-50834-handoff",
+      "to": "osm-facility-17123583-handoff",
+      "distance_m": 311.0506477590484,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-50834-handoff",
+        "2537696609",
+        "939075547",
+        "364921850",
+        "33981647",
+        "353019342",
+        "10128355978",
+        "364921006",
+        "349926329",
+        "359123685",
+        "2537696601",
+        "2522166221",
+        "359116656",
+        "34728597",
+        "359116660",
+        "6553340850",
+        "39455138",
+        "6553340849",
+        "478508678",
+        "478508679",
+        "6553340851",
+        "564742904",
+        "39455143",
+        "478508677",
+        "pickup::osm-facility-17123583-handoff"
+      ]
+    },
+    {
+      "from": "city-61860-handoff",
+      "to": "osm-facility-17123583-handoff",
+      "distance_m": 289.42543671187866,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-61860-handoff",
+        "2537696609",
+        "939075547",
+        "364921850",
+        "33981647",
+        "353019342",
+        "10128355978",
+        "364921006",
+        "349926329",
+        "359123685",
+        "2537696601",
+        "2522166221",
+        "359116656",
+        "34728597",
+        "359116660",
+        "6553340850",
+        "39455138",
+        "6553340849",
+        "478508678",
+        "478508679",
+        "6553340851",
+        "564742904",
+        "39455143",
+        "478508677",
+        "pickup::osm-facility-17123583-handoff"
+      ]
+    },
+    {
+      "from": "city-7772-handoff",
+      "to": "city-79952-handoff",
+      "distance_m": 161.92096104541199,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-7772-handoff",
+        "2537914858",
+        "2537914862",
+        "581932604",
+        "2537914871",
+        "2537914877",
+        "703895974",
+        "2537914882",
+        "479803066",
+        "34729879",
+        "6697263992",
+        "466975028",
+        "pickup::city-79952-handoff"
+      ]
+    },
+    {
+      "from": "city-7772-handoff",
+      "to": "dynamicum-delivery-zone",
+      "distance_m": 176.2682777327091,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-7772-handoff",
+        "2537914858",
+        "2537914862",
+        "581932604",
+        "2537914871",
+        "2537914877",
+        "703895974",
+        "2537914882",
+        "479803066",
+        "34729879",
+        "6697263992",
+        "466975028",
+        "772801261",
+        "pickup::dynamicum-delivery-zone"
+      ]
+    },
+    {
+      "from": "city-79951-handoff",
+      "to": "city-79952-handoff",
+      "distance_m": 96.47518789264586,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-79951-handoff",
+        "466975059",
+        "2537914880",
+        "2537914878",
+        "34729878",
+        "2537914879",
+        "466975058",
+        "772801265",
+        "772801259",
+        "34729879",
+        "6697263992",
+        "466975028",
+        "pickup::city-79952-handoff"
+      ]
+    },
+    {
+      "from": "city-79951-handoff",
+      "to": "city-8038-handoff",
+      "distance_m": 144.98159140481062,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-79951-handoff",
+        "466975045",
+        "566174822",
+        "2537914888",
+        "462743782",
+        "6684860320",
+        "6684860315",
+        "pickup::city-8038-handoff"
+      ]
+    },
+    {
+      "from": "city-79951-handoff",
+      "to": "osm-facility-29032068-handoff",
+      "distance_m": 116.71534793112788,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-79951-handoff",
+        "466975059",
+        "2537914880",
+        "2537914878",
+        "34729878",
+        "1306593922",
+        "479803067",
+        "2537914867",
+        "466975033",
+        "2537914864",
+        "465203627",
+        "465203629",
+        "pickup::osm-facility-29032068-handoff"
+      ]
+    },
+    {
+      "from": "city-79952-handoff",
+      "to": "dynamicum-delivery-zone",
+      "distance_m": 27.710681074972214,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-79952-handoff",
+        "772801261",
+        "pickup::dynamicum-delivery-zone"
+      ]
+    },
+    {
+      "from": "city-79952-handoff",
+      "to": "exactum-delivery-zone",
+      "distance_m": 68.03808186308837,
+      "kind": "local",
+      "nodes": [
+        "pickup::city-79952-handoff",
+        "772801261",
+        "pickup::exactum-delivery-zone"
+      ]
+    },
+    {
+      "from": "city-8038-handoff",
+      "to": "physicum-delivery-zone",
+      "distance_m": 135.8806960334254,
+      "kind": "tree",
+      "nodes": [
+        "pickup::city-8038-handoff",
+        "772801260",
+        "947959274",
+        "6697334047",
+        "947959273",
+        "947959271",
+        "444699520",
+        "34729563",
+        "364972517",
+        "pickup::physicum-delivery-zone"
+      ]
+    },
+    {
+      "from": "dynamicum-delivery-zone",
+      "to": "exactum-delivery-zone",
+      "distance_m": 60.52194557947322,
+      "kind": "tree",
+      "nodes": [
+        "pickup::dynamicum-delivery-zone",
+        "772801261",
+        "pickup::exactum-delivery-zone"
+      ]
+    },
+    {
+      "from": "osm-facility-17123583-handoff",
+      "to": "physicum-delivery-zone",
+      "distance_m": 126.776283090413,
+      "kind": "local",
+      "nodes": [
+        "pickup::osm-facility-17123583-handoff",
+        "2522166211",
+        "11755712774",
+        "6697334046",
+        "353713772",
+        "772801266",
+        "pickup::physicum-delivery-zone"
+      ]
+    },
+    {
+      "from": "osm-facility-17123583-handoff",
+      "to": "verified-004",
+      "distance_m": 99.01605406822824,
+      "kind": "tree",
+      "nodes": [
+        "pickup::osm-facility-17123583-handoff",
+        "2522166211",
+        "11755712774",
+        "6697334046",
+        "353713772",
+        "772801266",
+        "pickup::verified-004"
+      ]
+    },
+    {
+      "from": "physicum-delivery-zone",
+      "to": "verified-004",
+      "distance_m": 83.69817849318535,
+      "kind": "tree",
+      "nodes": [
+        "pickup::physicum-delivery-zone",
+        "772801266",
+        "pickup::verified-004"
+      ]
+    }
+  ]
+}

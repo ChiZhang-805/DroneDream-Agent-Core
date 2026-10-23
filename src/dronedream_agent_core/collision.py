@@ -575,6 +575,20 @@ def validate_route_clearance(
     route = GraphRoute.model_validate(route.model_dump(mode="python"), strict=True)
     semantic, semantic_sha256 = _load(semantic_path)
     primitives = planning_collision_primitives(semantic)
+    from .traversability import TraversableAirspace
+    traversability = TraversableAirspace(
+        semantic, primitives, radius_m=vehicle_diameter_m / 2,
+        half_height_m=vehicle_height_m / 2)
+    # The hard operating-volume clearance is capped, so an obstacle farther
+    # than that cap cannot lower any sample's minimum or cause a collision.
+    # Conservative full-rotation bounds preserve the exact report while avoiding
+    # O(samples * every building cell) on detailed campus footprints.
+    bounded_primitives = None
+    if traversability.active:
+        expansion = math.hypot(vehicle_diameter_m / 2, vehicle_height_m / 2)
+        expansion += traversability.cap
+        bounded_primitives = [(primitive, *primitive_bounds(primitive, expansion))
+                              for primitive in primitives]
     route_points = [(point.x, point.y, point.z) for point in route.positions_m]
     segments = list(zip(route_points, route_points[1:], strict=False))
     if not segments:
@@ -598,6 +612,13 @@ def validate_route_clearance(
             f"Checking {len(segments)} continuous segments against {len(primitives)} collision primitives, using a {vehicle_diameter_m:.2f} m wide and {vehicle_height_m:.2f} m high vehicle envelope.\n\nSamples are at most {sample_interval_m:.2f} m apart; half the actual sample spacing is deducted from clearance to conservatively cover gaps between samples. Clear endpoints alone do not establish a clear segment.\n\nEach candidate is checked separately, retaining minimum gaps and potential conflicts. Unchecked segments are not passed. Static map checks do not replace live sensor checks.")
     for segment_index, (start, end) in enumerate(segments):
         samples = _segment_samples(start, end, sample_interval_m)
+        candidates = primitives
+        if bounded_primitives is not None:
+            low = tuple(min(start[i], end[i]) for i in range(3))
+            high = tuple(max(start[i], end[i]) for i in range(3))
+            candidates = [primitive for primitive, minimum, maximum in bounded_primitives
+                          if all(minimum[i] <= high[i] and maximum[i] >= low[i]
+                                 for i in range(3))]
         if (
             sample_count + len(samples) > _MAX_ROUTE_SAMPLES
             or (sample_count + len(samples)) * len(primitives) > 50_000_000
@@ -607,7 +628,22 @@ def validate_route_clearance(
         penalty_m = math.dist(start, end) / (2 * (len(samples) - 1))
         segment_minimum = math.inf
         for point in samples:
-            for primitive in primitives:
+            if traversability.active:
+                area_clearance, area_name = traversability.clearance(point)
+                area_clearance -= penalty_m
+                segment_minimum = min(segment_minimum, area_clearance)
+                if area_clearance < minimum:
+                    minimum, minimum_point = area_clearance, point
+                    minimum_primitive = area_name
+                if area_clearance < -penetration_tolerance_m:
+                    collision_count += 1
+                    if len(collisions) < 100:
+                        collisions.append(RouteCollision(
+                            sample_index=sample_count,
+                            position_m=Vector3(x=point[0], y=point[1], z=point[2]),
+                            primitive_name=area_name,
+                            clearance_m=area_clearance))
+            for primitive in candidates:
                 clearance = (
                     _clearance(
                         point,
