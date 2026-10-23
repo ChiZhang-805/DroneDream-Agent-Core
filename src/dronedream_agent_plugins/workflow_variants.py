@@ -85,8 +85,11 @@ def plugin_definitions() -> list[PluginDefinition]:
                 "max_planning_rounds": 2,
                 "plugin_router_rounds": 1,
                 "maximum_plugin_calls": 4,
-                "intent_reviews_per_round": 1,
-                "plan_reviews_per_round": 1,
+                # Rapid preview keeps the three generative stages, while the
+                # fixed Core validates intent bindings, graph dependencies,
+                # route clearance, track export, and execution evidence.
+                "intent_reviews_per_round": 0,
+                "plan_reviews_per_round": 0,
             },
         ),
         _definition(

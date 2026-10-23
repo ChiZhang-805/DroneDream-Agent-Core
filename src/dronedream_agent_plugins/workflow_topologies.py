@@ -19,7 +19,7 @@ from ._helpers import hook_plugin
 # 输出：
 #   nodes：按依赖关系描述准备流程的节点列表，不是实时飞控执行循环。
 def _core_nodes(*, review_count: int, optional_advisors: bool) -> list[HarnessNodeSpec]:
-    if type(review_count) is not int or not 1 <= review_count <= 3:
+    if type(review_count) is not int or not 0 <= review_count <= 3:
         raise ValueError("WORKFLOW_REVIEW_COUNT_INVALID")
     if type(optional_advisors) is not bool:
         raise ValueError("WORKFLOW_ADVISOR_POLICY_INVALID")
@@ -66,13 +66,14 @@ def _core_nodes(*, review_count: int, optional_advisors: bool) -> list[HarnessNo
                 retry_limit=1,
             )
         )
+    intent_consensus_dependencies = reviews or ["mission.intent-parse"]
     nodes.extend(
         [
             HarnessNodeSpec(
                 node_id="mission.intent-consensus",
                 node_kind="barrier",
                 handler_id="core.intent-consensus",
-                depends_on=reviews,
+                depends_on=intent_consensus_dependencies,
                 output_key="accepted_intent",
             ),
             HarnessNodeSpec(
@@ -295,7 +296,7 @@ def official_topology_templates() -> dict[str, HarnessTopology]:
         HarnessTopology(
             topology_id="topology.rapid-safe",
             name="Rapid safe closed loop",
-            nodes=_core_nodes(review_count=1, optional_advisors=False),
+            nodes=_core_nodes(review_count=0, optional_advisors=False),
             maximum_parallelism=3,
             metadata={"review_strategy": "latency-bounded"},
         ),

@@ -524,8 +524,8 @@ class PreparationConfig:
             "max_planning_rounds": (1, 5),
             "plugin_router_rounds": (1, 5),
             "maximum_plugin_calls": (0, 16),
-            "intent_reviews_per_round": (1, 3),
-            "plan_reviews_per_round": (1, 3),
+            "intent_reviews_per_round": (0, 3),
+            "plan_reviews_per_round": (0, 3),
             "maximum_model_calls": (8, 48),
             "maximum_optional_tool_calls": (0, 64),
         }
@@ -3700,7 +3700,10 @@ class MissionOrchestrator:
                     )
                 intent_reviews.append(normalized_review)
             intent_critique = IntentCritique(
-                accepted=all(review.accepted for review in intent_reviews),
+                accepted=(
+                    all(review.accepted for review in intent_reviews)
+                    if intent_reviews else True
+                ),
                 issue_codes=list(
                     dict.fromkeys(code for review in intent_reviews for code in review.issue_codes)
                 )[:16],
@@ -4848,7 +4851,10 @@ class MissionOrchestrator:
                     )
                 plan_reviews.append(normalized_review)
             plan_critique = PlanCritique(
-                accepted=all(review.accepted for review in plan_reviews),
+                accepted=(
+                    all(review.accepted for review in plan_reviews)
+                    if plan_reviews else True
+                ),
                 issue_codes=list(
                     dict.fromkeys(code for review in plan_reviews for code in review.issue_codes)
                 )[:32],
