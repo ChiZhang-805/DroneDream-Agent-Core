@@ -783,8 +783,35 @@ def _intent_action_catalog_view(catalog: DomainActionCatalog) -> dict[str, objec
 #   catalog：与当前语义文件绑定的地图目录。
 # 输出：
 #   view：不包含坐标生成权的实体视图。
-def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
+def _intent_map_catalog_view(
+    catalog: MapCatalog,
+    *,
+    request_message: str | None = None,
+) -> dict[str, object]:
     """Expose entity identity for intent binding without irrelevant route geometry."""
+
+    normalized_request = (request_message or "").casefold()
+
+    def compact_aliases(entity_id: str, aliases: list[str]) -> list[str]:
+        # The entity id remains authoritative. Keep a small, deterministic alias
+        # window plus every alias explicitly present in the current request so a
+        # large campus catalog cannot crowd the user's actual destination out of
+        # the model call.
+        mentioned = [alias for alias in aliases if alias.casefold() in normalized_request]
+        return list(dict.fromkeys([*mentioned, *aliases[:4], entity_id]))[:8]
+
+    mentioned_planar_landmarks = [
+        landmark
+        for landmark in catalog.planar_landmarks
+        if request_message is None
+        or (
+            normalized_request
+            and any(
+                name.casefold() in normalized_request
+                for name in (landmark.entity_id, *landmark.aliases)
+            )
+        )
+    ][:16]
 
     view = {
         "schema_version": catalog.schema_version,
@@ -796,13 +823,20 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
         "entity_count": len(catalog.entities),
         "road_segment_count": len(catalog.road_segment_ids),
         # 二维地标仅提供语义环境；可用于动作绑定的实体仍必须来自下方三维 entities。
+        "non_actionable_planar_landmark_count": len(catalog.planar_landmarks),
         "non_actionable_planar_landmarks": [
-            landmark.model_dump(mode="json") for landmark in catalog.planar_landmarks
+            {
+                "entity_id": landmark.entity_id,
+                "aliases": compact_aliases(landmark.entity_id, landmark.aliases),
+                "semantic": landmark.semantic,
+                "flight_target_available": False,
+            }
+            for landmark in mentioned_planar_landmarks
         ],
         "entities": [
             {
                 "entity_id": entity.entity_id,
-                "aliases": list(entity.aliases),
+                "aliases": compact_aliases(entity.entity_id, entity.aliases),
                 "semantic": entity.semantic,
             }
             for entity in catalog.entities
@@ -3559,7 +3593,10 @@ class MissionOrchestrator:
         model_calls: list[ModelCallRecord] = []
         tool_receipts: list[ToolReceipt] = []
         intent_action_catalog = _intent_action_catalog_view(domain_actions)
-        intent_map_catalog = _intent_map_catalog_view(self.map_catalog)
+        intent_map_catalog = _intent_map_catalog_view(
+            self.map_catalog,
+            request_message=request.message,
+        )
         intent_workflow_scope = _intent_workflow_scope()
         decomposition_action_catalog = _decomposition_action_catalog_view(domain_actions)
         runtime_action_availability = {
