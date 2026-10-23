@@ -744,6 +744,11 @@ class StructuredModelPort:
                 ),
                 multimodal,
             ),
+            # Structured control-plane artifacts are bounded by their schemas.  Keep
+            # the provider allowance finite so the gateway does not reserve the
+            # model's entire output window for a response that is normally only a
+            # few hundred tokens.
+            "max_output_tokens": 4_096,
         }
         if previous_response_id:
             request["previous_response_id"] = previous_response_id
@@ -816,6 +821,7 @@ class StructuredModelPort:
                 },
             ],
             "response_format": {"type": "json_object"},
+            "max_tokens": 4_096,
         }
         if self.settings.name == "kimi" and self.settings.model == "kimi-k2.6":
             # K2.6 enables thinking by default.  A bounded control-plane call needs the
