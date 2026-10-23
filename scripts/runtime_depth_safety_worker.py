@@ -2880,6 +2880,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             route=qualified_route,
             clearance=qualified_clearance,
         )
+    # The fixed map/route graph lives for this worker's entire run. Retain it
+    # before creating live sources so full GC does not repeatedly scan hundreds
+    # of thousands of static voxels. Later sensor objects remain collectible;
+    # ExitStack stops their owners before releasing this baseline on every exit.
+    cleanup.enter_context(retained_interpreter_baseline())
     mount = oakd_lite_depth_sensor_contract()
     sensor_registry = RuntimeSensorRegistry()
     depth_binding = DepthSensorBinding(sensor_registry, vehicle_id=vehicle.asset_id)
@@ -3508,11 +3513,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         prioritize_ready_control = prioritize_ready_control or prioritize_teacher_state
         with lock:
             arrival_sample = latest_image[1] if latest_image is not None else None
+        source_image_revision = native_state_sampler.buffer.source_image_revision
         sensor_arrival_due = bool(local_input_wake_enabled
             and not (local_pending and dispatch_budget_ready)
             and sensor_arrival_scheduler.eligible(
                 now_monotonic=now, sample_monotonic=arrival_sample,
-                processed_sample_monotonic=last_image_received_at, fault_active=fault_active))
+                processed_sample_monotonic=last_image_received_at, fault_active=fault_active,
+                source_revision=source_image_revision))
         if now >= next_tick and not prioritize_ready_control and (
             ready_control_scheduler.await_pending_result(
                 now_monotonic=now, depth_sequence=sequence, continuous_pending=local_pending,
@@ -3546,8 +3553,6 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         handoff_wait_started = None
         if not prioritize_ready_control:
             next_tick = now + 1.0 / args.rate_hz
-            if sensor_arrival_due:
-                sensor_arrival_scheduler.record_attempt(now_monotonic=now)
         else:
             ready_control_scheduler.consume(sequence)
         cycle_timing = PhaseTimings(cpu_clock_ns=time.thread_time_ns)
@@ -3588,7 +3593,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         if new_depth_frame and not fault_active:
             # Normal timer ticks and early arrival ticks share the same input
             # rate bound. A maintenance-only pass cannot postpone fresh input.
-            sensor_arrival_scheduler.record_attempt(now_monotonic=now)
+            sensor_arrival_scheduler.record_source_selection(now_monotonic=now,
+                source_revision=source_image_revision, paired=True)
+        elif sensor_arrival_due:
+            sensor_arrival_scheduler.record_source_selection(now_monotonic=now,
+                source_revision=source_image_revision, paired=False)
         stale_tick = fault_active or not new_depth_frame
         depth_input_timing = None
         if new_depth_frame and not fault_active:
@@ -5196,7 +5205,6 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
 
 
 if __name__ == "__main__":
-    # This is an exec-created process. Retain only imported startup objects;
-    # all sensor/runtime objects are created inside main and remain collectible.
-    with retained_interpreter_baseline(), sensor_worker_gc_budget():
+    # Baseline retention begins after static map preparation, before live input.
+    with sensor_worker_gc_budget():
         raise SystemExit(main())

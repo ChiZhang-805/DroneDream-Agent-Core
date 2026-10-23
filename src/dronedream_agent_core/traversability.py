@@ -9,7 +9,7 @@ segment proofs and sampled clearance validation use exactly the same policy.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
@@ -218,9 +218,21 @@ class TraversableAirspace:
                     for y in range(first[1], last[1] + 1):
                         index[x, y].append(feature)
 
+    @cached_property
+    def _exact_clearances(self) -> OrderedDict:
+        # The authored geometry is fixed in this instance. These are exact
+        # coordinate/envelope queries only, never observed occupancy or a
+        # motion permission. New map bindings create a separate instance.
+        return OrderedDict()
+
     def clearance(self, point: Point) -> tuple[float, str]:
         if not self.active:
             return math.inf, ""
+        query = (tuple(point), self.radius_m, self.half_height_m, self.cap)
+        cache = self._exact_clearances
+        result = cache.get(query)
+        if result is not None:
+            return result
         key = tuple(math.floor(v / self._BIN_M) for v in point[:2])
         permitted = -self.cap
         for feature in self._areas_by_bin.get(key, ()):
@@ -240,7 +252,11 @@ class TraversableAirspace:
             distance = -feature.inside_distance(point[:2]) - self.radius_m
             if distance < clearance:
                 clearance, reason = distance, f"traversability:{feature.identifier}"
-        return clearance, reason
+        result = clearance, reason
+        if len(cache) >= 4096:
+            cache.popitem(last=False)
+        cache[query] = result
+        return result
 
     def path_clearance(self, points: list[Point], *, sample_interval_m: float = .1
                        ) -> tuple[float, str]:

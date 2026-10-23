@@ -1456,6 +1456,23 @@ class MetricVoxelMap:
     #   allow_first_position_as_start：首点豁免。
     # 输出：
     #   valid：整条折线是否满足保守连续碰撞检查。
+    def _swept_key_bounds(self, first: Point, second: Point, half_width: float):
+        """Only voxel boxes intersecting this segment's AABB can block it.
+
+        This is an outward-rounded enumeration bound, not a collision result;
+        every nonfree candidate still receives the complete segment/box test.
+        """
+        low, high = [], []
+        for axis in range(3):
+            lower = ((min(first[axis], second[axis]) - half_width - self._minimum[axis])
+                     / self.resolution_m - .5)
+            upper = ((max(first[axis], second[axis]) + half_width - self._minimum[axis])
+                     / self.resolution_m - .5)
+            rounding = 1e-9 + 16 * math.ulp(max(abs(lower), abs(upper), 1.))
+            low.append(math.ceil(lower - rounding))
+            high.append(math.floor(upper + rounding))
+        return low, high
+
     def path_clearance_valid(
         self,
         path_m: Iterable[Vector3],
@@ -1478,6 +1495,10 @@ class MetricVoxelMap:
         radius = math.ceil(required_clearance_m / self.resolution_m) + 1
         neighborhood = (2 * radius + 1) ** 3
         work = 0
+        # Evidence cannot change during this synchronous, single-writer query.
+        # Reuse only free-cell classifications across its adjacent segments;
+        # a blocked cell must still be intersected against each new segment.
+        clear_keys: set[VoxelKey] = set()
         segments = list(zip(points, points[1:], strict=False)) or [(points[0], points[0])]
         for segment_index, (start, end) in enumerate(segments):
             first = _point(start)
@@ -1491,6 +1512,8 @@ class MetricVoxelMap:
             work += (count + 1) * neighborhood
             if work > _MAX_GRID_WORK:
                 raise ValueError("METRIC_PATH_WORK_BUDGET_EXCEEDED")
+            low, high = self._swept_key_bounds(
+                first, second, self.resolution_m / 2. + required_clearance_m)
             checked: set[VoxelKey] = set()
             for index in range(count + 1):
                 if allow_first_position_as_start and segment_index == 0 and index == 0:
@@ -1503,9 +1526,10 @@ class MetricVoxelMap:
                 # 半体素采样只用于枚举邻近盒；最终检查完整线段而不是采样点。
                 # 净空按各轴扩张，盒角处略保守，绝不把拐角当成可穿过的缝隙。
                 for candidate in product(
-                    *(range(key[i] - radius, key[i] + radius + 1) for i in range(3))
+                    *(range(max(key[i] - radius, low[i]), min(key[i] + radius, high[i]) + 1)
+                      for i in range(3))
                 ):
-                    if candidate in checked:
+                    if candidate in clear_keys or candidate in checked:
                         continue
                     checked.add(candidate)
                     if (
@@ -1513,6 +1537,7 @@ class MetricVoxelMap:
                         and not self.is_occupied(candidate)
                         and (not self.unknown_is_occupied or self.is_observed_free(candidate))
                     ):
+                        clear_keys.add(candidate)
                         continue
                     if _segment_hits_box(
                         first,
@@ -1540,6 +1565,7 @@ class MetricVoxelMap:
             return False
         work = 0
         reach = math.ceil(extra_clearance_m / self.resolution_m) + 1
+        clear_keys: set[VoxelKey] = set()
         segments = list(zip(points, points[1:], strict=False)) or [(points[0], points[0])]
         for start, end in segments:
             first, second = _point(start), _point(end)
@@ -1552,18 +1578,23 @@ class MetricVoxelMap:
             work += (count + 1) * (2 * reach + 1)**3
             if work > _MAX_GRID_WORK:
                 raise ValueError("METRIC_COVERAGE_WORK_BUDGET_EXCEEDED")
+            low, high = self._swept_key_bounds(
+                first, second, self.resolution_m / 2. + extra_clearance_m)
             checked = set()
             for index in range(count + 1):
                 key = self.key_for(tuple(first[a] + (second[a] - first[a]) * index / count
                                          for a in range(3)))
-                for candidate in product(*(range(k - reach, k + reach + 1) for k in key)):
-                    if candidate in checked:
+                for candidate in product(*(
+                    range(max(key[i] - reach, low[i]), min(key[i] + reach, high[i]) + 1)
+                    for i in range(3))):
+                    if candidate in clear_keys or candidate in checked:
                         continue
                     checked.add(candidate)
                     if (candidate in self._known_static_free_keys
                             and candidate not in self._invalidated_static_free_keys
                             and self.is_observed_free(candidate)
                             and not self.is_occupied(candidate)):
+                        clear_keys.add(candidate)
                         continue
                     if _segment_hits_box(first, second, self._center_point_for_key(candidate),
                                          self.resolution_m / 2 + extra_clearance_m):

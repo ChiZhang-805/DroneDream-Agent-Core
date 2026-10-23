@@ -98,3 +98,37 @@ def test_bounds_are_lazy_for_preexisting_pickled_feature_instances():
     restored = pickle.loads(pickle.dumps(feature))
     assert restored.bounds() == ((0., 0.), (2., 2.))
     assert restored.inside_distance_upper_bound((1., 1.)) >= restored.inside_distance((1., 1.))
+
+
+def test_exact_clearance_reuse_does_not_quantize_coordinates_or_share_envelopes(monkeypatch):
+    airspace = _airspace(0., 0.)
+    original = _Feature.inside_distance
+    calls = []
+
+    def distance(feature, point):
+        calls.append((feature.identifier, point))
+        return original(feature, point)
+
+    monkeypatch.setattr(_Feature, "inside_distance", distance)
+    outside, inside = (-2.999999, 0., 2.), (-3.000001, 0., 2.)
+    result = airspace.clearance(outside)
+    count = len(calls)
+    for _ in range(30):
+        assert airspace.clearance(outside) == result
+    assert len(calls) == count
+    assert airspace.clearance(inside)[0] < 0. < result[0]
+    airspace.radius_m = .5
+    assert airspace.clearance(outside) == _unpruned(airspace, outside)
+    other = _airspace(0., 0.)
+    assert not other._exact_clearances
+    assert other.clearance(outside) == result
+
+
+def test_exact_clearance_reuse_is_bounded_and_eviction_does_not_change_results():
+    airspace = _airspace()
+    points = [(index / 1000., -8., 3.) for index in range(4100)]
+    for point in points:
+        assert airspace.clearance(point) == _unpruned(airspace, point)
+    assert len(airspace._exact_clearances) == 4096
+    assert airspace.clearance(points[0]) == _unpruned(airspace, points[0])
+    assert len(airspace._exact_clearances) == 4096

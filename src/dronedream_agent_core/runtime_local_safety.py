@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .collision import assess_tracking_corridor_budget
+from .collision import assess_tracking_corridor_budget, minimum_vehicle_clearances
 from .contracts import (
     BodyFrameControlIntent,
     ControlObservationBudget,
@@ -16,7 +16,10 @@ from .contracts import (
     Vector3,
     VehicleAsset,
 )
-from .control_timing import LOCAL_DISPATCH_RESERVE_MS
+from .control_timing import (
+    LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 from .control_uncertainty import localization_uncertainty_margin_m
 from .dynamic_safety import predictive_braking_decision, predictive_safety_decision
 from .hashing import sha256_json
@@ -506,10 +509,49 @@ def evaluate_runtime_local_safety(
                 issues = [*issues, "TRAVERSABLE_AIRSPACE_BOUNDARY"]
         return issues
 
+    # Every ordinary candidate shares this absolute upper bound, regardless
+    # of its speed or clearance. Searching another hundred paths cannot recover
+    # time that has already expired and only delays the next camera frame.
+    common_deadline_ms = min(
+        source_ms + math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000),
+        inherited_deadline,
+    )
+    common_budget_exhausted = (
+        source_ms >= 0
+        and generated_at_unix_ms + LOCAL_DISPATCH_RESERVE_MS >= common_deadline_ms
+    )
+    if (common_budget_exhausted and measured_speed_mps <= 0.25
+            and observation.stream_healthy
+            and observation.stream_age_seconds <= request.maximum_perception_age_seconds
+            and not observation.dynamic_obstacles):
+        # Preserve the existing separately bounded static-egress proof: a
+        # slow aircraft inside a conservative obstacle may still need it.
+        # An open-space route has no such exception to the source deadline.
+        origin = tuple(getattr(observation.current_position_m, axis) for axis in "xyz")
+        origin_clearance = minimum_vehicle_clearances(
+            [origin], static_primitives, radius_m=request.vehicle_radius_m,
+            half_height_m=request.vehicle_height_m / 2,
+        )[0][0]
+        common_budget_exhausted = origin_clearance >= required_clearance_m
+    common_budget_reason = (
+        "source-deadline-exhausted" if generated_at_unix_ms >= common_deadline_ms
+        else "processing-or-response-budget-exhausted"
+    )
+
     # The map's permitted ground volumes remain mandatory even when live depth
     # sees empty space above a roof or the local model proposes a shortcut.
     # 已知负载资格不满足时无需枚举几十个必败候选，直接走同一条保留惯性证据的制动路径。
-    if motion_guard is None:
+    if common_budget_exhausted:
+        decision = predictive_braking_decision(
+            request, static_primitives,
+            issue_codes=[
+                "OBSERVATION_CONTROL_BUDGET_EXHAUSTED",
+                "OBSERVATION_" + common_budget_reason.upper().replace("-", "_"),
+                "CANDIDATE_TIME_BUDGET_EXHAUSTED",
+                *(motion_guard.issues if motion_guard is not None else []),
+            ],
+        )
+    elif motion_guard is None:
         decision = predictive_safety_decision(
             request,
             static_primitives,
@@ -537,7 +579,17 @@ def evaluate_runtime_local_safety(
                                                   "threat_obstacle_id": name})
     adaptive_deadline_ms = None
     observation_budget = None
-    if (decision.action == "hold" and first_rejected_budget is not None
+    if common_budget_exhausted:
+        observation_budget = ControlObservationBudget(
+            source_observed_at_unix_ms=source_ms,
+            control_deadline_unix_ms=common_deadline_ms,
+            disposition="context-only", reason=common_budget_reason,
+            clearance_margin_m=max(
+                0., decision.minimum_predicted_clearance_m - required_clearance_m),
+            uncertainty_margin_m=uncertainty_margin_m,
+            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+        )
+    elif (decision.action == "hold" and first_rejected_budget is not None
             and "CANDIDATE_TIME_BUDGET_EXHAUSTED" in decision.issue_codes):
         # 这是被拒运动的预算，不是给紧急制动重新授予运动资格。
         # 保留原刹停预测、候选数和其他拒绝原因，不能用另一次预测覆盖证据。

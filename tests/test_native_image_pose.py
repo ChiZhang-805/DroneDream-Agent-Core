@@ -53,6 +53,17 @@ def buffer():
     return result
 
 
+def test_source_revision_advances_only_for_independent_odometry():
+    state = NativeImagePoseBuffer(clock_domain="same-run")
+    assert state.revision == 0
+    state.ingest(payload(), available_at_monotonic=10.01)
+    assert state.revision == 1
+    state.ingest(payload(), available_at_monotonic=10.02)
+    assert state.revision == 1
+    state.ingest(payload(1_020_000, 10.02, 1020), available_at_monotonic=10.03)
+    assert state.revision == 2
+
+
 # 功能：用延迟到达的图像进行配对，不将接收时间当作曝光时间。
 # 输入：state：缓存；changes：待验证的边界参数。
 # 输出：对齐结果，或者明确的拒绝。

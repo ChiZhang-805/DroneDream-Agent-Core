@@ -114,6 +114,46 @@ def test_failed_alignment_attempt_is_bounded_but_can_retry_without_redating():
     assert not scheduler.eligible(**{**original, "now_monotonic": 1.301})
 
 
+def test_new_odometry_unblocks_pairing_without_spending_a_second_input_period():
+    scheduler = SensorArrivalScheduler(rate_hz=40.)
+    incoming = hint(source_revision=10)
+    assert scheduler.eligible(**incoming)
+    scheduler.record_source_selection(now_monotonic=1.02, source_revision=10, paired=False)
+    assert not scheduler.eligible(**{**incoming, "now_monotonic": 1.022})
+    # The needed upper source bracket arrives 4 ms later, not at the 25 ms retry timer.
+    ready = {**incoming, "now_monotonic": 1.024, "source_revision": 11}
+    assert scheduler.eligible(**ready)
+    scheduler.record_source_selection(now_monotonic=1.024, source_revision=11, paired=True)
+    assert not scheduler.eligible(**{**ready, "now_monotonic": 1.025,
+                                    "source_revision": 12, "sample_monotonic": .96})
+    assert not scheduler.eligible(**{**ready, "now_monotonic": 1.05,
+                                    "processed_sample_monotonic": .95})
+    assert not scheduler.eligible(**{**ready, "now_monotonic": 1.301})
+
+
+def test_alignment_retry_requires_source_advance_and_preserves_processing_rate():
+    scheduler = SensorArrivalScheduler(rate_hz=40.)
+    scheduler.record_source_selection(now_monotonic=1., source_revision=1, paired=True)
+    scheduler.record_source_selection(now_monotonic=1.01, source_revision=2, paired=False)
+    incoming = {**hint(source_revision=3), "now_monotonic": 1.02}
+    assert not scheduler.eligible(**incoming)  # Previous actual processing was only 20 ms ago.
+    assert scheduler.eligible(**{**incoming, "now_monotonic": 1.026})
+    scheduler.record_source_selection(now_monotonic=1.026, source_revision=3, paired=False)
+    for revision in (None, 2, 3, True):
+        assert not scheduler.eligible(**{**incoming, "now_monotonic": 1.027,
+                                        "source_revision": revision})
+    assert scheduler.eligible(**{**incoming, "now_monotonic": 1.028, "source_revision": 4})
+    assert not scheduler.eligible(**{**incoming, "now_monotonic": 1.028,
+                                    "source_revision": 4, "fault_active": True})
+
+
+@pytest.mark.parametrize("revision", [-1, True, 1.5])
+def test_bad_alignment_revision_cannot_reset_attempt_budget(revision):
+    scheduler = SensorArrivalScheduler(rate_hz=40.)
+    with pytest.raises(ValueError, match="SENSOR_ARRIVAL_SOURCE_INVALID"):
+        scheduler.record_source_selection(now_monotonic=1., source_revision=revision, paired=False)
+
+
 # 功能：
 #   零、负数、布尔或非有限频率不能建立输入调度器。
 # 输入：
