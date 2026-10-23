@@ -456,6 +456,7 @@ def create_app(
             "threads": store.list_threads(),
             "asset_import_jobs": store.list_asset_import_jobs(),
             "asset_versions": store.list_asset_versions(),
+            "bundled_asset_migrations": asset_import_service.bundled_asset_migrations(),
             "asset_qualification_jobs": store.list_asset_pair_qualification_jobs(),
             "asset_source_adapters": plugin_manager.source_adapter_catalog(),
             "plugins": plugin_manager.list_plugins(),

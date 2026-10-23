@@ -27,6 +27,7 @@ Point = tuple[float, float, float]
 CONSERVATIVE_VEHICLE_ENVELOPE_SCALE = 1.2
 PREFERRED_TRANSIT_CLEARANCE_M = 0.35
 _MAX_ROUTE_SAMPLES = 250_000
+_MAX_ROUTE_COLLISION_WORK = 50_000_000
 
 
 # 功能：按共享预算反求足够的搜索净空，保守预留最大本地余量，避免搜索与验收使用两套假设。
@@ -594,6 +595,7 @@ def validate_route_clearance(
     if not segments:
         segments = [(route_points[0], route_points[0])]
     sample_count = 0
+    collision_work = 0
     minimum = math.inf
     minimum_point = route_points[0]
     minimum_primitive = ""
@@ -612,17 +614,25 @@ def validate_route_clearance(
             f"Checking {len(segments)} continuous segments against {len(primitives)} collision primitives, using a {vehicle_diameter_m:.2f} m wide and {vehicle_height_m:.2f} m high vehicle envelope.\n\nSamples are at most {sample_interval_m:.2f} m apart; half the actual sample spacing is deducted from clearance to conservatively cover gaps between samples. Clear endpoints alone do not establish a clear segment.\n\nEach candidate is checked separately, retaining minimum gaps and potential conflicts. Unchecked segments are not passed. Static map checks do not replace live sensor checks.")
     for segment_index, (start, end) in enumerate(segments):
         samples = _segment_samples(start, end, sample_interval_m)
+        if sample_count + len(samples) > _MAX_ROUTE_SAMPLES:
+            raise ValueError("route collision query budget exceeded")
         candidates = primitives
         if bounded_primitives is not None:
+            # Bound the broad phase too: many short segments must not turn
+            # distant geometry into an unbounded bounds-scan workload.
+            collision_work += len(bounded_primitives)
+            if collision_work > _MAX_ROUTE_COLLISION_WORK:
+                raise ValueError("route collision query budget exceeded")
             low = tuple(min(start[i], end[i]) for i in range(3))
             high = tuple(max(start[i], end[i]) for i in range(3))
             candidates = [primitive for primitive, minimum, maximum in bounded_primitives
                           if all(minimum[i] <= high[i] and maximum[i] >= low[i]
                                  for i in range(3))]
-        if (
-            sample_count + len(samples) > _MAX_ROUTE_SAMPLES
-            or (sample_count + len(samples)) * len(primitives) > 50_000_000
-        ):
+        # Charge only the exact queries that will run after the conservative
+        # broad phase. Distant building cells do not multiply every sample.
+        # The original finite work ceiling still applies across all segments.
+        collision_work += len(samples) * len(candidates)
+        if collision_work > _MAX_ROUTE_COLLISION_WORK:
             raise ValueError("route collision query budget exceeded")
         # 有符号保守距离是 1-Lipschitz；任意段内点到最近端点最多半步距。
         penalty_m = math.dist(start, end) / (2 * (len(samples) - 1))

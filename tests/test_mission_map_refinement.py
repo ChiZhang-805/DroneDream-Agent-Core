@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 from test_traversable_airspace import _graph, _ground
 
-from dronedream_agent_core.contracts import ModelCallRecord, VehicleAsset
+from dronedream_agent_core.contracts import MapEdge, ModelCallRecord, VehicleAsset
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.map_gap_refinement import MapImageSource, MapViewInterpretation
 from dronedream_agent_core.mission_map_refinement import (
@@ -107,6 +107,24 @@ def test_actual_replanning_routes_around_canopy_and_executor_receives_same_snaps
     assert _resolve(inputs, _prepared(result)) == result.semantic_path
 
 
+def test_connected_round_trip_refines_target_before_freezing_execution(inputs):
+    # The old graph is fully connected, but its edge crosses the known tree.
+    connected = inputs["graph"].model_copy(update={"edges": [MapEdge(
+        edge_id="old-over-canopy", from_node="start", to_node="goal", distance_m=6,
+        minimum_clearance_m=2, speed_limit_mps=2, bidirectional=True)]})
+    configured = {**inputs, "graph": connected}
+    vision = FixtureVision()
+    result = prepare_ground_routes(**configured, model_ports=[vision])
+    assert vision.calls[0]["input_artifact"]["focus_node_ids"] == ["goal"]
+    assert result.physical_calls == 1
+    assert len(result.receipt["route_checks"]) == 2
+    for check in result.receipt["route_checks"]:
+        assert check["clearance"]["accepted"]
+        assert any(abs(point["y"]) > 1.2 for point in check["route"]["positions_m"])
+        assert all(point["z"] < 12 for point in check["route"]["positions_m"])
+    assert _resolve(configured, _prepared(result)) == result.semantic_path
+
+
 def test_text_only_provider_retains_pending_observations_without_a_fake_plan(inputs):
     class TextPort:
         supports_image_input = False
@@ -198,6 +216,46 @@ def test_continuation_has_fresh_call_budget_without_recharging_history(inputs):
     assert result.receipt["physical_calls"] == 2
     assert len(result.model_calls) == 2
     assert _resolve(resumed, _prepared(result)) == result.semantic_path
+
+
+def test_old_alternate_only_pending_resumes_original_image_and_binds_executor(inputs):
+    class UncertainVision(FixtureVision):
+        def call(self, **kwargs):
+            response = super().call(**kwargs)
+            response.artifact = response.artifact.model_copy(update={"areas": []})
+            response.record = response.record.model_copy(update={
+                "output_sha256": sha256_json(response.artifact)})
+            return response
+
+    with pytest.raises(MapObservationPending) as caught:
+        prepare_ground_routes(**inputs, model_ports=[UncertainVision()])
+    details = caught.value.details
+    attempted = {record["view_id"] for record in details["observation_records"]
+                 if "view_id" in record}
+    # A persisted receipt from the previous implementation had no primary views left.
+    pending_path = inputs["output_dir"] / "map-refinement/pending.json"
+    pending = json.loads(pending_path.read_bytes())
+    pending["pending_requests"] = [{"reason": "inspect-remaining-occlusion",
+        "focus_node_ids": inputs["focus_nodes"], "bounds_xy_m": [-30, -30, 36, 30],
+        "scale": "alternate"}]
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+    resumed = {**inputs, "output_dir": inputs["output_dir"].parent / "plan-0002",
+               "maximum_model_calls": 1}
+    vision = FixtureVision()
+    result = prepare_ground_routes(**resumed, model_ports=[vision])
+    context = vision.calls[0]["input_artifact"]
+    assert context["view_id"] not in attempted
+    assert context["observation_scale"] != "alternate"
+    assert context["observation_reason"] == "inspect-unseen-registered-image-tile"
+    assert context["source_image_sha256"] == inputs["source_loader"]().image_sha256
+    assert result.physical_calls == 1
+    assert result.receipt["physical_calls"] == details["physical_calls"] + 1
+    assert len(result.model_calls) == result.receipt["physical_calls"]
+    assert _resolve(resumed, _prepared(result)) == result.semantic_path
+    candidate = json.loads(result.semantic_path.read_bytes())
+    original = json.loads(inputs["semantic_path"].read_bytes())
+    assert candidate["traversability"]["exclusions"] == original["traversability"]["exclusions"]
+    assert candidate["traversability"]["maximum_agl_m"] == 12
 
 
 @pytest.mark.usefixtures("isolated_server_credentials")

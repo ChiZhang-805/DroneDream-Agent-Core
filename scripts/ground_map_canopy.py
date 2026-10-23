@@ -22,6 +22,8 @@ from shapely.ops import unary_union
 MESH_URI = "meshes/kumpula-observed-canopy.obj"
 LINK_NAME = "observed-canopy-obstacles"
 WORLD_FILES = ("model.sdf", "world.sdf", "world.physics.sdf", "world.perception.sdf")
+CHUNK_TARGET_TRIANGLES = 4096
+CHUNK_MAX_TRIANGLES = 6144
 
 
 def _digest(value: object) -> str:
@@ -51,10 +53,49 @@ def _height(feature: dict, operating_upper_m: float) -> tuple[float, str]:
     return operating_upper_m, "unmeasured-height-column-covering-configured-operating-band"
 
 
-def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tuple[bytes, dict]:
+def _observed_polygon(feature: dict) -> Polygon:
+    """Remove only exact duplicate consecutive coordinates, never simplify XY."""
+    if feature.get("kind") != "tree-canopy":
+        raise ValueError("Canopy mesh only accepts observed canopy exclusions")
+    if feature.get("holes_xy_m"):
+        raise ValueError("Decompose canopy holes exactly before producing the mesh")
+    points = feature.get("polygon_xy_m")
+    if not isinstance(points, list) or not 3 <= len(points) <= 4096:
+        raise ValueError("Invalid canopy footprint vertex budget")
+    if any(
+        not isinstance(p, (list, tuple))
+        or len(p) != 2
+        or any(type(v) not in (int, float) or not math.isfinite(v) for v in p)
+        for p in points
+    ):
+        raise ValueError("Invalid canopy footprint coordinates")
+    ring = []
+    for point in points:
+        point = tuple(point)
+        if not ring or point != ring[-1]:
+            ring.append(point)
+    if len(ring) > 1 and ring[-1] == ring[0]:
+        ring.pop()
+    if len(ring) < 3:
+        raise ValueError("Invalid observed canopy polygon")
+    poly = Polygon(ring)
+    if not poly.is_valid or poly.is_empty or poly.area <= 0:
+        raise ValueError("Invalid observed canopy polygon")
+    return orient(poly, sign=1.0)
+
+
+def canopy_mesh(
+    features: list[dict],
+    *,
+    operating_upper_m: float = 12.0,
+    origin_xy_m: tuple[float, float] = (0.0, 0.0),
+    mesh_uri: str = MESH_URI,
+) -> tuple[bytes, dict]:
     """Return a closed triangle mesh with exactly the observed XY footprints."""
     if not math.isfinite(operating_upper_m) or not 0 < operating_upper_m <= 1000:
         raise ValueError("Invalid canopy operating band")
+    if len(origin_xy_m) != 2 or any(not math.isfinite(v) for v in origin_xy_m):
+        raise ValueError("Invalid canopy mesh origin")
     lines = [
         "# Observed footprint columns for simulation; not measured tree forms.",
         "# Source geometry is unchanged. Height classes are explanatory proxies.",
@@ -67,24 +108,8 @@ def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tup
         if not isinstance(identifier, str) or not identifier or identifier in seen:
             raise ValueError("Canopy IDs must be unique nonempty strings")
         seen.add(identifier)
-        if feature.get("kind") != "tree-canopy":
-            raise ValueError("Canopy mesh only accepts observed canopy exclusions")
-        if feature.get("holes_xy_m"):
-            raise ValueError("Decompose canopy holes exactly before producing the mesh")
         points = feature.get("polygon_xy_m")
-        if not isinstance(points, list) or not 3 <= len(points) <= 4096:
-            raise ValueError("Invalid canopy footprint vertex budget")
-        if any(
-            not isinstance(p, (list, tuple))
-            or len(p) != 2
-            or any(type(v) not in (int, float) or not math.isfinite(v) for v in p)
-            for p in points
-        ):
-            raise ValueError("Invalid canopy footprint coordinates")
-        poly = Polygon(points)
-        if not poly.is_valid or poly.is_empty or poly.area <= 0:
-            raise ValueError("Invalid observed canopy polygon")
-        poly = orient(poly, sign=1.0)
+        poly = _observed_polygon(feature)
         triangles = list(constrained_delaunay_triangles(poly).geoms)
         if not triangles or any(t.difference(poly).area > 1e-7 for t in triangles):
             raise ValueError("Canopy triangulation crosses the observed footprint")
@@ -103,7 +128,7 @@ def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tup
         def index(
             x: float, y: float, z: float, *, vertices=vertices, indices=indices, offset=point_count
         ) -> int:
-            point = (x, y, z)
+            point = (x - origin_xy_m[0], y - origin_xy_m[1], z)
             if point not in indices:
                 vertices.append(point)
                 indices[point] = offset + len(vertices)
@@ -119,7 +144,7 @@ def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tup
             c, d = index(*second, height), index(*first, height)
             faces.extend(((a, b, c), (a, c, d)))
         lines.append("g canopy-" + re.sub(r"[^a-zA-Z0-9_-]", "_", identifier))
-        lines.extend("v " + " ".join(format(v, ".15g") for v in point) for point in vertices)
+        lines.extend("v " + " ".join(format(v, ".17g") for v in point) for point in vertices)
         lines.extend("f " + " ".join(str(v) for v in face) for face in faces)
         point_count += len(vertices)
         face_count += len(faces)
@@ -137,7 +162,8 @@ def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tup
     content = ("\n".join(lines) + "\n").encode("utf-8")
     return content, {
         "schema_version": "dronedream.observed-canopy-mesh.v1",
-        "mesh_uri": MESH_URI,
+        "mesh_uri": mesh_uri,
+        "pose_xyz_m": [*origin_xy_m, 0.0],
         "mesh_sha256": hashlib.sha256(content).hexdigest(),
         "source_exclusions_sha256": _digest(features),
         "polygon_count": len(features),
@@ -155,8 +181,80 @@ def canopy_mesh(features: list[dict], *, operating_upper_m: float = 12.0) -> tup
     }
 
 
+def canopy_mesh_bundle(features: list[dict], *, operating_upper_m: float = 12.0):
+    """Pack complete closed columns into spatially local, bounded OBJ resources.
+
+    Split along the longest spatial axis, balancing triangle counts. No canopy
+    shell is sliced: closedness, interior tests and boundary visibility survive.
+    The local origin keeps each optical broad-phase bound near its real canopy.
+    """
+    records = [(feature, _observed_polygon(feature)) for feature in features]
+    identifiers = [feature.get("id") for feature in features]
+    if not records:
+        raise ValueError("Canopy bundle needs observed polygons")
+    if any(not isinstance(i, str) or not i for i in identifiers) or len(set(identifiers)) != len(
+        identifiers
+    ):
+        raise ValueError("Canopy IDs must be unique nonempty strings")
+
+    def weight(record):
+        return 4 * (len(record[1].exterior.coords) - 1) - 4
+
+    def partition(items):
+        total = sum(map(weight, items))
+        if total <= CHUNK_TARGET_TRIANGLES or len(items) == 1:
+            if total > CHUNK_MAX_TRIANGLES:
+                raise ValueError("A complete canopy shell exceeds the bounded mesh budget")
+            return [items]
+        axis = max(
+            range(2),
+            key=lambda a: (
+                max(p.bounds[a + 2] for _, p in items) - min(p.bounds[a] for _, p in items)
+            ),
+        )
+        items = sorted(items, key=lambda item: (item[1].centroid.coords[0][axis], item[0]["id"]))
+        subtotal, middle = 0, 1
+        for position, item in enumerate(items[:-1], 1):
+            middle = position
+            subtotal += weight(item)
+            if subtotal >= total / 2:
+                break
+        return partition(items[:middle]) + partition(items[middle:])
+
+    meshes, receipts = {}, []
+    for number, chunk in enumerate(partition(records)):
+        bounds = [poly.bounds for _, poly in chunk]
+        origin = tuple(
+            (min(b[a] for b in bounds) + max(b[a + 2] for b in bounds)) / 2 for a in range(2)
+        )
+        uri = f"meshes/kumpula-observed-canopy-{number:03d}.obj"
+        raw, receipt = canopy_mesh(
+            [f for f, _ in chunk],
+            operating_upper_m=operating_upper_m,
+            origin_xy_m=origin,
+            mesh_uri=uri,
+        )
+        if receipt["triangles"] > CHUNK_MAX_TRIANGLES or receipt["vertices"] > 8192:
+            raise ValueError("Canopy chunk exceeds the bounded mesh budget")
+        meshes[uri] = raw
+        receipts.append(receipt)
+    return meshes, {
+        "schema_version": "dronedream.observed-canopy-mesh-bundle.v2",
+        "source_exclusions_sha256": _digest(features),
+        "geometry_method": "exact-closed-shell-spatial-partition-with-local-origins",
+        "coordinate_cleanup": "exact-consecutive-duplicate-removal-only-no-simplification",
+        "polygon_count": len(features),
+        "vertices": sum(r["vertices"] for r in receipts),
+        "triangles": sum(r["triangles"] for r in receipts),
+        "chunk_target_triangles": CHUNK_TARGET_TRIANGLES,
+        "chunk_max_triangles": CHUNK_MAX_TRIANGLES,
+        "mesh_count": len(receipts),
+        "meshes": receipts,
+    }
+
+
 def install_canopy_obstacles(gazebo: Path, semantic: dict) -> dict:
-    """Install one shared mesh in all world variants; caller then saves semantic.
+    """Install identical locally framed meshes in every world; caller saves semantic.
 
     Call before regenerating summary / asset hashes. Existing box and cylinder
     primitives remain unchanged: the semantic polygon layer is the geometry
@@ -166,7 +264,9 @@ def install_canopy_obstacles(gazebo: Path, semantic: dict) -> dict:
     features = [f for f in layer.get("exclusions", []) if f.get("kind") == "tree-canopy"]
     if not features:
         return {"status": "no-observed-canopy"}
-    mesh, receipt = canopy_mesh(features, operating_upper_m=layer.get("maximum_agl_m", 12.0))
+    meshes, receipt = canopy_mesh_bundle(
+        features, operating_upper_m=layer.get("maximum_agl_m", 12.0)
+    )
     trees = []
     for name in WORLD_FILES:
         path = gazebo / name
@@ -179,26 +279,31 @@ def install_canopy_obstacles(gazebo: Path, semantic: dict) -> dict:
         for old in list(model.findall(f"link[@name='{LINK_NAME}']")):
             model.remove(old)
         link = ET.SubElement(model, "link", {"name": LINK_NAME})
-        for tag in ("collision", "visual"):
-            item = ET.SubElement(link, tag, {"name": "observed-canopy-" + tag})
-            geom = ET.SubElement(item, "geometry")
-            shape = ET.SubElement(geom, "mesh")
-            ET.SubElement(shape, "uri").text = MESH_URI
-            ET.SubElement(shape, "scale").text = "1 1 1"
-            if tag == "visual":
-                material = ET.SubElement(item, "material")
-                ET.SubElement(material, "ambient").text = "0.12 0.25 0.10 1"
-                ET.SubElement(material, "diffuse").text = "0.20 0.36 0.15 1"
-                ET.SubElement(material, "specular").text = "0 0 0 1"
+        for number, chunk in enumerate(receipt["meshes"]):
+            for tag in ("collision", "visual"):
+                item = ET.SubElement(link, tag, {"name": f"observed-canopy-{tag}-{number:03d}"})
+                ET.SubElement(item, "pose").text = (
+                    " ".join(format(v, ".17g") for v in chunk["pose_xyz_m"]) + " 0 0 0"
+                )
+                geom = ET.SubElement(item, "geometry")
+                shape = ET.SubElement(geom, "mesh")
+                ET.SubElement(shape, "uri").text = chunk["mesh_uri"]
+                ET.SubElement(shape, "scale").text = "1 1 1"
+                if tag == "visual":
+                    material = ET.SubElement(item, "material")
+                    ET.SubElement(material, "ambient").text = "0.12 0.25 0.10 1"
+                    ET.SubElement(material, "diffuse").text = "0.20 0.36 0.15 1"
+                    ET.SubElement(material, "specular").text = "0 0 0 1"
         trees.append((path, tree))
     collision_path = gazebo / "collision-primitives.json"
     document = json.loads(collision_path.read_text("utf-8"))
     if document.get("primitives") != semantic.get("collision_primitives"):
         raise ValueError("Physical collision metadata is not the same selected map")
     # Resolve every input and build every world before mutating the candidate.
-    mesh_path = gazebo / MESH_URI
-    mesh_path.parent.mkdir(parents=True, exist_ok=True)
-    mesh_path.write_bytes(mesh)
+    for uri, raw in meshes.items():
+        mesh_path = gazebo / uri
+        mesh_path.parent.mkdir(parents=True, exist_ok=True)
+        mesh_path.write_bytes(raw)
     for path, tree in trees:
         ET.indent(tree, space="  ")
         tree.write(path, encoding="utf-8", xml_declaration=True)
@@ -206,6 +311,7 @@ def install_canopy_obstacles(gazebo: Path, semantic: dict) -> dict:
         m
         for m in document.get("non_primitive_collision_meshes", [])
         if m.get("mesh_uri") != MESH_URI
+        and m.get("schema_version") != "dronedream.observed-canopy-mesh-bundle.v2"
     ]
     document["non_primitive_collision_meshes"] = existing + [receipt]
     collision_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", "utf-8")

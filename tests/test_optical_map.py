@@ -11,7 +11,7 @@ from dronedream_agent_core.optical_map import compile_optical_map
 
 # 功能：阻止小型共享网格的大量实例在索引检查前耗尽内存。
 # 输入：tmp_path：独立测试目录；monkeypatch：解析器测试替身。
-# 输出：无；真实索引预算必须在第九份 8192 三角形实例转换为列表前触发。
+# 输出：无；真实索引预算必须在第三十三份 8192 三角形实例转换为列表前触发。
 def test_total_mesh_budget_is_checked_before_list_expansion(tmp_path, monkeypatch):
     import dronedream_agent_core.optical_map as optical
 
@@ -29,10 +29,10 @@ def test_total_mesh_budget_is_checked_before_list_expansion(tmp_path, monkeypatc
 
     monkeypatch.setattr(optical, "_obj_triangles", lambda *_: (Triangles(), True))
     (tmp_path / "mesh.obj").write_bytes(cube())
-    path, digest = world(tmp_path, visual('<mesh><uri>mesh.obj</uri></mesh>') * 9)
+    path, digest = world(tmp_path, visual('<mesh><uri>mesh.obj</uri></mesh>') * 33)
     with pytest.raises(ValueError, match="MESH_TRIANGLE_BUDGET_EXCEEDED"):
         compile_optical_map(path, expected_world_sha256=digest)
-    assert len(expanded) == 8
+    assert len(expanded) == 32
 
 
 # 功能：拒绝过深的用户地图模型嵌套，返回确定错误而不是递归崩溃。

@@ -2,11 +2,13 @@
 
 import importlib.util
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+from shapely.affinity import translate
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
@@ -126,13 +128,16 @@ def test_all_world_variants_share_same_mesh_without_fake_box_primitives(tmp_path
     }
     (tmp_path / "collision-primitives.json").write_text(json.dumps({"primitives": [primitive]}))
     receipt = canopy.install_canopy_obstacles(tmp_path, semantic)
-    mesh_bytes = (tmp_path / canopy.MESH_URI).read_bytes()
+    chunk = receipt["meshes"][0]
+    mesh_uri = chunk["mesh_uri"]
+    mesh_bytes = (tmp_path / mesh_uri).read_bytes()
     assert _top_footprint(mesh_bytes).area == 2.0
     for name in canopy.WORLD_FILES:
         tree = ET.parse(tmp_path / name)
         link = tree.find(".//link[@name='observed-canopy-obstacles']")
-        assert link.find("collision/geometry/mesh/uri").text == canopy.MESH_URI
-        assert link.find("visual/geometry/mesh/uri").text == canopy.MESH_URI
+        assert link.find("collision/geometry/mesh/uri").text == mesh_uri
+        assert link.find("visual/geometry/mesh/uri").text == mesh_uri
+        assert link.findtext("collision/pose") == link.findtext("visual/pose") == "1 1 0 0 0 0"
     doc = json.loads((tmp_path / "collision-primitives.json").read_text())
     assert doc["primitives"] == semantic["collision_primitives"] == [primitive]
     assert doc["non_primitive_collision_meshes"] == semantic["canopy_collision_meshes"] == [receipt]
@@ -141,3 +146,80 @@ def test_all_world_variants_share_same_mesh_without_fake_box_primitives(tmp_path
     for name in canopy.WORLD_FILES:
         matches = ET.parse(tmp_path / name).findall(".//link[@name='observed-canopy-obstacles']")
         assert len(matches) == 1
+
+
+def test_exact_duplicate_boundary_points_do_not_emit_zero_area_wall_faces():
+    import numpy as np
+
+    from dronedream_agent_core.optical_map import _obj_triangles
+
+    points = [
+        [-247.2, -118.9],
+        [-245, -118.9],
+        [-245, -117],
+        [-247.2, -117],
+        [-247.2, -118.9],
+        [-247.2, -118.9],
+    ]
+    raw, receipt = canopy.canopy_mesh([_feature("duplicates", points)])
+    triangles, closed = _obj_triangles(raw, np.ones(3))
+    assert closed and len(triangles) == 12
+    assert receipt["footprints"][0]["polygon_sha256"] == canopy._digest(points)
+    assert _top_footprint(raw).symmetric_difference(Polygon(points)).area < 1e-10
+
+
+def test_spatial_chunks_keep_full_shells_local_and_exact(monkeypatch):
+    import numpy as np
+
+    from dronedream_agent_core.optical_map import _obj_triangles
+
+    monkeypatch.setattr(canopy, "CHUNK_TARGET_TRIANGLES", 24)
+    features = [
+        _feature(str(i), [[i * 30, 0], [i * 30 + 4, 0], [i * 30 + 4, 4], [i * 30, 4]])
+        for i in range(8)
+    ]
+    meshes, receipt = canopy.canopy_mesh_bundle(features)
+    assert len(meshes) == 4
+    footprints = []
+    ids = []
+    for chunk in receipt["meshes"]:
+        raw = meshes[chunk["mesh_uri"]]
+        triangles, closed = _obj_triangles(raw, np.ones(3))
+        assert closed and len(triangles) == 24
+        assert np.max(np.abs(triangles[:, :, 0])) == pytest.approx(17)
+        origin = chunk["pose_xyz_m"]
+        footprints.append(translate(_top_footprint(raw), xoff=origin[0], yoff=origin[1]))
+        ids.extend(item["id"] for item in chunk["footprints"])
+    assert sorted(ids) == sorted(f["id"] for f in features)
+    expected = unary_union([Polygon(f["polygon_xy_m"]) for f in features])
+    assert unary_union(footprints).symmetric_difference(expected).area < 1e-9
+    assert receipt["source_exclusions_sha256"] == canopy._digest(features)
+
+
+def test_oversized_shell_does_not_get_cut_or_lose_its_interior():
+    points = [[math.cos(i * math.tau / 1600), math.sin(i * math.tau / 1600)] for i in range(1600)]
+    with pytest.raises(ValueError, match="complete canopy shell"):
+        canopy.canopy_mesh_bundle([_feature("oversized", points)])
+
+
+def test_actual_observed_canopy_all_chunks_pass_optical_mesh_validation():
+    import numpy as np
+
+    from dronedream_agent_core.optical_map import _obj_triangles
+
+    source = (
+        Path(__file__).parents[1] / "scripts/data/campus-traversability/canopy-observations.json"
+    )
+    document = json.loads(source.read_text(encoding="utf-8"))
+    features = document["exclusions"]
+    meshes, receipt = canopy.canopy_mesh_bundle(features)
+    # Leave room in the compiler's 128 resource budget for the existing campus.
+    assert receipt["mesh_count"] <= 75
+    ids = []
+    for chunk in receipt["meshes"]:
+        triangles, closed = _obj_triangles(meshes[chunk["mesh_uri"]], np.ones(3))
+        assert closed and len(triangles) <= canopy.CHUNK_MAX_TRIANGLES
+        assert chunk["vertices"] <= 8192
+        ids.extend(item["id"] for item in chunk["footprints"])
+    assert sorted(ids) == sorted(f["id"] for f in features)
+    assert receipt["source_exclusions_sha256"] == canopy._digest(features)

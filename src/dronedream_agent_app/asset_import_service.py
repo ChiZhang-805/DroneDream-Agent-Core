@@ -103,6 +103,8 @@ class AssetImportService:
         self.source_detector = detect_asset_source if source_detector is None else source_detector
         self.plugin_source_normalizer = plugin_source_normalizer
         self.local_qualification_verifier = local_qualification_verifier
+        self._bundled_asset_migrations: list[dict[str, str]] = []
+        self._bundled_migration_job_id: str | None = None
         # 固定锁条带不会随任务数量增长；重复创建服务也不能绕过同一存储的串行保护。
         key = str(store.asset_versions_root.resolve()).casefold().encode()
         self._state_lock = _IMPORT_LOCKS[int.from_bytes(hashlib.sha256(key).digest()[:2]) % 64]
@@ -594,14 +596,15 @@ class AssetImportService:
     # 输出：
     #   rows：安装或复用后的默认资产记录列表。
     def seed_bundled_sources(self, bundle_directory: Path) -> list[dict[str, object]]:
+        self._bundled_asset_migrations = []
+        self._bundled_migration_job_id = None
         index_path = bundle_directory / "index.json"
         if not index_path.is_file():
             rows: list[dict[str, object]] = []
             return rows
         try:
-            index = decode_json(
-                read_plugin_file(index_path, limit=MAX_MANIFEST_BYTES), limit=MAX_MANIFEST_BYTES
-            )
+            index_bytes = read_plugin_file(index_path, limit=MAX_MANIFEST_BYTES)
+            index = decode_json(index_bytes, limit=MAX_MANIFEST_BYTES)
         except (OSError, ValueError) as error:
             raise AssetImportError("BUNDLED_ASSET_INDEX_INVALID") from error
         if not isinstance(index, dict):
@@ -718,7 +721,80 @@ class AssetImportService:
                 source_content_sha256=str(package["source_content_sha256"]),
                 replacement_content_sha256=str(package["content_sha256"]),
             )
+        # The browser can retain an old pin after its SQLite/source version has
+        # already been migrated and pruned. Rebuild the complete declared chain
+        # on EVERY successful seed, not only when a source row existed today.
+        target = {
+            "map_asset_id": str(replacements["map"]["asset_id"]),
+            "map_content_sha256": str(replacements["map"]["content_sha256"]),
+            "vehicle_asset_id": str(replacements["vehicle"]["asset_id"]),
+            "vehicle_content_sha256": str(replacements["vehicle"]["content_sha256"]),
+        }
+        records = {}
+        for kind, replacement in replacements.items():
+            sources = {str(replacement["source_content_sha256"])}
+            for superseded in superseded_pairs:
+                sources.update(
+                    (
+                        str(superseded[f"{kind}_content_sha256"]),
+                        str(superseded[f"{kind}_source_content_sha256"]),
+                    )
+                )
+            for source_hash in sorted(sources - {str(replacement["content_sha256"])}):
+                record = {
+                    "schema_version": "dronedream.bundled-asset-migration.v1",
+                    "kind": kind,
+                    "asset_id": str(replacement["asset_id"]),
+                    "from_content_sha256": source_hash,
+                    "to_content_sha256": str(replacement["content_sha256"]),
+                    "index_sha256": hashlib.sha256(index_bytes).hexdigest(),
+                    "qualification_id": str(current_pair["qualification_id"]),
+                    "receipt_sha256": str(current_pair["receipt_sha256"]),
+                    **target,
+                }
+                records[(kind, record["asset_id"], source_hash)] = record
+        self._bundled_asset_migrations = [records[key] for key in sorted(records)]
+        self._bundled_migration_job_id = (
+            "asset-qualification-job-"
+            + hashlib.sha256(
+                f"{current_pair['qualification_id']}:{current_pair['receipt_sha256']}".encode()
+            ).hexdigest()[:24]
+        )
         return rows
+
+    def bundled_asset_migrations(self) -> list[dict[str, str]]:
+        """Return exact release migrations only while their qualified pair exists.
+
+        Seed verified the release index, both package hashes and common receipt.
+        Recheck the installed pair's receipt here so deleting or invalidating a
+        target never authorizes a desktop cache to silently replace its pin.
+        Unknown/custom source hashes are deliberately absent from these records.
+        """
+        if not self._bundled_asset_migrations or self._bundled_migration_job_id is None:
+            return []
+        binding = self._bundled_asset_migrations[0]
+        try:
+            for kind in ("map", "vehicle"):
+                version = self.store.get_asset_version(
+                    binding[f"{kind}_asset_id"], binding[f"{kind}_content_sha256"]
+                )
+                if version["kind"] != kind or version["maturity"] != "qualified":
+                    return []
+            job = self.store.load_asset_pair_qualification_job(self._bundled_migration_job_id)
+            if (
+                job.qualification_id != binding["qualification_id"]
+                or job.map_asset_id != binding["map_asset_id"]
+                or job.result_map_content_sha256 != binding["map_content_sha256"]
+                or job.vehicle_asset_id != binding["vehicle_asset_id"]
+                or job.result_vehicle_content_sha256 != binding["vehicle_content_sha256"]
+            ):
+                return []
+            _, receipt_sha256 = self.store.verified_asset_pair_receipt(job)
+            if receipt_sha256 != binding["receipt_sha256"]:
+                return []
+        except (AssetImportError, KeyError, OSError, TypeError, ValueError):
+            return []
+        return [dict(record) for record in self._bundled_asset_migrations]
 
     # 功能：
     #   1. 核对发布索引、两个包及共同回执，安装声明的精确默认配对。
@@ -735,9 +811,7 @@ class AssetImportService:
         bundle_directory: Path,
         pair: dict[str, object],
     ) -> list[dict[str, object]]:
-        if pair.get("schema_version") != (
-            "dronedream.bundled-qualified-pair.v1"
-        ):
+        if pair.get("schema_version") != ("dronedream.bundled-qualified-pair.v1"):
             raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
         packages = pair.get("packages")
         qualification_id = pair.get("qualification_id")

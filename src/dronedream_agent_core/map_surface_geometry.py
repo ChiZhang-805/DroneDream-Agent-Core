@@ -7,20 +7,139 @@ learned confidence, pose fitting, or flight authority is implemented here.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 BOX, CYLINDER, SPHERE, MESH = 0, 1, 2, 3
+MAX_MESH_TRIANGLES = 8192
+MAX_INDEX_MESH_TRIANGLES = 262_144
+_MESH_LEAF_TRIANGLES = 64
+_MESH_RAY_BATCH = 32
+
+
+@dataclass
+class MeshQueryBudget:
+    """Bound actual work across all meshes in one map query, before allocation."""
+
+    maximum_triangle_pairs: int = 8_388_608
+    maximum_bound_pairs: int = 2_097_152
+    triangle_pairs: int = 0
+    bound_pairs: int = 0
+
+    # 功能：在求交前扣除真实射线/面工作量；输入：配对数及类型；输出：超额明确拒绝。
+    def charge(self, count, *, bounds=False):
+        if bounds:
+            self.bound_pairs += count
+            exceeded = self.bound_pairs > self.maximum_bound_pairs
+        else:
+            self.triangle_pairs += count
+            exceeded = self.triangle_pairs > self.maximum_triangle_pairs
+        if exceeded:
+            raise ValueError("MAP_ALIGNMENT_LOCAL_MESH_QUERY_BUDGET_EXCEEDED")
+
+
+class MeshRayIndex:
+    """Immutable local-space BVH; every authored triangle remains addressable."""
+
+    # 功能：为完整网格建立局部空间层次，不切断闭合壳、不改变绕序或表面身份。
+    # 输入：已校验且只读的三角面数组；输出：每叶最多 64 面的包围层次及缓存法向。
+    def __init__(self, triangles):
+        if not 1 <= len(triangles) <= MAX_MESH_TRIANGLES:
+            raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
+        self.triangles = triangles
+        self.edge1 = triangles[:, 1] - triangles[:, 0]
+        self.edge2 = triangles[:, 2] - triangles[:, 0]
+        self.normals = np.cross(self.edge1, self.edge2)
+        self.normals /= np.linalg.norm(self.normals, axis=1, keepdims=True)
+        lower, upper = triangles.min(axis=1), triangles.max(axis=1)
+        centroids = (lower + upper) / 2
+        padding = max(float(np.max(np.abs(triangles))), 1.0) * 1e-10
+        self.nodes = []
+
+        # 功能：按最长轴稳定分割面集合，保留原 face ID；输入：面索引；输出：节点编号。
+        def build(ids):
+            lo, hi = lower[ids].min(axis=0) - padding, upper[ids].max(axis=0) + padding
+            position = len(self.nodes)
+            self.nodes.append(None)
+            if len(ids) <= _MESH_LEAF_TRIANGLES:
+                ids = np.sort(ids)
+                ids.setflags(write=False)
+                node = (lo, hi, -1, -1, ids)
+            else:
+                axis = int(np.argmax(np.ptp(centroids[ids], axis=0)))
+                ordered = ids[np.argsort(centroids[ids, axis], kind="stable")]
+                split = len(ordered) // 2
+                node = (lo, hi, build(ordered[:split]), build(ordered[split:]), None)
+            lo.setflags(write=False)
+            hi.setflags(write=False)
+            self.nodes[position] = node
+            return position
+
+        build(np.arange(len(triangles)))
+        self.nodes = tuple(self.nodes)
+        for array in (self.edge1, self.edge2, self.normals):
+            array.setflags(write=False)
+
+    # 功能：只枚举射线实际能触及的叶节点；不能按观测终点丢弃前后遮挡或背面。
+    # 输入：最多 32 条射线、共享预算、可选首交邻域；输出：真实候选射线和原始面 ID。
+    def leaves(self, origins, directions, budget, depths=None, margin=0.0):
+        pending = [(0, np.arange(len(origins)))]
+        while pending:
+            node_id, rays = pending.pop()
+            budget.charge(len(rays), bounds=True)
+            lo, hi, left, right, faces = self.nodes[node_id]
+            origin, direction = origins[rays], directions[rays]
+            parallel = direction == 0.0
+            divisor = np.where(parallel, 1.0, direction)
+            first, second = (lo - origin) / divisor, (hi - origin) / divisor
+            enter = np.max(np.where(parallel, -np.inf, np.minimum(first, second)), axis=1)
+            leave = np.min(np.where(parallel, np.inf, np.maximum(first, second)), axis=1)
+            hit = (leave >= np.maximum(enter, 0.0)) & (leave > 1e-9)
+            hit &= ~np.any(parallel & ((origin < lo) | (origin > hi)), axis=1)
+            if depths is not None:
+                hit &= (np.isfinite(depths[rays]) & (enter <= depths[rays] + margin)
+                        & (leave >= depths[rays] - margin))
+            rays = rays[hit]
+            if not len(rays):
+                continue
+            if faces is not None:
+                yield rays, faces
+            else:
+                pending.append((right, rays))
+                pending.append((left, rays))
+
+
+# 功能：在 32 射线×64 面内精确求交，所有背面仍参加物理首交和内部判断。
+# 输入：局部射线、索引和候选面；输出：几何交点、可见性和面法向。
+def _mesh_leaf_hits(origins, directions, index, faces, double_sided, budget):
+    budget.charge(len(origins) * len(faces))
+    edge1, edge2 = index.edge1[faces], index.edge2[faces]
+    h = np.cross(directions[:, None], edge2)
+    det = np.einsum("tj,ntj->nt", edge1, h)
+    divisor = np.where(np.abs(det) > 1e-12, det, 1.0)
+    s = origins[:, None] - index.triangles[faces, 0]
+    u = np.einsum("ntj,ntj->nt", s, h) / divisor
+    q = np.cross(s, edge1)
+    v = np.einsum("nj,ntj->nt", directions, q) / divisor
+    t = np.einsum("tj,ntj->nt", edge2, q) / divisor
+    hit = ((np.abs(det) > 1e-12) & (u >= -1e-10) & (v >= -1e-10)
+           & (u + v <= 1 + 1e-10) & (t > 1e-9))
+    return np.where(hit, t, np.inf), hit if double_sided else hit & (det > 1e-12)
 
 
 # 功能：以有限批次求三角网格首个射线交点；背面、折边及内部起点不作为定位支持，但仍遮挡。
 # 输入：origins、directions：同一网格局部坐标中的射线；triangles：显式三角形；margin：边距。
 # 输出：首交距离、面法向、有效面标记、三角形身份与背面/内部标记。
 def mesh_surface_hits(
-    origins, directions, triangles, margin, *, double_sided=False, winding_sign=1.0
+    origins, directions, triangles, margin, *, double_sided=False, winding_sign=1.0,
+    acceleration=None, work_budget=None,
 ):
-    edge1, edge2 = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
-    normal = np.cross(edge1, edge2)
-    normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+    index = acceleration if acceleration is not None else MeshRayIndex(triangles)
+    if index.triangles is not triangles:
+        raise ValueError("MAP_ALIGNMENT_MESH_INDEX_MISMATCH")
+    budget = work_budget if work_budget is not None else MeshQueryBudget()
+    normal = index.normals
     count = len(origins)
     result = (
         np.full(count, np.inf),
@@ -29,35 +148,25 @@ def mesh_surface_hits(
         np.zeros(count, int),
         np.zeros(count, bool),
     )
-    for start in range(0, count, 32):
-        o, d = origins[start : start + 32], directions[start : start + 32]
-        h = np.cross(d[:, None], edge2)
-        det = np.einsum("tj,ntj->nt", edge1, h)
-        divisor = np.where(np.abs(det) > 1e-12, det, 1.0)
-        s = o[:, None] - triangles[:, 0]
-        u = np.einsum("ntj,ntj->nt", s, h) / divisor
-        q = np.cross(s, edge1)
-        v = np.einsum("nj,ntj->nt", d, q) / divisor
-        t = np.einsum("tj,ntj->nt", edge2, q) / divisor
-        hit = (
-            (np.abs(det) > 1e-12)
-            & (u >= -1e-10)
-            & (v >= -1e-10)
-            & (u + v <= 1 + 1e-10)
-            & (t > 1e-9)
-        )
-        physical_times = np.where(hit, t, np.inf)
-        physical_best = np.argmin(physical_times, axis=1)
+    for start in range(0, count, _MESH_RAY_BATCH):
+        o, d = origins[start : start + _MESH_RAY_BATCH], directions[start : start + _MESH_RAY_BATCH]
+        depth, physical_depth = np.full(len(o), np.inf), np.full(len(o), np.inf)
+        best, physical_best = np.zeros(len(o), int), np.zeros(len(o), int)
+        for rays, faces in index.leaves(o, d, budget):
+            t, visible = _mesh_leaf_hits(o[rays], d[rays], index, faces, double_sided, budget)
+            row = np.arange(len(rays))
+            for times, distances, selected in ((t, physical_depth, physical_best),
+                                               (np.where(visible, t, np.inf), depth, best)):
+                nearest = np.argmin(times, axis=1)
+                distance, face = times[row, nearest], faces[nearest]
+                update = ((distance < distances[rays])
+                          | ((distance == distances[rays]) & (face < selected[rays])))
+                distances[rays[update]], selected[rays[update]] = distance[update], face[update]
         # Physical inside testing is separate from the optical culling rule.
         # A reversed single-sided shell can show its far wall to an outside
         # camera; that does not put the camera physically inside the shell.
         physical_inside = np.einsum("nj,nj->n", normal[physical_best] * winding_sign, d) > 1e-12
-        physical_inside &= np.isfinite(np.min(physical_times, axis=1))
-        visible = hit if double_sided else hit & (det > 1e-12)
-        t = np.where(visible, t, np.inf)
-        best = np.argmin(t, axis=1)
-        row = np.arange(len(o))
-        depth = t[row, best]
+        physical_inside &= np.isfinite(physical_depth)
         normals = normal[best]
         if double_sided:
             normals = (
@@ -66,13 +175,12 @@ def mesh_surface_hits(
         front = -np.einsum("nj,nj->n", normals, d) > 0.02
         # All facets of the actual mesh remain occluders. Reject a first hit
         # if a nearby competing facet has a materially different normal.
-        dot = np.einsum("tj,nj->nt", normal, normals)
-        crease = np.any(
-            visible
-            & (np.abs(t - np.where(np.isfinite(depth), depth, 0.0)[:, None]) < margin)
-            & (np.abs(dot) < np.cos(np.deg2rad(20))),
-            axis=1,
-        )
+        crease = np.zeros(len(o), bool)
+        for rays, faces in index.leaves(o, d, budget, depth, margin):
+            t, visible = _mesh_leaf_hits(o[rays], d[rays], index, faces, double_sided, budget)
+            dot = np.einsum("tj,nj->nt", normal[faces], normals[rays])
+            crease[rays] |= np.any(visible & (np.abs(t - depth[rays, None]) < margin)
+                                  & (np.abs(dot) < np.cos(np.deg2rad(20))), axis=1)
         for destination, value in zip(
             result,
             (depth, normals, front & ~crease & np.isfinite(depth), best, physical_inside),

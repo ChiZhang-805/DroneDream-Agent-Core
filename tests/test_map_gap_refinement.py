@@ -88,6 +88,26 @@ def test_diagnosis_records_isolated_nodes_and_directed_gaps(graph):
     assert len(graph.edges) == 1  # Diagnosis does not invent a connecting edge.
 
 
+def test_connected_round_trip_inspects_destination_and_real_legs(graph):
+    connected = graph.model_copy(update={"edges": [MapEdge(
+        edge_id="old-shortcut", from_node="start", to_node="pickup", distance_m=114,
+        minimum_clearance_m=2, speed_limit_mps=2, bidirectional=True)]})
+    assert not diagnose_map_gaps(connected, ["start", "pickup", "start"])[
+        "disconnected_focus_pairs"]
+    # A geometric rejection of this connected graph must not inspect start→start.
+    requests = observation_requests(connected, ["start", "start", "pickup", "start"])
+    assert requests[0].focus_node_ids == ("pickup",)
+    assert requests[0].bounds_xy_m == (76, 76, 124, 124)
+    assert requests[2].focus_node_ids == ("start", "pickup")
+    assert requests[2].bounds_xy_m == (-4, -4, 124, 124)
+    assert len(requests) == 4  # Return leg reuses the same actual pixels.
+    directed = connected.model_copy(update={"edges": [
+        connected.edges[0].model_copy(update={"bidirectional": False})]})
+    gaps = diagnose_map_gaps(directed, ["start", "pickup", "start"])
+    assert [(pair["start_node"], pair["goal_node"])
+            for pair in gaps["disconnected_focus_pairs"]] == [("pickup", "start")]
+
+
 def test_crop_preserves_source_pixels_and_world_registration(source):
     request = ObservationRequest("test", ("pickup",), (50, 60, 110, 120), "detail")
     view = prepare_map_view(source, request)
@@ -244,3 +264,35 @@ def test_real_alternate_registered_view_is_used_for_remaining_occlusion(graph, s
         max_observations=1, requests=requests, additional_view=alternate)
     assert result.state == "route-ready" and viewed == requests
     assert port.calls[0]["input_artifact"]["observation_scale"] == "alternate"
+
+
+def test_missing_alternate_uses_new_registered_tiles_across_long_history(graph, source):
+    semantic = {"traversability": {"required": True, "maximum_agl_m": 12,
+        "exclusions": [{"id": "known-canopy", "kind": "tree-canopy",
+                        "polygon_xy_m": [[50, 50], [60, 50], [60, 60]]}]}}
+    alternate = [ObservationRequest("occlusion", ("start", "pickup", "start"),
+                                    (0, 0, 160, 160), "alternate")]
+    pending, history, called_ids = alternate, [], []
+    for attempt in range(4):
+        # Reproduce an old alternate-only continuation even after >8 observations.
+        requests = alternate if attempt == 3 else pending
+        port = RecordingPort([lambda call: _interpretation(call, confidence=.2)] * 4)
+        result = refine_map_gaps(graph=graph, semantic=semantic, semantic_sha256="a" * 64,
+            source=source, focus_nodes=["start", "pickup", "start"], model_port=port,
+            validate_candidate=lambda *_: [], route_available=lambda _: False,
+            max_observations=4, requests=requests, previous_observation_records=history)
+        assert result.physical_calls == len(port.calls) == 4
+        assert result.semantic == semantic  # No guessed road or removed canopy.
+        assert not result.patches
+        assert 1 <= len(result.pending_requests) <= 16
+        for call in port.calls:
+            context = call["input_artifact"]
+            assert context["observation_scale"] != "alternate"
+            assert context["observation_reason"] == "inspect-unseen-registered-image-tile"
+            assert context["source_id"] == source.source_id
+            assert context["source_image_sha256"] == source.image_sha256
+            assert context["view_id"] not in called_ids
+            called_ids.append(context["view_id"])
+        history, pending = result.observation_records, result.pending_requests
+    assert {record["view_id"] for record in history} == set(called_ids)
+    assert len(called_ids) == 16

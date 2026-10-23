@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from .local_map_alignment import MapSurfaceIndex
+from .map_surface_geometry import MAX_INDEX_MESH_TRIANGLES, MAX_MESH_TRIANGLES
 from .plugin_files import portable_plugin_path, read_plugin_file
 
 
@@ -72,7 +73,7 @@ def _obj_triangles(raw, scale):
             continue
         if fields[0] == "v":
             vertices.append(_numbers(" ".join(fields[1:]), 3))
-            if len(vertices) > 8192:
+            if len(vertices) > MAX_MESH_TRIANGLES:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] == "f":
             if len(fields) < 4 or len(fields) > 257:
@@ -85,7 +86,7 @@ def _obj_triangles(raw, scale):
             if len(set(ids)) != len(ids) or any(i < 0 or i >= len(vertices) for i in ids):
                 raise ValueError("OPTICAL_MAP_MESH_INDEX_INVALID")
             polygons.append(ids)
-            if len(polygons) > 8192:
+            if len(polygons) > MAX_MESH_TRIANGLES:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] not in {"vn", "vt", "o", "g", "s", "usemtl", "mtllib"}:
             raise ValueError("OPTICAL_MAP_OBJ_DIRECTIVE_UNSUPPORTED")
@@ -163,7 +164,7 @@ def _obj_triangles(raw, scale):
         polygon_faces.append(tuple(polygon[i] for i in remaining))
         for face in polygon_faces:
             faces.append(face)
-            if len(faces) > 8192:
+            if len(faces) > MAX_MESH_TRIANGLES:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
 
     edges = {}
@@ -383,7 +384,7 @@ def compile_optical_map(
                     # Enforce the index-wide budget BEFORE allocating nested
                     # Python lists. Repeated instances count even when they
                     # share one small OBJ resource.
-                    if mesh_triangle_count > 65_536:
+                    if mesh_triangle_count > MAX_INDEX_MESH_TRIANGLES:
                         raise ValueError("OPTICAL_MAP_MESH_TRIANGLE_BUDGET_EXCEEDED")
                     primitive["triangles"] = triangles.tolist()
                     primitive["mesh_closed"] = mesh_closed

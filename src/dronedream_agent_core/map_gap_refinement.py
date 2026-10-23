@@ -149,7 +149,8 @@ provided view_id and image_sha256 exactly. Return only the requested structured 
 def diagnose_map_gaps(graph: MapAsset, focus_nodes: list[str] | None = None) -> dict[str, Any]:
     """Identify exact missing connections without treating a nearest pair as a road."""
     nodes = {node.node_id: node for node in graph.nodes}
-    focus = list(dict.fromkeys(focus_nodes or graph.named_entities.values()))
+    # Preserve a return leg and revisits; only adjacent repeats have no motion.
+    focus = list(focus_nodes or graph.named_entities.values())
     if any(node not in nodes for node in focus):
         raise ValueError("MAP_FOCUS_NODES_INVALID")
     weak: dict[str, set[str]] = defaultdict(set)
@@ -168,7 +169,7 @@ def diagnose_map_gaps(graph: MapAsset, focus_nodes: list[str] | None = None) -> 
         components.append(sorted(component))
         unvisited.difference_update(component)
     pairs = []
-    for start, goal in zip(focus, focus[1:], strict=False):
+    for start, goal in dict.fromkeys(zip(focus, focus[1:], strict=False)):
         if goal not in _reachable(start, directed):
             a, b = nodes[start].position_m, nodes[goal].position_m
             pairs.append({"start_node": start, "goal_node": goal,
@@ -200,10 +201,15 @@ def observation_requests(graph: MapAsset, focus_nodes: list[str]) -> list[Observ
     gaps = diagnose_map_gaps(graph, focus_nodes)["disconnected_focus_pairs"]
     # A connected old graph can still violate traversability (e.g. a roof shortcut).
     # The caller invokes refinement after the real planner rejects that geometry.
-    pairs = gaps or [{"start_node": focus_nodes[0], "goal_node": focus_nodes[-1]}]
+    pairs = [(pair["start_node"], pair["goal_node"]) for pair in gaps]
+    pairs.extend((start, goal) for start, goal in zip(focus_nodes, focus_nodes[1:], strict=False)
+                 if start != goal and (start, goal) not in pairs)
+    if not pairs:
+        point = nodes[focus_nodes[0]].position_m
+        return [ObservationRequest("inspect-access-to-open-ground", (focus_nodes[0],),
+            (point.x - 24, point.y - 24, point.x + 24, point.y + 24), "detail")]
     requests = []
-    for pair in pairs:
-        start, goal = pair["start_node"], pair["goal_node"]
+    for start, goal in pairs:
         a, b = nodes[start].position_m, nodes[goal].position_m
         for node_id, point in ((goal, b), (start, a)):
             requests.append(ObservationRequest("inspect-access-to-open-ground", (node_id,),
@@ -214,7 +220,11 @@ def observation_requests(graph: MapAsset, focus_nodes: list[str]) -> list[Observ
             requests.append(ObservationRequest("trace-missing-traversable-connection",
                 (start, goal), (min(a.x, b.x) - pad, min(a.y, b.y) - pad,
                                max(a.x, b.x) + pad, max(a.y, b.y) + pad), scale))
-    return requests
+    # Reversing a leg needs the same ground pixels, not another charged call.
+    unique = {}
+    for request in requests:
+        unique.setdefault((request.bounds_xy_m, request.scale), request)
+    return list(unique.values())
 
 
 def prepare_map_view(source: MapImageSource, request: ObservationRequest) -> PreparedMapView:
@@ -242,6 +252,56 @@ def prepare_map_view(source: MapImageSource, request: ObservationRequest) -> Pre
     return PreparedMapView("map-view-" + sha256_json([digest, transform])[:24], content,
         digest, width, height, transform, source.source_id, source.image_sha256,
         (left, top, right, bottom), request, source.ground_z_m)
+
+
+def _registered_coverage_requests(
+    source: MapImageSource, graph: MapAsset, focus_nodes: list[str], seen: set[str],
+) -> list[ObservationRequest]:
+    """Inspect new primary-image coverage, never pretend it is a second perspective.
+
+    Coarse coverage can reveal a detour outside the endpoint box. Overlapping
+    finer tiles then expose junctions hidden by overview downsampling. The queue
+    is deterministic across continuations, while attempted view IDs exclude all
+    already charged crops, including rejected/uncertain model observations.
+    """
+    with Image.open(io.BytesIO(source.image_bytes)) as original:
+        width, height = original.size
+    nodes = {node.node_id: node for node in graph.nodes}
+    focus_pixels = [source.map_to_pixel(nodes[name].position_m.x, nodes[name].position_m.y)
+                    for name in dict.fromkeys(focus_nodes)]
+    a, b, c, d, e, f = source.pixel_to_map
+    requests = []
+    selected = set(seen)
+    for divisions in (1, 2, 4, 8):
+        tiles = [(column, row) for row in range(divisions) for column in range(divisions)]
+        tiles.sort(key=lambda tile: min(
+            ((tile[0] + .5) * width / divisions - x) ** 2
+            + ((tile[1] + .5) * height / divisions - y) ** 2
+            for x, y in focus_pixels))
+        for column, row in tiles:
+            padding = .125 if divisions > 1 else 0.
+            left = max(0., (column - padding) * width / divisions)
+            right = min(width, (column + 1 + padding) * width / divisions)
+            top = max(0., (row - padding) * height / divisions)
+            bottom = min(height, (row + 1 + padding) * height / divisions)
+            corners = [(a * x + b * y + c, d * x + e * y + f)
+                       for x in (left, right) for y in (top, bottom)]
+            request = ObservationRequest("inspect-unseen-registered-image-tile",
+                tuple(dict.fromkeys(focus_nodes)),
+                (min(p[0] for p in corners), min(p[1] for p in corners),
+                 max(p[0] for p in corners), max(p[1] for p in corners)),
+                "expanded" if divisions == 1 else "detail")
+            try:
+                view = prepare_map_view(source, request)
+            except ValueError:
+                continue
+            if view.view_id in selected:
+                continue
+            selected.add(view.view_id)
+            requests.append(request)
+            if len(requests) == 16:
+                return requests
+    return requests
 
 
 def interpretation_patch(
@@ -331,6 +391,7 @@ def refine_map_gaps(
     Neither callback should publish/qualify a map or start an aircraft. The caller
     publishes an accepted revision and binds its new hash before execution.
     additional_view may supply a real calibrated scene view after primary crops.
+    Without one, inspect untried registered primary-image coverage and detail.
     A text-only selected model needs an eligible image-capable port supplied here.
     """
     if source.map_id != graph.asset_id or source.semantic_sha256 != semantic_sha256:
@@ -338,8 +399,16 @@ def refine_map_gaps(
     if not 1 <= max_observations <= 16:
         raise ValueError("MAP_OBSERVATION_BUDGET_INVALID")
     current = deepcopy(semantic)
+    history = previous_observation_records or []
+    # Production admits at most 48 physical observations across continuations.
+    # Keep every attempted view, not just the last eight, so uncertain geometry
+    # cannot cause an already charged image to be requested again.
+    retained = {id(item) for item in [
+        *[item for item in history if "view_id" in item][-48:],
+        *[item for item in history if "view_id" not in item][-8:],
+    ]}
     result = MapRefinementResult("awaiting-observation", current, [], [],
-                                deepcopy((previous_observation_records or [])[-8:]), [])
+                                deepcopy([item for item in history if id(item) in retained]), [])
     if route_available(current):
         result.state = "route-ready"
         return result
@@ -354,7 +423,7 @@ def refine_map_gaps(
     if additional_view and not any(request.scale == "alternate" for request in queue):
         queue.append(ObservationRequest("inspect-remaining-occlusion", tuple(focus_nodes),
                                         queue[-1].bounds_xy_m, "alternate"))
-    seen: set[str] = set()
+    seen = {item["view_id"] for item in result.observation_records if "view_id" in item}
     attempts = 0
     while queue and attempts < max_observations:
         request = queue.pop(0)
@@ -362,7 +431,14 @@ def refine_map_gaps(
         if request.scale == "alternate":
             active_source = additional_view(request) if additional_view else None
             if active_source is None:
-                result.pending_requests.append(request)
+                coverage = _registered_coverage_requests(source, graph, focus_nodes, seen)
+                if coverage:
+                    queue = coverage + queue
+                else:
+                    result.pending_requests.append(request)
+                    result.observation_records.append({"state": "registered-coverage-exhausted",
+                        "source_id": source.source_id,
+                        "reason": "Unresolved occlusion requires a different registered image"})
                 continue
             if (active_source.map_id != source.map_id
                     or active_source.semantic_sha256 != semantic_sha256):
@@ -390,6 +466,10 @@ def refine_map_gaps(
                     "image_size_px": [view.width, view.height],
                     "focus_node_ids": list(request.focus_node_ids),
                     "observation_scale": request.scale,
+                    "observation_reason": request.reason,
+                    "source_id": view.source_id,
+                    "source_image_sha256": view.source_image_sha256,
+                    "source_crop_px": list(view.source_crop_px),
                     "previous_observations": result.observation_records[-4:]},
                 multimodal=[{"kind": "image-file", "content_bytes": view.image_bytes,
                              "sha256": view.image_sha256, "content_type": "image/png"}],
@@ -410,22 +490,27 @@ def refine_map_gaps(
                 issues = [*issues, "MAP_OBSERVATION_NO_CONFIDENT_GEOMETRY"]
             if issues:
                 result.observation_records.append({"view_id": view.view_id,
+                    "source_id": view.source_id, "source_crop_px": list(view.source_crop_px),
                     "state": "reobserve", "issue_codes": issues})
                 continue
         except (ModelInvocationError, ValueError) as error:
             result.observation_records.append({"view_id": view.view_id, "state": "reobserve",
+                "source_id": view.source_id, "source_crop_px": list(view.source_crop_px),
                 "issue_codes": [getattr(error, "reason_code", type(error).__name__)]})
             continue
         current = candidate
         result.semantic = current
         result.patches.append(patch)
         result.observation_records.append({"view_id": view.view_id, "state": "geometry-accepted",
+            "source_id": view.source_id, "source_crop_px": list(view.source_crop_px),
             "unresolved_observations": called.artifact.unresolved_observations})
         if route_available(current):
             result.state = "route-ready"
             result.pending_requests = []
             return result
     result.pending_requests.extend(queue)
+    if not result.pending_requests:
+        result.pending_requests = _registered_coverage_requests(source, graph, focus_nodes, seen)
     if not result.pending_requests:
         last = observation_requests(graph, focus_nodes)[-1]
         result.pending_requests.append(ObservationRequest("inspect-remaining-occlusion",
