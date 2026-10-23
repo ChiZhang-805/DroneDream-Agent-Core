@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import unicodedata
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -81,6 +82,90 @@ def synchronize_semantic_node_positions(semantic, graph):
         position = positions.get(entity["entity_id"])
         if position is not None:
             entity["position_m"] = dict(position)
+
+
+def complete_english_place_catalog(semantic, graph):
+    """Translate known place functions without inferring uses from requests.
+
+    The left-hand names already identify these facilities in the source map.
+    Their translations and common short forms bind to that same operational
+    node, while building centers and outdoor handoff positions stay distinct.
+    """
+    translations = {
+        "化学楼": ("chemistry building", "chemistry department", "department of chemistry"),
+        "物理楼": ("physics building", "physical sciences building"),
+        "地球科学楼": ("earth sciences building",),
+        "气象研究所": ("weather institute", "meteorological institute", "meteorology building"),
+        "信息科学楼": ("information science building", "information sciences building"),
+        "计算机科学楼": ("computer science building",),
+        "数学楼": ("mathematics building",),
+        "数学与统计楼": ("mathematics and statistics building",),
+        "Kumpula Campus Library": ("campus library", "Kumpula library"),
+        "Kumpula Sportcenter": (
+            "sports centre", "sports center", "Kumpula sports centre", "Kumpula sports center",
+        ),
+        "HOAS Kumpula / Pietari Kalmin katu": ("HOAS Kumpula",),
+        "Accelerator Laboratory": ("accelerator lab",),
+        "Helsinki Upper Secondary School of Natural Sciences": (
+            "science high school", "natural sciences high school",
+        ),
+        "Daycare Kumpupilvi": ("Kumpupilvi daycare",),
+    }
+    label_translations = {
+        "Kumpulan liikuntakeskus": "Kumpula Sports Centre",
+        "Kiihdytinlaboratorio": "Accelerator Laboratory",
+        "Kumpupilvi 幼儿园": "Daycare Kumpupilvi",
+        "Kumpulan kampuskirjasto": "Kumpula Campus Library",
+        "自然科学高中": "Natural Sciences High School",
+        "仓储附属建筑": "Storage annex",
+        "附属建筑": "Annex",
+    }
+    named = graph["named_entities"]
+    original_names = dict(named)
+    additions = {}
+    for source, aliases in translations.items():
+        if source in original_names:
+            additions.update((alias, original_names[source]) for alias in aliases)
+    for source, node_id in original_names.items():
+        for original, english in label_translations.items():
+            if source == original or source.startswith(original + " "):
+                additions[english + source[len(original):]] = node_id
+                break
+        ascii_accents = "".join(
+            char for char in unicodedata.normalize("NFKD", source)
+            if not unicodedata.combining(char)
+        )
+        if ascii_accents != source:
+            additions[ascii_accents] = node_id
+    folded_names = {name.casefold(): node_id for name, node_id in named.items()}
+    positions = {node["node_id"]: node["position_m"] for node in graph["nodes"]}
+    accepted_additions = {}
+    for alias, node_id in additions.items():
+        existing = folded_names.get(alias.casefold())
+        if existing is not None and existing != node_id:
+            # City and OSM records of the same school share one observed
+            # handoff. Retain its first canonical English spelling instead of
+            # adding a case-only alias that resolves to the duplicate record.
+            if positions[existing] == positions[node_id]:
+                continue
+            raise ValueError(f"Conflicting source place alias: {alias}")
+        named[alias] = node_id
+        folded_names[alias.casefold()] = node_id
+        accepted_additions[alias] = node_id
+    for entity in semantic["entities"]:
+        source_names = [entity["entity_id"], entity["name"], *entity.get("aliases", [])]
+        bindings = {original_names[name] for name in source_names if name in original_names}
+        if len(bindings) == 1:
+            node_id = next(iter(bindings))
+            entity["aliases"] = list(dict.fromkeys([
+                *entity.get("aliases", []),
+                *(name for name, target in accepted_additions.items() if target == node_id),
+            ]))
+    for node in graph["nodes"]:
+        for original, english in label_translations.items():
+            if node["label"].startswith(original + " "):
+                node["label"] = english + node["label"][len(original):]
+                break
 
 
 def include_physical_ground_support(gazebo, semantic):
@@ -488,6 +573,7 @@ def prepare(
     # The source package can already contain revised graph handoff positions.
     # Synchronize those too, not only corrections supplied in this invocation.
     synchronize_semantic_node_positions(semantic, graph)
+    complete_english_place_catalog(semantic, graph)
     semantic["traversability"]["handoff_corrections"] = observations["handoff_corrections"]
     semantic["traversability"]["unresolved_observations"] = observations["unresolved_observations"]
     write(semantic_path, semantic)

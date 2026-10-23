@@ -10898,12 +10898,17 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             args.require_model_control_authority or args.simulation_teacher_control
             or getattr(args, "independent_route_control", False)
         ):
-            from dronedream_agent_core.native_preflight import wait_for_native_perception
+            from dronedream_agent_core.native_preflight import (
+                wait_for_initialized_native_perception,
+                wait_for_native_perception,
+            )
 
             timing["native_perception_preflight"] = await base._await_with_setpoint_keepalive(
                 client,
-                wait_for_native_perception(
+                wait_for_initialized_native_perception(
                     args.run_dir / "depth-perception-health.json",
+                    initialization_deadline=started + args.takeoff_timeout_seconds,
+                    initialization_evidence=timing.setdefault("static_map_initialization", {}),
                     minimum_route_clearance_m=_native_route_preflight_clearance(args),
                     receiver=getattr(args, "_perception_health_receiver", None),
                     evidence=timing.setdefault("native_perception_preflight_diagnostics", {}),

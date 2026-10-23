@@ -420,8 +420,9 @@ def test_qualification_main_initializes_native_run_before_publishing_inputs(
     Only the native flight and its evidence verifier are test doubles; this
     fixture does not create flight qualification evidence.
     """
-    from dronedream_agent_core import simulation_fusion_runtime
+    from dronedream_agent_core import native_preflight, simulation_fusion_runtime
     from dronedream_agent_core.gazebo_adapter import _initialize_run_directory
+    from scripts import runtime_depth_safety_worker as depth_worker
 
     route, _, vehicle, sdf, semantic_hash = course
     outbound = GraphRoute(
@@ -453,6 +454,15 @@ def test_qualification_main_initializes_native_run_before_publishing_inputs(
     output = tmp_path / "new-qualification"
     observed = []
 
+    monkeypatch.setattr(depth_worker, "_seed_qualified_static_map", lambda **kw: (100, 7))
+    monkeypatch.setattr(native_preflight, "_native_worker_alive", lambda pid: True)
+
+    async def native_health(*args, **kwargs):
+        assert not (output / "simulation/clearance.json").exists()
+        return {"ready": True}
+
+    monkeypatch.setattr(native_preflight, "wait_for_native_perception", native_health)
+
     def native_run(**kwargs):
         plan = output / "plan"
         frozen = plan / "asset-qualification-inputs.json"
@@ -463,6 +473,27 @@ def test_qualification_main_initializes_native_run_before_publishing_inputs(
         _initialize_run_directory(kwargs["run_dir"])
         with pytest.raises(FileExistsError, match="not empty"):
             _initialize_run_directory(kwargs["run_dir"])
+        # The executor initializes while evidence still lives in plan/. Bind
+        # the real CLI route/semantic inputs, never an absent simulation copy.
+        run_root = kwargs["run_dir"]
+        route_hash = sha256_json(GraphRoute.model_validate_json(
+            kwargs["route_path"].read_bytes()))
+        semantic_hash = file_sha256(kwargs["semantic_path"])
+        source_path = run_root / "depth-worker-source.json"
+        _write_json(source_path, {"path": "worker.py", "sha256": "c" * 64})
+        depth_worker._initialize_qualified_static_map(
+            source_path=source_path, expected_semantic_sha256=semantic_hash,
+            qualified_clearance=SimpleNamespace(route_sha256=route_hash))
+        state = json.loads(source_path.read_text())["static_initialization"]
+        _write_json(run_root / "native-runtime-preflight-ready.json", {
+            "depth_safety_worker_pid": state["pid"],
+            "static_map_binding": {
+                "semantic_sha256": semantic_hash, "route_sha256": route_hash}})
+        initialized = asyncio.run(native_preflight.wait_for_initialized_native_perception(
+            run_root / "depth-perception-health.json",
+            initialization_deadline=native_preflight.time.monotonic() + 1.,
+            initialization_evidence={}))
+        assert initialized["ready"] is True
         if existing_clearance != "absent":
             (kwargs["run_dir"] / "clearance.json").write_bytes(
                 (plan / "clearance.json").read_bytes()

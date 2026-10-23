@@ -1473,21 +1473,21 @@ def test_dynamic_obstacle_recovery_episode_groups_one_continuous_encounter() -> 
 
 
 # 功能：
-#   验证狭窄空间速度上限服从路线已有更严限制，不为精细模式反向提速。
+#   验证精细模式沿用训练和运行共用的 1.5 m/s 上限，并保留更严格的路线限速。
 # 输入：
 #   无。
 # 输出：
 #   None：不返回业务数据。
-def test_precision_profile_uses_confined_space_speed_envelope() -> None:
+@pytest.mark.parametrize("route_limit, precision_limit", [(.15, .15), (.34, .34), (5., 1.5)])
+def test_precision_profile_preserves_route_limit_and_shared_cap(
+    route_limit: float, precision_limit: float
+) -> None:
     assert depth_worker._planner_speed_for_profile(
-        profile="cruise", route_speed_limit_mps=0.34
-    ) == pytest.approx(0.34)
+        profile="cruise", route_speed_limit_mps=route_limit
+    ) == pytest.approx(route_limit)
     assert depth_worker._planner_speed_for_profile(
-        profile="precision", route_speed_limit_mps=0.34
-    ) == pytest.approx(0.2)
-    assert depth_worker._planner_speed_for_profile(
-        profile="precision", route_speed_limit_mps=0.15
-    ) == pytest.approx(0.15)
+        profile="precision", route_speed_limit_mps=route_limit
+    ) == pytest.approx(precision_limit)
 
 
 # 功能：

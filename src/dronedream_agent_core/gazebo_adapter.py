@@ -5328,6 +5328,13 @@ def run_px4_gazebo_track(
                     ),
                     "live_camera_ready": camera_ready,
                     "depth_safety_worker_started": depth_worker_process is not None,
+                    "depth_safety_worker_pid": (
+                        depth_worker_process.pid if depth_worker_process is not None else None
+                    ),
+                    "static_map_binding": {
+                        "semantic_sha256": input_hashes[semantic_path],
+                        "route_sha256": sha256_json(route),
+                    },
                     "local_navigation_model_enabled": (
                         depth_worker_process is not None and local_navigation_provider is not None
                     ),
@@ -5855,6 +5862,11 @@ def run_px4_gazebo_track(
                             30.0, float(2 ** min(depth_worker_restart_count, 5))
                         )
                         outcome = f"retry-scheduled:{type(error).__name__}"
+                    startup = json.loads(native_preflight_marker.read_text(encoding="utf-8"))
+                    startup["depth_safety_worker_pid"] = (
+                        depth_worker_process.pid if depth_worker_process is not None else None
+                    )
+                    _write_json(native_preflight_marker, startup)
                     _write_json(
                         run_dir / "depth-safety-worker-recovery.json",
                         {

@@ -21,6 +21,74 @@ def _load(name):
     return module
 
 
+def test_english_function_catalog_binds_existing_handoffs_without_geometry_changes():
+    prep = _load("prepare-ground-map")
+    graph = {
+        "nodes": [
+            {"node_id": "chemistry-handoff", "label": "Chemicum south handoff point",
+             "position_m": {"x": 43, "y": 55, "z": 2}, "semantic": "pickup"},
+            {"node_id": "library-handoff", "label": "Kumpulan kampuskirjasto outdoor handoff",
+             "position_m": {"x": -66, "y": 46, "z": 2}, "semantic": "delivery"},
+            {"node_id": "unknown-building", "label": "Building 123 outdoor handoff",
+             "position_m": {"x": 9, "y": 8, "z": 2}, "semantic": "delivery"},
+        ],
+        "edges": [{"from_node": "chemistry-handoff", "to_node": "library-handoff"}],
+        "named_entities": {
+            "Chemicum": "chemistry-handoff", "化学楼": "chemistry-handoff",
+            "Kumpula Campus Library": "library-handoff",
+            "Väinö Auerin katu 12": "chemistry-handoff",
+            "Building 123": "unknown-building",
+        },
+    }
+    semantic = {
+        "entities": [{"entity_id": "chemicum", "name": "Chemicum", "kind": "building",
+                      "aliases": ["Chemicum", "化学楼"],
+                      "position_m": {"x": 50, "y": 50, "z": 0}}],
+        "traversability": {"exclusions": [{"id": "tree", "polygon_xy_m": [[1, 2]]}]},
+    }
+    old_graph, old_semantic = deepcopy(graph), deepcopy(semantic)
+    prep.complete_english_place_catalog(semantic, graph)
+    assert graph["named_entities"]["chemistry building"] == "chemistry-handoff"
+    assert graph["named_entities"]["department of chemistry"] == "chemistry-handoff"
+    assert graph["named_entities"]["Kumpula library"] == "library-handoff"
+    assert graph["named_entities"]["Vaino Auerin katu 12"] == "chemistry-handoff"
+    assert "chemistry building" in semantic["entities"][0]["aliases"]
+    assert graph["nodes"][1]["label"] == "Kumpula Campus Library outdoor handoff"
+    assert semantic["entities"][0]["position_m"] == {"x": 50, "y": 50, "z": 0}
+    assert graph["edges"] == old_graph["edges"]
+    assert [{k: v for k, v in n.items() if k != "label"} for n in graph["nodes"]] == [
+        {k: v for k, v in n.items() if k != "label"} for n in old_graph["nodes"]
+    ]
+    assert semantic["traversability"] == old_semantic["traversability"]
+    assert {k for k, v in graph["named_entities"].items() if v == "unknown-building"} == {
+        "Building 123"
+    }
+    repeated = deepcopy((semantic, graph))
+    prep.complete_english_place_catalog(semantic, graph)
+    assert (semantic, graph) == repeated
+
+
+def test_duplicate_source_school_keeps_one_english_function_binding():
+    prep = _load("prepare-ground-map")
+    position = {"x": 12.354, "y": -115.962, "z": 2.0}
+    graph = {
+        "nodes": [
+            {"node_id": "school-city", "label": "School outdoor handoff", "position_m": position},
+            {"node_id": "school-osm", "label": "自然科学高中 outdoor handoff",
+             "position_m": position},
+        ],
+        "named_entities": {
+            "Helsinki Upper Secondary School of Natural Sciences": "school-city",
+            "自然科学高中": "school-osm",
+        },
+    }
+    prep.complete_english_place_catalog({"entities": []}, graph)
+    assert graph["named_entities"]["science high school"] == "school-city"
+    assert {target for name, target in graph["named_entities"].items()
+            if name.casefold() == "natural sciences high school"} == {"school-city"}
+    assert graph["named_entities"]["自然科学高中"] == "school-osm"
+
+
 def test_observed_footway_joins_middle_of_long_street_without_inventing_ground():
     prep = _load("prepare-ground-map")
     street = LineString([(0, 0), (100, 0)])

@@ -1744,6 +1744,76 @@ def _point_segment_distance(point: Point, start: Point, end: Point) -> float:
     return math.dist(point, projection)
 
 
+_STATIC_ROUTE_TRAVERSAL_BUDGET = 8_000_000
+_STATIC_ROUTE_VOXEL_BUDGET = 1_000_000
+
+
+# 功能：按线段最长轴逐体素层扫描胶囊形走廊，避免长斜线外包盒的平方级空遍历。
+# 输入：原地图格网、路线线段和原有走廊半径；反向重复线段只处理一次。
+# 输出：仍以精确点到线段距离筛出的同一体素集合，以及实际候选遍历数。
+def _qualified_route_corridor_keys(
+    world: MetricVoxelMap,
+    route_segments: list[tuple[Point, Point]],
+    padding_m: float,
+) -> tuple[set[tuple[int, int, int]], int]:
+    minimum = tuple(getattr(world.minimum_bound_m, axis) for axis in ("x", "y", "z"))
+    maximum = tuple(getattr(world.maximum_bound_m, axis) for axis in ("x", "y", "z"))
+    resolution = world.resolution_m
+    corridor_keys: set[tuple[int, int, int]] = set()
+    inspected_voxels = 0
+    seen_segments = set()
+    for start, end in route_segments:
+        identity = tuple(sorted((start, end)))
+        if identity in seen_segments:
+            continue
+        seen_segments.add(identity)
+        low = tuple(max(minimum[i], min(start[i], end[i]) - padding_m) for i in range(3))
+        high = tuple(min(maximum[i] - resolution * .01,
+                         max(start[i], end[i]) + padding_m) for i in range(3))
+        first, last = world.key_for(low), world.key_for(high)
+        delta = tuple(end[i] - start[i] for i in range(3))
+        axis = max(range(3), key=lambda i: abs(delta[i]))
+        minor_axes = [i for i in range(3) if i != axis]
+        for major in range(first[axis], last[axis] + 1):
+            major_center = minimum[axis] + (major + .5) * resolution
+            if abs(delta[axis]) <= 1e-12:
+                ratios = (0., 1.)
+            else:
+                crossing = sorted(((major_center - padding_m - start[axis]) / delta[axis],
+                                   (major_center + padding_m - start[axis]) / delta[axis]))
+                ratios = (max(0., crossing[0]), min(1., crossing[1]))
+                if ratios[0] > ratios[1]:
+                    continue
+            ranges = []
+            for minor in minor_axes:
+                ends = [start[minor] + ratio * delta[minor] for ratio in ratios]
+                slab_low = max(low[minor], min(ends) - padding_m)
+                slab_high = min(high[minor], max(ends) + padding_m)
+                slab_first = max(first[minor], math.floor((slab_low - minimum[minor]) / resolution))
+                slab_last = min(last[minor], math.floor((slab_high - minimum[minor]) / resolution))
+                ranges.append(range(slab_first, slab_last + 1))
+            # Budget the work actually performed, before entering either inner loop.
+            inspected_voxels += len(ranges[0]) * len(ranges[1])
+            if inspected_voxels > _STATIC_ROUTE_TRAVERSAL_BUDGET:
+                raise ValueError(
+                    "qualified static route corridor exceeds the traversal safety budget"
+                )
+            for first_minor in ranges[0]:
+                for second_minor in ranges[1]:
+                    values = [0, 0, 0]
+                    values[axis] = major
+                    values[minor_axes[0]], values[minor_axes[1]] = first_minor, second_minor
+                    key = tuple(values)
+                    if key in corridor_keys:
+                        continue
+                    center = tuple(minimum[i] + (key[i] + .5) * resolution for i in range(3))
+                    if _point_segment_distance(center, start, end) <= padding_m:
+                        corridor_keys.add(key)
+                        if len(corridor_keys) > _STATIC_ROUTE_VOXEL_BUDGET:
+                            raise ValueError("qualified static route corridor exceeds voxel budget")
+    return corridor_keys, inspected_voxels
+
+
 # 功能：
 #   1. 核对静态地图、路线和净空报告的内容绑定，仅栅格化合格路线附近的保守先验。
 #   2. 在遍历前限制计算规模、遍历中限制体素数，全部分类完成后再提交地图。
@@ -1802,50 +1872,9 @@ def _seed_qualified_static_map(
         ((start.x, start.y, start.z), (end.x, end.y, end.z))
         for start, end in zip(route.positions_m, route.positions_m[1:], strict=False)
     ]
-    corridor_keys: set[tuple[int, int, int]] = set()
-    inspected_voxels = 0
-    for start, end in route_segments:
-        low = Vector3(
-            x=max(world.minimum_bound_m.x, min(start[0], end[0]) - padding_m),
-            y=max(world.minimum_bound_m.y, min(start[1], end[1]) - padding_m),
-            z=max(world.minimum_bound_m.z, min(start[2], end[2]) - padding_m),
-        )
-        high = Vector3(
-            x=min(
-                world.maximum_bound_m.x - world.resolution_m * 0.01,
-                max(start[0], end[0]) + padding_m,
-            ),
-            y=min(
-                world.maximum_bound_m.y - world.resolution_m * 0.01,
-                max(start[1], end[1]) + padding_m,
-            ),
-            z=min(
-                world.maximum_bound_m.z - world.resolution_m * 0.01,
-                max(start[2], end[2]) + padding_m,
-            ),
-        )
-        first = world.key_for(low)
-        last = world.key_for(high)
-        # 写入体素数不能限制遍历成本；细网格或长斜线必须在三重循环前检查计算预算。
-        inspected_voxels += math.prod(max(0, last[i] - first[i] + 1) for i in range(3))
-        if inspected_voxels > 8_000_000:
-            raise ValueError("qualified static route corridor exceeds the traversal safety budget")
-        for x in range(first[0], last[0] + 1):
-            for y in range(first[1], last[1] + 1):
-                for z in range(first[2], last[2] + 1):
-                    key = (x, y, z)
-                    center = world.center_for(key)
-                    if (
-                        _point_segment_distance(
-                            (center.x, center.y, center.z),
-                            start,
-                            end,
-                        )
-                        <= padding_m
-                    ):
-                        corridor_keys.add(key)
-                        if len(corridor_keys) > 1_000_000:
-                            raise ValueError("qualified static route corridor exceeds voxel budget")
+    corridor_keys, _inspected_voxels = _qualified_route_corridor_keys(
+        world, route_segments, padding_m
+    )
     classifications = []
     for key in sorted(corridor_keys):
         center = world.center_for(key)
@@ -1864,6 +1893,27 @@ def _seed_qualified_static_map(
         route_sha256=clearance.route_sha256,
         minimum_clearance_m=clearance.minimum_clearance_m,
     )
+    return counts
+
+
+def _initialize_qualified_static_map(*, source_path: Path, **inputs: Any) -> tuple[int, int]:
+    """Publish static preparation in the existing worker source record, not flight readiness."""
+    source = read_runtime_object(source_path)
+    started = time.monotonic()
+    state = {"state": "initializing", "pid": os.getpid(),
+             "semantic_sha256": inputs["expected_semantic_sha256"],
+             "route_sha256": inputs["qualified_clearance"].route_sha256}
+    _atomic_json(source_path, {**source, "static_initialization": state})
+    try:
+        counts = _seed_qualified_static_map(**inputs)
+    except Exception as error:
+        _atomic_json(source_path, {**source, "static_initialization": {
+            **state, "state": "failed", "issue": f"{type(error).__name__}: {error}"[:512],
+            "elapsed_seconds": time.monotonic() - started}})
+        raise
+    _atomic_json(source_path, {**source, "static_initialization": {
+        **state, "state": "ready", "free_voxels": counts[0], "occupied_voxels": counts[1],
+        "elapsed_seconds": time.monotonic() - started}})
     return counts
 
 
@@ -2811,7 +2861,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         # 三处使用同一已解析的路线/报告，禁止先验和模型背景各自重读后混入替换文件。
         qualified_route = _read_worker_contract(args.qualified_route, GraphRoute)
         qualified_clearance = _read_worker_contract(args.qualified_clearance, RouteClearanceReport)
-        _seed_qualified_static_map(
+        _initialize_qualified_static_map(
+            source_path=args.command.parent / "depth-worker-source.json",
             world=world,
             semantic_path=args.semantic,
             route_path=args.qualified_route,
