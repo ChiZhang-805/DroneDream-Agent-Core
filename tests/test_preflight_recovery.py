@@ -514,7 +514,8 @@ def test_transport_checks_actual_required_rate_receipts(tmp_path, state):
 # 功能：证明视觉定位依赖的遥测先于就绪等待启动，且不跳过原有飞控就绪检查。
 # 输入：tmp_path：隔离日志路径；就绪替身仅在获得采样率请求后返回。
 # 输出：顺序断言以及真实执行过的就绪检查回执，不请求解锁。
-def test_sensor_rates_precede_localization_readiness(tmp_path):
+@pytest.mark.parametrize("camera_bound", [False, True])
+def test_sensor_rates_precede_localization_readiness(tmp_path, camera_bound):
     base = _base_module()
     order = []
 
@@ -522,7 +523,10 @@ def test_sensor_rates_precede_localization_readiness(tmp_path):
         # 功能：记录遥测配置阶段，提供完整且成功的独立请求回执。
         # 输入：无。
         # 输出：按来源列出的模拟速率请求。
-        async def configure_dynamics_telemetry_rates(self):
+        async def configure_dynamics_telemetry_rates(
+            self, *, camera_source_alignment_required=False
+        ):
+            assert camera_source_alignment_required is camera_bound
             order.append('rates')
             return {'sources': {key: {'status': 'requested'} for key in
                     ('position_velocity', 'imu', 'attitude', 'odometry', 'battery')},
@@ -538,7 +542,7 @@ def test_sensor_rates_precede_localization_readiness(tmp_path):
 
     result = asyncio.run(base.connect_preflight_with_recovery(Client(), connection='test-only',
         readiness_timeout_seconds=2, abort_check=lambda: None, log_path=tmp_path/'log',
-        evidence={}))
+        evidence={}, camera_source_alignment_required=camera_bound))
     assert result.armable
     assert order == ['rates', 'readiness']
 

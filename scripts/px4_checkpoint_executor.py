@@ -5422,15 +5422,24 @@ def _read_stale_local_safety_command(
 # 功能：
 #   解释命令与观测为何不可用，记录解析、序号、摘要及时效差异，但不提供飞行许可。
 # 输入：
-#   args：当前命令与观测文件路径。
+#   args：当前实时配对接收端；无接收端时使用命令与观测文件路径。
 # 输出：
 #   diagnostic：配对状态和错误原因字典。
 def _local_safety_pair_diagnostic(args: argparse.Namespace) -> dict[str, Any]:
     """Explain why a command pair is unavailable without authorizing it."""
 
     diagnostic: dict[str, Any] = {"checked_at_unix_ms": int(time.time() * 1_000)}
+    receiver = getattr(args, "_local_safety_receiver", None)
+    pair = receiver.read_latest() if receiver is not None else None
+    if receiver is not None:
+        diagnostic["pair_source"] = "live-channel"
+        if pair is None:
+            diagnostic["command_parse"] = "not-received"
+            return diagnostic
+    else:
+        diagnostic["pair_source"] = "durable-files"
     try:
-        command = RuntimeLocalSafetyCommand.model_validate(
+        command = pair[1] if pair is not None else RuntimeLocalSafetyCommand.model_validate(
             read_runtime_object(args.local_safety_command)
         )
         diagnostic.update(
@@ -5447,7 +5456,7 @@ def _local_safety_pair_diagnostic(args: argparse.Namespace) -> dict[str, Any]:
         diagnostic["command_parse"] = f"{type(error).__name__}:{error}"
         return diagnostic
     try:
-        observation = RuntimeLocalSafetyObservation.model_validate(
+        observation = pair[0] if pair is not None else RuntimeLocalSafetyObservation.model_validate(
             read_runtime_object(args.local_safety_observation)
         )
         diagnostic.update(
@@ -10693,6 +10702,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             client,
             publish_independent_native_state,
             persist=persist_independent_native_state,
+            publication_rate_hz=(base.CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                if getattr(args, "perception_health_channel", None) is not None else 20.0),
         )
         args._independent_native_publisher_active = True
         native_publisher.start()
@@ -10705,6 +10716,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             log_path=args.log,
             evidence=timing["preflight_connection"],
             local_mode_preparation_only=getattr(args, 'local_reference_prearm', False),
+            camera_source_alignment_required=(
+                getattr(args, "perception_health_channel", None) is not None),
         )
         if getattr(args, 'local_reference_prearm', False):
             # Recovery ends before the first mode request. From here onward the
@@ -10851,6 +10864,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             client,
             publish_independent_native_state,
             persist=persist_independent_native_state,
+            publication_rate_hz=(base.CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                if getattr(args, "perception_health_channel", None) is not None else 20.0),
         )
         args._independent_native_publisher_active = True
         native_publisher.start()

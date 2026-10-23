@@ -98,6 +98,11 @@ DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ = {
     "actuator_output": 5.0,
     "odometry": 10.0,
 }
+# Native camera registration requires an existing source-time bracket within
+# 20 ms. A 10 Hz odometry stream cannot supply it for most camera frames; at
+# reduced simulation RTF, waiting for the next sample also exhausts the real
+# control lease. Request real 20 ms samples only for that camera-bound path.
+CAMERA_ODOMETRY_REQUESTED_RATE_HZ = 50.0
 ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM_ENV = "PX4_ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM"
 PX4_OFFBOARD_LOSS_TIMEOUT_SECONDS = 1.0
 PX4_OFFBOARD_LOSS_HOLD_ACTION = 5
@@ -999,9 +1004,12 @@ class OffboardClientProtocol(Protocol):
     #   请求各来源的明确采样频率并保留请求回执。
     # 输入：
     #   self：已连接的飞控客户端。
+    #   camera_source_alignment_required：原生相机是否需要二十毫秒内的里程计配准。
     # 输出：
     #   evidence：逐来源速率请求结果。
-    async def configure_dynamics_telemetry_rates(self) -> dict[str, Any]: ...
+    async def configure_dynamics_telemetry_rates(
+        self, *, camera_source_alignment_required: bool = False
+    ) -> dict[str, Any]: ...
 
     # 功能：
     #   按世界和模型身份获取仿真真实姿态供限定的对齐或挂载检查。
@@ -1397,9 +1405,12 @@ class MavsdkOffboardClient:
     #   逐来源请求采样率并记录实际回执；请求成功不等于实际已经达到该频率。
     # 输入：
     #   self：已经连接的真实 MAVSDK 客户端。
+    #   camera_source_alignment_required：相机配准时请求真实五十赫兹里程计。
     # 输出：
     #   evidence：各来源请求结果及必需来源的请求汇总。
-    async def configure_dynamics_telemetry_rates(self) -> dict[str, Any]:
+    async def configure_dynamics_telemetry_rates(
+        self, *, camera_source_alignment_required: bool = False
+    ) -> dict[str, Any]:
         """Request explicit MAVSDK rates and return non-secret preflight evidence."""
 
         telemetry = self._require_system().telemetry
@@ -1413,7 +1424,9 @@ class MavsdkOffboardClient:
         )
         sources: dict[str, dict[str, Any]] = {}
         for source, method_name in requests:
-            rate_hz = DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ[source]
+            rate_hz = (CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                       if source == "odometry" and camera_source_alignment_required
+                       else DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ[source])
             method = getattr(telemetry, method_name, None)
             if not callable(method):
                 sources[source] = {
@@ -5637,6 +5650,7 @@ def _is_recoverable_mavsdk_preflight_transport_error(error: BaseException) -> bo
 #   log_path：本次运行日志。
 #   evidence：逐次记录阶段和结果的证据容器。
 #   maximum_attempts：最多允许的连接次数，范围一到五；所有尝试共享同一准备期限。
+#   camera_source_alignment_required：原生相机运行所需的源时间配准采样频率。
 # 输出：
 #   health：真实就绪遥测；无法恢复时抛出原异常或超时。
 async def connect_preflight_with_recovery(
@@ -5649,6 +5663,7 @@ async def connect_preflight_with_recovery(
     evidence: dict[str, Any],
     maximum_attempts: int = MAVSDK_PREFLIGHT_MAX_ATTEMPTS,
     local_mode_preparation_only: bool = False,
+    camera_source_alignment_required: bool = False,
 ) -> TelemetryHealth:
     """Connect and pass readiness with bounded, pre-arm-only recovery attempts.
 
@@ -5709,8 +5724,10 @@ async def connect_preflight_with_recovery(
         rate_configurer = getattr(client, "configure_dynamics_telemetry_rates", None)
         if callable(rate_configurer):
             row["stage"] = "dynamics-telemetry-rates"
+            rate_request = (rate_configurer(camera_source_alignment_required=True)
+                            if camera_source_alignment_required else rate_configurer())
             rates = await _await_with_abort_polling(
-                asyncio.wait_for(rate_configurer(), timeout=min(5.,
+                asyncio.wait_for(rate_request, timeout=min(5.,
                     max(.001, deadline-time.monotonic()))), abort_check=abort_check)
             row["dynamics_telemetry_rates"] = rates
             required = ("position_velocity", "imu", "attitude", "odometry", "battery")

@@ -597,7 +597,8 @@ def test_odometry_collector_prefers_original_wire_frame_and_reset_counter():
     asyncio.run(scenario())
 
 
-def test_dynamics_telemetry_rates_are_explicitly_requested() -> None:
+@pytest.mark.parametrize("camera_bound", [False, True])
+def test_dynamics_telemetry_rates_are_explicitly_requested(camera_bound) -> None:
     base = _base_module()
 
     async def scenario() -> None:
@@ -626,7 +627,8 @@ def test_dynamics_telemetry_rates_are_explicitly_requested() -> None:
         client = object.__new__(base.MavsdkOffboardClient)
         client._system = SimpleNamespace(telemetry=telemetry)
 
-        evidence = await client.configure_dynamics_telemetry_rates()
+        evidence = await client.configure_dynamics_telemetry_rates(
+            camera_source_alignment_required=camera_bound)
 
         assert telemetry.requests == [
             ("position_velocity", 25.0),
@@ -634,10 +636,12 @@ def test_dynamics_telemetry_rates_are_explicitly_requested() -> None:
             ("attitude", 25.0),
             ("battery", 1.0),
             ("actuator_output", 5.0),
-            ("odometry", 10.0),
+            ("odometry", 50.0 if camera_bound else 10.0),
         ]
         assert evidence["required_rate_requests_succeeded"] is True
         assert evidence["sources"]["battery"]["status"] == "requested"
+        assert evidence["sources"]["odometry"]["requested_rate_hz"] == (
+            50.0 if camera_bound else 10.0)
 
     asyncio.run(scenario())
 

@@ -190,6 +190,43 @@ def test_executor_channel_has_same_deadline_and_never_falls_back_to_files(tmp_pa
         receiver.close()
 
 
+# 功能：诊断必须解释实时接收的完整配对，异步磁盘快照错位不能冒充通道故障。
+# 输入：tmp_path：测试回环端点与故意滞后的持久文件。
+# 输出：不续租的真实配对诊断，空通道不会回退到磁盘。
+def test_executor_diagnostic_uses_received_pair_even_when_durable_files_disagree(tmp_path):
+    path = tmp_path / "endpoint.json"
+    receiver, publisher = LocalSafetyReceiver(path), LocalSafetyPublisher(path)
+    executor = _load_executor()
+    executor.time = SimpleNamespace(time=lambda: 1.3)
+    observation_path, command_path = tmp_path / "observation.json", tmp_path / "command.json"
+    _, old_command = pair(1)
+    observation_path.write_text(pair(3, 1040)[0].model_dump_json())
+    command_path.write_text(old_command.model_dump_json())
+    args = SimpleNamespace(_local_safety_receiver=receiver,
+                           local_safety_observation=observation_path,
+                           local_safety_command=command_path)
+    try:
+        missing = executor._local_safety_pair_diagnostic(args)
+        assert missing["pair_source"] == "live-channel"
+        assert missing["command_parse"] == "not-received"
+        assert publisher.send(*pair(2, 1030))
+        observed = executor._local_safety_pair_diagnostic(args)
+        assert observed["pair_source"] == "live-channel"
+        assert observed["sequence_matches"] and observed["hash_matches"]
+        assert observed["command_sequence"] == observed["observation_sequence"] == 2
+        assert observed["command_valid_until_unix_ms"] == 1200
+        assert observed["command_age_after_expiry_seconds"] == pytest.approx(.1)
+        # The normal command reader still rejects that original expired lease.
+        assert executor._read_local_safety_command(args) is None
+        del args._local_safety_receiver
+        fallback = executor._local_safety_pair_diagnostic(args)
+        assert fallback["pair_source"] == "durable-files"
+        assert not fallback["sequence_matches"] and not fallback["hash_matches"]
+    finally:
+        publisher.close()
+        receiver.close()
+
+
 # 功能：
 #   发送端拒绝模拟器真值来源，即使其他内容与机载测试指令相似也不混用来源。
 # 输入：
