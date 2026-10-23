@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from dronedream_agent_app.asset_pair_catalog import (
@@ -71,6 +72,49 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
         if item["status"] == "qualified_builtin"
     }
     assert actual == expected
+
+
+def _release_index() -> dict:
+    path = (Path(__file__).parents[1] / "app" / "desktop" / "src-tauri" / "resources"
+            / "default-assets" / "index.json")
+    return json.loads(path.read_bytes())
+
+
+def test_catalog_follows_selected_release_without_source_constants(tmp_path: Path) -> None:
+    index = _release_index()
+    index_path = tmp_path / "default-assets" / "index.json"
+    index_path.parent.mkdir()
+    for qualification_id in ("asset-qualification-" + "1" * 24, "asset-qualification-" + "2" * 24):
+        index["default_qualification_id"] = qualification_id
+        index["qualified_pair"]["qualification_id"] = qualification_id
+        index["qualified_pairs"][0]["qualification_id"] = qualification_id
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        pair = get_asset_pair("dronedream-school-map", "px4-x500-depth", resource_root=tmp_path)
+        assert pair["qualification_id"] == qualification_id
+        assert pair["status"] == "qualified_builtin"
+
+
+@pytest.mark.parametrize("damage", ["missing", "json", "default", "duplicate", "vehicle", "hash"])
+def test_catalog_does_not_claim_qualification_from_damaged_index(
+    tmp_path: Path, damage: str,
+) -> None:
+    index = _release_index()
+    if damage == "default":
+        index["default_qualification_id"] = "asset-qualification-" + "3" * 24
+    elif damage == "duplicate":
+        index["qualified_pairs"].append(index["qualified_pairs"][0])
+    elif damage in {"vehicle", "hash"}:
+        for pair in (index["qualified_pair"], index["qualified_pairs"][0]):
+            package = next(item for item in pair["packages"] if item["kind"] == "vehicle")
+            package["asset_id" if damage == "vehicle" else "content_sha256"] = "different"
+    if damage != "missing":
+        path = tmp_path / "default-assets" / "index.json"
+        path.parent.mkdir()
+        path.write_text("{" if damage == "json" else json.dumps(index), encoding="utf-8")
+    pair = get_asset_pair("dronedream-school-map", "px4-x500-depth", resource_root=tmp_path)
+    assert pair["qualification_id"] is None
+    assert pair["status"] == "compatible_requires_qualification"
+    assert pair["required_gates"]
 
 
 def test_catalog_values_are_detached_and_unknown_pairs_fail_closed() -> None:

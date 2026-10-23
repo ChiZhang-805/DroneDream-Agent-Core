@@ -19,9 +19,12 @@ args = parser.parse_args()
 semantic = json.loads((args.candidate / "gazebo/semantic.json").read_text("utf-8"))
 graph = json.loads((args.candidate / "navigation-graph.json").read_text("utf-8"))
 fig, ax = plt.subplots(figsize=(14, 14))
+live_map = semantic["live_map"]
+a, _, tx, _, d, ty = live_map["world_to_image"]
 ax.imshow(
-    plt.imread(args.candidate / "gazebo/materials/textures/kumpula-orthophoto.jpg"),
-    extent=(-250, 250, -250, 250),
+    plt.imread(args.candidate / live_map["image_path"].removeprefix("normalized/map/")),
+    extent=(-tx / a, (live_map["width_px"] - tx) / a,
+            (live_map["height_px"] - ty) / d, -ty / d),
 )
 layer = semantic["traversability"]
 for item in layer["areas"]:

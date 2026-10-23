@@ -10,9 +10,9 @@ from pathlib import Path
 from PIL import Image
 
 from dronedream_agent_core.asset_packages import AssetIR
+from dronedream_agent_core.assets import read_map_semantic_object
 from dronedream_agent_core.plugin_files import read_plugin_file
 from dronedream_agent_core.xml_values import parse_xml
-from dronedream_plugin_sdk.protocol import decode_json
 
 from .asset_runtime_resolver import _declared_file, resolve_versioned_map
 
@@ -110,7 +110,7 @@ def resolve_live_map(record: dict[str, object]) -> LiveMap:
     """Resolve hash-verified pixels and the exact ENU-to-image affine transform."""
     selected = resolve_versioned_map(record)
     asset_ir = AssetIR.model_validate(record["asset_ir"])
-    semantic = decode_json(read_plugin_file(selected.semantic, limit=16 * 1024 * 1024))
+    semantic = read_map_semantic_object(selected.semantic)
     if not isinstance(semantic, dict) or semantic.get("coordinate_frame") not in {
         "ENU",
         "map_enu",

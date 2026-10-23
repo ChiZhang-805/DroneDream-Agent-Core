@@ -49,13 +49,26 @@ from .collision import (
     build_tracking_corridor_budget,
     validate_route_clearance,
 )
-from .contracts import GraphRoute, MapAsset, RouteQuery, StrictModel, VehicleAsset
+from .contracts import (
+    GraphRoute,
+    MapAsset,
+    Px4Track,
+    RouteClearanceReport,
+    RouteQuery,
+    StrictModel,
+    VehicleAsset,
+)
 from .hashing import sha256_json
 from .known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
 from .navigation import shortest_route
 from .plugin_contracts import PluginHookReceipt, PluginSnapshot
 from .plugin_files import check_plain_plugin_path, hash_plugin_file, read_plugin_file
 from .px4_track import route_to_px4_track
+from .runtime_bindings import (
+    load_map_runtime_bindings,
+    resolve_grounded_vehicle_model_root,
+    resolve_vehicle_collision_center_offset,
+)
 from .xml_values import parse_xml
 
 _MAX_CONTRACT_BYTES = 16 * 1024 * 1024
@@ -952,8 +965,78 @@ def _write_prepared_artifact(path: Path, payload: bytes) -> None:
         os.fsync(output.fileno())
 
 
+def _recorded_qualification_artifacts(
+    *,
+    route_path: Path,
+    track_path: Path,
+    clearance_path: Path,
+    semantic_path: Path,
+    vehicle: VehicleAsset,
+) -> tuple[GraphRoute, bytes, bytes, bytes]:
+    """Import the actual flown artifacts without replanning or rewriting their hashes."""
+    payloads = [read_plugin_file(path, limit=_MAX_CONTRACT_BYTES)
+                for path in (route_path, track_path, clearance_path)]
+    route = GraphRoute.model_validate(decode_json(payloads[0], limit=_MAX_CONTRACT_BYTES))
+    track = Px4Track.model_validate(decode_json(payloads[1], limit=_MAX_CONTRACT_BYTES))
+    clearance = RouteClearanceReport.model_validate(
+        decode_json(payloads[2], limit=_MAX_CONTRACT_BYTES))
+    # The existing plan contract binds its route object to this stable encoding.
+    # The runner must write it before flying; promotion never repairs evidence.
+    if payloads[0] != _json_bytes(route.model_dump(mode="json")):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_ROUTE_ENCODING_INVALID")
+    if (not clearance.accepted or clearance.collision_count != 0
+            or clearance.route_sha256 != sha256_json(route)
+            or clearance.semantic_sha256 != _sha256_file(semantic_path)):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_CLEARANCE_BINDING_INVALID")
+    semantic = _current_map_semantic_contract(semantic_path)
+    launch = load_map_runtime_bindings(semantic).mission_launch_waypoint
+    launch_xyz = (launch.x, launch.y, launch.z)
+    positions = [(point.x, point.y, point.z) for point in route.positions_m]
+    length = sum(math.dist(first, second)
+                 for first, second in zip(positions, positions[1:], strict=False))
+    if (len(positions) < 3 or route.start_node != route.goal_node or length <= 0
+            or math.dist(positions[0], launch_xyz) > 0.02
+            or math.dist(positions[-1], launch_xyz) > 0.02
+            or not math.isclose(length, route.route_length_m, abs_tol=1e-6, rel_tol=1e-9)):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_ROUND_TRIP_INVALID")
+    world_points = [(point.east_m, point.north_m, point.up_m)
+                    for point in track.source_world_points]
+    if world_points != positions:
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_TRACK_ROUTE_MISMATCH")
+    root = resolve_grounded_vehicle_model_root(semantic, vehicle)
+    offset = resolve_vehicle_collision_center_offset(vehicle)
+    if (track.coordinate_contract.model_root_world_enu_m != [root.x, root.y, root.z]
+            or track.coordinate_contract.collision_center_offset_model_m
+            != [offset.x, offset.y, offset.z]):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_TRACK_FRAME_MISMATCH")
+    for world, point in zip(route.positions_m, track.points, strict=True):
+        expected = (world.y - root.y - offset.y, world.x - root.x - offset.x,
+                    world.z - root.z - offset.z)
+        if (math.dist((point.x, point.y, point.z), expected) > 1e-9
+                or point.speed_limit_mps > vehicle.max_speed_mps):
+            raise AssetPairQualificationError(
+                "ASSET_QUALIFICATION_RECORDED_TRACK_EXECUTION_MISMATCH")
+    # Recheck this same geometry against the package being promoted. This does
+    # not generate another route, and the original clearance bytes are retained.
+    checked = validate_route_clearance(
+        route, semantic_path, vehicle_diameter_m=vehicle.body_radius_m * 2,
+        vehicle_height_m=vehicle.body_height_m, sample_interval_m=clearance.sample_interval_m)
+    if (not checked.accepted
+            or clearance.sample_count != checked.sample_count
+            or clearance.primitive_count != checked.primitive_count
+            or clearance.minimum_clearance_m > checked.minimum_clearance_m + 1e-6
+            or len(clearance.segment_minimum_clearances_m)
+            != len(checked.segment_minimum_clearances_m)
+            or any(recorded > actual + 1e-6 for recorded, actual in zip(
+                clearance.segment_minimum_clearances_m,
+                checked.segment_minimum_clearances_m, strict=True))):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_CLEARANCE_INVALID")
+    build_tracking_corridor_budget(checked.minimum_clearance_m)
+    return route, payloads[0], payloads[1], payloads[2]
+
+
 # 功能：
-#   1. 校验并提取当前地图、飞机及控制器，生成静态往返练习与输入摘要。
+#   1. 校验并提取当前地图、飞机及控制器，生成静态往返练习或导入同次实际飞行材料。
 #   2. 在独占新目录中保存计划；不启动仿真，也不自行授予飞行资格。
 # 输入：
 #   map_archive：已隔离的地图包路径。
@@ -961,6 +1044,8 @@ def _write_prepared_artifact(path: Path, payload: bytes) -> None:
 #   work_root：本次新建的计划目录，不允许复用已有目录。
 #   minimum_translation_m：单程练习长度下限，单位米。
 #   maximum_translation_m：单程练习长度上限，单位米。
+#   recorded_route_path、recorded_track_path、recorded_clearance_path：可选的同次实际
+#       飞行材料，必须一并提供；保留原始字节并复核绑定，不受自动练习的选点长度限制。
 # 输出：
 #   plan：绑定输入资产、路线、净空、轨迹及必需运行门禁的资格计划。
 def prepare_asset_pair_qualification(
@@ -970,7 +1055,13 @@ def prepare_asset_pair_qualification(
     work_root: Path,
     minimum_translation_m: float = 1.0,
     maximum_translation_m: float = 30.0,
+    recorded_route_path: Path | None = None,
+    recorded_track_path: Path | None = None,
+    recorded_clearance_path: Path | None = None,
 ) -> AssetPairQualificationPlan:
+    recorded = (recorded_route_path, recorded_track_path, recorded_clearance_path)
+    if any(path is not None for path in recorded) and any(path is None for path in recorded):
+        raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_ARTIFACTS_INCOMPLETE")
     if not _is_positive_finite(minimum_translation_m):
         raise AssetPairQualificationError("ASSET_QUALIFICATION_MINIMUM_TRANSLATION_INVALID")
     if (
@@ -1033,24 +1124,30 @@ def prepare_asset_pair_qualification(
     controller = _controller_contract(vehicle_root / controller_path)
     _validate_vehicle_static_contract(vehicle_inspected, vehicle, controller)
 
-    route, clearance = _round_trip_route(
-        graph,
-        map_root / semantic_path,
-        vehicle,
-        minimum_translation_m=minimum_translation_m,
-        maximum_translation_m=maximum_translation_m,
-    )
-    track = route_to_px4_track(
-        route,
-        graph,
-        map_root / semantic_path,
-        vehicle=vehicle,
-        waypoint_hold_seconds=1.0,
-    )
-
-    route_payload = _json_bytes(route.model_dump(mode="json"))
-    clearance_payload = _json_bytes(clearance.model_dump(mode="json"))
-    track_payload = _json_bytes(track.model_dump(mode="json"))
+    if (recorded_route_path is not None and recorded_track_path is not None
+            and recorded_clearance_path is not None):
+        route, route_payload, track_payload, clearance_payload = _recorded_qualification_artifacts(
+            route_path=recorded_route_path, track_path=recorded_track_path,
+            clearance_path=recorded_clearance_path, semantic_path=map_root / semantic_path,
+            vehicle=vehicle)
+    else:
+        route, clearance = _round_trip_route(
+            graph,
+            map_root / semantic_path,
+            vehicle,
+            minimum_translation_m=minimum_translation_m,
+            maximum_translation_m=maximum_translation_m,
+        )
+        track = route_to_px4_track(
+            route,
+            graph,
+            map_root / semantic_path,
+            vehicle=vehicle,
+            waypoint_hold_seconds=1.0,
+        )
+        route_payload = _json_bytes(route.model_dump(mode="json"))
+        clearance_payload = _json_bytes(clearance.model_dump(mode="json"))
+        track_payload = _json_bytes(track.model_dump(mode="json"))
     _write_prepared_artifact(work_root / "route.json", route_payload)
     _write_prepared_artifact(work_root / "clearance.json", clearance_payload)
     _write_prepared_artifact(work_root / "track.json", track_payload)

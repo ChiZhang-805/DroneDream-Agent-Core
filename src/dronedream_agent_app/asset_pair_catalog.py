@@ -9,7 +9,13 @@ as permission to execute a mission.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
+from pathlib import Path
+
+from dronedream_agent_core.asset_packages import MAX_MANIFEST_BYTES
+from dronedream_agent_core.plugin_files import read_plugin_file
+from dronedream_plugin_sdk.protocol import decode_json
 
 from .vehicle_resource_catalog import vehicle_resource_catalog
 
@@ -17,13 +23,6 @@ _SCHOOL_MAP = {
     "resource_id": "dronedream-school-map",
     "display_name": {"zh-CN": "赫尔辛基大学昆普拉校区", "en-US": "Kumpula Campus"},
     "environment_class": "outdoor_campus",
-}
-
-# These identifiers bind to receipts already shipped in default-assets/index.json.
-# The qualified aircraft is the normalized built-in My Drone package, whose
-# reviewed source model is PX4 x500_depth.
-_BUILTIN_X500_DEPTH_QUALIFICATIONS = {
-    "dronedream-school-map": "asset-qualification-9e8f76549880788ec9e81ef0",
 }
 
 # The public resource identifier names the catalog entry, while the normalized
@@ -35,6 +34,58 @@ _BUILTIN_MAP_ASSET_IDS = {
 }
 
 
+def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
+    """Read display identities from this release; actual admission verifies the pair receipt."""
+    root = resource_root if resource_root is not None else (
+        Path(__file__).resolve().parents[2] / "app" / "desktop" / "src-tauri" / "resources")
+    try:
+        index = decode_json(
+            read_plugin_file(root / "default-assets" / "index.json", limit=MAX_MANIFEST_BYTES),
+            limit=MAX_MANIFEST_BYTES)
+        if not isinstance(index, dict) or index.get("schema_version") not in {
+            "dronedream.bundled-assets.v2", "dronedream.bundled-assets.v3",
+        }:
+            return {}
+        current = index.get("qualified_pair")
+        pairs = (index.get("qualified_pairs")
+                 if index["schema_version"] == "dronedream.bundled-assets.v3" else [current])
+        if (not isinstance(pairs, list) or not 1 <= len(pairs) <= 64
+                or not isinstance(current, dict) or current not in pairs
+                or (index["schema_version"] == "dronedream.bundled-assets.v3"
+                    and index.get("default_qualification_id") != current.get("qualification_id"))):
+            return {}
+        qualifications: dict[str, str] = {}
+        for pair in pairs:
+            if not isinstance(pair, dict):
+                return {}
+            resource_id = pair.get("resource_id", "dronedream-school-map")
+            qualification_id = pair.get("qualification_id")
+            packages = pair.get("packages")
+            if (pair.get("schema_version") != "dronedream.bundled-qualified-pair.v1"
+                    or resource_id not in _BUILTIN_MAP_ASSET_IDS
+                    or resource_id in qualifications
+                    or not isinstance(qualification_id, str)
+                    or re.fullmatch(r"asset-qualification-[0-9a-f]{24}", qualification_id) is None
+                    or not isinstance(packages, list) or len(packages) != 2
+                    or any(not isinstance(package, dict) for package in packages)):
+                return {}
+            identities = {(package.get("kind"), package.get("asset_id")) for package in packages}
+            if identities != {("map", _BUILTIN_MAP_ASSET_IDS[resource_id]),
+                              ("vehicle", "dronedream.my-drone.v1")}:
+                return {}
+            hashes = [pair.get("receipt_sha256"), *(package.get(field)
+                      for package in packages
+                      for field in ("sha256", "content_sha256", "source_content_sha256"))]
+            if any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                   for value in hashes):
+                return {}
+            qualifications[resource_id] = qualification_id
+        return qualifications
+    except (OSError, ValueError, TypeError):
+        # A missing or damaged display index cannot resurrect a retired ID.
+        return {}
+
+
 def _maps() -> list[dict[str, object]]:
     """Return the sole map admitted to the built-in mission catalog."""
 
@@ -44,15 +95,15 @@ def _maps() -> list[dict[str, object]]:
 def _pair_record(
     map_resource: dict[str, object],
     vehicle_resource: dict[str, object],
+    qualifications: dict[str, str],
 ) -> dict[str, object]:
     map_id = str(map_resource["resource_id"])
     vehicle_id = str(vehicle_resource["resource_id"])
     vehicle_class = str(vehicle_resource["vehicle_class"])
     environment_class = str(map_resource["environment_class"])
-    qualification_id = None
+    qualification_id = qualifications.get(map_id) if vehicle_id == "px4-x500-depth" else None
 
-    if vehicle_id == "px4-x500-depth":
-        qualification_id = _BUILTIN_X500_DEPTH_QUALIFICATIONS[map_id]
+    if qualification_id is not None:
         status = "qualified_builtin"
         reasons = [
             "The exact normalized My Drone/x500_depth package completed the "
@@ -106,12 +157,13 @@ def _pair_record(
     }
 
 
-def asset_pair_catalog() -> dict[str, object]:
+def asset_pair_catalog(*, resource_root: Path | None = None) -> dict[str, object]:
     """Return the complete one-map by 13-aircraft compatibility matrix."""
     maps = _maps()
     vehicles = vehicle_resource_catalog()["resources"]
+    qualifications = _bundled_qualifications(resource_root)
     pairs = [
-        _pair_record(map_resource, vehicle_resource)
+        _pair_record(map_resource, vehicle_resource, qualifications)
         for map_resource in maps
         for vehicle_resource in vehicles
     ]
@@ -133,10 +185,12 @@ def asset_pair_catalog() -> dict[str, object]:
     }
 
 
-def get_asset_pair(map_resource_id: str, vehicle_resource_id: str) -> dict[str, object]:
+def get_asset_pair(
+    map_resource_id: str, vehicle_resource_id: str, *, resource_root: Path | None = None,
+) -> dict[str, object]:
     """Resolve one reviewed pair, rejecting identifiers outside the catalog."""
     pair_id = f"{map_resource_id}::{vehicle_resource_id}"
-    for pair in asset_pair_catalog()["pairs"]:
+    for pair in asset_pair_catalog(resource_root=resource_root)["pairs"]:
         if pair["pair_id"] == pair_id:
             return pair
     raise KeyError(pair_id)

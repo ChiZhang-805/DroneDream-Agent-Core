@@ -27,6 +27,7 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.evidence import EvidenceChain
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.mission_launch_binding import default_launch_node
 from dronedream_agent_core.mission_map_refinement import prepare_ground_routes
 from dronedream_agent_core.model_harness.boundary import (
     HARD_MAXIMUM_REPAIR_CYCLES,
@@ -147,7 +148,9 @@ def _canonical_sha256(value: object) -> str:
 #   output_dir：当前计划目录；evidence：完整证据链；tool_receipts：完整工具回执。
 # 输出：
 #   evidence_ids、tool_ids、index：证据链末端引用、工具引用和完整索引的文件绑定。
-def _output_receipt_references(output_dir: Path, evidence: list[EvidenceRecord], tool_receipts: list[ToolReceipt]) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, object]]:
+def _output_receipt_references(
+    output_dir: Path, evidence: list[EvidenceRecord], tool_receipts: list[ToolReceipt],
+) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, object]]:
     EvidenceChain.verify(evidence)
     payload = {
         "schema_version": "dronedream.harness-receipt-index.v1",
@@ -207,7 +210,8 @@ def _model_tool_proof(prepared) -> dict[str, object]:
 # 功能：
 #   将已准备的任务投影到界面协议，保留插件动作和实际规划预算，不赋予飞行权限。
 # 输入：
-#   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本；maximum_planning_rounds：配置上限。
+#   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本。
+#   maximum_planning_rounds：配置上限。
 # 输出：
 #   artifact：供界面展示与摘要绑定的计划对象。
 def _public_planner_artifact(
@@ -752,24 +756,7 @@ class MissionService:
         }
         effective_input_metadata["preferred_airspace"] = preferred_context
         if start_entity == "__auto__":
-            launch_node_ids = {node.node_id for node in graph.nodes if node.semantic == "launch"}
-            launch_aliases = [
-                alias
-                for alias, node_id in graph.named_entities.items()
-                if node_id in launch_node_ids
-            ]
-            if not launch_aliases:
-                raise ValueError("MAP_LAUNCH_ENTITY_REQUIRED")
-            launch_aliases.sort(
-                key=lambda value: (
-                    0
-                    if any(term in value.casefold() for term in ("launch", "start", "起飞", "起点"))
-                    else 1,
-                    len(value),
-                    value,
-                )
-            )
-            start_entity = launch_aliases[0]
+            start_entity = default_launch_node(graph, semantic_path)
         catalog = load_map_catalog(semantic_path, qualified_graph=graph)
         mission_root = self.store.missions_root / thread_id
         mission_root.mkdir(parents=True, exist_ok=True)
@@ -1324,7 +1311,8 @@ class MissionService:
             summary["integration_artifact_sha256"] = _canonical_sha256(planner_artifact)
             # 传递被摘要绑定的原始字节，防止 JavaScript 把 1.0、指数和键序重编码。
             summary["integration_artifact_canonical_json"] = json.dumps(
-                planner_artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                planner_artifact, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
             )
         notification_outputs, notification_receipts = extension_registry.invoke_multiple(
             "notifications.plan-ready",

@@ -1,0 +1,1110 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "corridors": [
+    {
+      "id": "fringe-forest-sports-centre-paved-exit",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -44,
+          165
+        ],
+        [
+          -43.4,
+          162
+        ],
+        [
+          -40.1,
+          158
+        ],
+        [
+          -37,
+          154
+        ],
+        [
+          -34,
+          150
+        ],
+        [
+          -30,
+          146
+        ],
+        [
+          -27.3,
+          142
+        ],
+        [
+          -24,
+          137
+        ],
+        [
+          -17.7,
+          127
+        ],
+        [
+          -10,
+          116
+        ],
+        [
+          -4,
+          109
+        ],
+        [
+          0,
+          105
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible paved woodland exit beside the sports-centre and apartment edges, following the bend into the broad campus forecourt."
+      }
+    },
+    {
+      "id": "fringe-daycare-woodland-paved-link",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -139.011,
+          221.025
+        ],
+        [
+          -135.8,
+          218
+        ],
+        [
+          -130.6,
+          211
+        ],
+        [
+          -127.6,
+          207
+        ],
+        [
+          -125.7,
+          204
+        ],
+        [
+          -122.6,
+          198
+        ],
+        [
+          -118,
+          192
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible diagonal paved path from the daycare forecourt to the open forest junction; preserve all observed tree margins."
+      }
+    },
+    {
+      "id": "fringe-gadolinin-north-paved-courtyard",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          170,
+          223
+        ],
+        [
+          175,
+          217.5
+        ],
+        [
+          180,
+          212
+        ],
+        [
+          182,
+          209
+        ],
+        [
+          184,
+          209
+        ],
+        [
+          187,
+          209
+        ],
+        [
+          190,
+          208
+        ],
+        [
+          193,
+          207
+        ]
+      ],
+      "width_m": 2.6,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible diagonal courtyard footway and white building-side apron skirt the north side of the courtyard tree."
+      }
+    },
+    {
+      "id": "fringe-forest-visible-paved-bend",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -121,
+          195
+        ],
+        [
+          -118,
+          192
+        ],
+        [
+          -112,
+          188
+        ],
+        [
+          -106,
+          184.6
+        ],
+        [
+          -100,
+          181.6
+        ],
+        [
+          -94,
+          178.5
+        ],
+        [
+          -88,
+          172.5
+        ],
+        [
+          -86,
+          169
+        ],
+        [
+          -84,
+          167.8
+        ],
+        [
+          -82,
+          166.2
+        ],
+        [
+          -80,
+          164.9
+        ],
+        [
+          -78,
+          164.1
+        ],
+        [
+          -76,
+          163.3
+        ],
+        [
+          -74,
+          162.6
+        ],
+        [
+          -72,
+          162
+        ],
+        [
+          -70,
+          161.7
+        ],
+        [
+          -68,
+          161.6
+        ],
+        [
+          -67,
+          161.8
+        ],
+        [
+          -64,
+          163.2
+        ],
+        [
+          -61,
+          164.4
+        ],
+        [
+          -57,
+          165.4
+        ],
+        [
+          -53,
+          166.2
+        ],
+        [
+          -50,
+          166
+        ],
+        [
+          -44,
+          165
+        ]
+      ],
+      "width_m": 2.8,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "The visible continuous pale paved woodland path bends between the observed canopy margins; its surveyed straight chords had cut the inside edge of the bend."
+      }
+    },
+    {
+      "id": "fringe-gadolinin-east-side-paved-path",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          191,
+          176
+        ],
+        [
+          198,
+          180
+        ],
+        [
+          201,
+          183
+        ],
+        [
+          204,
+          186.5
+        ],
+        [
+          207,
+          188.5
+        ],
+        [
+          208.4,
+          191
+        ],
+        [
+          208,
+          193
+        ],
+        [
+          207,
+          195
+        ],
+        [
+          205,
+          196.8
+        ],
+        [
+          202,
+          198.4
+        ]
+      ],
+      "width_m": 2.6,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible building-side paved path on the eastern side of the courtyard trees, keeping the full route outside their observed footprints."
+      }
+    },
+    {
+      "id": "fringe-daycare-south-paved-frontage",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          -139.011,
+          221.025
+        ],
+        [
+          -138,
+          226
+        ],
+        [
+          -138,
+          230
+        ],
+        [
+          -132,
+          234
+        ],
+        [
+          -125.646,
+          234.102
+        ],
+        [
+          -115.649,
+          233.849
+        ],
+        [
+          -100,
+          234
+        ],
+        [
+          -96,
+          232.8
+        ],
+        [
+          -94,
+          232.8
+        ],
+        [
+          -92,
+          234
+        ],
+        [
+          -90.09,
+          236.204
+        ]
+      ],
+      "width_m": 4.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Paved forecourt along the south face of Kumpupilvi and its annex; imagery shows a continuous open strip between the building and planted southern garden."
+      }
+    },
+    {
+      "id": "fringe-vaino7-building-side-access",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          54,
+          174.8
+        ],
+        [
+          55,
+          180
+        ],
+        [
+          60,
+          185
+        ],
+        [
+          61,
+          188
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Building-side paved path to the northern residential frontage, on the northwest side of the street tree strip."
+      }
+    },
+    {
+      "id": "fringe-vaino-north-road-lane",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          74,
+          181
+        ],
+        [
+          80,
+          185
+        ],
+        [
+          86,
+          191
+        ],
+        [
+          91,
+          199
+        ],
+        [
+          94,
+          212
+        ],
+        [
+          94,
+          228
+        ],
+        [
+          94,
+          244
+        ]
+      ],
+      "width_m": 6.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Continuous visible paved street lane, keeping the route within the carriageway beside the street tree belt."
+      }
+    },
+    {
+      "id": "fringe-gadolinin4-southwest-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          187,
+          207
+        ],
+        [
+          193,
+          207
+        ],
+        [
+          198,
+          204
+        ],
+        [
+          201,
+          201
+        ],
+        [
+          202.482,
+          198.62
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Paved building frontage strip rather than the planted courtyard to its southwest."
+      }
+    },
+    {
+      "id": "fringe-vaino10-west-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          154,
+          234
+        ],
+        [
+          152,
+          237
+        ],
+        [
+          148.6,
+          241
+        ],
+        [
+          144.2,
+          245
+        ],
+        [
+          141,
+          248
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible paved diagonal access and northern building-side apron, within the registered image."
+      }
+    },
+    {
+      "id": "fringe-vaino10-east-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          154,
+          234
+        ],
+        [
+          158,
+          237
+        ],
+        [
+          159,
+          241
+        ],
+        [
+          158.5,
+          245
+        ],
+        [
+          156.408,
+          247.41
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Open apron east of the isolated courtyard tree, approaching the building frontage."
+      }
+    },
+    {
+      "id": "fringe-bengalin4-south-apron",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          221,
+          225
+        ],
+        [
+          226,
+          224
+        ],
+        [
+          231,
+          223
+        ],
+        [
+          233,
+          222
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible pale paved/gravel apron outside the south-west corner of Bengalinpolku 4, avoiding the canopy at the previous west-wall handoff."
+      }
+    },
+    {
+      "id": "fringe-hameentie-open-carriageway",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          180,
+          72
+        ],
+        [
+          198,
+          74
+        ],
+        [
+          215,
+          70
+        ],
+        [
+          219,
+          52
+        ],
+        [
+          214,
+          32
+        ],
+        [
+          206,
+          3
+        ],
+        [
+          195,
+          -27
+        ],
+        [
+          184,
+          -58
+        ],
+        [
+          172,
+          -89
+        ],
+        [
+          159,
+          -120
+        ],
+        [
+          146,
+          -149
+        ],
+        [
+          133,
+          -177
+        ],
+        [
+          126,
+          -186
+        ]
+      ],
+      "width_m": 7.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visually traced continuous paved carriageway around the eastern forest; follows the road curve rather than crossing the forest interior."
+      }
+    },
+    {
+      "id": "fringe-hameentie-south-junction",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          126,
+          -186
+        ],
+        [
+          148,
+          -184
+        ],
+        [
+          173,
+          -184
+        ],
+        [
+          194,
+          -183
+        ],
+        [
+          211,
+          -179
+        ],
+        [
+          216,
+          -175
+        ]
+      ],
+      "width_m": 6.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Open paved road junction south of the eastern forest."
+      }
+    },
+    {
+      "id": "fringe-group-home-paved-drive",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          211,
+          -179
+        ],
+        [
+          215,
+          -194
+        ],
+        [
+          217,
+          -205
+        ],
+        [
+          219,
+          -214
+        ],
+        [
+          217,
+          -224
+        ],
+        [
+          213.091,
+          -235.31
+        ]
+      ],
+      "width_m": 4.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible curved paved approach and building-side apron to the group home south of the junction."
+      }
+    },
+    {
+      "id": "fringe-west-48969-paved-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -248,
+          163
+        ],
+        [
+          -249.58632413524413,
+          164.65661492698598
+        ]
+      ],
+      "width_m": 2,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Limingantie 27: move the staging point from the rear garden to the visible northwest paved frontage of the same registered building. This is an outdoor ground handoff, not a recognized door. The short frontage connection joins existing Limingantie survey-road-0064; no building or canopy geometry is changed. Registered image reviewed at east -250..-215, north 140..183 metres.",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6"
+      }
+    },
+    {
+      "id": "fringe-west-50176-paved-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -239,
+          171.5
+        ],
+        [
+          -240.64533197939514,
+          173.21823743732796
+        ]
+      ],
+      "width_m": 2,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Limingantie 29: move the staging point from the rear garden to the visible northwest paved frontage of the same registered building. This is an outdoor ground handoff, not a recognized door. The short frontage connection joins existing Limingantie survey-road-0064; no building or canopy geometry is changed. Registered image reviewed at east -250..-215, north 140..183 metres.",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6"
+      }
+    },
+    {
+      "id": "fringe-west-expanded-shared-driveway",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -261,
+          216
+        ],
+        [
+          -259,
+          218
+        ],
+        [
+          -253,
+          224
+        ],
+        [
+          -245,
+          232
+        ],
+        [
+          -243,
+          234
+        ],
+        [
+          -237,
+          240
+        ],
+        [
+          -229,
+          248
+        ],
+        [
+          -221,
+          256
+        ],
+        [
+          -213,
+          264
+        ],
+        [
+          -205,
+          270
+        ],
+        [
+          -193,
+          278
+        ],
+        [
+          -185,
+          270
+        ],
+        [
+          -178,
+          262
+        ],
+        [
+          -168.155,
+          251.092
+        ],
+        [
+          -163.904,
+          246.71
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "image_sha256": "0781c7fc0c4df656f4d985d6f92abd13108731c4a01661f1d7cc719f4608f987",
+        "source_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25497640%2C6677080%2C25497800%2C6677175&width=1920&height=1140&format=image%2Fjpeg",
+        "source_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "image_extent_enu": [
+          -280,
+          -120,
+          200,
+          295
+        ],
+        "note": "Directly visible paved shared frontage driveway and its connection around the northwest corner of Limingantie 40 to the main Limingantie street. The connector is outside the former north crop. A narrow 3 m planning corridor follows pavement, excludes parked-car bays and gardens, and must still be intersected with the expanded official building and canopy obstacles. 2023 adjacent orthophoto evidence, not a new capture of the original 2025 image."
+      }
+    },
+    {
+      "id": "fringe-limingantie-junction-pavement-bend",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          -163.904,
+          246.71
+        ],
+        [
+          -161,
+          244.5
+        ],
+        [
+          -159,
+          241.9
+        ],
+        [
+          -158.6948,
+          240.8182
+        ],
+        [
+          -147.274,
+          229.331
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "source_year": 2025,
+        "note": "Observed paved Limingantie junction: the source OSM joint (-161.55,243.69) clips the southwest roadside canopy at the street corner. This short road-centre bend stays on the photographed asphalt between unchanged canopy boundaries, then rejoins the exact original road0002 centerline at t=0.2. The remainder follows the existing road centre, away from the northeast parked-car edge. Both mainstreet and branch endpoints are exact existing survey nodes, so this is a real connected street junction, not an arbitrary straight shortcut. Verified in original registered 2025 image at E[-168,-141],N[226,250]; candidate13 full metric planner passes all four segments with vehicle diameter .912m, height .516m and required clearance .35m; minimum sampled inflated clearance .5129m."
+      }
+    }
+  ],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": [
+    {
+      "node_id": "city-35635-handoff",
+      "old_position_m": {
+        "x": 66.562,
+        "y": 183.75,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 61,
+        "y": 188,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Move from the observed street tree strip to the visible building-side paved apron. An outdoor staging point, not a claimed doorway."
+      }
+    },
+    {
+      "node_id": "city-39082-handoff",
+      "old_position_m": {
+        "x": 86.562,
+        "y": 244.688,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 94,
+        "y": 244,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Place the staging point on the adjacent visible road frontage, outside the street tree belt; not a claimed doorway."
+      }
+    },
+    {
+      "node_id": "city-45669-handoff",
+      "old_position_m": {
+        "x": 130.224,
+        "y": 247.23,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 141,
+        "y": 248,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Move the staging point from the western lawn edge to the visible paved diagonal frontage approach of the same building, not a claimed doorway."
+      }
+    },
+    {
+      "node_id": "city-49129-handoff",
+      "old_position_m": {
+        "x": 235.119,
+        "y": 239.003,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 233,
+        "y": 222,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Move the canopy-covered west-wall handoff to the same building's visible southwest apron; not a claimed doorway."
+      }
+    },
+    {
+      "node_id": "city-48969-handoff",
+      "old_position_m": {
+        "x": -237.717,
+        "y": 150.09,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -248,
+        "y": 163,
+        "z": 2
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
+        "note": "Limingantie 27: move the staging point from the rear garden to the visible northwest paved frontage of the same registered building. This is an outdoor ground handoff, not a recognized door. The short frontage connection joins existing Limingantie survey-road-0064; no building or canopy geometry is changed. Registered image reviewed at east -250..-215, north 140..183 metres.",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6"
+      }
+    },
+    {
+      "node_id": "city-50176-handoff",
+      "old_position_m": {
+        "x": -235.477,
+        "y": 152.25,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -239,
+        "y": 171.5,
+        "z": 2
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
+        "note": "Limingantie 29: move the staging point from the rear garden to the visible northwest paved frontage of the same registered building. This is an outdoor ground handoff, not a recognized door. The short frontage connection joins existing Limingantie survey-road-0064; no building or canopy geometry is changed. Registered image reviewed at east -250..-215, north 140..183 metres.",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6"
+      }
+    },
+    {
+      "node_id": "city-68417-handoff",
+      "old_position_m": {
+        "x": -242.831,
+        "y": 210.298,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -259,
+        "y": 218,
+        "z": 2
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "image_sha256": "0781c7fc0c4df656f4d985d6f92abd13108731c4a01661f1d7cc719f4608f987",
+        "source_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25497640%2C6677080%2C25497800%2C6677175&width=1920&height=1140&format=image%2Fjpeg",
+        "source_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "image_extent_enu": [
+          -280,
+          -120,
+          200,
+          295
+        ],
+        "note": "Limingantie 34: same-building northwest paved frontage staging point on the visible shared driveway, away from the rear garden. This is a proposed outdoor ground handoff, not a recognized entrance. The actual continuous driveway joins Limingantie around the neighboring apartment outside the old crop. Expanded exact building/canopy geometry and simulation qualification are still required.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-68454-handoff",
+      "old_position_m": {
+        "x": -239.088,
+        "y": 218.862,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -243,
+        "y": 234,
+        "z": 2
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "image_sha256": "0781c7fc0c4df656f4d985d6f92abd13108731c4a01661f1d7cc719f4608f987",
+        "source_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25497640%2C6677080%2C25497800%2C6677175&width=1920&height=1140&format=image%2Fjpeg",
+        "source_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "image_extent_enu": [
+          -280,
+          -120,
+          200,
+          295
+        ],
+        "note": "Limingantie 36: same-building northwest paved frontage staging point on the visible shared driveway, away from the rear garden. This is a proposed outdoor ground handoff, not a recognized entrance. The actual continuous driveway joins Limingantie around the neighboring apartment outside the old crop. Expanded exact building/canopy geometry and simulation qualification are still required.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-61548-handoff",
+      "old_position_m": {
+        "x": -217.568,
+        "y": 246.96,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -229,
+        "y": 248,
+        "z": 2
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "image_sha256": "0781c7fc0c4df656f4d985d6f92abd13108731c4a01661f1d7cc719f4608f987",
+        "source_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25497640%2C6677080%2C25497800%2C6677175&width=1920&height=1140&format=image%2Fjpeg",
+        "source_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "image_extent_enu": [
+          -280,
+          -120,
+          200,
+          295
+        ],
+        "note": "Limingantie 38: same-building northwest paved frontage staging point on the visible shared driveway, away from the rear garden. This is a proposed outdoor ground handoff, not a recognized entrance. The actual continuous driveway joins Limingantie around the neighboring apartment outside the old crop. Expanded exact building/canopy geometry and simulation qualification are still required.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    }
+  ],
+  "remove_corridor_ids": [],
+  "unresolved_observations": []
+}

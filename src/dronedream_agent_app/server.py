@@ -754,7 +754,7 @@ def create_app(
     #   catalog：1 张正式地图、13 架无人机及其 13 个精确组合。
     @app.get("/v1/asset-pair-catalog", dependencies=[local])
     def list_asset_pairs() -> dict[str, object]:
-        return asset_pair_catalog()
+        return asset_pair_catalog(resource_root=resource_root)
 
     @app.get("/v1/asset-source-adapters", dependencies=[local])
     def list_asset_source_adapters() -> list[dict[str, object]]:
@@ -1392,7 +1392,9 @@ def create_app(
         except MapObservationPending as error:
             store.set_thread_state(thread_id, "planning")
             private_fields = {"candidate_semantic", "patches", "model_calls", "pending_artifact"}
-            details = {key: value for key, value in error.details.items() if key not in private_fields}
+            details = {
+                key: value for key, value in error.details.items() if key not in private_fields
+            }
             text = ("正在补全地图观察；任务已保留，等待可用的视觉模型或补充视图。"
                     if payload.locale == "zh-CN" else
                     "Map observation is incomplete. The task is retained for a vision model "

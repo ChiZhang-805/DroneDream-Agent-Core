@@ -45,8 +45,12 @@ in map_catalog, never invent coordinates, permissions, evidence, or sensor value
 
 Apply workflow_scope.product_defaults before asking questions. In particular, a pickup
 returns to the mission start unless another destination is explicit; pickup hover/scan policy
-is not a user question; execution still requires confirmation. Use a documented pickup entity
-over a non-actionable facility anchor. If exactly one documented place fits, select it. Ask a
+is not a user question; execution still requires confirmation.
+When no starting place is stated, use request.start_entity, which is bound to the selected
+map's default launch. If the user names a different start, resolve that place to its documented
+accessible launch/handoff node; never substitute its building center or silently use the default.
+Use a documented pickup entity over a non-actionable facility anchor.
+If exactly one documented place fits, select it. Ask a
 short question only when a material ambiguity changes the task or prevents route preparation.
 For each blocking ambiguity, fill missing_critical_fields and clarification_questions. Offer
 at most A/B/C single-entity choices in likelihood order, set allow_other=true, and include the
@@ -252,8 +256,10 @@ hard gate:
 a newly generated metric-geometry route cannot have historical edge-flight labels before
 execution. Accept it when the selected candidate is feasible and its hash-bound continuous
 vehicle-envelope clearance, qualified semantic geometry, endpoints, and route binding all
-pass their deterministic gates. A vehicle's qualified_range_m already includes its declared
-reserve, so never subtract that reserve a second time. Return short issue codes and repair
+pass their deterministic gates. Use qualified_range_m as the declared route-distance limit
+without an additional reserve deduction. Follow its qualification basis: a completed
+simulated route does not establish physical battery endurance. Runtime battery-reserve
+checks still apply. Return short issue codes and repair
 instructions for the next bounded planning iteration. The planning_evidence_scope object explicitly
 separates evidence that must exist now from runtime evidence that can only be collected
 after the user confirms and execution begins. Do not reject a prepared plan merely because

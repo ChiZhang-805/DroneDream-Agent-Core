@@ -34,6 +34,7 @@ from dronedream_agent_core.asset_pair_qualification import (
     build_pair_qualification_receipt,
     prepare_asset_pair_qualification,
 )
+from dronedream_agent_core.asset_payload_qualification import verify_asset_payload_run
 
 MAP_ASSET_ID = "dronedream.school-map.v1"
 VEHICLE_ASSET_ID = "dronedream.my-drone.v1"
@@ -143,8 +144,9 @@ def _stage_current_vehicle(
     if not controller_params.is_file():
         raise FileNotFoundError("verified controller parameters are unavailable")
     destination.mkdir(parents=True, exist_ok=False)
-    for name in required:
-        shutil.copyfile(source_root / name, destination / name)
+    _copy_tree(source_root, destination)
+    if (destination / "model.config").is_file():
+        return controller_params
     (destination / "model.config").write_text(
         """<?xml version="1.0"?>
 <model>
@@ -169,6 +171,18 @@ def _assert_promotion_input_binding(
     controller_params: Path,
 ) -> None:
     """Require qualification evidence to hash-bind every promoted runtime input."""
+
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verify_asset_payload_run(run_dir)
+        inputs = _json(run_dir / 'asset-qualification-inputs.json')
+        for root, key in ((map_source, 'map_files'), (vehicle_source, 'vehicle_files')):
+            for relative, digest in inputs[key].items():
+                candidate = (root / relative).resolve()
+                if not candidate.is_relative_to(root.resolve()) or _sha256(candidate) != digest:
+                    raise ValueError('DEFAULT_ASSET_PROMOTION_INPUT_MISMATCH')
+        if _sha256(controller_params) != inputs['runtime_inputs']['controller_params_sha256']:
+            raise ValueError('DEFAULT_ASSET_PROMOTION_INPUT_MISMATCH')
+        return
 
     preflight = _json(run_dir / "preflight_contract.json")
     map_hashes = preflight.get("school_map_package_sha256")
@@ -461,6 +475,25 @@ def _write_current_source_package(
 
 def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
     evidence_path = run_dir / "mission_evidence.json"
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verified = verify_asset_payload_run(run_dir)
+        return {
+            'schema_version': 'dronedream.asset-qualification-receipt.v1',
+            'source': 'real-gazebo-harmonic-px4-sitl',
+            'mission_evidence_file': 'qualification/mission_evidence.json',
+            'mission_evidence_sha256': _sha256(evidence_path),
+            'required_gates': verified['gates'],
+            'pose_sample_count': verified['measurements']['pose_sample_count'],
+            'payload_spawn_file': 'qualification/payload_spawn.json',
+            'payload_spawn_sha256': _sha256(run_dir / 'payload_spawn.json'),
+            'gazebo_runtime_verified': True, 'px4_mission_smoke_verified': True,
+            'simulation_execution_ready': True,
+            'measurements': verified['measurements'],
+            'verified_source_files_sha256': verified['verified_source_files_sha256'],
+            'verified_native_runtime_files_sha256': (
+                verified['verified_native_runtime_files_sha256']
+            ),
+        }
     evidence = _json(evidence_path)
     if (
         evidence.get("schema_version") != "dronedream.school-map-px4-mission-evidence.v1"
@@ -501,6 +534,14 @@ def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
 def _copy_qualification_evidence(run_dir: Path, destination: Path) -> None:
     qualification = destination / "qualification"
     qualification.mkdir(parents=True, exist_ok=True)
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verified = verify_asset_payload_run(run_dir)
+        for name in verified['verified_source_files_sha256']:
+            target = qualification / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(run_dir / name, target)
+        _write_json(qualification / 'asset-qualification-evidence.json', verified)
+        return
     for name in (
         "mission_evidence.json",
         "preflight_contract.json",
@@ -729,7 +770,8 @@ def _build_map_bundle(
     map_source: Path,
 ) -> None:
     _copy_tree(map_source, destination / "gazebo")
-    _write_current_map_contract(destination / "gazebo" / "semantic.json")
+    if not (run_dir / 'asset-qualification-inputs.json').is_file():
+        _write_current_map_contract(destination / "gazebo" / "semantic.json")
     graph = _json(graph_source)
     evidence_sha256 = _sha256(run_dir / "mission_evidence.json")
     graph["asset_id"] = MAP_ASSET_ID
@@ -837,7 +879,8 @@ def _build_vehicle_bundle(
         raise ValueError("DEFAULT_VEHICLE_PAYLOAD_QUALIFICATION_INVALID")
     vehicle_summary["maximum_design_payload_kg"] = design_payload_limit_kg
     vehicle_summary["maximum_qualified_payload_kg"] = qualified_payload_kg
-    _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
+    if not (run_dir / "asset-qualification-inputs.json").is_file():
+        _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
     qualified_range_m = _verified_track_distance_m(run_dir)
     vehicle = {
         "schema_version": "dronedream.vehicle.v1",
@@ -908,6 +951,11 @@ def _qualified_runtime_evidence(
     mission_evidence_path: Path,
 ) -> dict[str, Any]:
     source = _json(mission_evidence_path)
+    if (mission_evidence_path.parent / 'asset-qualification-inputs.json').is_file():
+        # Preserve all seven native input hashes. The pair importer consumes
+        # these exact flight artifacts instead of preparing a different route.
+        verify_asset_payload_run(mission_evidence_path.parent)
+        return source
     source_gates = source.get("gates")
     measurements = source.get("measurements")
     if (
@@ -988,11 +1036,15 @@ def _build_qualified_pair(
         created_at=qualified_at,
     )
     qualification_root = temporary / "qualification"
+    recorded = (run_dir / 'asset-qualification-inputs.json').is_file()
     plan = prepare_asset_pair_qualification(
         map_archive=source_map,
         vehicle_archive=source_vehicle,
         work_root=qualification_root,
         maximum_translation_m=300.0,
+        **({'recorded_route_path': run_dir / 'mission-route.json',
+            'recorded_track_path': run_dir / 'reference_track.json',
+            'recorded_clearance_path': run_dir / 'clearance.json'} if recorded else {}),
     )
     mission_evidence_path = run_dir / "mission_evidence.json"
     runtime_evidence = _qualified_runtime_evidence(
@@ -1139,7 +1191,9 @@ def main() -> None:
         graph = args.map_graph.resolve()
         if not map_source.is_dir() or not graph.is_file():
             raise FileNotFoundError("current Kumpula map source or graph is unavailable")
-        _write_current_map_contract(map_source / "semantic.json")
+        recorded = (run_dir / 'asset-qualification-inputs.json').is_file()
+        if not recorded:
+            _write_current_map_contract(map_source / "semantic.json")
         controller_params = _stage_current_vehicle(
             args.vehicle_source.resolve(),
             args.controller_params.resolve(),
@@ -1148,7 +1202,8 @@ def main() -> None:
         _assert_promotion_input_binding(
             run_dir=run_dir,
             map_source=map_source,
-            vehicle_source=temporary / "current-vehicle",
+            vehicle_source=(args.vehicle_source.resolve() if recorded
+                            else temporary / "current-vehicle"),
             controller_params=controller_params,
         )
         _build_map_bundle(run_dir, graph, map_root, map_source)

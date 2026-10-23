@@ -45,6 +45,24 @@ def test_missing_geometry_stays_unobservable():
     assert len(result['candidates']) == 14
 
 
+def test_open_ground_uses_the_actual_camera_range_for_distant_facades():
+    primitives, frames = fixture()
+    primitives[0].update(center_x=12., size_y=60., size_z=12., center_z=6.)
+    primitives[1].update(center_y=12., size_x=60., size_z=12., center_z=6.)
+    primitives[2].update(size_x=60., size_y=60.)
+    index = MapSurfaceIndex(primitives)
+    result = select_simulation_start_view(index=index, frames=frames, model_root=[0., 0., 0.])
+    assert result['selected_yaw_rad'] is not None
+    assert result['candidates'][-1]['predicted_pose_rank'] == 6
+    assert result['candidates'][-1]['predicted_translation_rank'] == 3
+    assert not result['motion_permission_granted']
+
+    frames['depth_optics']['far_m'] = 6.
+    short_range = select_simulation_start_view(index=index, frames=frames, model_root=[0., 0., 0.])
+    assert short_range['selected_yaw_rad'] is None
+    assert short_range['issue'] == 'START_VIEW_NO_COMPLETE_PREDICTED_CONSTRAINT'
+
+
 # 功能：偏心机型不能在原点契约不变时擅自旋转；输入：水平偏心；输出：保留原生成语义。
 def test_eccentric_vehicle_does_not_change_bound_origin():
     primitives, frames = fixture()

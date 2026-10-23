@@ -26,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from dronedream_agent_core.asset_payload_qualification import decide_asset_checkpoint
 from dronedream_agent_core.collision import validate_route_clearance
 from dronedream_agent_core.contracts import (
     GraphRoute,
@@ -9190,6 +9191,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--hybrid-route-sha256")
     parser.add_argument("--simulation-teacher-control", action="store_true")
     parser.add_argument("--teacher-payload-checkpoints", action="store_true")
+    parser.add_argument("--asset-qualification-checkpoints", action="store_true")
     parser.add_argument("--local-safety-command-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-runtime-stale-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-repair-timeout-seconds", type=float, default=15.0)
@@ -10355,6 +10357,14 @@ def _apply_native_preflight_tracking_budget(args: argparse.Namespace, receipt: d
 # 输出：
 #   None：不返回业务数据。
 async def _run(args: argparse.Namespace, base: ModuleType) -> None:
+    if getattr(args, "asset_qualification_checkpoints", False) and (
+        not getattr(args, "independent_route_control", False)
+        or args.require_model_control_authority or not args.local_safety_required
+        or getattr(args, "simulation_teacher_control", False)
+        or getattr(args, "teacher_payload_checkpoints", False)
+        or args.checkpoint_contract is None or args.runtime_action_contract is None
+    ):
+        raise ValueError("asset qualification requires independent native safety and bound actions")
     if getattr(args, "independent_route_control", False) and (
         args.require_model_control_authority or not args.local_safety_required
         or getattr(args, "simulation_teacher_control", False)
@@ -11598,7 +11608,16 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 checkpoint_started = loop.time()
                 while True:
                     try:
-                        if getattr(args, "teacher_payload_checkpoints", False):
+                        if getattr(args, "asset_qualification_checkpoints", False):
+                            base._raise_if_external_abort_requested(args.abort_file)
+                            if runtime_interrupt_probe is not None:
+                                interruption = runtime_interrupt_probe()
+                                if interruption is not None:
+                                    raise interruption
+                            decision = decide_asset_checkpoint(request, checkpoint_contract)
+                            _atomic_json(request_path.with_name(
+                                f"{checkpoint.checkpoint_id}.asset-decision.json"), decision)
+                        elif getattr(args, "teacher_payload_checkpoints", False):
                             base._raise_if_external_abort_requested(args.abort_file)
                             if runtime_interrupt_probe is not None:
                                 interruption = runtime_interrupt_probe()
@@ -11677,8 +11696,10 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                         "decision_sha256": sha256_json(decision),
                         "continue_authorized": decision.continue_authorized,
                         "assessment_action": decision.assessment.action,
-                        "decision_source": ("simulation-payload-teacher"
-                            if getattr(args, "teacher_payload_checkpoints", False) else "model"),
+                        "decision_source": ("physical-asset-qualification"
+                            if getattr(args, "asset_qualification_checkpoints", False) else (
+                            "simulation-payload-teacher"
+                            if getattr(args, "teacher_payload_checkpoints", False) else "model")),
                     }
                 )
                 if not decision.continue_authorized:

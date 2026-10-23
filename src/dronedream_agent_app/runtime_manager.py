@@ -33,6 +33,7 @@ from dronedream_agent_core.contracts import (
     RuntimeOperatorTakeoverGrant,
     SimulationWorkflowResult,
     Vector3,
+    VehicleAsset,
 )
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.local_policy_packages import load_local_policy_package
@@ -1502,7 +1503,6 @@ class RuntimeManager:
             map_selection = resolve_versioned_map(map_record)
             vehicle_selection = resolve_versioned_vehicle(vehicle_record)
             if local_policy_trial is not None:
-                from dronedream_agent_core.contracts import VehicleAsset
                 from dronedream_agent_core.simulation_trial import validate_trial_configuration
 
                 validate_trial_configuration(
@@ -1612,13 +1612,18 @@ class RuntimeManager:
             # Its evidence is already covered by the prepared-mission authority;
             # verify the original qualified world and exact observed delta before
             # handing the same semantic bytes to the Linux executor.
-            from dronedream_agent_core.mission_map_refinement import resolve_execution_semantic
+            from dronedream_agent_core.mission_launch_binding import (
+                resolve_mission_execution_semantic,
+            )
 
             from .map_refinement_source import map_observation_source
 
-            semantic = resolve_execution_semantic(
+            semantic = resolve_mission_execution_semantic(
                 prepared=prepared_mission, output_dir=prepared.parent,
                 base_semantic_path=semantic, graph=bound_map,
+                vehicle=decode_contract_json(
+                    read_plugin_file(vehicle_metadata, limit=1024 * 1024), VehicleAsset,
+                    limit=1024 * 1024, node_limit=100_000),
                 source_loader=lambda: map_observation_source(map_record),
             )
             if (

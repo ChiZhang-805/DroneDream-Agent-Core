@@ -3099,6 +3099,7 @@ def run_px4_gazebo_track(
     development_depth_drop_after_seconds: float | None = None,
     development_depth_drop_duration_seconds: float | None = None,
     development_payload_collection: bool = False,
+    asset_payload_qualification: bool = False,
     record_learning_observations: bool = False,
     learning_image_size: tuple[int, int] = (224, 128),
     simulation_teacher_control: bool = False,
@@ -3121,6 +3122,14 @@ def run_px4_gazebo_track(
     """Execute one route; success requires runtime state and evidence, not process exit alone."""
 
     executor_options = _validated_executor_options(executor_extra_args)
+    if type(asset_payload_qualification) is not bool or (asset_payload_qualification and (
+        not independent_route_control or simulation_teacher_control
+        or development_payload_collection or simulation_training_channel is not None
+        or local_navigation_provider is not None or checkpoint_contract_path is None
+        or runtime_action_contract_path is None
+        or development_depth_drop_after_seconds is not None
+    )):
+        raise ValueError('ASSET_QUALIFICATION_REQUIRES_NATIVE_BOUND_PHYSICAL_COURSE')
     local_reference_arguments = _local_reference_arguments(
         local_reference_prearm, localization_source_channel, native_source_clock_domain)
     if native_source_clock_domain is not None and (
@@ -5521,6 +5530,8 @@ def run_px4_gazebo_track(
                         *(["--independent-route-control"] if independent_route_control else []),
                         *(["--teacher-payload-checkpoints"]
                           if simulation_teacher_control and development_payload_collection else []),
+                        *(["--asset-qualification-checkpoints"]
+                          if asset_payload_qualification else []),
                         "--takeoff-timeout-seconds",
                         f"{SIMULATION_TAKEOFF_STABILITY_TIMEOUT_SECONDS:g}",
                         "--takeoff-climb-rate-m-s",

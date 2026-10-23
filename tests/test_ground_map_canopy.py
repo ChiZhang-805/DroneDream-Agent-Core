@@ -34,10 +34,68 @@ def _top_footprint(raw):
         if line.startswith("v "):
             vertices.append(tuple(map(float, line.split()[1:])))
         if line.startswith("f "):
-            points = [vertices[int(i) - 1] for i in line.split()[1:]]
+            points = [vertices[int(i.split("/")[0]) - 1] for i in line.split()[1:]]
             if len({p[2] for p in points}) == 1 and points[0][2] > 0:
                 triangles.append(Polygon([(x, y) for x, y, _ in points]))
     return unary_union(triangles)
+
+
+def _assert_outward_face_normals(raw):
+    """Check the actual OBJ corner bindings consumed by Gazebo / Assimp."""
+    vertices, normals, used_normals = [], [], set()
+    groups = faces = 0
+    for line in raw.decode().splitlines():
+        if line.startswith("g "):
+            groups += 1
+        elif line.startswith("v "):
+            vertices.append(tuple(map(float, line.split()[1:])))
+        elif line.startswith("vn "):
+            normal = tuple(map(float, line.split()[1:]))
+            assert all(math.isfinite(v) for v in normal)
+            assert math.hypot(*normal) == pytest.approx(1, abs=1e-12)
+            normals.append(normal)
+        elif line.startswith("f "):
+            corners = [token.split("/") for token in line.split()[1:]]
+            assert len(corners) == 3
+            assert all(len(c) == 3 and c[1] == "" for c in corners)
+            normal_ids = {int(c[2]) for c in corners}
+            assert len(normal_ids) == 1
+            normal_id = normal_ids.pop()
+            assert normal_id == faces + 1  # Independent global indices across groups.
+            used_normals.add(normal_id)
+            a, b, c = (vertices[int(corner[0]) - 1] for corner in corners)
+            u, v = [b[i] - a[i] for i in range(3)], [c[i] - a[i] for i in range(3)]
+            cross = (
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            )
+            length = math.hypot(*cross)
+            assert length > 0
+            assert normals[normal_id - 1] == pytest.approx(tuple(n / length for n in cross))
+            faces += 1
+    assert used_normals == set(range(1, len(normals) + 1))
+    return groups, faces
+
+
+def test_gazebo_normals_bind_every_face_across_groups_without_smoothing_seams():
+    raw, receipt = canopy.canopy_mesh(
+        [
+            _feature("concave", [[0, 0], [6, 0], [6, 2], [2, 2], [2, 6], [0, 6]]),
+            _feature("diagonal", [[10, 10], [13, 11], [11, 15]], "puusto_2_10m_2024"),
+        ],
+        origin_xy_m=(6, 7),
+    )
+    groups, faces = _assert_outward_face_normals(raw)
+    assert groups == 2
+    assert faces == receipt["triangles"] == receipt["normals"]
+    normals = {
+        tuple(map(float, line.split()[1:]))
+        for line in raw.decode().splitlines()
+        if line.startswith("vn ")
+    }
+    assert (0, 0, 1) in normals and (0, 0, -1) in normals
+    assert any(n[2] == 0 and n[0] != 0 and n[1] != 0 for n in normals)
 
 
 def test_concave_canopy_does_not_fill_open_road_or_bounding_box():
@@ -59,7 +117,7 @@ def test_canopy_surface_is_closed_and_outward_wound_for_physical_collision():
         if line.startswith("v "):
             vertices.append(tuple(map(float, line.split()[1:])))
         if line.startswith("f "):
-            ids = tuple(map(int, line.split()[1:]))
+            ids = tuple(int(i.split("/")[0]) for i in line.split()[1:])
             for a, b in ((ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])):
                 edges[tuple(sorted((a, b)))] += 1
             a, b, c = [vertices[i - 1] for i in ids]
@@ -217,9 +275,12 @@ def test_actual_observed_canopy_all_chunks_pass_optical_mesh_validation():
     assert receipt["mesh_count"] <= 75
     ids = []
     for chunk in receipt["meshes"]:
-        triangles, closed = _obj_triangles(meshes[chunk["mesh_uri"]], np.ones(3))
+        raw = meshes[chunk["mesh_uri"]]
+        triangles, closed = _obj_triangles(raw, np.ones(3))
         assert closed and len(triangles) <= canopy.CHUNK_MAX_TRIANGLES
         assert chunk["vertices"] <= 8192
+        _, faces = _assert_outward_face_normals(raw)
+        assert faces == chunk["triangles"] == chunk["normals"]
         ids.extend(item["id"] for item in chunk["footprints"])
     assert sorted(ids) == sorted(f["id"] for f in features)
     assert receipt["source_exclusions_sha256"] == canopy._digest(features)

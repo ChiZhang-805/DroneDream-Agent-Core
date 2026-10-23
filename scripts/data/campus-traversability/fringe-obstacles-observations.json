@@ -1,0 +1,185 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "supplemental_source": {
+    "image_sha256": "c18e954ee346928eee2fbbcb5e3a01ae328a8cbdfdeb0086997623bd5b7e6e7c",
+    "crs": "EPSG:3879",
+    "origin": [
+      25497920,
+      6676880
+    ],
+    "extent_enu": [
+      135,
+      205,
+      190,
+      260
+    ],
+    "source_year": 2023,
+    "license": "CC-BY-4.0",
+    "attribution": "Orthophoto (c) municipalities in the area, HSY, HSL and Finnish Defence Forces 2023",
+    "url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25498055%2C6677070%2C25498125%2C6677140&width=840&height=840&format=image%2Fjpeg",
+    "retrieved_at": "2026-10-23T19:54:13.603984+00:00"
+  },
+  "corridors": [
+    {
+      "id": "fringe-gadolinin-shed-north-lawn-bypass",
+      "kind": "lawn",
+      "centerline_xy_m": [
+        [
+          195,
+          206
+        ],
+        [
+          194,
+          208
+        ],
+        [
+          193.9,
+          209.7
+        ],
+        [
+          194,
+          212
+        ],
+        [
+          193.7,
+          214.4
+        ],
+        [
+          191,
+          216
+        ],
+        [
+          187.6,
+          216.2
+        ],
+        [
+          183.4,
+          217.2
+        ],
+        [
+          177.5,
+          217.5
+        ],
+        [
+          175,
+          217.5
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "registered-orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "supplemental_image_sha256": "c18e954ee346928eee2fbbcb5e3a01ae328a8cbdfdeb0086997623bd5b7e6e7c",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Observed paved frontage and open lawn north of the two small sheds 62535/61325; passes around the east and north sides of the leafy tree rather than across either shed. The narrow ground corridor is independently checked against the complete candidate15 building and canopy exclusions."
+      }
+    },
+    {
+      "id": "fringe-vaino10-shed-northwest-ground-bypass",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          154.5,
+          235
+        ],
+        [
+          154.7,
+          237.3
+        ],
+        [
+          155.9,
+          238.7
+        ],
+        [
+          157.2,
+          240
+        ],
+        [
+          158.5,
+          241.5
+        ],
+        [
+          159,
+          243
+        ],
+        [
+          158.5,
+          245
+        ],
+        [
+          156.408,
+          247.41
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "registered-orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "supplemental_image_sha256": "c18e954ee346928eee2fbbcb5e3a01ae328a8cbdfdeb0086997623bd5b7e6e7c",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible paved narrow passage around the northwest end of shed62341, then the open lawn and frontage north of the shed to the original city42937 handoff. The 2023 registered leaf-off view distinguishes ground from the 2025 cast shadow. Full existing tree canopy353126 and shed footprint remain excluded; the path does not pass through their gap diagonally."
+      }
+    }
+  ],
+  "areas": [],
+  "exclusions": [
+    {
+      "id": "visual-canopy-gadolinin-north-shed-tree",
+      "kind": "tree-canopy",
+      "polygon_xy_m": [
+        [
+          187.3,
+          208
+        ],
+        [
+          187.8,
+          211
+        ],
+        [
+          188.4,
+          212.6
+        ],
+        [
+          190.3,
+          213
+        ],
+        [
+          192.1,
+          212.1
+        ],
+        [
+          192.5,
+          210.8
+        ],
+        [
+          192.8,
+          209.8
+        ],
+        [
+          192,
+          207.6
+        ],
+        [
+          190.5,
+          207
+        ],
+        [
+          188.5,
+          207
+        ]
+      ],
+      "evidence": {
+        "source": "registered-orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "supplemental_image_sha256": "c18e954ee346928eee2fbbcb5e3a01ae328a8cbdfdeb0086997623bd5b7e6e7c",
+        "note": "Leafy crown traced on registered 2023 and retained 2025 orthophotos with a 1 m coordinate grid. Crown outline is distinct from its northwest cast shadow; the east edge remains west of x=192.8. Independent geometry and simulation qualification required."
+      }
+    }
+  ],
+  "handoff_corrections": [],
+  "unresolved_observations": []
+}

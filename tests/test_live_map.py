@@ -78,6 +78,23 @@ def test_map_image_dimensions_cannot_drift_from_registration(tmp_path, monkeypat
         maps.resolve_live_map(record)
 
 
+def test_full_campus_geometry_uses_asset_budget_without_dropping_live_pixels(tmp_path, monkeypatch):
+    record, semantic, _ = _map_fixture(tmp_path, monkeypatch, explicit=True)
+    # Real canopy/footprint maps exceed the small plugin RPC envelope. The Live
+    # reader must use the same map-file reader as planning, not reject that map.
+    semantic["traversability"] = {
+        "exclusions": [
+            {"id": f"tree-{i}", "kind": "tree-canopy",
+             "polygon_xy_m": [[float(j), float(j + 1)] for j in range(100)]}
+            for i in range(1000)
+        ]
+    }
+    (tmp_path / "semantic.json").write_text(json.dumps(semantic))
+    result = maps.resolve_live_map(record)
+    assert result.image == (tmp_path / "ortho.png").read_bytes()
+    assert result.metadata["world_to_image"] == [0.4, 0, 100, 0, -0.2, 50]
+
+
 @pytest.mark.parametrize("edit", ["rotation", "uv"])
 def test_legacy_fallback_rejects_unverified_mesh_registration(tmp_path, monkeypatch, edit):
     record, _, asset_ir = _map_fixture(tmp_path, monkeypatch)

@@ -72,6 +72,7 @@ from .contracts import (
     SemanticSpeedPreference,
     TaskGraph,
     TaskGraphArtifact,
+    TaskNode,
     ToolReceipt,
     VehicleAsset,
 )
@@ -81,6 +82,7 @@ from .extensions import ExtensionExecutionError, ExtensionRegistry
 from .hashing import sha256_json
 from .lifecycle import LifecycleTransitionError
 from .map_reasoning import build_map_reasoning_context
+from .mission_launch_binding import prepare_mission_launch
 from .mission_map_refinement import GroundMapPreparation
 from .model_harness.boundary import HarnessInputEnvelope
 from .model_harness.graph import (
@@ -104,6 +106,7 @@ from .plugin_api import (
     ToolEnvironment,
     build_discovered_extension_registry,
     build_discovered_tool_registry,
+    build_snapshot_tool_registry,
 )
 from .plugin_contracts import PluginHookReceipt, PluginSnapshot
 from .prompts import (
@@ -1044,7 +1047,7 @@ def _intent_workflow_scope() -> dict[str, object]:
             "pickup_returns_to_requester_start_unless_another_destination_is_explicit": True,
             "pickup_hover_seconds": 10,
             "pickup_scan_policy": "only_when_required_by_the_pickup_workflow",
-            "launch_entity_is_current_simulated_position_when_the_user_does_not_name_a_start": True,
+            "use_request_start_bound_to_map_default_unless_user_names_another_start": True,
         },
         "return_entity_semantics": (
             "final landing entity for both one-way and round-trip missions"
@@ -1515,7 +1518,8 @@ def _bind_task_graph_action_contracts(
             "nodes": [
                 task.model_copy(
                     update={
-                        "success_evidence": list(definitions[task.action].required_success_evidence),
+                        "success_evidence": list(
+                            definitions[task.action].required_success_evidence),
                         "arguments": contract_arguments(task),
                     }
                 )
@@ -3868,6 +3872,26 @@ class MissionOrchestrator:
                     self.map_graph, self.map_catalog, self.semantic_path, self.vehicle)
                 evidence.append("mission.refined-navigation-readiness",
                                 navigation_readiness.model_dump(mode="json"))
+        # The accepted named start controls the real spawn and local PX4 frame,
+        # not just a label in the plan. Keep the selected map untouched.
+        launch_path, launch_receipt = prepare_mission_launch(
+            semantic_path=self.semantic_path, graph=self.map_graph, vehicle=self.vehicle,
+            start_node=resolved_nodes[0], intent_sha256=sha256_json(intent), output_dir=output_dir)
+        if launch_receipt is not None:
+            self.semantic_path = launch_path
+            semantic_sha256 = _file_sha256(launch_path)
+            self.map_catalog = load_map_catalog(launch_path, qualified_graph=self.map_graph)
+            self.tool_registry = (
+                self.tool_registry_factory(launch_path) if self.tool_registry_factory is not None
+                else build_snapshot_tool_registry(ToolEnvironment(
+                    map_graph=self.map_graph, semantic_path=launch_path,
+                    vehicle_diameter_m=self.vehicle.body_radius_m * 2,
+                    vehicle_height_m=self.vehicle.body_height_m, vehicle=self.vehicle,
+                    waypoint_hold_seconds=self.config.waypoint_hold_seconds,
+                    planning_phase="initial"), self.plugin_snapshot))
+            self.tool_registry.configure_extensions(self.extension_registry,
+                receipt_sink=lambda receipts: self._record_hook_receipts(receipts, evidence))
+            evidence.append("mission.launch-binding", launch_receipt)
         contract = MissionContract(
             contract_id=f"mission-{uuid4().hex[:24]}",
             conversation_id=request.conversation_id,
@@ -3902,7 +3926,8 @@ class MissionOrchestrator:
                 "state": "route-ready",
                 "semantic_sha256": semantic_sha256,
                 "qualification": map_refinement_receipt["qualification"],
-                "topology_note": "Graph edges may be incomplete; ground geometry routes are checked.",
+                "topology_note": (
+                    "Graph edges may be incomplete; ground geometry routes are checked."),
                 "routes": [{"start_node": item["start_node"], "goal_node": item["goal_node"],
                     "route_sha256": item["route_sha256"],
                     "minimum_clearance_m": item["clearance"]["minimum_clearance_m"]}

@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 from PIL import Image
 from shapely import affinity
 from shapely.geometry import LineString, Point, Polygon, box
-from shapely.ops import unary_union
+from shapely.ops import substring, unary_union
 
 
 def read(path):
@@ -38,6 +38,94 @@ def xy(value):
     return [float(value["x"]), float(value["y"])]
 
 
+def node_observed_corridor_joins(lines, usable, maximum_join_m=2.0):
+    """Join near-miss survey endpoints within already observed usable ground.
+
+    A footway can end beside the middle of a long street segment. Split that
+    segment at the actual projection; its distant existing vertices do not
+    determine connectivity. The join cannot cross an excluded planted median
+    or create a traversable surface outside the observed road footprints.
+    """
+    cuts = [{0.0, line.length} for line in lines]
+    joins = []
+    for index, line in enumerate(lines):
+        for endpoint in (Point(line.coords[0]), Point(line.coords[-1])):
+            for target_index, target in enumerate(lines):
+                if target_index == index or endpoint.distance(target) > maximum_join_m:
+                    continue
+                distance = target.project(endpoint)
+                projection = target.interpolate(distance)
+                join = LineString([endpoint.coords[0], projection.coords[0]])
+                if not usable.covers(join):
+                    continue
+                cuts[target_index].add(distance)
+                if join.length > 1e-8:
+                    joins.append(join)
+    segments = []
+    for line, distances in zip(lines, cuts, strict=True):
+        ordered = sorted(distances)
+        for start, end in zip(ordered, ordered[1:], strict=False):
+            if end - start > 1e-8:
+                segments.append(substring(line, start, end))
+    return unary_union(segments + joins)
+
+
+def synchronize_semantic_node_positions(semantic, graph):
+    """Expose one operational position for each identity shared with the graph.
+
+    Building centers and separately identified ground pads retain their own
+    coordinates; only an exact entity / node ID denotes the same operation.
+    """
+    positions = {node["node_id"]: node["position_m"] for node in graph["nodes"]}
+    for entity in semantic["entities"]:
+        position = positions.get(entity["entity_id"])
+        if position is not None:
+            entity["position_m"] = dict(position)
+
+
+def include_physical_ground_support(gazebo, semantic):
+    """Expose the actual horizontal SDF ground box to landing and route geometry."""
+    supports = []
+    for filename in ("model.sdf", "world.sdf", "world.physics.sdf", "world.perception.sdf"):
+        root = ET.parse(gazebo / filename).getroot()
+        model = root.find("model")
+        if model is None:
+            model = root.find("world/model[@name='kumpula_campus']")
+        link = model.find("link[@name='ground']")
+        collision = link.find("collision[@name='ground-collision']")
+        x = y = z = yaw = 0.0
+        for element in (model, link, collision):
+            pose = element.find("pose")
+            px, py, pz, roll, pitch, angle = map(
+                float, pose.text.split() if pose is not None else [0] * 6
+            )
+            if roll != 0 or pitch != 0 or (pose is not None and pose.get("relative_to")):
+                raise ValueError("Campus ground support must use horizontal parent-frame poses")
+            x, y, z = (
+                x + px * math.cos(yaw) - py * math.sin(yaw),
+                y + px * math.sin(yaw) + py * math.cos(yaw),
+                z + pz,
+            )
+            yaw += angle
+        sx, sy, sz = map(float, collision.find("geometry/box/size").text.split())
+        supports.append({
+            "name": "ground-collision", "semantic": "terrain",
+            "center_x": x, "center_y": y, "center_z": z,
+            "size_x": sx, "size_y": sy, "size_z": sz, "yaw_rad": yaw,
+        })
+    if any(support != supports[0] for support in supports[1:]):
+        raise ValueError("Campus worlds disagree on physical ground support")
+    support = supports[0]
+    for key in ("collision_primitives", "runtime_collision_primitives"):
+        if key in semantic:
+            semantic[key] = [p for p in semantic[key] if p.get("name") != support["name"]]
+            semantic[key].append(dict(support))
+    collision_path = gazebo / "collision-primitives.json"
+    document = read(collision_path)
+    document["primitives"] = semantic["collision_primitives"]
+    write(collision_path, document)
+
+
 def footprint(primitive):
     cx, cy = primitive["center_x"], primitive["center_y"]
     sx, sy = primitive["size_x"] / 2, primitive["size_y"] / 2
@@ -50,6 +138,24 @@ def footprint(primitive):
 
 def update_candidate_summary(gazebo, semantic):
     """Invalidate inherited proof and bind the candidate's actual files."""
+    (gazebo / "README.md").write_text(
+        "# Kumpula Campus runtime map\n\n"
+        "Registered local-ENU exterior model using City of Helsinki building data, "
+        "the 2025 campus orthophoto and observed roads and paths. "
+        "Adjoining coverage, when present, uses attributed HSY/city building and "
+        "2023 orthophoto sources; original campus pixels and the metric origin are preserved. "
+        "Source dates and geographic registration are recorded in semantic.json.\n\n"
+        "Planning and all simulation worlds share footprint-derived building collisions "
+        "and observed HSY 2024 tree-canopy geometry. Buildings and canopy remain excluded "
+        "at every flight altitude. Routes use connected observed roads, paths and open "
+        "ground, with full-aircraft clearance checked before execution.\n\n"
+        "The ground is a flat registered plane. Building and canopy heights are explicitly "
+        "derived exterior proxies, not measured roof or branch clearance. This model does "
+        "not claim interior, doorway, power-line or dynamic-obstacle coverage. "
+        "New map geometry requires a new physical qualification; old flight receipts do "
+        "not qualify it.\n",
+        encoding="utf-8", newline="\n",
+    )
     write(
         gazebo / "qualification-evidence.json",
         {
@@ -64,6 +170,10 @@ def update_candidate_summary(gazebo, semantic):
     )
     summary = read(gazebo / "summary.json")
     summary["fidelity"] = semantic["fidelity"]
+    if "bounds_m" in semantic:
+        summary["bounds_m"] = semantic["bounds_m"]
+    if "extent_enu_m" in semantic:
+        summary["extent_enu_m"] = semantic["extent_enu_m"]
     summary["collision_primitive_count"] = len(semantic["collision_primitives"])
     for key in (
         "gazebo_runtime_verified",
@@ -221,7 +331,11 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
     return exact
 
 
-def prepare(package: Path, survey_path: Path, observations_paths: list[Path], output: Path):
+def prepare(
+    package: Path, survey_path: Path, observations_paths: list[Path], output: Path,
+    extent_source: Path | None = None,
+    building_source: Path | None = None,
+):
     from ground_map_canopy import install_canopy_obstacles
 
     if output.exists():
@@ -277,6 +391,16 @@ def prepare(package: Path, survey_path: Path, observations_paths: list[Path], ou
         "coordinate_frame": "ENU",
         "world_to_image": [width / 500, 0, width / 2, 0, -height / 500, height / 2],
     }
+    if extent_source is not None:
+        from ground_map_extent import expand_registered_ground
+
+        expand_registered_ground(output / "gazebo", semantic, extent_source)
+    if building_source is not None:
+        from ground_map_extent_buildings import install_extent_buildings
+
+        install_extent_buildings(
+            output / "gazebo", semantic, building_source, semantic["extent_enu_m"]
+        )
     provenance = {
         "source": "registered-orthophoto-and-osm-survey",
         "image_sha256": image_hash,
@@ -344,6 +468,7 @@ def prepare(package: Path, survey_path: Path, observations_paths: list[Path], ou
     }
     semantic["traversability"] = layer
     install_canopy_obstacles(output / "gazebo", semantic)
+    include_physical_ground_support(output / "gazebo", semantic)
     semantic["fidelity"]["qualified_routes"] = 0
     semantic["fidelity"]["route_policy"] = "ground-traversability-no-roof-or-canopy-overflight"
     # Correct staging locations only with explicit visual observations. Preserve
@@ -359,8 +484,10 @@ def prepare(package: Path, survey_path: Path, observations_paths: list[Path], ou
         node["position_m"] = correction["new_position_m"]
         for entity in semantic["entities"]:
             if entity.get("entity_id") == node["node_id"]:
-                entity["position_m"] = {**node["position_m"], "z": 0.0}
                 entity["location_evidence"] = correction["evidence"]
+    # The source package can already contain revised graph handoff positions.
+    # Synchronize those too, not only corrections supplied in this invocation.
+    synchronize_semantic_node_positions(semantic, graph)
     semantic["traversability"]["handoff_corrections"] = observations["handoff_corrections"]
     semantic["traversability"]["unresolved_observations"] = observations["unresolved_observations"]
     write(semantic_path, semantic)
@@ -375,7 +502,7 @@ def prepare(package: Path, survey_path: Path, observations_paths: list[Path], ou
     forbidden = unary_union([Polygon(item["polygon_xy_m"]) for item in exclusions])
     # Apply the X500 planning envelope+margin once, not twice at obstacles.
     usable = permitted.difference(forbidden).buffer(-0.85)
-    noded = unary_union(lines)
+    noded = node_observed_corridor_joins(lines, usable)
     old_nodes = [
         node
         for node in graph["nodes"]
@@ -525,5 +652,10 @@ if __name__ == "__main__":
     for name in ("package", "survey", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--observations", type=Path, action="append", required=True)
+    parser.add_argument("--extent-source", type=Path)
+    parser.add_argument("--building-source", type=Path)
     args = parser.parse_args()
-    prepare(args.package, args.survey, args.observations, args.output)
+    prepare(
+        args.package, args.survey, args.observations, args.output,
+        args.extent_source, args.building_source,
+    )

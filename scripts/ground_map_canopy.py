@@ -145,7 +145,27 @@ def canopy_mesh(
             faces.extend(((a, b, c), (a, c, d)))
         lines.append("g canopy-" + re.sub(r"[^a-zA-Z0-9_-]", "_", identifier))
         lines.extend("v " + " ".join(format(v, ".17g") for v in point) for point in vertices)
-        lines.extend("f " + " ".join(str(v) for v in face) for face in faces)
+        # Gazebo's DART mesh loader requires a normal for every imported vertex.
+        # Give each triangle its actual outward normal: sharing a normal across
+        # cap / wall boundaries would incorrectly smooth these physical seams.
+        # OBJ vertex and normal indices are independent and global across groups.
+        for face in faces:
+            a, b, c = (vertices[i - point_count - 1] for i in face)
+            u = tuple(b[i] - a[i] for i in range(3))
+            v = tuple(c[i] - a[i] for i in range(3))
+            normal = (
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            )
+            length = math.hypot(*normal)
+            if not math.isfinite(length) or length <= 0:
+                raise ValueError("Degenerate canopy triangle has no physical surface normal")
+            lines.append("vn " + " ".join(format(n / length, ".17g") for n in normal))
+        lines.extend(
+            "f " + " ".join(f"{v}//{face_count + n}" for v in face)
+            for n, face in enumerate(faces, 1)
+        )
         point_count += len(vertices)
         face_count += len(faces)
         footprints.append(
@@ -169,6 +189,8 @@ def canopy_mesh(
         "polygon_count": len(features),
         "vertices": point_count,
         "triangles": face_count,
+        "normals": face_count,
+        "normal_method": "outward-unit-face-normals-with-explicit-obj-corner-bindings",
         "operating_band_m": [0.0, operating_upper_m],
         "geometry_method": "exact-constrained-triangulation-and-vertical-extrusion-no-xy-buffer",
         "height_fidelity": "class-based-or-operating-band-illustration-not-measured-tree-height",

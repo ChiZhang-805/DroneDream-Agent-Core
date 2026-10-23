@@ -270,13 +270,15 @@ def _freeze_result(result: MapRefinementResult, *, base: dict[str, Any], base_ha
 
 def resolve_execution_semantic(*, prepared: PreparedMission, output_dir: Path,
                               base_semantic_path: Path, graph: MapAsset,
-                              source_loader: Callable[[], MapImageSource]) -> Path:
+                              source_loader: Callable[[], MapImageSource],
+                              expected_semantic_sha256: str | None = None) -> Path:
     """Verify the prepared authority-bound revision; never trust a free path override."""
     base_raw = read_plugin_file(base_semantic_path, limit=_LIMIT)
     base_hash = hashlib.sha256(base_raw).hexdigest()
+    expected_hash = expected_semantic_sha256 or prepared.contract.map_semantic_sha256
     records = [item.payload for item in prepared.evidence if item.event_type == _EVENT]
     if not records:
-        if prepared.contract.map_semantic_sha256 != base_hash:
+        if expected_hash != base_hash:
             raise ValueError("MAP_REFINEMENT_RECEIPT_REQUIRED")
         return base_semantic_path
     if len(records) != 1:
@@ -287,10 +289,10 @@ def resolve_execution_semantic(*, prepared: PreparedMission, output_dir: Path,
             or receipt.get("base_map_sha256") != sha256_json(graph)
             or receipt.get("map_id") != graph.asset_id
             or receipt.get("qualification") != _QUALIFICATION
-            or receipt.get("derived_semantic_sha256") != prepared.contract.map_semantic_sha256):
+            or receipt.get("derived_semantic_sha256") != expected_hash):
         raise ValueError("MAP_REFINEMENT_BASE_BINDING_MISMATCH")
     relative = receipt.get("semantic_relative_path")
-    expected = f"map-refinement/semantic-{prepared.contract.map_semantic_sha256}.json"
+    expected = f"map-refinement/semantic-{expected_hash}.json"
     if relative != expected:
         raise ValueError("MAP_REFINEMENT_PATH_INVALID")
     path = output_dir / expected
@@ -298,7 +300,7 @@ def resolve_execution_semantic(*, prepared: PreparedMission, output_dir: Path,
     if output_dir.resolve() not in path.resolve().parents:
         raise ValueError("MAP_REFINEMENT_PATH_INVALID")
     raw = read_plugin_file(path, limit=_LIMIT)
-    if hashlib.sha256(raw).hexdigest() != prepared.contract.map_semantic_sha256:
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
         raise ValueError("MAP_REFINEMENT_SNAPSHOT_CHANGED")
     candidate = read_map_semantic_object(path)
     patches = receipt.get("patches")

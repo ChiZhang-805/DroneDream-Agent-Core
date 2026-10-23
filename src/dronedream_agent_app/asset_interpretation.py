@@ -54,8 +54,10 @@ Output size rules count characters (including spaces), not words: aim for at mos
 Keep summary under 1200 characters (hard limit 1800). Use compact factual sentences;
 do not repeat global caveats in every item. Preserve all required source IDs.
 Vehicle field semantics: dry_mass_kg is the configured unloaded vehicle mass used
-by this product; do not invent whether a battery is excluded. qualified_range_m
-already includes the declared battery reserve: never deduct that reserve twice.
+by this product; do not invent whether a battery is excluded. Use qualified_range_m
+as the declared route-distance limit without an additional reserve deduction.
+Follow its qualification basis: a completed simulated route does not establish
+physical battery endurance. Runtime battery-reserve checks still apply.
 coordinate_frame describes the vehicle contract, not every sensor's native frame;
 sensor transforms are separate. A geometry summary marked unavailable means the
 summary could not be read, not proof that the asset contains no 3D geometry.
