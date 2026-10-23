@@ -67,17 +67,15 @@ def _asset_understanding(value: object) -> dict[str, object]:
             continue
         projected = _selected_scalars(
             raw,
-            ("asset_id", "content_sha256", "cache_key", "cached", "reuse_mode", "authority"),
+            ("asset_id", "content_sha256", "authority"),
         )
         understanding = raw.get("understanding")
         if isinstance(understanding, dict):
             projected["understanding"] = {
-                "summary": _bounded_text(understanding.get("summary"), maximum=2_400) or "",
-                "limitations": _bounded_strings(
-                    understanding.get("limitations"),
-                    maximum_items=8,
-                    maximum_length=360,
-                ),
+                # Intent grounding only needs the asset's short identity summary.
+                # Detailed limitations remain in immutable evidence and are fed to
+                # later deterministic qualification and planning stages.
+                "summary": _bounded_text(understanding.get("summary"), maximum=320) or "",
                 # 逐项解释会与语义地图目录重复；只保留数量用于说明摘要完整度。
                 "item_count": min(
                     len(understanding.get("items", []))

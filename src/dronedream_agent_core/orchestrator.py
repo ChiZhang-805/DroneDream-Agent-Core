@@ -766,10 +766,7 @@ def _intent_action_catalog_view(catalog: DomainActionCatalog) -> dict[str, objec
             {
                 "action_id": action.action_id,
                 "domain_id": action.domain_id,
-                "label": action.label,
-                "description": action.description,
                 "payload": action.payload,
-                "flight_boundary": action.flight_boundary,
             }
             for action in catalog.actions
         ],
