@@ -64,6 +64,24 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# 功能：运行结束后复制起飞前冻结的资格输入，保留原生运行目录的空目录初始化约束。
+# 输入：plan_root 保存原始输入，run_dir 已由实际执行器独占创建。
+# 输出：同字节输入和净空证据；已有不同内容时拒绝覆盖。
+def _publish_asset_qualification_inputs(plan_root: Path, run_dir: Path) -> None:
+    inputs_path = plan_root / "asset-qualification-inputs.json"
+    inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+    clearance = plan_root / "clearance.json"
+    if _sha256(clearance) != inputs["run_files"]["clearance.json"]:
+        raise ValueError("ASSET_QUALIFICATION_INPUT_CHANGED")
+    for source in (inputs_path, clearance):
+        destination = run_dir / source.name
+        if destination.exists():
+            if destination.read_bytes() != source.read_bytes():
+                raise ValueError("ASSET_QUALIFICATION_INPUT_CHANGED")
+        else:
+            shutil.copyfile(source, destination)
+
+
 # 功能：
 #   读取有限大小的严格挑战回执并绑定实际世界，拒绝歧义 JSON 与隐式数值转换。
 # 输入：
@@ -796,9 +814,6 @@ def main() -> int:
         checkpoint_path, action_path = (
             plan_root / 'asset-checkpoints.json', plan_root / 'asset-actions.json'
         )
-        simulation_root = args.output_root / 'simulation'
-        simulation_root.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(clearance_path, simulation_root / 'clearance.json')
         physics = json.loads((args.vehicle_sdf.parent / 'summary.json').read_text(encoding='utf-8'))
         inputs = {
             'schema_version': 'dronedream.asset-qualification-inputs.v1',
@@ -820,7 +835,7 @@ def main() -> int:
             'loaded_thrust_to_weight': physics['mission_payload']['loaded_thrust_to_weight'],
             'minimum_thrust_to_weight': physics['minimum_qualified_thrust_to_weight'],
         }
-        _write_json(simulation_root / 'asset-qualification-inputs.json', inputs)
+        _write_json(plan_root / 'asset-qualification-inputs.json', inputs)
     _write_json(
         plan_root / "qualification-plan.json",
         {
@@ -1068,6 +1083,7 @@ def main() -> int:
         asset_payload_qualification=asset_course is not None,
     )
     if asset_course is not None:
+        _publish_asset_qualification_inputs(plan_root, args.output_root / 'simulation')
         try:
             asset_receipt = verify_asset_payload_run(args.output_root / 'simulation')
         except (ValueError, OSError, KeyError, TypeError) as error:

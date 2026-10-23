@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from dronedream_agent_core.gazebo_adapter import _validate_execution_contract_bi
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.simulation_payload_runtime import LIBRARY
 from scripts import px4_checkpoint_executor as executor
+from scripts import run_school_map_depth_qualification as qualification_runner
 from scripts.run_school_map_depth_qualification import _qualification_route, _write_json
 
 
@@ -407,3 +409,85 @@ def test_asset_responder_requires_independent_safety_before_touching_flight():
     )
     with pytest.raises(ValueError, match="asset qualification requires"):
         asyncio.run(executor._run(args, None))
+
+
+@pytest.mark.parametrize("existing_clearance", ["absent", "identical", "different"])
+def test_qualification_main_initializes_native_run_before_publishing_inputs(
+    course, tmp_path, monkeypatch, existing_clearance
+):
+    """Run the production CLI preparation through the real empty-directory gate.
+
+    Only the native flight and its evidence verifier are test doubles; this
+    fixture does not create flight qualification evidence.
+    """
+    from dronedream_agent_core import simulation_fusion_runtime
+    from dronedream_agent_core.gazebo_adapter import _initialize_run_directory
+
+    route, _, vehicle, sdf, semantic_hash = course
+    outbound = GraphRoute(
+        start_node=route.node_ids[0], goal_node=route.node_ids[2],
+        node_ids=route.node_ids[:3], edge_ids=route.edge_ids[:2],
+        positions_m=route.positions_m[:3], route_length_m=route.route_length_m / 2,
+        all_edges_flight_verified=False,
+    )
+    metric = tmp_path / "metric.json"
+    _write_json(metric, outbound.model_dump(mode="json"))
+    world, semantic, metadata, controller = [tmp_path / name for name in (
+        "world.sdf", "semantic.json", "vehicle.json", "controller.json"
+    )]
+    for path in (world, semantic, metadata, controller):
+        path.write_text("{}", encoding="utf-8")
+    physics = json.loads((sdf.parent / "summary.json").read_text(encoding="utf-8"))
+    physics["mission_payload"]["loaded_thrust_to_weight"] = 1.7
+    physics["minimum_qualified_thrust_to_weight"] = 1.6
+    _write_json(sdf.parent / "summary.json", physics)
+    clearance = {"accepted": True, "semantic_sha256": semantic_hash,
+                 "minimum_clearance_m": 1.0}
+    monkeypatch.setattr(qualification_runner, "_load_vehicle", lambda *a, **kw: vehicle)
+    monkeypatch.setattr(qualification_runner, "validate_route_clearance", lambda *a, **kw:
+                        SimpleNamespace(**clearance, model_dump=lambda **kw: clearance))
+    monkeypatch.setattr(qualification_runner, "route_to_px4_track", lambda *a, **kw:
+                        SimpleNamespace(model_dump=lambda **kw: {"points": []}))
+    monkeypatch.setattr(simulation_fusion_runtime, "prepare_simulation_fusion", lambda **kw:
+                        (kw["executor_path"], {}))
+    output = tmp_path / "new-qualification"
+    observed = []
+
+    def native_run(**kwargs):
+        plan = output / "plan"
+        frozen = plan / "asset-qualification-inputs.json"
+        assert frozen.is_file()
+        inputs = json.loads(frozen.read_text(encoding="utf-8"))
+        assert inputs["run_files"]["clearance.json"] == file_sha256(plan / "clearance.json")
+        # The real adapter gate must accept the directory at its normal entry.
+        _initialize_run_directory(kwargs["run_dir"])
+        with pytest.raises(FileExistsError, match="not empty"):
+            _initialize_run_directory(kwargs["run_dir"])
+        if existing_clearance != "absent":
+            (kwargs["run_dir"] / "clearance.json").write_bytes(
+                (plan / "clearance.json").read_bytes()
+                if existing_clearance == "identical" else b"different existing evidence"
+            )
+        observed.append("native-return")
+        return {"status": "verified", "gates": {"unit_native_return": True}, "measurements": {}}
+
+    def verify_run(root):
+        assert observed == ["native-return"]
+        for name in ("asset-qualification-inputs.json", "clearance.json"):
+            assert (root / name).read_bytes() == (output / "plan" / name).read_bytes()
+        observed.append("verify")
+        return {"gates": {"unit_native_return": True}}
+
+    monkeypatch.setattr(qualification_runner, "run_px4_gazebo_track", native_run)
+    monkeypatch.setattr(qualification_runner, "verify_asset_payload_run", verify_run)
+    monkeypatch.setattr(sys, "argv", ["qualification", *map(str, (
+        metric, semantic, world, sdf, metadata, controller, output
+    )), "--independent-route-control"])
+    if existing_clearance == "different":
+        with pytest.raises(ValueError, match="ASSET_QUALIFICATION_INPUT_CHANGED"):
+            qualification_runner.main()
+        assert observed == ["native-return"]
+        assert (output / "simulation/clearance.json").read_bytes() == b"different existing evidence"
+    else:
+        assert qualification_runner.main() == 0
+        assert observed == ["native-return", "verify"]
