@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 XY = tuple[float, float]
@@ -82,10 +83,26 @@ class _Feature:
             _segment_distance(point, a, b)
             for a, b in zip(self.points, self.points[1:], strict=False))
 
-    def bounds(self) -> tuple[XY, XY]:
+    @cached_property
+    def bounding_box(self) -> tuple[XY, XY]:
         radius = self.corridor_radius or 0.
         return (tuple(min(p[i] for p in self.points) - radius for i in range(2)),
                 tuple(max(p[i] for p in self.points) + radius for i in range(2)))
+
+    def bounds(self) -> tuple[XY, XY]:
+        return self.bounding_box
+
+    def inside_distance_upper_bound(self, point: XY) -> float:
+        """A containing rectangle bounds signed distance without replacing the shape."""
+        (low_x, low_y), (high_x, high_y) = self.bounding_box
+        x, y = point
+        dx, dy = max(low_x - x, 0., x - high_x), max(low_y - y, 0., y - high_y)
+        distance = (-math.hypot(dx, dy) if dx or dy
+                    else min(x - low_x, high_x - x, y - low_y, high_y - y))
+        # Keep the broad phase outward rounded, including at equal/touching
+        # boundaries. The exact polygon/corridor remains the final authority.
+        return distance + 1e-12 * max(1., abs(x), abs(y), abs(low_x), abs(low_y),
+                                     abs(high_x), abs(high_y))
 
 
 class TraversableAirspace:
@@ -207,13 +224,19 @@ class TraversableAirspace:
         key = tuple(math.floor(v / self._BIN_M) for v in point[:2])
         permitted = -self.cap
         for feature in self._areas_by_bin.get(key, ()):
-            distance = min(feature.inside_distance(point[:2]) - self.radius_m,
-                           point[2] - feature.lower_z - self.half_height_m,
+            vertical = min(point[2] - feature.lower_z - self.half_height_m,
                            feature.upper_z - point[2] - self.half_height_m)
+            if min(feature.inside_distance_upper_bound(point[:2]) - self.radius_m,
+                   vertical) <= permitted:
+                continue
+            distance = min(feature.inside_distance(point[:2]) - self.radius_m,
+                           vertical)
             permitted = max(permitted, distance)
         clearance = min(self.cap, permitted)
         reason = "traversability:permitted-ground-volume"
         for feature in self._exclusions_by_bin.get(key, ()):
+            if -feature.inside_distance_upper_bound(point[:2]) - self.radius_m >= clearance:
+                continue
             distance = -feature.inside_distance(point[:2]) - self.radius_m
             if distance < clearance:
                 clearance, reason = distance, f"traversability:{feature.identifier}"
