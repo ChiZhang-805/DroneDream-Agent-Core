@@ -78,7 +78,7 @@ def test_lease_has_fixed_deadline_and_cannot_renew_after_timeout():
     a = BoundedHybridArbiter()
     arm(a)
     first = tick(a, .4)
-    assert first.maximum_speed_mps == 1.5
+    assert first.maximum_speed_mps == 4.0
     assert tick(a, .8).expires_at_unix_ms == first.expires_at_unix_ms
     assert tick(a, 1.9) is None
     assert tick(a, 2.0) is None

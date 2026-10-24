@@ -201,7 +201,7 @@ class BoundedHybridArbiter:
             if (self._start is not None and self._bridge_speed_cap is not None
                     and model_speed_mps + 1e-9 < self._bridge_speed_cap):
                 self.invalidate("model-speed-reduced-during-bridge")
-            self._model_speed_cap = min(1.5, model_speed_mps)
+            self._model_speed_cap = min(5.0, model_speed_mps)
             if self._good_since is None:
                 self._good_since = now
                 self._execution_epoch_wall = now_unix_ms

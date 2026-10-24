@@ -118,7 +118,7 @@ def test_delivery_requires_release_at_target_and_rejects_pickup_custody() -> Non
 #   speeds：需要拒绝的航点速度列表。
 # 输出：
 #   None：不返回业务数据。
-@pytest.mark.parametrize("speeds", [[], [-1], [float("nan")], [True], [4]])
+@pytest.mark.parametrize("speeds", [[], [-1], [float("nan")], [True], [7]])
 def test_stop_policy_does_not_make_bad_track_values_safe(speeds) -> None:
     track = SimpleNamespace(
         points=[SimpleNamespace(speed_limit_mps=s) for s in speeds], stop_at_waypoints=True
@@ -162,7 +162,7 @@ def test_clearance_gate_rejects_empty_and_nonfinite_segments() -> None:
 def test_clearance_gate_allows_campus_cruise_outside_tight_corridors() -> None:
     plan = SimpleNamespace(
         segments=[
-            SimpleNamespace(segment_id="outdoor", minimum_clearance_m=0.55, speed_limit_mps=3.0)
+            SimpleNamespace(segment_id="outdoor", minimum_clearance_m=0.55, speed_limit_mps=6.0)
         ]
     )
     validation = _clearance_speed_gate(flight_plan=plan)

@@ -190,10 +190,12 @@ geometry. Use critique feedback from an earlier attempt when supplied.
 ordered_targets may contain only contract target_node and return_node. Never preserve an
 older destination or emit intermediate graph nodes; shortest-route owns those nodes.
 For every ordered target, emit exactly one speed_preferences item in the same order.
-Choose cruise_speed_mps and approach_speed_mps from the supplied vehicle_speed_envelope.
+Choose cruise_speed_mps between cruise_min_mps and cruise_max_mps, and choose
+approach_speed_mps no higher than approach_max_mps.
 These are desired per-leg limits, not fixed controls. Reason from the mission, semantic
 environment, proximity to buildings, payload state, turns, and arrival precision.
-Both speeds must be positive and no greater than the supplied operational ceiling;
+Cruise must stay within the supplied 5–6 m/s qualified band when the aircraft supports
+it. Approach speed must be positive and no greater than the supplied operational ceiling;
 design performance does not establish a higher qualified operating speed. Reduce the
 approach speed when
 the destination, surrounding structures, or requested action needs finer control. The

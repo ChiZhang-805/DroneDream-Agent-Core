@@ -4803,7 +4803,7 @@ def _recovery_position_velocity_feedforward(
     target_setpoint: Any,
     gain_s_inverse: float = 0.8,
     velocity_damping: float = 0.5,
-    maximum_speed_mps: float = 1.5,
+    maximum_speed_mps: float = 5.0,
     deadband_m: float = 0.005,
 ) -> tuple[float, float, float]:
     """Provide bounded radial assistance to PX4's precision position loop.
@@ -5966,7 +5966,7 @@ def _local_safety_command_matches_required_authority(
                 fallback_speed = math.hypot(velocity.x, velocity.y, velocity.z)
                 qualified_simulation_fallback = bool(
                     "SIMULATION_QUALIFIED_STATIC_ROUTE_FALLBACK" in decision.issue_codes
-                    and fallback_speed <= 1.5 + 1e-9
+                    and fallback_speed <= 5.0 + 1e-9
                 )
         return (command.navigation_control_authority == "route-fallback"
                 and not command.model_navigation_authorized
@@ -6960,7 +6960,7 @@ async def _apply_local_safety(
                         getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                     ),
                     maximum_speed_mps=min(operational_speed_mps, float(
-                        getattr(args, "tracking_recovery_assist_max_speed_mps", 1.5))),
+                        getattr(args, "tracking_recovery_assist_max_speed_mps", 5.0))),
                     deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
                 )
                 if tracking_recovery_active
@@ -9252,7 +9252,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tracking-recovery-assist-max-speed-mps",
         type=float,
-        default=1.5,
+        default=5.0,
     )
     parser.add_argument(
         "--tracking-recovery-assist-velocity-damping",

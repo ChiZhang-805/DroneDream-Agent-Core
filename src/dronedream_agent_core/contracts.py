@@ -556,7 +556,7 @@ class HybridControlLease(StrictModel):
     episode: int = Field(ge=1, strict=True)
     started_at_unix_ms: int = Field(ge=0, strict=True)
     expires_at_unix_ms: int = Field(ge=0, strict=True)
-    maximum_speed_mps: float = Field(gt=0, le=1.5)
+    maximum_speed_mps: float = Field(gt=0, le=5.0)
     maximum_distance_m: float = Field(gt=0, le=0.35)
     reason: Literal["model-delay-bounded-bridge"] = "model-delay-bounded-bridge"
 

@@ -217,7 +217,7 @@ def evaluate_runtime_local_safety(
                 or generated_at_unix_ms < hybrid_lease.started_at_unix_ms
                 or hybrid_lease.expires_at_unix_ms - generated_at_unix_ms < 50):
             raise ValueError("HYBRID_EVALUATION_CONTEXT_INVALID")
-        maximum_speed_mps = min(maximum_speed_mps or .25, hybrid_lease.maximum_speed_mps)
+        maximum_speed_mps = min(maximum_speed_mps or 5.0, hybrid_lease.maximum_speed_mps)
         validity_milliseconds = min(validity_milliseconds,
             hybrid_lease.expires_at_unix_ms - generated_at_unix_ms)
     elif hybrid_lease is not None:
@@ -303,7 +303,7 @@ def evaluate_runtime_local_safety(
     # The vehicle asset describes a hardware envelope, not permission to
     # exceed the active mission track's qualified speed.  The runtime passes
     # the tighter track/profile bound here so an avoidance manoeuvre cannot
-    # turn a 0.34 m/s precision route into a 1.2 m/s local correction.
+    # exceed the active route's authorized speed.
     planner_max_speed_mps = min(
         vehicle.operational_max_speed_mps,
         maximum_speed_mps if maximum_speed_mps is not None else vehicle.operational_max_speed_mps,
@@ -311,7 +311,6 @@ def evaluate_runtime_local_safety(
     if tracking_recovery_active:
         planner_max_speed_mps = min(
             planner_max_speed_mps,
-            1.5,
             # Recovery must catch a moving route clock instead of becoming a
             # permanent slower mode. Keep the original 0.45 gain inside the
             # final 0.2 m, then add catch-up authority only outside that
@@ -348,7 +347,7 @@ def evaluate_runtime_local_safety(
             # Keep a deliberate approach envelope for an unqualified payload,
             # but do not turn an otherwise valid campus leg into walking speed.
             # Real hardware retains its independent hard restriction.
-            planner_max_speed_mps = min(planner_max_speed_mps, 1.5)
+            planner_max_speed_mps = min(planner_max_speed_mps, 5.0)
     # Absolute map-position uncertainty and image/state alignment uncertainty
     # are different budgets.  A qualified route corridor funds the former;
     # body-relative depth validity only needs the additional displacement that

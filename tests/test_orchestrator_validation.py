@@ -933,13 +933,13 @@ def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
             },
             {
                 "target_node": "pickup",
-                "cruise_speed_mps": 3.4,
+                "cruise_speed_mps": 5.4,
                 "approach_speed_mps": 0.8,
                 "rationale": "Pickup approach.",
             },
             {
                 "target_node": "office",
-                "cruise_speed_mps": 4.0,
+                "cruise_speed_mps": 5.0,
                 "approach_speed_mps": 0.7,
                 "rationale": "Return approach.",
             },
@@ -956,13 +956,13 @@ def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
         speed_preferences=[
             {
                 "target_node": "pickup",
-                "cruise_speed_mps": 3.4,
+                "cruise_speed_mps": 5.4,
                 "approach_speed_mps": 0.8,
                 "rationale": "Pickup approach.",
             },
             {
                 "target_node": "office",
-                "cruise_speed_mps": 4.0,
+                "cruise_speed_mps": 5.0,
                 "approach_speed_mps": 0.7,
                 "rationale": "Return approach.",
             },

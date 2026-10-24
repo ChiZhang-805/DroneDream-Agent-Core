@@ -291,7 +291,7 @@ def _validation(
             "indoor_transition_clear": not indoor_route or clearance_valid,
             "indoor_speed_bounded": not indoor_route
             or all(
-                point.speed_limit_mps <= min(vehicle.operational_max_speed_mps, 2.0)
+                point.speed_limit_mps <= min(vehicle.operational_max_speed_mps, 5.0)
                 for point in px4_track.points
             ),
         }

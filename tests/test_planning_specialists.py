@@ -349,7 +349,7 @@ def test_indoor_speed_gate_does_not_cap_outdoor_cruise() -> None:
     vehicle = vehicle.model_copy(update={"max_speed_mps": 6.0})
     track = track.model_copy(
         update={
-            "points": [point.model_copy(update={"speed_limit_mps": 3.0}) for point in track.points]
+            "points": [point.model_copy(update={"speed_limit_mps": 6.0}) for point in track.points]
         }
     )
 

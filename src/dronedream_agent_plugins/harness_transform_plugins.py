@@ -248,7 +248,7 @@ def _phase_speed_envelope(
     default_caps = {
         "launch": 20.0,
         "transit": 20.0,
-        "stairs": 1.0,
+        "stairs": 5.0,
         "pickup": 20.0,
         "return": 20.0,
         "land": 20.0,
@@ -283,8 +283,9 @@ def _corner_speed_envelope(
     value = _validated_copy(value)
     configured = {} if configuration is None else configuration
     threshold_deg = policy_number(configured, "minimum_turn_angle_deg", 35.0, 5.0, 175.0)
-    # 拐点到达速度应足够低，并且不得覆盖原轨迹中已经更严格的速度上限。
-    corner_speed_mps = policy_number(configured, "corner_speed_limit_mps", 0.3, 0, 5.0)
+    # Default outdoor turns retain the agreed 5 m/s lower cruise target. Live
+    # geometry and the flight controller may still decelerate when necessary.
+    corner_speed_mps = policy_number(configured, "corner_speed_limit_mps", 5.0, 0, 6.0)
     if corner_speed_mps <= 0:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     points = list(value.points)

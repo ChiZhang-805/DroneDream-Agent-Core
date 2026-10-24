@@ -310,7 +310,7 @@ def test_metric_geometry_route_exports_with_campus_cruise_speed(
 
     track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
-    assert [point.speed_limit_mps for point in track.points] == [3.0, 3.0, 3.0]
+    assert [point.speed_limit_mps for point in track.points] == [4.0, 4.0, 4.0]
 
 
 def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:
@@ -455,7 +455,7 @@ def test_metric_route_speed_satisfies_default_stability_gate(tmp_path: Path) -> 
 
     track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
-    assert all(point.speed_limit_mps <= 3.0 for point in track.points)
+    assert all(point.speed_limit_mps <= 4.0 for point in track.points)
 
 
 # 功能：

@@ -625,7 +625,7 @@ def prepare(
                 "to_node": b,
                 "distance_m": distance,
                 "minimum_clearance_m": 0.8,
-                "speed_limit_mps": 2.0,
+                "speed_limit_mps": 6.0,
                 "bidirectional": True,
                 "qualification": "geometry-derived",
                 "evidence_sha256": provenance["observations_sha256"],

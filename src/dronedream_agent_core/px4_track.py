@@ -23,9 +23,11 @@ from .runtime_bindings import (
     resolve_vehicle_collision_center_offset,
 )
 
-# Synthetic metric-geometry joins must satisfy the product's default
-# track-stability gate, which rejects any exported point above 3 m/s.
-METRIC_ROUTE_CRUISE_SPEED_MPS = 3.0
+# Synthetic metric-geometry joins use the same qualified outdoor cruise ceiling
+# as the default vehicle. Geometry, curvature and live safety may still request
+# bounded deceleration, but a synthetic join must not silently impose an old
+# walking-speed cap on an otherwise qualified mission.
+METRIC_ROUTE_CRUISE_SPEED_MPS = 6.0
 
 
 # 功能：
@@ -132,7 +134,7 @@ def route_to_px4_track(
             phase = "stairs"
         speed = speed_limits[index - 1] if index > 0 else speed_limits[0]
         if phase == "stairs":
-            speed = min(speed, 0.45)
+            speed = min(speed, 5.0)
         points.append(
             Px4TrackPoint(
                 # 此处 x 为局部北、y 为局部东、z 向上；执行器发送 NED 时再对高度取反。

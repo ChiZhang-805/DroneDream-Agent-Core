@@ -408,7 +408,7 @@ def main() -> int:
             "Production qualification requires exactly one round trip."
         ),
     )
-    parser.add_argument("--speed-limit-mps", type=float, default=0.8)
+    parser.add_argument("--speed-limit-mps", type=float, default=6.0)
     parser.add_argument("--one-way-training", action="store_true",
                         help=("Explicit teacher curriculum ending at the outbound goal; "
                               "not round-trip qualification"))
@@ -593,8 +593,8 @@ def main() -> int:
             or args.simulation_camera_profile != 'responsive-control'
             or args.multimodal_dataset_root is None):
         raise ValueError('MAP_FUSION_EXPERIMENT_REQUIRES_NATIVE_RECORDED_TRAINING')
-    if not 0.1 <= args.speed_limit_mps <= 1.2:
-        raise ValueError("qualification speed must be within [0.1, 1.2] m/s")
+    if not 5.0 <= args.speed_limit_mps <= 6.0:
+        raise ValueError("qualification cruise speed must be within [5.0, 6.0] m/s")
     if args.required_clearance_m is not None and not (
         0.05 <= args.required_clearance_m <= 6.0
     ):

@@ -1808,6 +1808,7 @@ def _validate_semantic_plan(
         raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_ORDER_MISMATCH")
     if any(
         item.cruise_speed_mps > vehicle.operational_max_speed_mps
+        or item.cruise_speed_mps < min(5.0, vehicle.operational_max_speed_mps)
         or item.approach_speed_mps > item.cruise_speed_mps
         for item in plan.speed_preferences
     ):
@@ -4237,6 +4238,7 @@ class MissionOrchestrator:
                     "vehicle_speed_envelope": {
                         "vehicle_max_speed_mps": self.vehicle.operational_max_speed_mps,
                         "vehicle_max_acceleration_mps2": self.vehicle.max_acceleration_mps2,
+                        "cruise_min_mps": min(5.0, self.vehicle.operational_max_speed_mps),
                         "cruise_max_mps": self.vehicle.operational_max_speed_mps,
                         "approach_max_mps": self.vehicle.operational_max_speed_mps,
                         "runtime_may_reduce_speed": True,
