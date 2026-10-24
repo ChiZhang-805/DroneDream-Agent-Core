@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -223,9 +224,20 @@ def test_ground_support_places_explicit_start_on_physical_floor(tmp_path):
         prep.include_physical_ground_support(tmp_path, semantic)
 
 
-def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(tmp_path):
+@pytest.mark.parametrize("yaw", [0, .43])
+def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
+    tmp_path, monkeypatch, yaw
+):
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "scripts"))
     prep = _load("prepare-ground-map")
     ring = [(0, 0), (10, 0), (10, 10), (7, 10), (7, 3), (3, 3), (3, 10), (0, 10)]
+    c, s = math.cos(yaw), math.sin(yaw)
+    def rotate(x, y):
+        return x * c - y * s, x * s + y * c
+
+    ring = [rotate(x, y) for x, y in ring]
     (tmp_path / "meshes").mkdir()
     (tmp_path / "meshes/kumpula-buildings.obj").write_text(
         "g courtyard\n" + "\n".join(f"v {x} {y} {z}" for z in (0, 8) for x, y in ring)
@@ -233,39 +245,69 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(tmp_path
     original = {
         "name": "courtyard-collision",
         "semantic": "building",
-        "center_x": 5,
-        "center_y": 5,
+        "center_x": rotate(5, 5)[0],
+        "center_y": rotate(5, 5)[1],
         "center_z": 4,
         "size_x": 10,
         "size_y": 10,
         "size_z": 8,
-        "yaw_rad": 0,
+        "yaw_rad": yaw,
     }
     semantic = {"collision_primitives": [original], "fidelity": {}}
     (tmp_path / "collision-primitives.json").write_text(json.dumps({"primitives": [original]}))
     for name in ("model.sdf", "world.sdf", "world.physics.sdf", "world.perception.sdf"):
         (tmp_path / name).write_text(
             '<sdf version="1.9"><model name="kumpula_campus">'
-            '<link name="building-collision-old"/></model></sdf>'
+            '<link name="building-collision-old"/>'
+            '<link name="building-visuals"><visual name="original">'
+            '<geometry><mesh><uri>meshes/kumpula-buildings.obj</uri></mesh></geometry>'
+            '</visual></link></model></sdf>'
         )
+    visual_before = ET.tostring(ET.parse(tmp_path / "model.sdf").find(".//visual"))
+    obj_before = (tmp_path / "meshes/kumpula-buildings.obj").read_bytes()
     exact = prep.refine_building_collisions(tmp_path, semantic)
     covered = unary_union([Polygon(prep.footprint(p)) for p in semantic["collision_primitives"]])
     assert Polygon(ring).difference(covered).area < 1e-8
-    assert covered.distance(Point(5, 7)) >= 1.5
+    assert covered.distance(Point(*rotate(5, 7))) >= 1.5
     assert exact[0]["polygon_xy_m"] == ring
-    expected = {p["name"]: p for p in semantic["collision_primitives"]}
+    assert len(semantic["collision_primitives"]) > 1
+    assert prep.read(tmp_path / "collision-primitives.json")["primitives"] == (
+        semantic["collision_primitives"]
+    )
     for name in ("model.sdf", "world.sdf", "world.physics.sdf", "world.perception.sdf"):
         root = ET.parse(tmp_path / name).getroot()
         collisions = root.findall(".//collision")
-        assert len(collisions) == len(expected)
-        for collision in collisions:
-            primitive = expected[collision.get("name")]
-            assert list(map(float, collision.find("pose").text.split())) == pytest.approx(
-                [primitive["center_x"], primitive["center_y"], 4, 0, 0, 0]
-            )
-            assert list(
-                map(float, collision.find("geometry/box/size").text.split())
-            ) == pytest.approx([primitive["size_x"], primitive["size_y"], 8])
+        assert len(collisions) == 1
+        collision = collisions[0]
+        assert list(map(float, collision.find("pose").text.split())) == [0, 0, 4, 0, 0, yaw]
+        raw = (tmp_path / collision.find("geometry/mesh/uri").text).read_text()
+        vertices, caps = [], []
+        for line in raw.splitlines():
+            if line.startswith("v "):
+                vertices.append(tuple(map(float, line.split()[1:])))
+            elif line.startswith("f "):
+                points = [vertices[int(t.split("//")[0]) - 1] for t in line.split()[1:]]
+                if all(p[2] == 4 for p in points):
+                    caps.append(Polygon([rotate(x, y) for x, y, _ in points]))
+        assert unary_union(caps).symmetric_difference(covered).area < 1e-10
+        visual = root.find(".//visual")
+        # Pretty-printing changes whitespace, never the original visual contents.
+        for node in visual.iter():
+            if node.text is not None and not node.text.strip():
+                node.text = None
+            node.tail = None
+        assert ET.tostring(visual) == visual_before
+    assert (tmp_path / "meshes/kumpula-buildings.obj").read_bytes() == obj_before
+    prep.write(tmp_path / "semantic.json", semantic)
+    # The geometry used by both route validation and worker static-occupancy
+    # classification still sees all cells, even though SDF has only one mesh.
+    geometry = KnownMapMetricPlanner(
+        graph=None, semantic_path=tmp_path / "semantic.json",
+        vehicle_diameter_m=.76, vehicle_height_m=.516,
+    )
+    assert len(geometry.primitives) == len(semantic["collision_primitives"])
+    assert geometry.clearance((*rotate(1, 1), 4)) < 0
+    assert geometry.clearance((*rotate(5, 7), 4)) > 0
 
 
 def test_candidate_never_inherits_old_flight_success(tmp_path):

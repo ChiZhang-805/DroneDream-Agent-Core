@@ -296,8 +296,11 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
     """Conservatively cover the actual city footprint, preserving open courtyards.
 
     Leaf cells intersecting the footprint are retained; no part of the city
-    footprint is removed. Physics and planning receive exactly the same boxes.
+    footprint is removed. Planning keeps the boxes; physics uses their exact
+    closed union per building to avoid thousands of independent collision shapes.
     """
+    from ground_map_collision_mesh import building_collision_mesh
+
     groups, current = {}, None
     for line in (gazebo / "meshes/kumpula-buildings.obj").read_text("utf-8").splitlines():
         if line.startswith("g "):
@@ -310,7 +313,7 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
         for p in semantic["collision_primitives"]
         if p.get("semantic") == "building"
     }
-    refined, exact = [], []
+    refined, exact, meshes = [], [], []
     for name, primitive in original.items():
         vertices = groups[name]
         floor = min(v[2] for v in vertices)
@@ -364,6 +367,11 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
         union = unary_union([box(*cell) for cell in cells])
         if rotated.difference(union.buffer(1e-8)).area > 1e-6:
             raise ValueError(f"Footprint coverage lost: {name}")
+        mesh_uri = f"meshes/kumpula-building-collision-{len(meshes):03d}.obj"
+        (gazebo / mesh_uri).write_bytes(
+            building_collision_mesh(cells, height_m=primitive["size_z"])
+        )
+        meshes.append((name, mesh_uri, primitive["center_z"], angle))
         c, s = math.cos(angle), math.sin(angle)
         for i, (x0, y0, x1, y1) in enumerate(cells):
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -393,17 +401,15 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
             if link.get("name", "").startswith("building-collision-"):
                 model.remove(link)
         link = ET.SubElement(model, "link", {"name": "building-collision-footprints"})
-        for p in refined:
-            col = ET.SubElement(link, "collision", {"name": p["name"]})
+        for name, mesh_uri, center_z, angle in meshes:
+            col = ET.SubElement(link, "collision", {"name": f"{name}-cell-union"})
             ET.SubElement(col, "pose").text = (
-                f"{p['center_x']:.10f} {p['center_y']:.10f} {p['center_z']:.10f} "
-                f"0 0 {p.get('yaw_rad', 0):.10f}"
+                f"0 0 {center_z:.17g} 0 0 {angle:.17g}"
             )
             geom = ET.SubElement(col, "geometry")
-            shape = ET.SubElement(geom, "box")
-            ET.SubElement(
-                shape, "size"
-            ).text = f"{p['size_x']:.10f} {p['size_y']:.10f} {p['size_z']:.10f}"
+            shape = ET.SubElement(geom, "mesh")
+            ET.SubElement(shape, "uri").text = mesh_uri
+            ET.SubElement(shape, "scale").text = "1 1 1"
         ET.indent(tree, space="  ")
         tree.write(path, encoding="utf-8", xml_declaration=True)
     collision_path = gazebo / "collision-primitives.json"
