@@ -17,6 +17,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from itertools import chain, islice, product
 
+import numpy as np
+
 from .contracts import (
     DynamicObstacleObservation,
     MetricVoxelMapSnapshot,
@@ -888,8 +890,8 @@ class MetricVoxelMap:
             if not inside_local_cube:
                 removable = tuple(chunk_keys)
             else:
-                # 整桶严格位于保留球内时只检查年龄；球面附近仍使用原逐体素
-                # 平方距离公式，不能用近似包围盒扩大保留区域或延长来源寿命。
+                # 整桶严格位于保留球内时只检查年龄；边界桶最多 16³ 个体素，
+                # 批量计算距离，球面附近仍按原标量平方和裁决。
                 edge = self._NAVIGATION_CHUNK_EDGE_VOXELS
                 low = self._center_point_for_key(tuple(value * edge for value in chunk))
                 high = self._center_point_for_key(tuple((value + 1) * edge - 1 for value in chunk))
@@ -897,14 +899,32 @@ class MetricVoxelMap:
                                         for i in range(3)))
                 wholly_inside = farthest < retained_radius - max(1e-9, retained_radius * 1e-12)
                 local_removable: list[VoxelKey] = []
+                fresh_boundary_keys: list[VoxelKey] = []
                 for key in chunk_keys:
                     evidence = self._evidence[key]
                     if evidence.latest_monotonic_seconds < cutoff:
                         local_removable.append(key)
                     elif not wholly_inside:
-                        voxel_center = self._center_point_for_key(key)
-                        if sum((voxel_center[axis] - center[axis]) ** 2 for axis in range(3)) > maximum_distance_squared:
-                            local_removable.append(key)
+                        fresh_boundary_keys.append(key)
+                if fresh_boundary_keys:
+                    centers = (np.asarray(fresh_boundary_keys, dtype=np.float64) + .5)
+                    centers *= self.resolution_m
+                    centers += self._minimum
+                    delta = centers - center
+                    distances_squared = np.sum(delta * delta, axis=1)
+                    boundary = np.flatnonzero(
+                        np.abs(distances_squared - maximum_distance_squared)
+                        <= max(1e-9, maximum_distance_squared * 1e-12)
+                    )
+                    for index in boundary:
+                        voxel_center = self._center_point_for_key(fresh_boundary_keys[index])
+                        distances_squared[index] = sum(
+                            (voxel_center[axis] - center[axis]) ** 2 for axis in range(3)
+                        )
+                    local_removable.extend(
+                        fresh_boundary_keys[index]
+                        for index in np.flatnonzero(distances_squared > maximum_distance_squared)
+                    )
                 removable = tuple(local_removable)
             for key in removable:
                 self._evidence.pop(key, None)
@@ -913,10 +933,10 @@ class MetricVoxelMap:
                     and key not in self._known_static_free_keys
                 ):
                     self._non_static_evidence_count -= 1
-                self._occupied_keys.discard(key)
-                self._observed_free_keys.discard(key)
-                chunk_keys.discard(key)
             if removable:
+                self._occupied_keys.difference_update(removable)
+                self._observed_free_keys.difference_update(removable)
+                chunk_keys.difference_update(removable)
                 self._navigation_blocks.pop(chunk, None)
             if not chunk_keys:
                 self._evidence_keys_by_chunk.pop(chunk, None)

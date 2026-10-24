@@ -315,6 +315,96 @@ def test_prune_live_evidence_expires_dynamic_state_but_preserves_static_prior() 
     assert all(near_old_key not in keys for keys in world._evidence_keys_by_chunk.values())
 
 
+@pytest.mark.parametrize("radius_delta", [-1e-10, 0., 1e-10])
+@pytest.mark.parametrize("age_delta", [-1e-10, 0., 1e-10])
+def test_prune_preserves_closed_sphere_and_age_boundaries(radius_delta, age_delta):
+    world = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=-20, y=-20, z=-20),
+                           maximum_bound_m=Vector3(x=20, y=20, z=20))
+    point = Vector3(x=3.125, y=4.125, z=.125)
+    key = world.key_for(point)
+    world.mark_box(minimum_m=point, maximum_m=point, occupied=False,
+                   observed_at_monotonic_seconds=10. + age_delta)
+    # The voxel center is exactly 5 m from the query; neither the sphere nor
+    # the maximum-age boundary is exclusive. The epsilons exercise both sides.
+    removed = world.prune_live_evidence(
+        center_m=Vector3(x=.125, y=.125, z=.125),
+        radius_m=5. - math.sqrt(3.) * .25 / 2 + radius_delta,
+        now_monotonic_seconds=20., maximum_age_seconds=10.)
+    retained = radius_delta >= 0. and age_delta >= 0.
+    assert removed == int(not retained)
+    assert world.is_observed_free(key) is retained
+    assert world.is_occupied(key) is not retained
+
+
+@pytest.mark.parametrize("radius", [.001, 1., 4., 12., 100.])
+def test_prune_matches_scalar_retention_across_chunks(radius):
+    rng = random.Random(514)
+    world = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=-50, y=-50, z=-25),
+                           maximum_bound_m=Vector3(x=50, y=50, z=25))
+    center = Vector3(x=-3.5, y=-2.25, z=4.25)
+    center_key = world.key_for(center)
+    for _ in range(4000):
+        key = tuple(value + rng.randint(-70, 70) for value in center_key)
+        world._update_log_odds(key, measurement=rng.choice([-1., 1.]),
+                              observed_at=rng.choice([9.9999999999, 10., 10.0000000001, 19.]))
+    before = dict(world._evidence)
+    maximum_distance_squared = (radius + math.sqrt(3.) * .25 / 2) ** 2
+    expected = {
+        key for key, evidence in before.items()
+        if evidence.latest_monotonic_seconds >= 10.
+        and sum((coordinate - query) ** 2 for coordinate, query in zip(
+            world._center_point_for_key(key), (center.x, center.y, center.z), strict=True)
+        ) <= maximum_distance_squared
+    }
+    removed = world.prune_live_evidence(center_m=center, radius_m=radius,
+        now_monotonic_seconds=20., maximum_age_seconds=10.)
+    assert removed == len(before) - len(expected)
+    assert set(world._evidence) == expected
+    assert set().union(set(), *world._evidence_keys_by_chunk.values()) == expected
+    assert world._non_static_evidence_count == len(expected)
+    for key, evidence in before.items():
+        assert world.is_observed_free(key) is (key in expected and evidence.log_odds < 0.)
+        assert world.is_occupied(key) is (key not in expected or evidence.log_odds > 0.)
+        if key in expected:
+            assert world._evidence[key] is evidence
+
+
+@pytest.mark.parametrize("unknown_is_occupied", [False, True])
+def test_prune_keeps_static_revocation_and_navigation_clone_isolation(unknown_is_occupied):
+    world = MetricVoxelMap(resolution_m=.25, minimum_bound_m=Vector3(x=0, y=0, z=0),
+        maximum_bound_m=Vector3(x=20, y=5, z=5), unknown_is_occupied=unknown_is_occupied)
+    points = [Vector3(x=x, y=1.125, z=1.125) for x in (2.125, 3.125, 4.125, 15.125)]
+    keys = [world.key_for(point) for point in points]
+    world.seed_known_static_region([(points[0], False), (points[1], False), (points[2], True)],
+                                   source_sha256="c" * 64)
+    # One live obstacle revokes static free evidence. Another free observation
+    # overlaps a valid static prior; a third cannot erase a known static wall.
+    for point, occupied in zip(points, (True, False, False, False), strict=True):
+        world.mark_box(minimum_m=point, maximum_m=point, occupied=occupied,
+                       observed_at_monotonic_seconds=10.)
+    clone = world.navigation_clone()
+    before = dict(clone._evidence)
+    assert world.prune_live_evidence(center_m=points[0], radius_m=4.,
+        now_monotonic_seconds=12., maximum_age_seconds=1.) == 4
+    assert not world._evidence
+    assert world._non_static_evidence_count == 0
+    assert world.is_observed_free(keys[0]) is False
+    assert world.is_occupied(keys[0]) is unknown_is_occupied
+    assert world.is_observed_free(keys[1]) is True
+    assert world.is_occupied(keys[1]) is False
+    assert world.is_occupied(keys[2]) is True
+    assert world.is_observed_free(keys[2]) is False
+    assert world.is_observed_free(keys[3]) is False
+    assert world.is_occupied(keys[3]) is unknown_is_occupied
+    assert clone._evidence == before
+    assert clone.is_occupied(keys[0]) is True
+    assert clone.is_observed_free(keys[3]) is True
+    clone._update_log_odds(keys[0], measurement=-6., observed_at=13.)
+    assert clone._evidence[keys[0]] is not before[keys[0]]
+    assert before[keys[0]].latest_monotonic_seconds == 10.
+    assert world.is_observed_free(keys[0]) is False
+
+
 @pytest.mark.parametrize(
     ("radius_m", "maximum_age_seconds", "now_monotonic_seconds", "message"),
     [
