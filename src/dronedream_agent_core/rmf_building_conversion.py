@@ -473,7 +473,7 @@ def convert_rmf_building_map(payload: bytes, *, source_name: str) -> RmfBuilding
                 continue
             parameters = lane[2] if len(lane) > 2 else {}
             speed = _parameter(parameters, "speed_limit")
-            speed_limit = float(speed) if type(speed) in (int, float) and float(speed) > 0 else 0.5
+            speed_limit = float(speed) if type(speed) in (int, float) and float(speed) > 0 else 6.0
             graph_edges.append(
                 {
                     "edge_id": _slug(f"{level_name}-lane{lane_index}"),

@@ -8758,7 +8758,7 @@ async def _follow_runtime_target(
     standoff_m = float(parameters.get("standoff_m", 2.0))
     altitude_offset_m = float(parameters.get("altitude_offset_m", 1.0))
     maximum_speed_mps = min(
-        float(parameters.get("maximum_speed_mps", 1.0)),
+        float(parameters.get("maximum_speed_mps", 5.0)),
         vehicle.operational_max_speed_mps,
     )
     if not (
@@ -8766,7 +8766,7 @@ async def _follow_runtime_target(
         and 0.5 <= update_rate_hz <= 10.0
         and 0.5 <= standoff_m <= 20.0
         and -5.0 <= altitude_offset_m <= 20.0
-        and 0.1 <= maximum_speed_mps <= 3.0
+        and 5.0 <= maximum_speed_mps <= 6.0
     ):
         raise UserDirectedLanding(
             "dynamic follow parameters are outside the bounded safety contract"

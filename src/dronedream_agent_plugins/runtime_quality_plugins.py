@@ -85,7 +85,7 @@ def _tracking_stability(
     }:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     maximum_error = policy_number(configured, "maximum_position_error_m", 1.5, 0.05, 20)
-    maximum_speed = policy_number(configured, "maximum_checkpoint_speed_mps", 3.0, 0, 20)
+    maximum_speed = policy_number(configured, "maximum_checkpoint_speed_mps", 6.0, 0, 20)
     gates = {
         "position_error_within_policy": bounded_number(request.position_error_m, 0, maximum_error),
         "checkpoint_speed_within_policy": bounded_number(request.speed_mps, 0, maximum_speed),

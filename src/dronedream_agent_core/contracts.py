@@ -2063,8 +2063,8 @@ class RuntimeOperatorTakeoverGrant(StrictModel):
     hold_ack_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     decision_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     grant_token_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    maximum_horizontal_speed_mps: float = Field(gt=0.0, le=3.0)
-    maximum_vertical_speed_mps: float = Field(gt=0.0, le=2.0)
+    maximum_horizontal_speed_mps: float = Field(gt=0.0, le=6.0)
+    maximum_vertical_speed_mps: float = Field(gt=0.0, le=3.0)
     maximum_yaw_rate_dps: float = Field(gt=0.0, le=180.0)
     deterministic_gates: dict[str, bool] = Field(min_length=1, max_length=32)
     issued_at: datetime

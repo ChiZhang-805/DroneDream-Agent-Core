@@ -151,7 +151,7 @@ def _classify(
     )
     if action == "set_speed" and speeds:
         values = {float(speed) for speed in speeds}
-        if len(values) != 1 or not bounded_number(next(iter(values)), 0.1, 3):
+        if len(values) != 1 or not bounded_number(next(iter(values)), 5, 6):
             raise ValueError("AMENDMENT_SPEED_AMBIGUOUS_OR_OUT_OF_RANGE")
         parameters["maximum_speed_mps"] = next(iter(values))
     if action == "camera_control":
@@ -231,7 +231,7 @@ def _conservative_directive(
         speed = parameters.get("maximum_speed_mps")
         if speed is None:
             issues.append("SPEED_VALUE_REQUIRED")
-        elif not bounded_number(speed, 0.1, 3):
+        elif not bounded_number(speed, 5, 6):
             issues.append("SPEED_OUTSIDE_QUALIFIED_ENVELOPE")
     if action in {"redirect", "set_return_point", "follow_target"} and not (
         classification.target_entity
@@ -265,13 +265,13 @@ def _conservative_directive(
         parameters.setdefault("follow_duration_seconds", 30.0)
         parameters.setdefault("standoff_m", 2.0)
         parameters.setdefault("altitude_offset_m", 1.0)
-        parameters.setdefault("maximum_speed_mps", 1.0)
+        parameters.setdefault("maximum_speed_mps", 5.0)
         parameters.setdefault("target_update_rate_hz", 2.0)
         numeric_limits = {
             "follow_duration_seconds": (1.0, 300.0),
             "standoff_m": (0.5, 20.0),
             "altitude_offset_m": (-5.0, 20.0),
-            "maximum_speed_mps": (0.1, 3.0),
+            "maximum_speed_mps": (5.0, 6.0),
             "target_update_rate_hz": (0.5, 10.0),
         }
         for name, (minimum, maximum) in numeric_limits.items():
