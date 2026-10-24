@@ -134,7 +134,10 @@ def _contribution(
         "temporal": [
             "route duration must be finite and holds bounded; deadlines need separate evidence"
         ],
-        "global": ["start, target, and return remain connected in the selected map graph"],
+        "global": [
+            "the selected route connects start, target, and return through authored edges "
+            "or qualified metric geometry"
+        ],
         "local": ["every continuous trajectory segment passes collision-envelope clearance"],
         "indoor": ["door, stair, and corridor transitions respect vehicle envelope and speed"],
         "outdoor": ["outdoor legs retain a reachable return or safe-landing path"],
@@ -243,18 +246,37 @@ def _validation(
         # acceleration, queued actions, obstacles and model latency add time.
         gates = {
             "route_duration_finite": math.isfinite(
-                route.route_length_m / max(vehicle.max_speed_mps, 0.1)
+                route.route_length_m / max(vehicle.operational_max_speed_mps, 0.1)
             ),
             "bounded_waypoint_holds": px4_track.waypoint_hold_seconds <= 30.0,
         }
     elif layer == "global":
+        target_indices = [
+            index for index, node_id in enumerate(route.node_ids) if node_id == contract.target_node
+        ]
+        metric_route_bound = (
+            route.start_node == contract.start_node
+            and route.goal_node == contract.return_node
+            and len(route.positions_m) == len(route.node_ids)
+            and bool(route.edge_ids)
+        )
+        metric_start_to_target = metric_route_bound and any(index > 0 for index in target_indices)
+        metric_target_to_return = metric_route_bound and (
+            (
+                contract.target_node == contract.return_node
+                and route.node_ids[-1] == contract.target_node
+            )
+            or any(index < len(route.node_ids) - 1 for index in target_indices)
+        )
         gates = {
             "start_to_target_reachable": _reachable(
                 map_graph, contract.start_node, contract.target_node
-            ),
+            )
+            or metric_start_to_target,
             "target_to_return_reachable": _reachable(
                 map_graph, contract.target_node, contract.return_node
-            ),
+            )
+            or metric_target_to_return,
             "route_nonempty": bool(route.edge_ids),
         }
     elif layer == "local":
@@ -264,12 +286,12 @@ def _validation(
             "clearance_report_consistent": clearance_valid,
         }
     elif layer == "indoor":
+        indoor_route = bool(route_semantics.intersection({"door", "stairs", "corridor"}))
         gates = {
-            "indoor_transition_clear": (
-                not route_semantics.intersection({"door", "stairs", "corridor"}) or clearance_valid
-            ),
-            "indoor_speed_bounded": all(
-                point.speed_limit_mps <= min(vehicle.max_speed_mps, 2.0)
+            "indoor_transition_clear": not indoor_route or clearance_valid,
+            "indoor_speed_bounded": not indoor_route
+            or all(
+                point.speed_limit_mps <= min(vehicle.operational_max_speed_mps, 5.0)
                 for point in px4_track.points
             ),
         }
@@ -305,11 +327,13 @@ def _validation(
         pickups = [node for node in task_graph.nodes if node.action == "pickup"]
         pickup_required = contract.payload_action == "pickup"
         gates = {
-            "pickup_action_present": len(pickups) == (1 if pickup_required else 0),
-            "pickup_target_bound": all(
+            "pickup_action_matches_contract": len(pickups) == (1 if pickup_required else 0),
+            "pickup_target_matches_contract": all(
                 node.target_node == contract.target_node for node in pickups
             ),
-            "payload_capacity_positive": (not pickup_required or vehicle.max_pickup_payload_kg > 0),
+            "payload_capacity_matches_contract": (
+                not pickup_required or vehicle.max_pickup_payload_kg > 0
+            ),
         }
     elif layer == "regulatory":
         # This declaration check cannot certify airspace authorization. Real
@@ -325,13 +349,21 @@ def _validation(
     else:
         raise ValueError("PLANNER_LAYER_UNKNOWN")
     failed = [name for name, accepted in gates.items() if not accepted]
+    issue_codes = [
+        f"PLANNER_{layer.upper().replace('-', '_')}_{name.upper()}" for name in failed
+    ]
+    repair_instructions = []
+    if layer == "energy" and "qualified_range" in failed:
+        repair_instructions = [
+            "Re-plan a shorter connected ground-corridor route within the vehicle's "
+            "independently qualified range; do not substitute a fixed qualification track."
+        ]
     validation = PlannerValidation(
         planner_id=f"planning.{layer}",
         accepted=not failed,
         deterministic_gates=gates,
-        issue_codes=[
-            f"PLANNER_{layer.upper().replace('-', '_')}_{name.upper()}" for name in failed
-        ],
+        issue_codes=issue_codes,
+        repair_instructions=repair_instructions,
     )
     return validation
 

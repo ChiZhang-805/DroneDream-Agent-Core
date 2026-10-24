@@ -156,6 +156,7 @@ def test_source_clock_buffer_integration_and_selection(monkeypatch):
     from test_native_image_pose import payload as source_payload
 
     state = NativeStateBuffer(source_clock_domain="same-run")
+    assert state.source_image_revision == 0
     for timestamp in (1000, 1020):
         current = packet(timestamp)
         wire = source_payload(timestamp * 1000, timestamp / 100., timestamp)
@@ -163,6 +164,9 @@ def test_source_clock_buffer_integration_and_selection(monkeypatch):
             wire["dynamics"]["sources"]["odometry"])
         monkeypatch.setattr(time, "monotonic", lambda stamp=timestamp: stamp / 100. + .01)
         state.ingest(current, now_unix_ms=timestamp)
+    assert state.source_image_revision == 2
+    state.ingest(current, now_unix_ms=1020)
+    assert state.source_image_revision == 2
     limits = dict(clock_domain="same-run", now_unix_ms=1160, now_monotonic=10.23,
                   maximum_range_m=10., maximum_acceleration_mps2=1.)
     assert state.select_source_image_time(((1150, 1_001_000_000),),
@@ -184,6 +188,8 @@ def test_source_clock_buffer_integration_and_selection(monkeypatch):
     with pytest.raises(ValueError, match="CONTRACT"):
         state.align_source_image(image_timestamp_ns=1_001_000_000,
             image_received_at_unix_ms=1150, **{**limits, "clock_domain": "wrong"})
+    state.invalidate("SOURCE_INVALID")
+    assert state.source_image_revision is None
 
 
 # 功能：

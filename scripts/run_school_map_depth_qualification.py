@@ -15,9 +15,15 @@ import hashlib
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
+from dronedream_agent_core.asset_payload_qualification import (
+    build_asset_payload_course,
+    separate_release_from_landing,
+    verify_asset_payload_run,
+)
 from dronedream_agent_core.collision import (
     build_tracking_corridor_budget,
     validate_route_clearance,
@@ -49,13 +55,31 @@ from dronedream_plugin_sdk.protocol import decode_json
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+# 功能：运行结束后复制起飞前冻结的资格输入，保留原生运行目录的空目录初始化约束。
+# 输入：plan_root 保存原始输入，run_dir 已由实际执行器独占创建。
+# 输出：同字节输入和净空证据；已有不同内容时拒绝覆盖。
+def _publish_asset_qualification_inputs(plan_root: Path, run_dir: Path) -> None:
+    inputs_path = plan_root / "asset-qualification-inputs.json"
+    inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+    clearance = plan_root / "clearance.json"
+    if _sha256(clearance) != inputs["run_files"]["clearance.json"]:
+        raise ValueError("ASSET_QUALIFICATION_INPUT_CHANGED")
+    for source in (inputs_path, clearance):
+        destination = run_dir / source.name
+        if destination.exists():
+            if destination.read_bytes() != source.read_bytes():
+                raise ValueError("ASSET_QUALIFICATION_INPUT_CHANGED")
+        else:
+            shutil.copyfile(source, destination)
 
 
 # 功能：
@@ -131,13 +155,18 @@ def _load_dynamic_obstacle_challenge(receipt_path: Path, *, world_sdf: Path) -> 
 #   vehicle：本轮加载的机体模型，用于独立包围体距离检查。
 # 输出：
 #   result：包含挑战门槛与检查错误的最终证据。
-def _finalize_recovery_challenge(root: Path, evidence: dict, challenge: dict, vehicle: VehicleAsset) -> dict:
+def _finalize_recovery_challenge(
+    root: Path, evidence: dict, challenge: dict, vehicle: VehicleAsset
+) -> dict:
     result = {**evidence, "gates": dict(evidence["gates"]),
         "measurements": dict(evidence["measurements"]), "artifacts": dict(evidence["artifacts"])}
     checks = {"evidence_complete": False, "motion_observed": False, "entities_observed": False,
-        "entities_encountered": False, "entities_became_threat": False, "sampled_clearance_respected": False}
+        "entities_encountered": False, "entities_became_threat": False,
+        "sampled_clearance_respected": False}
     result["status"] = "failed"
-    result["gates"].update({"dynamic_obstacle_challenge_" + key: value for key, value in checks.items()})
+    result["gates"].update(
+        {"dynamic_obstacle_challenge_" + key: value for key, value in checks.items()}
+    )
     result["measurements"]["dynamic_obstacle_challenge"] = {**challenge, "issue": "CHECK_PENDING"}
     target = root / "mission_evidence.json"
     _write_json(target, result)
@@ -159,7 +188,8 @@ def _finalize_recovery_challenge(root: Path, evidence: dict, challenge: dict, ve
                 for name in challenge.get("moving_entity_names", [])),
             "entities_observed": all(metrics[name]["observation_count"] > 0 for name in names),
             "entities_encountered": all(metrics[name]["minimum_horizontal_distance_m"] is not None
-                and metrics[name]["minimum_horizontal_distance_m"] <= challenge["required_encounter_distance_m"] for name in names),
+                and metrics[name]["minimum_horizontal_distance_m"]
+                <= challenge["required_encounter_distance_m"] for name in names),
             "entities_became_threat": all(metrics[name]["threat_count"] > 0 for name in names),
             "sampled_clearance_respected": clearance["sampled_clearance_respected"],
         }
@@ -168,7 +198,9 @@ def _finalize_recovery_challenge(root: Path, evidence: dict, challenge: dict, ve
         # 错误类型用于排查；不把任意底层异常文本（可能含环境信息）写进公开回执。
         details["issue"] = "RECOVERY_CHALLENGE_EVIDENCE_INVALID"
         details["error_type"] = type(error).__name__
-    result["gates"].update({"dynamic_obstacle_challenge_" + key: value for key, value in checks.items()})
+    result["gates"].update(
+        {"dynamic_obstacle_challenge_" + key: value for key, value in checks.items()}
+    )
     result["measurements"]["dynamic_obstacle_challenge"] = details
     result["status"] = "verified" if all(result["gates"].values()) else "failed"
     _write_json(target, result)
@@ -345,7 +377,8 @@ def _load_vehicle(path: Path, *, vehicle_sdf: Path) -> VehicleAsset:
 # 输出：
 #   None：无证据出口的训练被拒绝。
 def _validate_training_capture(*, training: bool, dataset: Path | None,
-                               learner_channel: Path | None, teacher_observations: bool = False) -> None:
+                               learner_channel: Path | None,
+                               teacher_observations: bool = False) -> None:
     if type(teacher_observations) is not bool:
         raise ValueError("teacher observation mode must be an explicit boolean")
     if training and dataset is None and learner_channel is None and not teacher_observations:
@@ -375,9 +408,10 @@ def main() -> int:
             "Production qualification requires exactly one round trip."
         ),
     )
-    parser.add_argument("--speed-limit-mps", type=float, default=0.8)
+    parser.add_argument("--speed-limit-mps", type=float, default=6.0)
     parser.add_argument("--one-way-training", action="store_true",
-                        help="Explicit teacher curriculum ending at the outbound goal; not round-trip qualification")
+                        help=("Explicit teacher curriculum ending at the outbound goal; "
+                              "not round-trip qualification"))
     parser.add_argument(
         "--required-clearance-m",
         type=float,
@@ -517,7 +551,8 @@ def main() -> int:
         ),
     )
     parser.add_argument('--experimental-map-fusion', action='store_true',
-                        help='Owned source-matched localization experiment; training only, no qualification')
+                        help=('Owned source-matched localization experiment; '
+                              'training only, no qualification'))
     parser.add_argument(
         '--independent-route-control',
         action='store_true',
@@ -537,7 +572,8 @@ def main() -> int:
         ),
     )
     parser.add_argument('--bounded-hybrid-control', action='store_true',
-                        help='Explicit bounded delay bridge; independent controller attribution retained')
+                        help=('Explicit bounded delay bridge; '
+                              'independent controller attribution retained'))
     args = parser.parse_args()
     if args.independent_route_control and (
         args.training_data_collection
@@ -553,11 +589,12 @@ def main() -> int:
         raise ValueError('INDEPENDENT_ROUTE_CONTROL_REQUIRES_MODEL_FREE_PRODUCT_MODE')
     if args.experimental_map_fusion and (
             not args.training_data_collection or args.simulation_training_channel is None
-            or args.native_sensor_runtime is None or args.simulation_camera_profile != 'responsive-control'
+            or args.native_sensor_runtime is None
+            or args.simulation_camera_profile != 'responsive-control'
             or args.multimodal_dataset_root is None):
         raise ValueError('MAP_FUSION_EXPERIMENT_REQUIRES_NATIVE_RECORDED_TRAINING')
-    if not 0.1 <= args.speed_limit_mps <= 1.2:
-        raise ValueError("qualification speed must be within [0.1, 1.2] m/s")
+    if not 5.0 <= args.speed_limit_mps <= 6.0:
+        raise ValueError("qualification cruise speed must be within [5.0, 6.0] m/s")
     if args.required_clearance_m is not None and not (
         0.05 <= args.required_clearance_m <= 6.0
     ):
@@ -705,6 +742,9 @@ def main() -> int:
         return_to_launch=not args.one_way_training,
     )
     vehicle = _load_vehicle(args.vehicle_metadata, vehicle_sdf=args.vehicle_sdf)
+    if (not args.training_data_collection and args.short_outbound_points is None
+            and args.independent_route_control):
+        route, graph = separate_release_from_landing(route, graph, vehicle)
     clearance = validate_route_clearance(
         route,
         args.semantic,
@@ -736,6 +776,15 @@ def main() -> int:
                                          clearance.semantic_sha256)
         if args.teacher_observation_collection and args.development_payload_collection else None
     )
+    asset_course = (
+        build_asset_payload_course(route, graph, vehicle, args.vehicle_sdf,
+                                   clearance.semantic_sha256)
+        if (not args.training_data_collection and args.short_outbound_points is None
+            and args.independent_route_control) else None
+    )
+    if asset_course is not None and (not args.independent_route_control
+                                    or args.local_navigation_provider is not None):
+        raise ValueError('physical asset qualification requires --independent-route-control')
 
     plan_root = args.output_root / "plan"
     route_path = plan_root / "route.json"
@@ -751,12 +800,42 @@ def main() -> int:
     checkpoint_path = action_path = None
     if payload_curriculum is not None:
         for name, artifact in payload_curriculum.items():
-            _write_json(plan_root / f"payload-teacher-{name}.json", artifact.model_dump(mode="json"))
+            _write_json(
+                plan_root / f"payload-teacher-{name}.json", artifact.model_dump(mode="json")
+            )
         checkpoint_path = plan_root / "payload-teacher-checkpoints.json"
         action_path = plan_root / "payload-teacher-actions.json"
         _write_json(plan_root / "payload-teacher-purpose.json", {
             "simulation_only": True, "model_call_performed": False,
             "flight_qualification_granted": False, "purpose": "physical-payload-measurement"})
+    if asset_course is not None:
+        for name, artifact in asset_course.items():
+            _write_json(plan_root / f"asset-{name}.json", artifact.model_dump(mode="json"))
+        checkpoint_path, action_path = (
+            plan_root / 'asset-checkpoints.json', plan_root / 'asset-actions.json'
+        )
+        physics = json.loads((args.vehicle_sdf.parent / 'summary.json').read_text(encoding='utf-8'))
+        inputs = {
+            'schema_version': 'dronedream.asset-qualification-inputs.v1',
+            'runtime_inputs': {'world_sha256': _sha256(args.world_sdf),
+                'semantic_sha256': _sha256(args.semantic),
+                'vehicle_sha256': _sha256(args.vehicle_sdf),
+                'controller_params_sha256': _sha256(args.controller_params)},
+            'map_files': {p.relative_to(args.world_sdf.parent).as_posix(): _sha256(p)
+                          for p in args.world_sdf.parent.rglob('*') if p.is_file()},
+            'vehicle_files': {p.relative_to(args.vehicle_sdf.parent).as_posix(): _sha256(p)
+                              for p in args.vehicle_sdf.parent.rglob('*') if p.is_file()},
+            'run_files': {name: _sha256(path) for name, path in {
+                'mission-route.json': route_path, 'reference_track.json': track_path,
+                'clearance.json': clearance_path, 'runtime-checkpoints.json': checkpoint_path,
+                'runtime-actions.json': action_path}.items()},
+            'source_start_node': outbound.start_node, 'source_target_node': outbound.goal_node,
+            'source_metric_route_sha256': _sha256(args.metric_route),
+            'reserve_battery_percent': vehicle.reserve_battery_percent,
+            'loaded_thrust_to_weight': physics['mission_payload']['loaded_thrust_to_weight'],
+            'minimum_thrust_to_weight': physics['minimum_qualified_thrust_to_weight'],
+        }
+        _write_json(plan_root / 'asset-qualification-inputs.json', inputs)
     _write_json(
         plan_root / "qualification-plan.json",
         {
@@ -771,7 +850,9 @@ def main() -> int:
                 )
             ),
             "operational_qualification_requested": not args.training_data_collection,
-            "route_completion_mode": "outbound-goal-landing" if args.one_way_training else "return-to-launch",
+            "route_completion_mode": (
+                "outbound-goal-landing" if args.one_way_training else "return-to-launch"
+            ),
             "round_trip_repetitions": args.round_trip_repetitions,
             "live_depth_required": True,
             "text_model_input": (
@@ -889,9 +970,10 @@ def main() -> int:
         checkpoint_contract_path=checkpoint_path,
         runtime_action_contract_path=action_path,
         contract_id=(
+            asset_course['mission'].contract_id if asset_course is not None else (
             payload_curriculum["mission"].contract_id if payload_curriculum is not None else (
                 "school-map-training-data-collection" if args.training_data_collection
-                else "school-map-live-depth-qualification")
+                else "school-map-live-depth-qualification"))
         ),
         executor_extra_args=[
             "--base-executor",
@@ -998,19 +1080,38 @@ def main() -> int:
             args.development_depth_drop_duration_seconds
         ),
         development_payload_collection=args.development_payload_collection,
+        asset_payload_qualification=asset_course is not None,
     )
+    if asset_course is not None:
+        _publish_asset_qualification_inputs(plan_root, args.output_root / 'simulation')
+        try:
+            asset_receipt = verify_asset_payload_run(args.output_root / 'simulation')
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            asset_receipt = {'schema_version': 'dronedream.asset-payload-qualification.v1',
+                'status': 'failed', 'issue': str(error), 'model_qualification_granted': False}
+            evidence = {**evidence, 'status': 'failed', 'gates': {
+                **evidence['gates'], 'physical_asset_qualification_complete': False}}
+        else:
+            evidence = {**evidence, 'gates': asset_receipt['gates']}
+        _write_json(
+            args.output_root / 'simulation/asset-qualification-evidence.json', asset_receipt
+        )
     if dynamic_obstacle_challenge is not None:
-        evidence = _finalize_recovery_challenge(args.output_root / "simulation", evidence, dynamic_obstacle_challenge, vehicle)
+        evidence = _finalize_recovery_challenge(
+            args.output_root / "simulation", evidence, dynamic_obstacle_challenge, vehicle
+        )
     summary = {
         "schema_version": "dronedream.school-map-depth-qualification-summary.v1",
         "status": evidence["status"],
         "gates": evidence["gates"],
         "measurements": evidence["measurements"],
         "training_data_collection": args.training_data_collection,
-        "route_completion_mode": "outbound-goal-landing" if args.one_way_training else "return-to-launch",
+        "route_completion_mode": (
+            "outbound-goal-landing" if args.one_way_training else "return-to-launch"
+        ),
         "development_payload_collection": args.development_payload_collection,
         "operational_qualification_granted": bool(
-            not args.training_data_collection and evidence["status"] == "verified"
+            asset_course is not None and evidence["status"] == "verified"
         ),
     }
     _write_json(args.output_root / "qualification-summary.json", summary)

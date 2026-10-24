@@ -23,6 +23,7 @@ from typing import Any
 from uuid import uuid4
 
 from dronedream_agent_core.assets import _load_object as _read_semantic_snapshot
+from dronedream_agent_core.collision import planning_collision_primitives
 from dronedream_agent_core.collision import primitive_bounds as _primitive_bounds
 from dronedream_agent_core.contracts import (
     ControlledVehicleIdentityEvidence,
@@ -60,6 +61,7 @@ from dronedream_agent_core.learning_observation_recorder import (
     LearningObservationRecorder,
     learning_recovery_task_context,
 )
+from dronedream_agent_core.local_map_alignment import MapSurfaceIndex
 from dronedream_agent_core.local_policy_packages import (
     LocalPolicyQualificationReceipt,
     LocalPolicySimulationAdmissionReceipt,
@@ -84,6 +86,7 @@ from dronedream_agent_core.native_state_stream import NativeStateSampler
 from dronedream_agent_core.navigation_context import build_navigation_context
 from dronedream_agent_core.navigation_snapshot import NavigationSnapshotRequest
 from dronedream_agent_core.occupancy_collision import fully_contained_box_mask
+from dronedream_agent_core.optical_map import compile_optical_map
 from dronedream_agent_core.payload_collection_contract import payload_collection_mode
 from dronedream_agent_core.perception_health_channel import PerceptionHealthPublisher
 from dronedream_agent_core.perception_runtime import (
@@ -158,6 +161,7 @@ from dronedream_agent_core.simulation_teacher import (
 )
 from dronedream_agent_core.simulation_teacher_contract import SIMULATION_TEACHER_CONTRACT_SHA256
 from dronedream_agent_core.static_geometry_index import StaticGeometryIndex
+from dronedream_agent_core.traversability import TraversableAirspace
 from dronedream_agent_core.vertical_navigation import (
     CeilingTransition,
     VerticalMotionGuard,
@@ -1742,6 +1746,76 @@ def _point_segment_distance(point: Point, start: Point, end: Point) -> float:
     return math.dist(point, projection)
 
 
+_STATIC_ROUTE_TRAVERSAL_BUDGET = 8_000_000
+_STATIC_ROUTE_VOXEL_BUDGET = 1_000_000
+
+
+# 功能：按线段最长轴逐体素层扫描胶囊形走廊，避免长斜线外包盒的平方级空遍历。
+# 输入：原地图格网、路线线段和原有走廊半径；反向重复线段只处理一次。
+# 输出：仍以精确点到线段距离筛出的同一体素集合，以及实际候选遍历数。
+def _qualified_route_corridor_keys(
+    world: MetricVoxelMap,
+    route_segments: list[tuple[Point, Point]],
+    padding_m: float,
+) -> tuple[set[tuple[int, int, int]], int]:
+    minimum = tuple(getattr(world.minimum_bound_m, axis) for axis in ("x", "y", "z"))
+    maximum = tuple(getattr(world.maximum_bound_m, axis) for axis in ("x", "y", "z"))
+    resolution = world.resolution_m
+    corridor_keys: set[tuple[int, int, int]] = set()
+    inspected_voxels = 0
+    seen_segments = set()
+    for start, end in route_segments:
+        identity = tuple(sorted((start, end)))
+        if identity in seen_segments:
+            continue
+        seen_segments.add(identity)
+        low = tuple(max(minimum[i], min(start[i], end[i]) - padding_m) for i in range(3))
+        high = tuple(min(maximum[i] - resolution * .01,
+                         max(start[i], end[i]) + padding_m) for i in range(3))
+        first, last = world.key_for(low), world.key_for(high)
+        delta = tuple(end[i] - start[i] for i in range(3))
+        axis = max(range(3), key=lambda i: abs(delta[i]))
+        minor_axes = [i for i in range(3) if i != axis]
+        for major in range(first[axis], last[axis] + 1):
+            major_center = minimum[axis] + (major + .5) * resolution
+            if abs(delta[axis]) <= 1e-12:
+                ratios = (0., 1.)
+            else:
+                crossing = sorted(((major_center - padding_m - start[axis]) / delta[axis],
+                                   (major_center + padding_m - start[axis]) / delta[axis]))
+                ratios = (max(0., crossing[0]), min(1., crossing[1]))
+                if ratios[0] > ratios[1]:
+                    continue
+            ranges = []
+            for minor in minor_axes:
+                ends = [start[minor] + ratio * delta[minor] for ratio in ratios]
+                slab_low = max(low[minor], min(ends) - padding_m)
+                slab_high = min(high[minor], max(ends) + padding_m)
+                slab_first = max(first[minor], math.floor((slab_low - minimum[minor]) / resolution))
+                slab_last = min(last[minor], math.floor((slab_high - minimum[minor]) / resolution))
+                ranges.append(range(slab_first, slab_last + 1))
+            # Budget the work actually performed, before entering either inner loop.
+            inspected_voxels += len(ranges[0]) * len(ranges[1])
+            if inspected_voxels > _STATIC_ROUTE_TRAVERSAL_BUDGET:
+                raise ValueError(
+                    "qualified static route corridor exceeds the traversal safety budget"
+                )
+            for first_minor in ranges[0]:
+                for second_minor in ranges[1]:
+                    values = [0, 0, 0]
+                    values[axis] = major
+                    values[minor_axes[0]], values[minor_axes[1]] = first_minor, second_minor
+                    key = tuple(values)
+                    if key in corridor_keys:
+                        continue
+                    center = tuple(minimum[i] + (key[i] + .5) * resolution for i in range(3))
+                    if _point_segment_distance(center, start, end) <= padding_m:
+                        corridor_keys.add(key)
+                        if len(corridor_keys) > _STATIC_ROUTE_VOXEL_BUDGET:
+                            raise ValueError("qualified static route corridor exceeds voxel budget")
+    return corridor_keys, inspected_voxels
+
+
 # 功能：
 #   1. 核对静态地图、路线和净空报告的内容绑定，仅栅格化合格路线附近的保守先验。
 #   2. 在遍历前限制计算规模、遍历中限制体素数，全部分类完成后再提交地图。
@@ -1800,50 +1874,9 @@ def _seed_qualified_static_map(
         ((start.x, start.y, start.z), (end.x, end.y, end.z))
         for start, end in zip(route.positions_m, route.positions_m[1:], strict=False)
     ]
-    corridor_keys: set[tuple[int, int, int]] = set()
-    inspected_voxels = 0
-    for start, end in route_segments:
-        low = Vector3(
-            x=max(world.minimum_bound_m.x, min(start[0], end[0]) - padding_m),
-            y=max(world.minimum_bound_m.y, min(start[1], end[1]) - padding_m),
-            z=max(world.minimum_bound_m.z, min(start[2], end[2]) - padding_m),
-        )
-        high = Vector3(
-            x=min(
-                world.maximum_bound_m.x - world.resolution_m * 0.01,
-                max(start[0], end[0]) + padding_m,
-            ),
-            y=min(
-                world.maximum_bound_m.y - world.resolution_m * 0.01,
-                max(start[1], end[1]) + padding_m,
-            ),
-            z=min(
-                world.maximum_bound_m.z - world.resolution_m * 0.01,
-                max(start[2], end[2]) + padding_m,
-            ),
-        )
-        first = world.key_for(low)
-        last = world.key_for(high)
-        # 写入体素数不能限制遍历成本；细网格或长斜线必须在三重循环前检查计算预算。
-        inspected_voxels += math.prod(max(0, last[i] - first[i] + 1) for i in range(3))
-        if inspected_voxels > 8_000_000:
-            raise ValueError("qualified static route corridor exceeds the traversal safety budget")
-        for x in range(first[0], last[0] + 1):
-            for y in range(first[1], last[1] + 1):
-                for z in range(first[2], last[2] + 1):
-                    key = (x, y, z)
-                    center = world.center_for(key)
-                    if (
-                        _point_segment_distance(
-                            (center.x, center.y, center.z),
-                            start,
-                            end,
-                        )
-                        <= padding_m
-                    ):
-                        corridor_keys.add(key)
-                        if len(corridor_keys) > 1_000_000:
-                            raise ValueError("qualified static route corridor exceeds voxel budget")
+    corridor_keys, _inspected_voxels = _qualified_route_corridor_keys(
+        world, route_segments, padding_m
+    )
     classifications = []
     for key in sorted(corridor_keys):
         center = world.center_for(key)
@@ -1863,6 +1896,55 @@ def _seed_qualified_static_map(
         minimum_clearance_m=clearance.minimum_clearance_m,
     )
     return counts
+
+
+def _initialize_qualified_static_map(*, source_path: Path, **inputs: Any) -> tuple[int, int]:
+    """Publish static preparation in the existing worker source record, not flight readiness."""
+    source = read_runtime_object(source_path)
+    started = time.monotonic()
+    state = {"state": "initializing", "pid": os.getpid(),
+             "semantic_sha256": inputs["expected_semantic_sha256"],
+             "route_sha256": inputs["qualified_clearance"].route_sha256}
+    _atomic_json(source_path, {**source, "static_initialization": state})
+    try:
+        counts = _seed_qualified_static_map(**inputs)
+    except Exception as error:
+        _atomic_json(source_path, {**source, "static_initialization": {
+            **state, "state": "failed", "issue": f"{type(error).__name__}: {error}"[:512],
+            "elapsed_seconds": time.monotonic() - started}})
+        raise
+    _atomic_json(source_path, {**source, "static_initialization": {
+        **state, "state": "ready", "free_voxels": counts[0], "occupied_voxels": counts[1],
+        "elapsed_seconds": time.monotonic() - started}})
+    return counts
+
+
+def _load_worker_static_surfaces(
+    *, world_path: Path, expected_world_sha256: str, semantic: dict[str, Any],
+) -> tuple[MapSurfaceIndex, dict[str, Any]]:
+    """Bind motion classification to the same rendered surfaces, never exclusion volumes."""
+    index, _, receipt = compile_optical_map(
+        world_path, expected_world_sha256=expected_world_sha256)
+    canopy = semantic.get("canopy_collision_meshes", [])
+    bundles = [canopy] if isinstance(canopy, dict) else canopy
+    if not isinstance(bundles, list):
+        raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+    dependencies = receipt["resource_dependencies"]
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+        meshes = bundle.get("meshes", [bundle])
+        if not isinstance(meshes, list):
+            raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+        for mesh in meshes:
+            if (not isinstance(mesh, dict) or not isinstance(mesh.get("mesh_uri"), str)
+                    or not isinstance(mesh.get("mesh_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", mesh["mesh_sha256"])):
+                raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+            resource = dependencies.get(mesh["mesh_uri"])
+            if resource is None or resource["sha256"] != mesh["mesh_sha256"]:
+                raise ValueError("DEPTH_STATIC_CANOPY_RESOURCE_MISMATCH:" + mesh["mesh_uri"])
+    return index, receipt
 
 
 # 功能：
@@ -2366,7 +2448,7 @@ def _load_worker_vehicle(path: Path, *, radius_m: float, height_m: float,
         raise ValueError("vehicle radius does not match runtime clearance envelope")
     if abs(vehicle.body_height_m - height_m) > 1e-6:
         raise ValueError("vehicle height does not match runtime clearance envelope")
-    if (speed_mps > vehicle.max_speed_mps + 1e-6
+    if (speed_mps > vehicle.operational_max_speed_mps + 1e-6
             or acceleration_mps2 > vehicle.max_acceleration_mps2 + 1e-6):
         raise ValueError("vehicle motion limits do not match the admitted metadata")
     return vehicle
@@ -2487,6 +2569,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--vehicle", required=True)
     parser.add_argument("--vehicle-metadata", type=Path, required=True)
     parser.add_argument("--semantic", type=Path, required=True)
+    parser.add_argument("--static-world", type=Path, required=True)
+    parser.add_argument("--static-world-sha256", required=True)
     parser.add_argument("--qualified-route", type=Path)
     parser.add_argument("--qualified-clearance", type=Path)
     parser.add_argument("--target", type=Path, required=True)
@@ -2633,8 +2717,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             or flight_dynamics_envelope.domain != "simulation"):
         parser.error("flight dynamics envelope does not belong to this simulation vehicle")
     # 机体资产用于资格摘要；控制侧只收紧本次限制，不反向修改物理资产身份。
+    control_speed_mps = min(args.max_speed, vehicle.operational_max_speed_mps)
     control_vehicle = VehicleAsset.model_validate({**vehicle.model_dump(mode="python"),
-        "max_speed_mps": min(args.max_speed, vehicle.max_speed_mps),
+        "max_speed_mps": control_speed_mps,
+        "qualified_cruise_max_mps": (
+            control_speed_mps if vehicle.qualified_cruise_max_mps is not None else None),
         "body_radius_m": max(vehicle.body_radius_m, flight_dynamics_envelope.collision_radius_m
                              if flight_dynamics_envelope is not None else 0.),
         "body_height_m": max(vehicle.body_height_m, flight_dynamics_envelope.collision_height_m
@@ -2775,6 +2862,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
     if not isinstance(primitives, list) or not primitives:
         raise SystemExit("semantic artifact has no runtime collision primitives")
+    all_map_primitives = planning_collision_primitives(semantic)
+    operating_airspace = TraversableAirspace(
+        semantic, all_map_primitives, radius_m=control_vehicle.body_radius_m,
+        half_height_m=control_vehicle.body_height_m / 2)
     static_geometry_index = StaticGeometryIndex(primitives, bounds=_primitive_bounds)
     minimum, maximum = _map_bounds(primitives)
     world = MetricVoxelMap(
@@ -2783,12 +2874,22 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         maximum_bound_m=maximum,
         unknown_is_occupied=True,
     )
+    if operating_airspace.active:
+        world.bind_traversable_airspace(
+            TraversableAirspace(semantic, all_map_primitives, radius_m=0., half_height_m=0.),
+            source_sha256=active_semantic_sha256)
     _atomic_json(args.command.with_name('metric-scan-kernel.json'),
         {'contract': metric_scan_backend.CONTRACT,
          'depth_contract': getattr(metric_scan_backend, 'DEPTH_CONTRACT', None),
          'sha256': hashlib.sha256(Path(metric_scan_backend.__file__).read_bytes()).hexdigest()}
         if metric_scan_backend is not None else {'implementation': 'numpy-python'})
     strategic_map_context: dict[str, object] = {}
+    known_static_surfaces, optical_receipt = _load_worker_static_surfaces(
+        world_path=args.static_world, expected_world_sha256=args.static_world_sha256,
+        semantic=semantic)
+    worker_source_path = args.command.parent / "depth-worker-source.json"
+    _atomic_json(worker_source_path, {
+        **read_runtime_object(worker_source_path), "static_optical_map": optical_receipt})
     if args.bounded_hybrid_control:
         require_hybrid_provider(provider=args.local_navigation_provider,
             model_authority=args.require_model_control_authority,
@@ -2801,7 +2902,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         # 三处使用同一已解析的路线/报告，禁止先验和模型背景各自重读后混入替换文件。
         qualified_route = _read_worker_contract(args.qualified_route, GraphRoute)
         qualified_clearance = _read_worker_contract(args.qualified_clearance, RouteClearanceReport)
-        _seed_qualified_static_map(
+        _initialize_qualified_static_map(
+            source_path=args.command.parent / "depth-worker-source.json",
             world=world,
             semantic_path=args.semantic,
             route_path=args.qualified_route,
@@ -2819,6 +2921,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             route=qualified_route,
             clearance=qualified_clearance,
         )
+    # The fixed map/route graph lives for this worker's entire run. Retain it
+    # before creating live sources so full GC does not repeatedly scan hundreds
+    # of thousands of static voxels. Later sensor objects remain collectible;
+    # ExitStack stops their owners before releasing this baseline on every exit.
+    cleanup.enter_context(retained_interpreter_baseline())
     mount = oakd_lite_depth_sensor_contract()
     sensor_registry = RuntimeSensorRegistry()
     depth_binding = DepthSensorBinding(sensor_registry, vehicle_id=vehicle.asset_id)
@@ -3142,7 +3249,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             expected_channel, contract=LOCALIZATION_SOURCE_CONTRACT)
         cleanup.callback(localization_publisher.close)
     bridge = MetricRangeSensorBridge(mount)
-    tracker = DepthMotionTracker(known_static_primitives=primitives)
+    tracker = DepthMotionTracker(
+        known_static_primitives=primitives, known_static_surfaces=known_static_surfaces)
     # Native state progresses independently of depth rendering and inference.
     native_state_sampler = NativeStateSampler(
         args.identity_telemetry, channel_path=args.native_state_channel,
@@ -3447,11 +3555,13 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         prioritize_ready_control = prioritize_ready_control or prioritize_teacher_state
         with lock:
             arrival_sample = latest_image[1] if latest_image is not None else None
+        source_image_revision = native_state_sampler.buffer.source_image_revision
         sensor_arrival_due = bool(local_input_wake_enabled
             and not (local_pending and dispatch_budget_ready)
             and sensor_arrival_scheduler.eligible(
                 now_monotonic=now, sample_monotonic=arrival_sample,
-                processed_sample_monotonic=last_image_received_at, fault_active=fault_active))
+                processed_sample_monotonic=last_image_received_at, fault_active=fault_active,
+                source_revision=source_image_revision))
         if now >= next_tick and not prioritize_ready_control and (
             ready_control_scheduler.await_pending_result(
                 now_monotonic=now, depth_sequence=sequence, continuous_pending=local_pending,
@@ -3485,8 +3595,6 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         handoff_wait_started = None
         if not prioritize_ready_control:
             next_tick = now + 1.0 / args.rate_hz
-            if sensor_arrival_due:
-                sensor_arrival_scheduler.record_attempt(now_monotonic=now)
         else:
             ready_control_scheduler.consume(sequence)
         cycle_timing = PhaseTimings(cpu_clock_ns=time.thread_time_ns)
@@ -3527,7 +3635,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
         if new_depth_frame and not fault_active:
             # Normal timer ticks and early arrival ticks share the same input
             # rate bound. A maintenance-only pass cannot postpone fresh input.
-            sensor_arrival_scheduler.record_attempt(now_monotonic=now)
+            sensor_arrival_scheduler.record_source_selection(now_monotonic=now,
+                source_revision=source_image_revision, paired=True)
+        elif sensor_arrival_due:
+            sensor_arrival_scheduler.record_source_selection(now_monotonic=now,
+                source_revision=source_image_revision, paired=False)
         stale_tick = fault_active or not new_depth_frame
         depth_input_timing = None
         if new_depth_frame and not fault_active:
@@ -4339,6 +4451,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     vehicle=control_vehicle,
                     motion_guard=motion_guard,
                     static_primitives=static,
+                    operating_airspace=operating_airspace if operating_airspace.active else None,
                     required_clearance_m=args.required_clearance,
                     # 接管许可在较晚的配对时钟签发，命令不得反向早于租期起点。
                     # 只更新命令签发时间；观测和深度来源时间保持原样参与预算校验。
@@ -4349,7 +4462,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                     # fixed-position hold and then a bounded landing.
                     validity_milliseconds=600,
                     maximum_speed_mps=(
-                        min(active_planner_speed_mps, 0.12)
+                        min(active_planner_speed_mps, 5.0)
                         if qualified_static_route_fallback
                         else active_planner_speed_mps
                     ),
@@ -4445,6 +4558,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                         vehicle=control_vehicle,
                         motion_guard=motion_guard,
                         static_primitives=static,
+                        operating_airspace=(
+                            operating_airspace if operating_airspace.active else None),
                         required_clearance_m=args.required_clearance,
                         generated_at_unix_ms=published_at_unix_ms,
                         command_horizon_seconds=0.2,
@@ -5132,7 +5247,6 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
 
 
 if __name__ == "__main__":
-    # This is an exec-created process. Retain only imported startup objects;
-    # all sensor/runtime objects are created inside main and remain collectible.
-    with retained_interpreter_baseline(), sensor_worker_gc_budget():
+    # Baseline retention begins after static map preparation, before live input.
+    with sensor_worker_gc_budget():
         raise SystemExit(main())

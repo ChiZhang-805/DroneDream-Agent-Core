@@ -31,11 +31,21 @@ from dronedream_agent_core.realtime_feature_encoders import (
     encode_dynamic_targets,
     encode_metric_geometry,
     fuse_realtime_features,
+    pilot_control_limits_for_profile,
     world_enu_to_body,
 )
 from dronedream_agent_core.runtime_local_safety import evaluate_runtime_local_safety
 
 IDENTITY = QuaternionWxyz(w=1.0, x=0.0, y=0.0, z=0.0)
+
+
+def test_open_cruise_and_precision_profiles_preserve_practical_speed() -> None:
+    assert pilot_control_limits_for_profile(
+        profile="cruise", route_speed_limit_mps=5.0
+    )[:2] == (5.0, 1.5)
+    assert pilot_control_limits_for_profile(
+        profile="precision", route_speed_limit_mps=5.0
+    )[:2] == (1.5, 1.5)
 
 
 def _mount(

@@ -34,6 +34,7 @@ from dronedream_agent_core.asset_pair_qualification import (
     build_pair_qualification_receipt,
     prepare_asset_pair_qualification,
 )
+from dronedream_agent_core.asset_payload_qualification import verify_asset_payload_run
 
 MAP_ASSET_ID = "dronedream.school-map.v1"
 VEHICLE_ASSET_ID = "dronedream.my-drone.v1"
@@ -143,8 +144,9 @@ def _stage_current_vehicle(
     if not controller_params.is_file():
         raise FileNotFoundError("verified controller parameters are unavailable")
     destination.mkdir(parents=True, exist_ok=False)
-    for name in required:
-        shutil.copyfile(source_root / name, destination / name)
+    _copy_tree(source_root, destination)
+    if (destination / "model.config").is_file():
+        return controller_params
     (destination / "model.config").write_text(
         """<?xml version="1.0"?>
 <model>
@@ -169,6 +171,18 @@ def _assert_promotion_input_binding(
     controller_params: Path,
 ) -> None:
     """Require qualification evidence to hash-bind every promoted runtime input."""
+
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verify_asset_payload_run(run_dir)
+        inputs = _json(run_dir / 'asset-qualification-inputs.json')
+        for root, key in ((map_source, 'map_files'), (vehicle_source, 'vehicle_files')):
+            for relative, digest in inputs[key].items():
+                candidate = (root / relative).resolve()
+                if not candidate.is_relative_to(root.resolve()) or _sha256(candidate) != digest:
+                    raise ValueError('DEFAULT_ASSET_PROMOTION_INPUT_MISMATCH')
+        if _sha256(controller_params) != inputs['runtime_inputs']['controller_params_sha256']:
+            raise ValueError('DEFAULT_ASSET_PROMOTION_INPUT_MISMATCH')
+        return
 
     preflight = _json(run_dir / "preflight_contract.json")
     map_hashes = preflight.get("school_map_package_sha256")
@@ -461,6 +475,25 @@ def _write_current_source_package(
 
 def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
     evidence_path = run_dir / "mission_evidence.json"
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verified = verify_asset_payload_run(run_dir)
+        return {
+            'schema_version': 'dronedream.asset-qualification-receipt.v1',
+            'source': 'real-gazebo-harmonic-px4-sitl',
+            'mission_evidence_file': 'qualification/mission_evidence.json',
+            'mission_evidence_sha256': _sha256(evidence_path),
+            'required_gates': verified['gates'],
+            'pose_sample_count': verified['measurements']['pose_sample_count'],
+            'payload_spawn_file': 'qualification/payload_spawn.json',
+            'payload_spawn_sha256': _sha256(run_dir / 'payload_spawn.json'),
+            'gazebo_runtime_verified': True, 'px4_mission_smoke_verified': True,
+            'simulation_execution_ready': True,
+            'measurements': verified['measurements'],
+            'verified_source_files_sha256': verified['verified_source_files_sha256'],
+            'verified_native_runtime_files_sha256': (
+                verified['verified_native_runtime_files_sha256']
+            ),
+        }
     evidence = _json(evidence_path)
     if (
         evidence.get("schema_version") != "dronedream.school-map-px4-mission-evidence.v1"
@@ -501,6 +534,14 @@ def _qualification_receipt(run_dir: Path) -> dict[str, Any]:
 def _copy_qualification_evidence(run_dir: Path, destination: Path) -> None:
     qualification = destination / "qualification"
     qualification.mkdir(parents=True, exist_ok=True)
+    if (run_dir / 'asset-qualification-inputs.json').is_file():
+        verified = verify_asset_payload_run(run_dir)
+        for name in verified['verified_source_files_sha256']:
+            target = qualification / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(run_dir / name, target)
+        _write_json(qualification / 'asset-qualification-evidence.json', verified)
+        return
     for name in (
         "mission_evidence.json",
         "preflight_contract.json",
@@ -543,6 +584,67 @@ def _verified_track_distance_m(run_dir: Path) -> float:
     if not math.isfinite(distance_m) or distance_m <= 0.0:
         raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_DISTANCE_INVALID")
     return distance_m
+
+
+def _independently_qualified_range_m(
+    capability_receipt: Path | None,
+    *,
+    vehicle_source: Path,
+    controller_params: Path,
+) -> float | None:
+    """Read range evidence bound to this exact airframe and controller."""
+
+    if capability_receipt is None:
+        return None
+    receipt = _json(capability_receipt)
+    required = {
+        "schema_version": "dronedream.vehicle-capability-evidence.v1",
+        "status": "verified",
+        "vehicle_sdf_sha256": _sha256(vehicle_source / "model.sdf"),
+        "controller_params_sha256": _sha256(controller_params),
+    }
+    for key, expected in required.items():
+        if receipt.get(key) != expected:
+            raise ValueError(f"DEFAULT_VEHICLE_CAPABILITY_{key.upper()}_MISMATCH")
+    qualified_range_m = receipt.get("qualified_range_m")
+    if (
+        not isinstance(qualified_range_m, (int, float))
+        or not math.isfinite(float(qualified_range_m))
+        or float(qualified_range_m) <= 0.0
+    ):
+        raise ValueError("DEFAULT_VEHICLE_CAPABILITY_RANGE_INVALID")
+    return float(qualified_range_m)
+
+
+def _verified_track_speed_limit_mps(run_dir: Path, controller_params: Path) -> float:
+    """Derive the operating ceiling from the accepted, unmodified motion schedule.
+
+    The executor limits each segment by its destination point and controller.
+    Stationary points do not qualify a faster cruise speed. This is a completed
+    run's configured ceiling, not a claim that measured speed was always equal.
+    """
+    points = _json(run_dir / "reference_track.json").get("points")
+    controller_limit = _json(controller_params).get("vel_limit")
+    if (type(controller_limit) not in (int, float)
+            or not math.isfinite(controller_limit) or controller_limit <= 0.0):
+        raise ValueError("DEFAULT_ASSET_CONTROLLER_SPEED_INVALID")
+    if not isinstance(points, list) or len(points) < 2:
+        raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_INVALID")
+    previous = None
+    moving_limits: list[float] = []
+    for point in points:
+        if not isinstance(point, dict) or any(
+            type(point.get(key)) not in (int, float) or not math.isfinite(point[key])
+            for key in ("x", "y", "z", "speed_limit_mps")
+        ) or not 0.0 < point["speed_limit_mps"] <= 20.0:
+            raise ValueError("DEFAULT_ASSET_REFERENCE_SPEED_INVALID")
+        position = tuple(float(point[axis]) for axis in ("x", "y", "z"))
+        if previous is not None and math.dist(previous, position) > 0.0:
+            moving_limits.append(min(float(controller_limit), float(point["speed_limit_mps"])))
+        previous = position
+    if not moving_limits:
+        raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_DISTANCE_INVALID")
+    return max(moving_limits)
 
 
 def _artifact_identity(summary: dict[str, Any]) -> dict[str, Any]:
@@ -729,12 +831,17 @@ def _build_map_bundle(
     map_source: Path,
 ) -> None:
     _copy_tree(map_source, destination / "gazebo")
-    _write_current_map_contract(destination / "gazebo" / "semantic.json")
+    if not (run_dir / 'asset-qualification-inputs.json').is_file():
+        _write_current_map_contract(destination / "gazebo" / "semantic.json")
     graph = _json(graph_source)
     evidence_sha256 = _sha256(run_dir / "mission_evidence.json")
     graph["asset_id"] = MAP_ASSET_ID
     graph["name"] = "Kumpula Campus"
-    _synchronize_verified_route_graph(run_dir=run_dir, graph=graph)
+    # An acceptance flight is evidence about that run, never the source of a
+    # campus road network. Keep every authored junction and surface constraint.
+    _validate_ground_route_graph(
+        graph=graph, semantic_path=destination / "gazebo" / "semantic.json"
+    )
     for edge in graph["edges"]:
         if edge.get("qualification") == "flight-verified":
             edge["evidence_sha256"] = evidence_sha256
@@ -766,11 +873,36 @@ def _build_map_bundle(
     )
 
 
+def _validate_ground_route_graph(*, graph: dict[str, Any], semantic_path: Path) -> None:
+    """Reject a stale elevated graph without rewriting any of its geometry."""
+    from dronedream_agent_core.contracts import MapAsset
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner
+
+    semantic = _json(semantic_path)
+    if not isinstance(semantic.get("traversability"), dict):
+        raise ValueError("DEFAULT_MAP_GROUND_TRAVERSABILITY_REQUIRED")
+    model = MapAsset.model_validate(graph)
+    # Full bundled X500 envelope, not a zero-radius point. The separate pair
+    # qualifier still validates the actual selected vehicle and physical run.
+    planner = KnownMapMetricPlanner(
+        graph=model, semantic_path=semantic_path,
+        vehicle_diameter_m=0.76, vehicle_height_m=0.6,
+    )
+    positions = {
+        node.node_id: (node.position_m.x, node.position_m.y, node.position_m.z)
+        for node in model.nodes
+    }
+    for edge in model.edges:
+        if not planner._segment_is_free(positions[edge.from_node], positions[edge.to_node]):
+            raise ValueError(f"DEFAULT_MAP_EDGE_OUTSIDE_TRAVERSABLE_GROUND:{edge.edge_id}")
+
+
 def _build_vehicle_bundle(
     run_dir: Path,
     destination: Path,
     vehicle_source: Path,
     controller_params: Path,
+    capability_receipt: Path | None = None,
 ) -> None:
     _copy_tree(vehicle_source, destination / "gazebo")
     shutil.copyfile(controller_params, destination / "controller_params.json")
@@ -809,8 +941,16 @@ def _build_vehicle_bundle(
         raise ValueError("DEFAULT_VEHICLE_PAYLOAD_QUALIFICATION_INVALID")
     vehicle_summary["maximum_design_payload_kg"] = design_payload_limit_kg
     vehicle_summary["maximum_qualified_payload_kg"] = qualified_payload_kg
-    _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
-    qualified_range_m = _verified_track_distance_m(run_dir)
+    if not (run_dir / "asset-qualification-inputs.json").is_file():
+        _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
+    map_pair_route_m = _verified_track_distance_m(run_dir)
+    independent_range_m = _independently_qualified_range_m(
+        capability_receipt,
+        vehicle_source=vehicle_source,
+        controller_params=controller_params,
+    )
+    qualified_range_m = max(map_pair_route_m, independent_range_m or 0.0)
+    qualified_speed_mps = _verified_track_speed_limit_mps(run_dir, controller_params)
     vehicle = {
         "schema_version": "dronedream.vehicle.v1",
         "asset_id": VEHICLE_ASSET_ID,
@@ -821,10 +961,11 @@ def _build_vehicle_bundle(
         "body_radius_m": 0.38,
         "body_height_m": 0.43,
         "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
-        "max_speed_mps": 1.2,
-        "max_acceleration_mps2": 0.8,
-        # Bound to the exact successfully completed Gazebo/PX4 pickup-return
-        # reference track; no value is inherited from an older route.
+        "max_speed_mps": 6.0,
+        "qualified_cruise_max_mps": qualified_speed_mps,
+        "max_acceleration_mps2": 1.5,
+        # Range is independent of the current map route. A longer value is
+        # accepted only through exact-airframe capability evidence.
         "qualified_range_m": qualified_range_m,
         "reserve_battery_percent": 30.0,
         "max_pickup_payload_kg": qualified_payload_kg,
@@ -863,7 +1004,14 @@ def _build_vehicle_bundle(
                 "mass_and_inertia_from_source_model": True,
                 "rotor_dynamics_from_source_model": True,
                 "qualified_range_m": qualified_range_m,
-                "qualified_range_basis": "completed Gazebo/PX4 pickup-return route",
+                "qualified_range_basis": (
+                    "independent exact-airframe capability evidence"
+                    if independent_range_m is not None
+                    else "completed Gazebo/PX4 pickup-return route"
+                ),
+                "map_pair_qualification_route_m": map_pair_route_m,
+                "qualified_cruise_max_mps": qualified_speed_mps,
+                "qualified_speed_basis": "completed Gazebo/PX4 reference-track speed ceiling",
                 "payload_mass_kg": qualified_payload_kg,
                 "loaded_thrust_to_weight": loaded_thrust_to_weight,
                 "perception_sensor": perception,
@@ -880,6 +1028,11 @@ def _qualified_runtime_evidence(
     mission_evidence_path: Path,
 ) -> dict[str, Any]:
     source = _json(mission_evidence_path)
+    if (mission_evidence_path.parent / 'asset-qualification-inputs.json').is_file():
+        # Preserve all seven native input hashes. The pair importer consumes
+        # these exact flight artifacts instead of preparing a different route.
+        verify_asset_payload_run(mission_evidence_path.parent)
+        return source
     source_gates = source.get("gates")
     measurements = source.get("measurements")
     if (
@@ -929,6 +1082,26 @@ def _qualified_runtime_evidence(
     }
 
 
+def _navigation_evidence_sha256(map_root: Path) -> str:
+    """Return the one reviewed evidence digest bound to every navigation edge."""
+    graph = _json(map_root / "navigation-graph.json")
+    edges = graph.get("edges")
+    if not isinstance(edges, list) or not edges:
+        raise ValueError("DEFAULT_ASSET_NAVIGATION_EDGES_MISSING")
+    digests = {
+        edge.get("evidence_sha256")
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+    if (
+        len(digests) != 1
+        or not isinstance(next(iter(digests)), str)
+        or len(next(iter(digests))) != 64
+    ):
+        raise ValueError("DEFAULT_ASSET_NAVIGATION_EVIDENCE_INVALID")
+    return next(iter(digests))
+
+
 def _build_qualified_pair(
     *,
     output: Path,
@@ -960,11 +1133,15 @@ def _build_qualified_pair(
         created_at=qualified_at,
     )
     qualification_root = temporary / "qualification"
+    recorded = (run_dir / 'asset-qualification-inputs.json').is_file()
     plan = prepare_asset_pair_qualification(
         map_archive=source_map,
         vehicle_archive=source_vehicle,
         work_root=qualification_root,
         maximum_translation_m=300.0,
+        **({'recorded_route_path': run_dir / 'mission-route.json',
+            'recorded_track_path': run_dir / 'reference_track.json',
+            'recorded_clearance_path': run_dir / 'clearance.json'} if recorded else {}),
     )
     mission_evidence_path = run_dir / "mission_evidence.json"
     runtime_evidence = _qualified_runtime_evidence(
@@ -972,6 +1149,13 @@ def _build_qualified_pair(
         qualification_root=qualification_root,
         mission_evidence_path=mission_evidence_path,
     )
+    runtime_artifacts = runtime_evidence.get("artifacts")
+    if not isinstance(runtime_artifacts, dict):
+        raise ValueError("DEFAULT_ASSET_RUNTIME_ARTIFACTS_INVALID")
+    # Navigation edges are map facts assembled from the reviewed road survey.
+    # Keep that evidence identity separate from the one mission used to qualify
+    # the vehicle/map pair; a mission route must never become a reusable route.
+    runtime_artifacts["navigation_evidence_sha256"] = _navigation_evidence_sha256(map_root)
     receipt = build_pair_qualification_receipt(
         plan=plan,
         work_root=qualification_root,
@@ -1089,6 +1273,7 @@ def main() -> None:
     parser.add_argument("--map-graph", type=Path, required=True)
     parser.add_argument("--vehicle-source", type=Path, required=True)
     parser.add_argument("--controller-params", type=Path, required=True)
+    parser.add_argument("--vehicle-capability-receipt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--supersedes-index", type=Path)
     parser.add_argument("--gazebo-version", required=True)
@@ -1111,7 +1296,9 @@ def main() -> None:
         graph = args.map_graph.resolve()
         if not map_source.is_dir() or not graph.is_file():
             raise FileNotFoundError("current Kumpula map source or graph is unavailable")
-        _write_current_map_contract(map_source / "semantic.json")
+        recorded = (run_dir / 'asset-qualification-inputs.json').is_file()
+        if not recorded:
+            _write_current_map_contract(map_source / "semantic.json")
         controller_params = _stage_current_vehicle(
             args.vehicle_source.resolve(),
             args.controller_params.resolve(),
@@ -1120,7 +1307,8 @@ def main() -> None:
         _assert_promotion_input_binding(
             run_dir=run_dir,
             map_source=map_source,
-            vehicle_source=temporary / "current-vehicle",
+            vehicle_source=(args.vehicle_source.resolve() if recorded
+                            else temporary / "current-vehicle"),
             controller_params=controller_params,
         )
         _build_map_bundle(run_dir, graph, map_root, map_source)
@@ -1129,6 +1317,11 @@ def main() -> None:
             vehicle_root,
             temporary / "current-vehicle",
             controller_params,
+            (
+                args.vehicle_capability_receipt.resolve()
+                if args.vehicle_capability_receipt is not None
+                else None
+            ),
         )
         output.mkdir(parents=True, exist_ok=True)
         qualified_pair = _build_qualified_pair(

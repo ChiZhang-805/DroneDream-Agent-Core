@@ -98,33 +98,36 @@ def test_a_center_ray_cannot_clear_unseen_sides_or_vertical_volume():
     )
 
 
-def test_long_lost_track_preserves_real_age_and_denies_control_without_crashing_fusion():
+def test_long_lost_track_retires_motion_prediction_without_crashing_fusion():
     f = fusion()
     f.ingest(frame(1, 1000, detected=True), now_unix_ms=1000, now_monotonic_seconds=1)
     health = f.ingest(frame(2, 61_000), now_unix_ms=61_000, now_monotonic_seconds=61)
-    assert not health.stream_healthy
-    assert "DYNAMIC_TRACK_OBSERVATION_STALE:moving-object" in health.issue_codes
-    assert len(f.latest_frame.dynamic_obstacles) == 1
-    assert f.latest_frame.dynamic_obstacles[0].age_seconds == 60
+    assert health.stream_healthy
+    assert not f.latest_frame.dynamic_obstacles
     assert not f.last_dynamic_clearances
+    assert f.last_dynamic_retirements[0]["obstacle_id"] == "moving-object"
+    assert f.last_dynamic_retirements[0]["age_seconds"] == 60
     observation = f.local_safety_observation(target_position_m=Vector3(x=4, y=0, z=0),
                                             now_unix_ms=61_000)
-    assert not observation.stream_healthy
-    assert observation.dynamic_obstacles[0].age_seconds == 60
+    assert observation.stream_healthy
+    assert not observation.dynamic_obstacles
 
 
-# 功能：过期轨迹不触发无效全图清除计算，但保留原观测、年龄和阻塞状态。
-# 输入：一条超过短时清除包络期限的失联轨迹；输出：不计算自由网格且不会误放行。
-def test_long_lost_track_skips_unusable_clearance_work_without_becoming_clear(monkeypatch):
+# 功能：过期轨迹不触发无效全图清除计算，并退出已失效的短时运动预测。
+# 输入：一条超过短时预测期限的失联轨迹；输出：不计算自由网格并记录预测退役。
+def test_long_lost_track_skips_unusable_clearance_work_and_retires_prediction(monkeypatch):
     f = fusion()
     f.ingest(frame(1, 1000, detected=True), now_unix_ms=1000, now_monotonic_seconds=1)
     def forbidden(*args, **kwargs):
         raise AssertionError('an expired envelope cannot consume a free-space scan')
     monkeypatch.setattr('dronedream_agent_core.perception_runtime.fresh_free_voxels', forbidden)
     health = f.ingest(frame(2, 2001), now_unix_ms=2001, now_monotonic_seconds=2.001)
-    assert not health.stream_healthy
-    assert f.latest_frame.dynamic_obstacles[0].age_seconds == 1.001
+    assert health.stream_healthy
+    assert not f.latest_frame.dynamic_obstacles
     assert not f.last_dynamic_clearances
+    assert f.last_dynamic_retirements[0]["method"] == (
+        "prediction-horizon-expired-metric-occupancy-retained"
+    )
 
 
 @pytest.mark.parametrize("kind", ["old", "future", "low-confidence", "over-budget"])

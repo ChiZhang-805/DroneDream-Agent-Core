@@ -16,8 +16,12 @@ import numpy as np
 from .map_surface_geometry import (
     BOX,
     CYLINDER,
+    MAX_INDEX_MESH_TRIANGLES,
+    MAX_MESH_TRIANGLES,
     MESH,
     SPHERE,
+    MeshQueryBudget,
+    MeshRayIndex,
     _box_hits,
     first_surface_hits,
     mesh_surface_hits,
@@ -252,8 +256,20 @@ class MapSurfaceIndex:
             raise ValueError("MAP_ALIGNMENT_MAP_INVALID")
         centers, halves, rotations, kinds = [], [], [], []
         self.meshes = {}
+        self.mesh_acceleration = {}
         self.mesh_optics = {}
+        # Reject oversized instances before copying any mesh or building BVHs.
         mesh_triangle_count = 0
+        for primitive in primitives:
+            if not isinstance(primitive, dict):
+                raise ValueError("MAP_ALIGNMENT_PRIMITIVE_INVALID")
+            if "triangles" in primitive:
+                raw = primitive["triangles"]
+                if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_MESH_TRIANGLES:
+                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
+                mesh_triangle_count += len(raw)
+                if mesh_triangle_count > MAX_INDEX_MESH_TRIANGLES:
+                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
         eligible = []
         for primitive in primitives:
             if not isinstance(primitive, dict):
@@ -264,11 +280,6 @@ class MapSurfaceIndex:
                 if any(k in primitive for k in (*size_keys, *lengths, "radius_m")):
                     raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")
                 raw = primitive["triangles"]
-                if not isinstance(raw, list) or not 1 <= len(raw) <= 8192:
-                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
-                mesh_triangle_count += len(raw)
-                if mesh_triangle_count > 65_536:
-                    raise ValueError("MAP_ALIGNMENT_MESH_BUDGET_INVALID")
                 # Inspect scalars before NumPy can coerce a mixed bool/float mesh
                 # into apparently valid metric coordinates.
                 if any(not isinstance(face, (list, tuple)) or len(face) != 3
@@ -301,6 +312,7 @@ class MapSurfaceIndex:
                 )
                 triangles.setflags(write=False)
                 self.meshes[len(centers)] = triangles
+                self.mesh_acceleration[len(centers)] = MeshRayIndex(triangles)
                 centered = triangles - triangles[0, 0]
                 volume = float(
                     np.sum(
@@ -311,13 +323,31 @@ class MapSurfaceIndex:
                     / 6
                 )
                 double_sided = primitive.get("mesh_double_sided", False)
+                mesh_closed = primitive.get("mesh_closed", True)
                 if (
                     not math.isfinite(volume)
-                    or abs(volume) < 1e-12
                     or type(double_sided) is not bool
+                    or type(mesh_closed) is not bool
                 ):
                     raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
-                self.mesh_optics[len(centers)] = (double_sided, float(np.sign(volume)))
+                if mesh_closed:
+                    if abs(volume) < 1e-12:
+                        raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
+                    winding_sign = float(np.sign(volume))
+                else:
+                    normal = np.cross(triangles[0, 1] - triangles[0, 0],
+                                      triangles[0, 2] - triangles[0, 0])
+                    normal /= np.linalg.norm(normal)
+                    span = max(float(np.ptp(triangles, axis=(0, 1)).max()), 1.0)
+                    if (
+                        abs(volume) >= 1e-12
+                        or np.max(np.abs((triangles.reshape(-1, 3) - triangles[0, 0]) @ normal))
+                        > 1e-10 * span
+                    ):
+                        raise ValueError("MAP_ALIGNMENT_MESH_OPTICS_INVALID")
+                    # An open planar rendering surface has no physical interior.
+                    winding_sign = 0.0
+                self.mesh_optics[len(centers)] = (double_sided, winding_sign)
             elif any(k in primitive for k in size_keys):
                 if not all(k in primitive for k in size_keys) or lengths or "radius_m" in primitive:
                     raise ValueError("MAP_ALIGNMENT_SHAPE_AMBIGUOUS")
@@ -386,9 +416,12 @@ class MapSurfaceIndex:
     # 输出：
     #   matches：逐点法向、偏移、残差、有效性和表面身份；无邻近原语时全部无效。
     def match(
-        self, value, limits: MapAlignmentLimits, *, sensor_origins_world_m
+        self, value, limits: MapAlignmentLimits, *, sensor_origins_world_m,
+        observed_range_prefix: bool = False,
     ) -> PlaneCorrespondences:
         points = _points(value)
+        if type(observed_range_prefix) is not bool:
+            raise ValueError("MAP_ALIGNMENT_RAY_RANGE_INVALID")
         if not isinstance(limits, MapAlignmentLimits):
             raise ValueError("MAP_ALIGNMENT_LIMITS_INVALID")
         limits = replace(limits)
@@ -417,11 +450,19 @@ class MapSurfaceIndex:
         )
         local_origin = np.einsum("nbi,bij->nbj", origins[:, None] - centers, rotations)
         world_direction = points - origins
-        world_direction /= np.linalg.norm(world_direction, axis=1, keepdims=True)
+        observed_ranges = np.linalg.norm(world_direction, axis=1)
+        world_direction /= observed_ranges[:, None]
+        # Static identity needs only the actual ray prefix, including all nearer
+        # occluders and the unchanged edge/competition margin. Registration retains
+        # its existing unlimited visibility query by default.
+        maximum_ranges = (observed_ranges + padding + max(
+            limits.minimum_face_interior_m, limits.ambiguity_distance_m)
+            if observed_range_prefix else None)
         direction = np.einsum("ni,bij->nbj", world_direction, rotations)
         enter, local_normals, interiors, face_ids, inside, planar = first_surface_hits(
             local_origin, direction, halves, self.kinds[indices], limits.minimum_face_interior_m
         )
+        mesh_budget = MeshQueryBudget()
         for column, global_index in enumerate(indices):
             if self.kinds[global_index] == MESH:
                 # Skip only rays which cannot touch the mesh at all. Truncating
@@ -430,8 +471,21 @@ class MapSurfaceIndex:
                     local_origin[:, column], direction[:, column], halves[column], 0.0
                 )
                 candidates = box_inside | np.isfinite(box_enter)
+                if maximum_ranges is not None:
+                    candidates &= box_inside | (box_enter <= maximum_ranges)
                 if not np.any(candidates):
                     continue
+                mesh_ranges = (maximum_ranges[candidates].copy()
+                               if maximum_ranges is not None else None)
+                if mesh_ranges is not None:
+                    # A source inside the mesh's bounding box might be inside a
+                    # closed shell whose exit lies after the observed endpoint.
+                    # Retain the complete physical-inside test for those rays.
+                    inside_bounds = box_inside[candidates]
+                    mesh_ranges[inside_bounds] = np.linalg.norm(
+                        np.abs(local_origin[candidates, column][inside_bounds]) + halves[column],
+                        axis=1,
+                    ) + 1e-6
                 values = mesh_surface_hits(
                     local_origin[candidates, column],
                     direction[candidates, column],
@@ -439,6 +493,9 @@ class MapSurfaceIndex:
                     limits.minimum_face_interior_m,
                     double_sided=self.mesh_optics[int(global_index)][0],
                     winding_sign=self.mesh_optics[int(global_index)][1],
+                    acceleration=self.mesh_acceleration[int(global_index)],
+                    work_budget=mesh_budget,
+                    maximum_ranges=mesh_ranges,
                 )
                 for destination, value in zip(
                     (enter, local_normals, interiors, face_ids, inside), values, strict=True

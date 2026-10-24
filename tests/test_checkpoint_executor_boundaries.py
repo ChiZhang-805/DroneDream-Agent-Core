@@ -36,6 +36,22 @@ def test_executor_rejects_nonfinite_model_before_writing(tmp_path):
     assert not path.parent.exists()
 
 
+def test_clearance_measurement_maps_fresh_local_safety_evidence():
+    executor = _load_executor()
+    step = SimpleNamespace(driver="local-safety")
+    output = {
+        "confirmed": True,
+        "operation": "measure-clearance",
+        "minimum_predicted_clearance_m": 0.62,
+        "measurement_pose_bound": True,
+    }
+
+    assert executor._observed_runtime_action_evidence(step, output) == [
+        "clearance measured",
+        "measurement pose bound",
+    ]
+
+
 # 功能：
 #   验证目标替换失败后只回收自有暂存，同时保留上一份完整证据。
 # 输入：
@@ -764,6 +780,16 @@ def test_cross_track_error_preserves_small_perpendicular_component():
     )
     assert result["cross_track_error_m"] == pytest.approx(0.01)
     assert result["along_track_lag_m"] == pytest.approx(1e8)
+
+
+def test_fast_route_gets_one_second_of_longitudinal_response_lag() -> None:
+    result = _load_executor()._route_tracking_error_components(
+        observed_route_frame_ned=(0.0, 0.0, 0.0),
+        planned_setpoint=SimpleNamespace(north_m=4.5, east_m=0.05, down_m=0.0),
+        planned_velocity_ned_mps=(5.0, 0.0, 0.0),
+    )
+    assert result["cross_track_error_m"] == pytest.approx(0.05)
+    assert result["along_track_lag_limit_m"] == pytest.approx(5.0)
 
 
 # 功能：

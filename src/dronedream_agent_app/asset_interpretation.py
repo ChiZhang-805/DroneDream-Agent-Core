@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -53,8 +54,10 @@ Output size rules count characters (including spaces), not words: aim for at mos
 Keep summary under 1200 characters (hard limit 1800). Use compact factual sentences;
 do not repeat global caveats in every item. Preserve all required source IDs.
 Vehicle field semantics: dry_mass_kg is the configured unloaded vehicle mass used
-by this product; do not invent whether a battery is excluded. qualified_range_m
-already includes the declared battery reserve: never deduct that reserve twice.
+by this product; do not invent whether a battery is excluded. Use qualified_range_m
+as the declared route-distance limit without an additional reserve deduction.
+Follow its qualification basis: a completed simulated route does not establish
+physical battery endurance. Runtime battery-reserve checks still apply.
 coordinate_frame describes the vehicle contract, not every sensor's native frame;
 sensor transforms are separate. A geometry summary marked unavailable means the
 summary could not be read, not proof that the asset contains no 3D geometry.
@@ -94,6 +97,72 @@ def _read_bound_json(record: dict, root: Path, path: Path) -> bytes:
     return raw
 
 
+# 功能：保留所有命名地点，把密集道路采样图压缩为绑定完整图摘要的解释视图。
+# 输入：graph：已验证的完整地图；几何与逐段路径继续由地图工具读取。
+# 输出：facts：地点角色、真实直接连接和弱连通分组，不生成跨建筑的捷径边。
+def _map_interpretation_facts(graph: MapAsset) -> dict:
+    if len(graph.nodes) <= 96 and len(graph.edges) <= 192:
+        return graph.model_dump(mode="json")
+    named = set(graph.named_entities.values())
+    parents = {node.node_id: node.node_id for node in graph.nodes}
+    inbound: Counter[str] = Counter()
+    outbound: Counter[str] = Counter()
+
+    def component(node: str) -> str:
+        while parents[node] != node:
+            parents[node] = parents[parents[node]]
+            node = parents[node]
+        return node
+
+    for edge in graph.edges:
+        parents[component(edge.to_node)] = component(edge.from_node)
+        outbound[edge.from_node] += 1
+        inbound[edge.to_node] += 1
+        if edge.bidirectional:
+            outbound[edge.to_node] += 1
+            inbound[edge.from_node] += 1
+    groups: dict[str, list[str]] = {}
+    for node_id in sorted(named):
+        groups.setdefault(component(node_id), []).append(node_id)
+    special = [node for node in graph.nodes
+               if node.node_id not in named and node.semantic not in {"corridor", "outdoor"}]
+    included = named | {node.node_id for node in special[:96]}
+    direct_edges = [edge for edge in graph.edges
+                    if edge.from_node in included and edge.to_node in included]
+    return {
+        "schema_version": graph.schema_version,
+        "asset_id": graph.asset_id,
+        "name": graph.name,
+        "coordinate_frame": graph.coordinate_frame,
+        "named_entities": dict(graph.named_entities),
+        "nodes": [node.model_dump(mode="json") for node in graph.nodes if node.node_id in included],
+        "edges": [edge.model_dump(mode="json") for edge in direct_edges[:192]],
+        "topology_summary": {
+            "source_graph_sha256": sha256_json(graph),
+            "complete_node_count": len(graph.nodes),
+            "complete_edge_count": len(graph.edges),
+            "node_semantic_counts": dict(sorted(
+                Counter(node.semantic for node in graph.nodes).items()
+            )),
+            "weak_component_count": len({component(node_id) for node_id in parents}),
+            "named_place_weak_components": sorted(groups.values()),
+            "named_place_degrees": [
+                {"node_id": node_id, "incoming": inbound[node_id], "outgoing": outbound[node_id]}
+                for node_id in sorted(named)
+            ],
+            "omitted_geometry_node_count": len(graph.nodes) - len(included),
+            "omitted_special_node_count": max(0, len(special) - 96),
+            "omitted_edge_count": len(graph.edges) - min(192, len(direct_edges)),
+            "scope": (
+                "All named places are included. Edges list only actual direct links among "
+                "included nodes; road sampling nodes and other edges remain in the map tools. "
+                "Weak connectivity ignores travel direction and does not establish a direct "
+                "connection, ground clearance, or flight permission. Use route tools for paths."
+            ),
+        },
+    }
+
+
 # 功能：
 #   将真实地图图结构或飞机物理契约编码为模型输入，超出容量时明确拒绝而非假装全量解析。
 # 输入：
@@ -112,7 +181,7 @@ def interpretation_source(
         graph = MapAsset.model_validate_json(
             _read_bound_json(record, selection.root, selection.graph)
         )
-        facts = graph.model_dump(mode="json")
+        facts = _map_interpretation_facts(graph)
         semantic_raw = _read_bound_json(record, selection.root, selection.semantic)
         semantic = json.loads(semantic_raw)
         entities = semantic.get("entities", [])
@@ -233,7 +302,16 @@ class AssetInterpretationService:
         if source["kind"] == "map":
             facts = source["facts"]
             names = list(facts.get("named_entities", {}))[:8]
-            report_progress("assets", f"当前地图提供 {len(facts.get('nodes', []))} 个节点、{len(facts.get('edges', []))} 条连接，地点标签包括：{'、'.join(names)}。这些是地图事实，不代表路线已经通过安全检查。", f"Map contains {len(facts.get('nodes', []))} nodes and {len(facts.get('edges', []))} connections. Documented labels: {', '.join(names)}. These facts do not establish route safety.")
+            topology = facts.get("topology_summary", {})
+            node_count = topology.get("complete_node_count", len(facts.get("nodes", [])))
+            edge_count = topology.get("complete_edge_count", len(facts.get("edges", [])))
+            report_progress(
+                "assets",
+                f"当前地图提供 {node_count} 个节点、{edge_count} 条连接，"
+                f"地点标签包括：{'、'.join(names)}。这些是地图事实，不代表路线已经通过安全检查。",
+                f"Map contains {node_count} nodes and {edge_count} connections. "
+                f"Documented labels: {', '.join(names)}. These facts do not establish route safety.",
+            )
         if not self._lock.acquire(blocking=False):
             raise ValueError("ASSET_INTERPRETATION_BUSY")
         try:
@@ -363,18 +441,92 @@ class AssetInterpretationService:
                 max_attempts=1,
                 timeout_seconds=180,
             )
+            required_ids = list(model_source["required_source_ids"])
+            # Keep each response comfortably below the smallest supported provider's
+            # structured-output allowance.  Large maps previously asked one model call
+            # to explain 32 places, which produced truncated JSON (about 7 KB) on Kimi
+            # and made preparation fail before planning.  Eight source IDs still amortize
+            # the fixed prompt while leaving room for the summary, limitations and JSON
+            # syntax required by the validated AssetUnderstanding contract.
+            batch_size = 8
+            batches = [
+                required_ids[index : index + batch_size]
+                for index in range(0, len(required_ids), batch_size)
+            ] or [[]]
+            if len(batches) > remaining_calls:
+                raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
+            records = []
+            batch_results = []
+            physical_calls = 0
             try:
-                called = active_port.call(
-                    role="context_summarizer",
-                    output_type=AssetUnderstanding,
-                    instructions=INTERPRETATION_PROMPT,
-                    input_artifact={"purpose": "asset_interpretation", "locale": locale, **model_source},
-                    maximum_physical_attempts=1,
-                )
+                for batch_index, batch_ids in enumerate(batches, start=1):
+                    calls_left = remaining_calls - physical_calls
+                    batches_left = len(batches) - batch_index + 1
+                    attempts_for_batch = min(2, calls_left - (batches_left - 1))
+                    if attempts_for_batch < 1:
+                        raise ValueError("ASSET_INTERPRETATION_PLANNING_BUDGET_EXHAUSTED")
+                    batch_source = {
+                        **model_source,
+                        "required_source_ids": batch_ids,
+                        "interpretation_batch": {
+                            "index": batch_index,
+                            "total": len(batches),
+                        },
+                    }
+                    validation_repair = None
+                    attempt_budget = attempts_for_batch
+                    while attempt_budget > 0:
+                        input_artifact = {
+                            "purpose": "asset_interpretation",
+                            "locale": locale,
+                            **batch_source,
+                        }
+                        if validation_repair is not None:
+                            input_artifact["validation_repair"] = validation_repair
+                        called = active_port.call(
+                            role="context_summarizer",
+                            output_type=AssetUnderstanding,
+                            instructions=INTERPRETATION_PROMPT,
+                            input_artifact=input_artifact,
+                            maximum_physical_attempts=attempt_budget,
+                        )
+                        model_record = called.record.model_dump(mode="json")
+                        records.append(model_record)
+                        used_attempts = int(model_record.get("attempt", 1))
+                        physical_calls += used_attempts
+                        attempt_budget -= used_attempts
+                        try:
+                            checked_batch = validate_understanding(called.artifact, batch_source)
+                        except ValueError as error:
+                            if (
+                                str(error)
+                                not in {
+                                    "ASSET_INTERPRETATION_REFERENCES_INVALID",
+                                    "ASSET_INTERPRETATION_LIMITATIONS_INVALID",
+                                }
+                                or attempt_budget < 1
+                            ):
+                                raise
+                            validation_repair = {
+                                "reason": str(error),
+                                "instruction": (
+                                    "Return exactly one items entry for every required_source_id "
+                                    "and no other source_id. Keep every limitation non-empty and "
+                                    "within 400 characters."
+                                ),
+                            }
+                            continue
+                        batch_results.append(checked_batch)
+                        break
             finally:
                 if owned:
                     active_port.close()
-            checked = validate_understanding(called.artifact, model_source)
+            checked = AssetUnderstanding(
+                summary=batch_results[0].summary,
+                limitations=batch_results[0].limitations,
+                items=[item for result in batch_results for item in result.items],
+            )
+            checked = validate_understanding(checked, model_source)
             if previous and retained:
                 checked = AssetUnderstanding(summary=checked.summary, limitations=checked.limitations, items=[*checked.items, *(InterpretedItem.model_validate(item) for item in previous["understanding"]["items"] if item["source_id"] in retained)])
             checked = validate_understanding(checked, source)
@@ -383,7 +535,8 @@ class AssetInterpretationService:
                 "binding": binding,
                 "understanding": output,
                 "output_sha256": sha256_json(output),
-                "model_call": called.record.model_dump(mode="json"),
+                "model_call": records[-1],
+                "model_calls": records,
                 "lineage": lineage,
             }
             with sqlite3.connect(self.path) as db:
@@ -399,7 +552,7 @@ class AssetInterpretationService:
                 "cached": False,
                 "source": source,
                 "understanding": output,
-                "model_calls": [called.record.model_dump(mode="json")],
+                "model_calls": records,
                 "reuse_mode": "incremental" if retained else "full",
                 "retained_items": len(retained),
             }
@@ -434,6 +587,7 @@ def interpret_mission_assets(
     if tuple(source["kind"] for source in sources) != ("map", "vehicle"):
         raise ValueError("ASSET_INTERPRETATION_PAIR_REQUIRED")
     calls = []
+    physical_calls = 0
     interpretations = {}
     for source in sources:
         interpreted = service.interpret(
@@ -442,9 +596,12 @@ def interpret_mission_assets(
             connection=connection,
             locale=locale,
             port=port,
-            remaining_calls=maximum_model_calls - len(calls) - 8,
+            remaining_calls=maximum_model_calls - physical_calls - 8,
         )
         calls.extend(interpreted["model_calls"])
+        physical_calls += sum(
+            int(record.get("attempt", 1)) for record in interpreted["model_calls"]
+        )
         interpretations[source["kind"]] = {
             "asset_id": source["asset_id"],
             "content_sha256": source["content_sha256"],
@@ -457,5 +614,5 @@ def interpret_mission_assets(
     return {
         "interpretations": interpretations,
         "model_calls": calls,
-        "remaining_model_calls": maximum_model_calls - len(calls),
+        "remaining_model_calls": maximum_model_calls - physical_calls,
     }

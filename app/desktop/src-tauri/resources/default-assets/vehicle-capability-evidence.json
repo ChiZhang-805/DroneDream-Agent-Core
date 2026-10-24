@@ -1,0 +1,11 @@
+{
+  "schema_version": "dronedream.vehicle-capability-evidence.v1",
+  "status": "verified",
+  "qualification_id": "asset-qualification-6675da036f3135719edb02a9",
+  "vehicle_sdf_sha256": "2fd72c879e679fee577892d51d0dba4d23538c176185425ac2d3ca4c229c748f",
+  "controller_params_sha256": "0812f3be25f441df8c2aaa2cfc4623a37bd532c6ac8bb6e678b8d4859e94f57f",
+  "qualified_range_m": 594.8946341000945,
+  "qualified_cruise_max_mps": 6.0,
+  "source_pair_qualification_sha256": "ccbdc072bdde4b8567485ad631008c82536d7989a2f01e54d8c38d617146a3a5",
+  "source_speed_qualification_sha256": "dfb2c5e7565b659e5d318de9b02caa2cb3319ef785ae2fe9523b004c84d69b51"
+}

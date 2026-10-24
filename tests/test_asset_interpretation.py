@@ -30,14 +30,19 @@ class FakePort:
     def __init__(self):
         self.calls = []
         self.invalid = False
+        self.invalid_calls = 0
+        self.attempt = 1
 
     def call(self, **kwargs):
         self.calls.append(kwargs)
         ids = kwargs["input_artifact"]["required_source_ids"]
+        invalid = self.invalid or self.invalid_calls > 0
+        if self.invalid_calls > 0:
+            self.invalid_calls -= 1
         artifact = AssetUnderstanding(
             summary="解析测试",
             items=[
-                {"source_id": "invented" if self.invalid else item, "explanation": "源条目的用途"}
+                {"source_id": "invented" if invalid else item, "explanation": "源条目的用途"}
                 for item in ids
             ],
             limitations=["实时状态需要另行读取"],
@@ -47,7 +52,7 @@ class FakePort:
             record=ModelCallRecord(
                 call_id="model-" + "a" * 24,
                 role="context_summarizer",
-                attempt=1,
+                attempt=self.attempt,
                 input_sha256="a" * 64,
                 output_sha256="b" * 64,
                 output_schema="AssetUnderstanding",
@@ -149,6 +154,24 @@ def test_unknown_source_rejected_and_failed_reinterpretation_preserves_good_cach
     assert service.interpret(**options)["understanding"] == first["understanding"]
 
 
+def test_reference_mismatch_gets_one_bounded_model_repair(setup):
+    service, options = setup
+    options["port"].invalid_calls = 1
+
+    interpreted = service.interpret(**options, remaining_calls=2)
+
+    assert not interpreted["cached"]
+    assert len(options["port"].calls) == 2
+    assert len(interpreted["model_calls"]) == 2
+    assert options["port"].calls[1]["input_artifact"]["validation_repair"] == {
+        "reason": "ASSET_INTERPRETATION_REFERENCES_INVALID",
+        "instruction": (
+            "Return exactly one items entry for every required_source_id and no other source_id. "
+            "Keep every limitation non-empty and within 400 characters."
+        ),
+    }
+
+
 def test_cache_corruption_is_not_model_understanding(setup):
     service, options = setup
     result = service.interpret(**options)
@@ -189,6 +212,7 @@ def test_pair_preparation_reuses_manual_cache_and_shares_call_budget(setup):
     assert not prepared["interpretations"]["vehicle"]["cached"]
     assert len(prepared["model_calls"]) == 1
     assert prepared["remaining_model_calls"] == 9
+    assert options["port"].calls[1]["maximum_physical_attempts"] == 2
     reused = interpret_mission_assets(
         service=service, sources=sources, maximum_model_calls=8, **options
     )
@@ -205,6 +229,46 @@ def test_no_new_interpretation_can_consume_reserved_planning_calls(setup):
     with pytest.raises(ValueError, match="BUDGET_EXHAUSTED"):
         interpret_mission_assets(service=service, sources=sources, maximum_model_calls=8, **options)
     assert options["port"].calls == []
+
+
+def test_repaired_interpretation_counts_every_physical_model_attempt(setup):
+    service, options = setup
+    options["port"].attempt = 2
+    source = options.pop("source")
+    vehicle_source = {**source, "kind": "vehicle", "asset_id": "vehicle-test"}
+
+    prepared = interpret_mission_assets(
+        service=service, sources=(source, vehicle_source), maximum_model_calls=12, **options
+    )
+
+    assert len(prepared["model_calls"]) == 2
+    assert prepared["remaining_model_calls"] == 8
+
+
+def test_large_map_interpretation_is_batched_and_revalidated_as_one_asset(setup):
+    service, options = setup
+    source_ids = [f"place-{index:02d}" for index in range(49)]
+    options["source"]["required_source_ids"] = source_ids
+    options["source"]["facts"] = {
+        "nodes": [{"node_id": item, "semantic": "delivery"} for item in source_ids]
+    }
+
+    interpreted = service.interpret(**options, remaining_calls=8)
+
+    assert len(options["port"].calls) == 7
+    assert [len(call["input_artifact"]["required_source_ids"]) for call in options["port"].calls] == [
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        1,
+    ]
+    assert {item["source_id"] for item in interpreted["understanding"]["items"]} == set(
+        source_ids
+    )
+    assert len(interpreted["model_calls"]) == 7
 
 
 def test_map_without_named_entities_is_not_forced_to_invent_a_place(setup):

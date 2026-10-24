@@ -48,6 +48,13 @@ class NativeImagePoseBuffer:
         self._binding = None
         self._binding_hash = None
         self._invalidated = False
+        self._revision = 0
+
+    # 功能：提供真实新里程计的接入代次，仅作唤醒提示，不替代时间及身份校验。
+    # 输入：无；输出：重复缓存不会推进的非负代次。
+    @property
+    def revision(self):
+        return self._revision
 
     # 功能：保留完整单包姿态及其首次接收/消费时刻，校验重复字段与固定地图绑定。
     # 输入：payload：原生遥测；available_at_monotonic：本消费者首次见到消息的时刻。
@@ -108,6 +115,7 @@ class NativeImagePoseBuffer:
                 stamp: value for stamp, value in self._records.items() if stamp in active
             }
             self._records[packet.timestamp_us] = (received_ms, source["fields_json"])
+            self._revision += 1
 
     # 功能：用实际图像源时刻选择同段完整位姿，分别检查主机新鲜度和源时差预算。
     # 输入：图像源纳秒、时钟域、原接收时刻、消费时刻，以及量程和加速度上限。

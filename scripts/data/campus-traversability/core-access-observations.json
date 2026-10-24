@@ -1,0 +1,65 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "corridors": [
+    {
+      "id": "sports-south-paved-canopy-detour",
+      "kind": "path",
+      "centerline_xy_m": [[-21.453, 112.815], [-21.8, 110], [-20.5, 106], [-16.5, 102], [-10, 100]],
+      "width_m": 3,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "The old northeast shortcut crosses the observed tree row. Follow the visible paved apron south of the sports-centre access, staying east of the building corner and west of the tree island, then join the campus road southwest of the pedestrian crossing. Reviewed at east -40..15, north 85..133 metres against the registered orthophoto and official tree footprint layer."
+      }
+    },
+    {
+      "id": "physicum-north-road-connection",
+      "kind": "path",
+      "centerline_xy_m": [[22.218, 68.372], [23.6, 71.3], [26.652, 74.885]],
+      "width_m": 3,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Paved access between the northwest building shadow and parked cars east of the path, joining the main campus road. Reviewed at east 5..40, north 50..90 metres."
+      }
+    },
+    {
+      "id": "hoas-southeast-paved-access",
+      "kind": "path",
+      "centerline_xy_m": [[166, 73], [171, 73.5], [176, 74.5], [181, 74], [181, 73]],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "note": "Use the visible southeast frontage pavement between the same HOAS building and the parked-car row. Follow the open apron eastward to the road; do not cross the western continuous tree strip or diagonal parked-car aisle. Reviewed at east 140..185, north 50..95 metres against the orthophoto and tree polygons."
+      }
+    }
+  ],
+  "remove_corridor_ids": ["hoas-paved-entry", "sports-paved-entry"],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": [
+    {
+      "node_id": "osm-facility-509799015-handoff",
+      "old_position_m": {"x": 148.725, "y": 74.247, "z": 2},
+      "new_position_m": {"x": 166, "y": 73, "z": 2},
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
+        "note": "Use the clear southeast paved frontage of the same HOAS building. The earlier southwest approach is separated from the road by a tree strip and is not retained. This is a ground handoff staging position, not a claimed entrance doorway."
+      }
+    },
+    {
+      "node_id": "osm-facility-16790294-handoff",
+      "old_position_m": {"x": -53.871, "y": 40.972, "z": 2},
+      "new_position_m": {"x": -66, "y": 46, "z": 2},
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
+        "note": "Use the clear road-side frontage opposite the library rather than the old marker under the planted/shadowed building edge. Reviewed at east -85..-35, north 20..65 metres."
+      }
+    }
+  ]
+}

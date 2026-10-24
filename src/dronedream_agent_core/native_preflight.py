@@ -276,6 +276,75 @@ def _read_native_health(path: Path) -> dict:
 #   require_realtime_features：模型/教师接管时要求神经特征；确定性路线控制不要求。
 # 输出：
 #   receipt：含来源时刻、有效期、独立帧数量及跟踪余量的就绪回执。
+def _native_worker_alive(pid: int) -> bool:
+    """The native flight runtime is Linux; do not signal a process to inspect it."""
+    try:
+        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+async def wait_for_initialized_native_perception(
+    path: Path, *, initialization_deadline: float,
+    initialization_evidence: dict, **health_options,
+) -> dict:
+    """Spend the remaining startup budget on static preparation, then observe live health."""
+    root = path.parent
+    started = time.monotonic()
+    initialization_evidence.update(status="waiting")
+    health_task = None
+    health_pid = None
+    try:
+        while (remaining := initialization_deadline - time.monotonic()) > 0:
+            startup = read_runtime_object(root / "native-runtime-preflight-ready.json")
+            binding = startup["static_map_binding"]
+            source = read_runtime_object(root / "depth-worker-source.json")
+            state = source.get("static_initialization", {})
+            pid = startup.get("depth_safety_worker_pid")
+            ready = False
+            # A supervisor restart cannot inherit its predecessor's static or
+            # live-health receipt; keep the same absolute startup deadline.
+            if type(pid) is int and pid > 0 and state.get("pid") == pid:
+                if (state.get("semantic_sha256") != binding.get("semantic_sha256")
+                        or state.get("route_sha256") != binding.get("route_sha256")):
+                    raise RuntimeError("STATIC_MAP_INITIALIZATION_BINDING_MISMATCH")
+                if state.get("state") == "failed":
+                    raise RuntimeError(
+                        "STATIC_MAP_INITIALIZATION_FAILED:" + str(state.get("issue")))
+                ready = state.get("state") == "ready" and _native_worker_alive(pid)
+            if health_task is not None and (not ready or pid != health_pid):
+                health_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await health_task
+                health_task = None
+            if ready:
+                if health_task is None:
+                    initialization_evidence.update(
+                        status="ready", worker_pid=pid,
+                        preparation_seconds=state.get("elapsed_seconds"),
+                        elapsed_seconds=time.monotonic() - started)
+                    health_pid = pid
+                    options = {**health_options, "timeout_seconds": min(
+                        30., health_options.get("timeout_seconds", 30.), remaining)}
+                    health_task = asyncio.create_task(wait_for_native_perception(path, **options))
+                # Re-read current PID/static status after health finishes before
+                # handing its unchanged freshness receipt to the arm gate.
+                if health_task.done():
+                    return health_task.result()
+                await asyncio.wait({health_task}, timeout=min(.1, remaining))
+            else:
+                initialization_evidence.update(status="waiting")
+                await asyncio.sleep(min(.1, remaining))
+        initialization_evidence.update(status="timeout", elapsed_seconds=time.monotonic() - started)
+        raise RuntimeError("STATIC_MAP_INITIALIZATION_STARTUP_BUDGET_EXCEEDED")
+    finally:
+        if health_task is not None:
+            health_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await health_task
+
+
 async def wait_for_native_perception(
     path: Path, *, timeout_seconds: float = 30., minimum_route_clearance_m: float | None = None,
     receiver: PerceptionHealthReceiver | None = None,

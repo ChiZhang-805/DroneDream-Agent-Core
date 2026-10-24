@@ -382,6 +382,36 @@ def test_preflight_payload_receipt_is_run_bound(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+# 功能：随航交付任务可以用真实起飞前挂载回执初始化关节观察，释放动作不会从未知状态开始。
+# 输入：当前隔离运行的已挂载回执；输出：客户端读回 attached 状态及来源。
+def test_preflight_payload_receipt_accepts_verified_initial_attachment(tmp_path, monkeypatch):
+    base = executor_module()
+    client = event_client(base, monkeypatch)
+    monkeypatch.setenv("GZ_PARTITION", "attached-integrity-test")
+    monkeypatch.setenv("PX4_GAZEBO_WORLD_NAME", "world-test")
+    path = tmp_path / "preflight-attached.json"
+    observed_at = int(base.time.time() * 1000) - 100
+    base._write_json_atomic(path, {
+        "schema_version": "dronedream.payload-preflight-observation",
+        "world": "world-test", "partition": "attached-integrity-test",
+        "observed_at_unix_ms": observed_at,
+        "observation": {"confirmed": True, "detached": False,
+                        "output_topic": "/payload/state"},
+    })
+    monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_PATH", str(path))
+    monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256",
+                       hashlib.sha256(path.read_bytes()).hexdigest())
+
+    async def scenario():
+        await client._prime_payload_observer()
+        state = await client.sample_payload_state("/payload/state", 0.01)
+        assert state["detached"] is False
+        assert state["state_source"] == "verified-preflight-attach-readback"
+        await client.close()
+
+    asyncio.run(scenario())
+
+
 # 功能：慢启动后必须重新测量，不能刷新旧回执冒充新状态；挂载或查询失败仍拒绝。
 # 输入：旧的运行绑定回执、当前查询结果；输出：真实查询覆盖或拒绝断言。
 @pytest.mark.parametrize("detached", [True, False, None])
@@ -399,7 +429,10 @@ def test_slow_startup_queries_current_joint_not_old_receipt(tmp_path, monkeypatc
         "observation": {"confirmed": True, "detached": True, "output_topic": "/payload/state",
                         "state_service": "/world/world-test/model/parcel/attachment_state"}})
     monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_PATH", str(path))
-    monkeypatch.setenv("PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256", hashlib.sha256(path.read_bytes()).hexdigest())
+    monkeypatch.setenv(
+        "PX4_GAZEBO_PAYLOAD_PREFLIGHT_SHA256",
+        hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
     def read(*args, **kwargs):
         if detached is None:
             raise RuntimeError("unknown state")
@@ -414,7 +447,7 @@ def test_slow_startup_queries_current_joint_not_old_receipt(tmp_path, monkeypatc
                 assert state["detached"] is True and state["observed_at_unix_ms"] > old_time
                 assert state["observation_kind"] == "request-bound-physics-snapshot"
             else:
-                with pytest.raises(RuntimeError, match="attached before|unknown state"):
+                with pytest.raises(RuntimeError, match="state changed|unknown state"):
                     await client._prime_payload_observer()
         finally:
             await client.close()

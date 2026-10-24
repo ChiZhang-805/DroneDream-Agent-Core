@@ -106,6 +106,12 @@ def _finite_configuration(**values: object) -> None:
 class RuntimePerceptionFusion:
     """Validate ordered sensor frames and update a conservative voxel map."""
 
+    # Dynamic motion is only predictable over the same one-second horizon used
+    # by the deterministic safety gate.  Once that horizon expires, the metric
+    # ray evidence remains in the voxel map, but the stale velocity envelope is
+    # no longer presented as a live moving obstacle.
+    _DYNAMIC_PREDICTION_HORIZON_MS = 1_000
+
     # 功能：
     #   建立单一所有者的保守感知融合流，校验门控参数后保存地图与传感器注册表引用。
     # 输入：
@@ -191,6 +197,7 @@ class RuntimePerceptionFusion:
         self._dynamic_track_issue_codes: list[str] = []
         self._clearance_confirmations: dict[str, tuple[float, str]] = {}
         self.last_dynamic_clearances: list[dict[str, object]] = []
+        self.last_dynamic_retirements: list[dict[str, object]] = []
 
     # 功能：
     #   判断是否已有接纳帧，不复制射线，也不声称该帧仍然新鲜。
@@ -360,9 +367,12 @@ class RuntimePerceptionFusion:
         missing = {
             key: state
             for key, state in dynamic_tracks.items()
-            # 超过一秒的历史本来就不允许以这个短时运动包络清除；不要为必定拒绝的
-            # 目标逐帧重新遍历全幅自由空间，挤占定位新帧预算。目标仍原样留在历史中。
-            if 100 <= frame.observed_at_unix_ms - state.observed_at_unix_ms <= 1000
+            # Only live short-horizon predictions participate in explicit
+            # two-scan clearance. Older detections are retired below while
+            # their ray-derived occupancy remains in the metric map.
+            if 100
+            <= frame.observed_at_unix_ms - state.observed_at_unix_ms
+            <= self._DYNAMIC_PREDICTION_HORIZON_MS
         }
         if missing:
             free = fresh_free_voxels(
@@ -406,8 +416,25 @@ class RuntimePerceptionFusion:
                     clearance_confirmations[key] = (
                         previous if previous and scan_time == previous[0] else (scan_time, scan_sha)
                     )
-        # No hit, incomplete coverage, stale data or a missing ID alone never
-        # clears a track. Remaining evidence retains its original deadline.
+        retirements: list[dict[str, object]] = []
+        for key, state in tuple(dynamic_tracks.items()):
+            age_ms = frame.observed_at_unix_ms - state.observed_at_unix_ms
+            if age_ms <= self._DYNAMIC_PREDICTION_HORIZON_MS:
+                continue
+            del dynamic_tracks[key]
+            clearance_confirmations.pop(key, None)
+            retirements.append(
+                {
+                    "obstacle_id": key,
+                    "original_detection_unix_ms": state.observed_at_unix_ms,
+                    "retired_at_unix_ms": frame.observed_at_unix_ms,
+                    "age_seconds": age_ms / 1_000.0,
+                    "method": "prediction-horizon-expired-metric-occupancy-retained",
+                }
+            )
+        # Missing IDs do not prove free space. Live predictions retain their
+        # original deadline, while expired prediction envelopes leave the
+        # dynamic set without deleting their metric occupancy evidence.
         retained = tuple(
             FrozenDynamicObstacle.model_validate(
                 {
@@ -455,6 +482,7 @@ class RuntimePerceptionFusion:
         self._dynamic_tracks = dynamic_tracks
         self._clearance_confirmations = clearance_confirmations
         self.last_dynamic_clearances = clearances
+        self.last_dynamic_retirements = retirements
         self._dynamic_track_issue_codes = dynamic_issues
         health = self.health(
             now_unix_ms=now_unix_ms,

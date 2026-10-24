@@ -79,7 +79,8 @@ def test_oversized_queries_remain_complete_without_cache(monkeypatch):
               for x in (0, 1, 2)]
     index = _StaticPrimitiveIndex(shapes, exclusion_m=0.)
     assert len(index._large_primitives) == 3
-    assert index.contains_known_static((2., 0., 0.))
+    # 定位余量使查询跨越相邻两格，正确空间筛选后仍有三个候选，继续检验缓存容量。
+    assert index.contains_known_static((2., 0., 0.), uncertainty_m=.1)
     assert index.contains_known_static((80., 0., 0.), uncertainty_m=100.)
     assert not index.contains_known_static((200., 0., 0.), uncertainty_m=100.)
     assert not index._candidate_cache
@@ -132,3 +133,65 @@ def test_frozen_geometry_avoids_revalidation_but_keeps_numeric_guards(monkeypatc
     monkeypatch.setattr(module, "_clearance", lambda *args, **kwargs: math.inf)
     with pytest.raises(ValueError, match="clearance overflow"):
         index.contains_known_static((0., 0., 0.))
+
+
+# 功能：强制所有形状走大基元旁表，核对完整有符号净空、跨格余量与负坐标。
+# 输入：monkeypatch：关闭格写入；seed：固定混合形状种子。输出：所有查询与标量一致。
+@pytest.mark.parametrize("seed", range(4))
+def test_large_primitive_broad_phase_preserves_complete_scalar_query(monkeypatch, seed):
+    monkeypatch.setattr(_StaticPrimitiveIndex, "_MAX_BIN_ENTRIES", 0)
+    rng = random.Random(seed)
+    shapes = mixed_shapes(seed)
+    index = _StaticPrimitiveIndex(shapes, exclusion_m=.1)
+    for _ in range(200):
+        point = tuple(rng.uniform(-6, 6) for _ in range(3))
+        uncertainty = rng.choice((0., .001, .1, .5, 2., 100.))
+        expected = any(vehicle_clearance(point, shape, radius_m=.001, half_height_m=.001)
+                       <= .1 + uncertainty for shape in shapes)
+        assert index.contains_known_static(point, uncertainty_m=uncertainty) is expected
+
+
+# 功能：格边界附近的圆形探针对角半径仍纳入宽阶段；不得漏掉内点或接触边界。
+# 输入：monkeypatch、force_large：切换普通格与大基元旁表。输出：两路均等于完整标量。
+@pytest.mark.parametrize("sign", (-1, 1))
+@pytest.mark.parametrize("force_large", (False, True))
+def test_round_primitive_preserves_diagonal_probe_at_bin_boundary(monkeypatch, sign, force_large):
+    if force_large:
+        monkeypatch.setattr(_StaticPrimitiveIndex, "_MAX_BIN_ENTRIES", 0)
+    shape = dict(center_x=sign * 1.8988, center_y=0., center_z=0., radius_m=.1)
+    index = _StaticPrimitiveIndex([shape], exclusion_m=0.)
+    point = (sign * 2.0001, 0., 0.)
+    assert vehicle_clearance(point, shape, radius_m=.001, half_height_m=.001) < 0.
+    assert index.contains_known_static(point)
+    assert index.contains_known_static((shape["center_x"], 0., 0.))
+
+
+# 功能：排除远方旁表基元但保留本地与跨格可达者，缓存只存几何候选编号。
+# 输入：monkeypatch：强制大基元索引。输出：候选数量受空间范围约束且结论完整。
+def test_large_primitive_candidates_prune_distant_geometry(monkeypatch):
+    monkeypatch.setattr(_StaticPrimitiveIndex, "_MAX_BIN_ENTRIES", 0)
+    shapes = [dict(center_x=float(x), center_y=0., center_z=0., radius_m=.1)
+              for x in (0, 100, 200)]
+    index = _StaticPrimitiveIndex(shapes, exclusion_m=.1)
+    assert index._candidates((0, 0, 0), (0, 0, 0)) == (0,)
+    assert index.contains_known_static((100., 0., 0.))
+    assert index.contains_known_static((99.7, 0., 0.), uncertainty_m=.2)
+
+
+# 功能：大箱体中心距边界很远仍保留内部和表面邻域，旋转与定位余量不缩小宽阶段。
+# 输入：yaw、sign、uncertainty：合成姿态与边界两侧；输出：全部结果等于有符号标量净空。
+@pytest.mark.parametrize("yaw", (0., math.pi / 5))
+@pytest.mark.parametrize("sign", (-1, 1))
+@pytest.mark.parametrize("uncertainty", (0., .5))
+def test_large_box_signed_interior_and_surface_margin(yaw, sign, uncertainty):
+    shape = dict(center_x=-100., center_y=60., center_z=4., size_x=200.,
+                 size_y=20., size_z=8., yaw_rad=yaw)
+    index = _StaticPrimitiveIndex([shape], exclusion_m=.1)
+    assert index._large_primitives == [0]
+    assert index.contains_known_static((-100., 60., 4.))
+    for gap in (-5., -.001, .05, .1009, .1011, .6011, 4.):
+        local_x = sign * (100. + gap)
+        point = (-100. + math.cos(yaw) * local_x, 60. + math.sin(yaw) * local_x, 4.)
+        expected = vehicle_clearance(point, shape, radius_m=.001, half_height_m=.001)
+        assert index.contains_known_static(point, uncertainty_m=uncertainty) is (
+            expected <= .1 + uncertainty)

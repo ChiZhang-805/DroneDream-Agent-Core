@@ -11,6 +11,7 @@ import io
 import json
 import struct
 import tomllib
+from argparse import Namespace
 from pathlib import Path
 
 import httpx
@@ -20,10 +21,12 @@ from pydantic import ValidationError
 
 from dronedream_agent_app import console
 from dronedream_agent_app.console_client import (
+    ConsoleClarificationRequired,
     ConsoleError,
     ConsoleSession,
     ProductConsoleClient,
 )
+from dronedream_agent_app.console_ui import TerminalUI
 from dronedream_agent_app.models import ThreadCreate
 
 pytestmark = pytest.mark.usefixtures("isolated_server_credentials")
@@ -61,6 +64,53 @@ def overview_png():
     Image.new("RGB", (2, 1), (0, 40, 80)).save(stream, format="PNG")
     png = stream.getvalue()
     return png
+
+
+def test_watch_preserves_live_telemetry_and_ready_simulation_sources(monkeypatch):
+    class ActiveMissionClient:
+        def __init__(self):
+            self.status_calls = 0
+
+        def status(self, _thread_id):
+            self.status_calls += 1
+            return {
+                "thread_id": THREAD,
+                "state": "executing" if self.status_calls == 1 else "completed",
+            }
+
+        def telemetry(self, _thread_id):
+            return {"phase": "cruise", "x_m": 12.5, "y_m": 4.0}
+
+        def live_sources(self, _thread_id):
+            return {
+                "mode": "simulation",
+                "sources": [
+                    {
+                        "id": "gazebo-render",
+                        "label": "Gazebo",
+                        "mode": "simulation",
+                        "ready": True,
+                    }
+                ],
+            }
+
+    output = io.StringIO()
+    client = ActiveMissionClient()
+    monkeypatch.setattr(console.time, "sleep", lambda _seconds: None)
+
+    result = console._wait_for_terminal(
+        client,
+        THREAD,
+        poll_seconds=0.2,
+        timeout_seconds=1,
+        ui=TerminalUI(stream=output, color=False, width=100),
+    )
+
+    assert result["state"] == "completed"
+    assert result["watch"]["telemetry_samples"] == 1
+    assert result["watch"]["last_live_telemetry"]["phase"] == "cruise"
+    assert result["watch"]["live_sources"]["sources"][0]["id"] == "gazebo-render"
+    assert f"dronedream mission frame {THREAD}" in output.getvalue()
 
 
 # 功能：
@@ -107,12 +157,19 @@ def test_overview_command_saves_authenticated_original_png_without_overwrite(tmp
 #   monkeypatch：临时字节预算替换器。
 # 输出：
 #   None：错误响应落盘或未产生对应错误码时测试失败。
-@pytest.mark.parametrize("fault,code", [
-    ("type", "TYPE_INVALID"), ("header", "HEADER_INVALID"),
-    ("dimensions", "DIMENSIONS_INVALID"), ("corrupt", "CONTENT_INVALID"),
-    ("redirect", "REDIRECT_REJECTED"), ("compressed", "COMPRESSED_RESPONSE_REJECTED"),
-    ("large", "RESPONSE_TOO_LARGE"), ("missing", "HTTP_404"),
-])
+@pytest.mark.parametrize(
+    "fault,code",
+    [
+        ("type", "TYPE_INVALID"),
+        ("header", "HEADER_INVALID"),
+        ("dimensions", "DIMENSIONS_INVALID"),
+        ("corrupt", "CONTENT_INVALID"),
+        ("redirect", "REDIRECT_REJECTED"),
+        ("compressed", "COMPRESSED_RESPONSE_REJECTED"),
+        ("large", "RESPONSE_TOO_LARGE"),
+        ("missing", "HTTP_404"),
+    ],
+)
 def test_overview_rejects_invalid_response_before_writing(fault, code, tmp_path, monkeypatch):
     from dronedream_agent_app import console_client
 
@@ -158,8 +215,11 @@ def test_overview_rejects_invalid_response_before_writing(fault, code, tmp_path,
 # 输出：
 #   None：错误被吞掉或误报成功时测试失败。
 def test_overview_write_failure_does_not_claim_saved(tmp_path):
-    client = make_client(lambda request: httpx.Response(
-        200, content=overview_png(), headers={"Content-Type": "image/png"}))
+    client = make_client(
+        lambda request: httpx.Response(
+            200, content=overview_png(), headers={"Content-Type": "image/png"}
+        )
+    )
     try:
         with pytest.raises(ConsoleError, match="WRITE_FAILED"):
             console.save_overview_frame(client, THREAD, tmp_path / "missing" / "frame.png")
@@ -281,13 +341,14 @@ def test_prepare_routes_through_cloud_grant_and_desktop_api_without_execution():
         assert "x-dronedream-identity-token" not in cloud.headers
         assert SESSION["local_token"] not in str(cloud.headers)
         assert json.loads(cloud.content) == {
-            "scope": "assistant",
+            "scope": "job",
             "scope_reference": THREAD,
             "provider": "kimi",
             "model": "kimi-k2.6",
         }
         assert local.headers["authorization"] == "Bearer " + SESSION["local_token"]
         assert local.headers["x-dronedream-identity-token"] == SESSION["identity_token"]
+        assert local.extensions["timeout"]["read"] == 1200
         payload = json.loads(local.content)
         assert payload["message"] == SELECTION["message"]
         assert payload["map_content_sha256"] == "a" * 64
@@ -411,26 +472,44 @@ def test_untrusted_error_text_is_not_printed():
         client.close()
 
 
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("PLAN_REVIEW_EXHAUSTED", "PLAN_REVIEW_EXHAUSTED"),
+        ("TASK_GRAPH_ACTION_EVIDENCE_MISSING:pickup_payload", "TASK_GRAPH_ACTION_EVIDENCE_MISSING"),
+        ({"code": "MODEL_INVOCATION_FAILED", "error_id": "opaque"}, "MODEL_INVOCATION_FAILED"),
+    ],
+)
+def test_bounded_service_error_code_is_visible_without_exposing_context(detail, expected):
+    client = make_client(lambda req: httpx.Response(409, json={"detail": detail}))
+    try:
+        with pytest.raises(ConsoleError, match=f"^{expected}$"):
+            client.bootstrap()
+    finally:
+        client.close()
+
+
 # 功能：
 #   核对 CLI 观测命令仅访问账户绑定的读取接口，不调用模型或确认执行。
 # 输入：
 #   command、suffix：终端命令及唯一允许访问的产品端点。
 # 输出：
 #   None：请求路径、授权头与原始遥测均与产品接口一致。
-@pytest.mark.parametrize('command,suffix', [('live-sources', 'live-sources'),
-                                           ('telemetry', 'live-telemetry')])
+@pytest.mark.parametrize(
+    "command,suffix", [("live-sources", "live-sources"), ("telemetry", "live-telemetry")]
+)
 def test_console_observation_commands_use_only_authenticated_read(command, suffix):
     calls = []
     client = make_client(lambda req: contract_response(req, calls))
     try:
         args = console.build_parser().parse_args([command, THREAD])
-        assert console.dispatch(client, args) == {'status': 'fixture-response'}
+        assert console.dispatch(client, args) == {"status": "fixture-response"}
         assert len(calls) == 1
         request = calls[0]
-        assert request.method == 'GET'
-        assert request.url.path == '/v1/threads/' + THREAD + '/' + suffix
-        assert request.headers['authorization'] == 'Bearer ' + SESSION['local_token']
-        assert request.headers['x-dronedream-identity-token'] == SESSION['identity_token']
+        assert request.method == "GET"
+        assert request.url.path == "/v1/threads/" + THREAD + "/" + suffix
+        assert request.headers["authorization"] == "Bearer " + SESSION["local_token"]
+        assert request.headers["x-dronedream-identity-token"] == SESSION["identity_token"]
     finally:
         client.close()
 
@@ -538,12 +617,453 @@ def test_response_budget_and_compression_are_checked_before_json(monkeypatch):
             client.bootstrap()
     finally:
         client.close()
+
     client = make_client(lambda req: httpx.Response(200, headers={"Content-Encoding": "br"}))
     try:
         with pytest.raises(ConsoleError, match="COMPRESSED_RESPONSE_REJECTED"):
             client.bootstrap()
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("models", "/v1/models"),
+        ("maps", "/v1/map-resource-catalog"),
+        ("aircraft", "/v1/vehicle-resource-catalog"),
+        ("asset_pairs", "/v1/asset-pair-catalog"),
+    ],
+)
+def test_product_discovery_uses_shared_desktop_catalog_routes(method, path):
+    calls = []
+    client = make_client(lambda request: contract_response(request, calls))
+    try:
+        getattr(client, method)()
+        assert [request.url.path for request in calls] == [path]
+    finally:
+        client.close()
+
+
+def test_model_clarification_is_structured_and_never_treated_as_a_plan():
+    fields = ["Which building should receive the package?", "Should the aircraft return?"]
+    client = make_client(
+        lambda request: httpx.Response(
+            409,
+            json={"detail": {"code": "MISSION_CLARIFICATION_REQUIRED", "fields": fields}},
+        )
+    )
+    try:
+        with pytest.raises(ConsoleClarificationRequired) as caught:
+            client.bootstrap()
+        assert caught.value.fields == fields
+    finally:
+        client.close()
+
+
+def test_server_thread_directory_only_includes_archive_when_requested(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from dronedream_agent_app.server import create_app
+    from dronedream_agent_app.storage import AppStore
+
+    store = AppStore(tmp_path)
+    active = store.create_thread("Active", "gpt-5.4", "en-US")
+    archived = store.create_thread("Archived", "gpt-5.4", "en-US")
+    store.patch_thread(archived["thread_id"], {"archived": True})
+    app = create_app(store=store, token=SESSION["local_token"])
+    headers = {"Authorization": "Bearer " + SESSION["local_token"]}
+    with TestClient(app) as desktop:
+        current = desktop.get("/v1/threads", headers=headers).json()
+        complete = desktop.get("/v1/threads?include_archived=true", headers=headers).json()
+    assert [item["thread_id"] for item in current["threads"]] == [active["thread_id"]]
+    assert {item["thread_id"] for item in complete["threads"]} == {
+        active["thread_id"],
+        archived["thread_id"],
+    }
+
+
+class _FlyFixture:
+    def __init__(self, *, qualified=True):
+        self.calls = []
+        self.qualified = qualified
+
+    def models(self):
+        return {"models": [{"id": "gpt-5.4", "source": "default"}]}
+
+    def maps(self):
+        return {"resources": [{"resource_id": "campus", "display_name": {"en-US": "Campus"}}]}
+
+    def aircraft(self):
+        return {"resources": [{"resource_id": "x500", "display_name": {"en-US": "PX4 x500 depth"}}]}
+
+    def asset_pairs(self):
+        return {
+            "counts": {
+                "qualified_builtin": 1 if self.qualified else 0,
+                "compatible_requires_qualification": 0 if self.qualified else 1,
+            },
+            "pairs": [
+                {
+                    "map_resource_id": "campus",
+                    "vehicle_resource_id": "x500",
+                    "status": (
+                        "qualified_builtin"
+                        if self.qualified
+                        else "compatible_requires_qualification"
+                    ),
+                    "qualification_id": "qualification-real",
+                    "qualified_map_asset_id": "map.asset",
+                    "qualified_vehicle_asset_id": "aircraft.asset",
+                }
+            ],
+        }
+
+    def bootstrap(self):
+        return {
+            "asset_versions": [
+                {
+                    "asset_id": "map.asset",
+                    "content_sha256": "a" * 64,
+                    "maturity": "qualified",
+                },
+                {
+                    "asset_id": "aircraft.asset",
+                    "content_sha256": "b" * 64,
+                    "maturity": "qualified",
+                },
+            ]
+        }
+
+    def create(self, request):
+        self.calls.append(("create", request.selected_model))
+        return {"thread_id": THREAD}
+
+    def prepare(self, thread_id, selection):
+        self.calls.append(("prepare", thread_id, selection))
+        return {
+            "plan_revision_id": PLAN,
+            "goal": selection["message"],
+            "model_calls": 4,
+            "successful_model_responses": 4,
+            "model_id": "gpt-5.4",
+            "model_source": "default",
+            "model_tool_proof": {
+                "tool_requests": [{"call_id": "call-1", "tool_id": "plan_route"}],
+                "tool_receipts": [
+                    {"call_id": "call-1", "tool_id": "plan_route", "outcome": "accepted"}
+                ],
+                "task_graph": {"nodes": [{"node_id": "takeoff", "action": "takeoff"}]},
+            },
+        }
+
+    def execute(self, thread_id, plan_id):
+        self.calls.append(("execute", thread_id, plan_id))
+        return {"status": "starting", "execution_id": "execution-real"}
+
+    def status(self, thread_id):
+        self.calls.append(("status", thread_id))
+        return {"thread_id": thread_id, "state": "completed"}
+
+    def evidence(self, thread_id):
+        self.calls.append(("evidence", thread_id))
+        return {
+            "execution_id": "execution-real",
+            "state": "completed",
+            "result": {"status": "verified", "gates": {"landed": True}},
+        }
+
+    def patch_thread(self, thread_id, changes):
+        self.calls.append(("patch", thread_id, changes))
+        return {"thread_id": thread_id, **changes}
+
+
+def _fly_args(**changes):
+    values = {
+        "model": "gpt-5.4",
+        "map_id": "campus",
+        "vehicle_id": "x500",
+        "text": "Bring the lab package back after delivery.",
+        "title": "Lab delivery",
+        "locale": "en-US",
+        "start": "__auto__",
+        "plan_only": False,
+        "no_archive": False,
+        "poll_seconds": 0.2,
+        "timeout_seconds": 5.0,
+    }
+    values.update(changes)
+    return Namespace(**values)
+
+
+def test_fly_refuses_unqualified_asset_pair_before_task_or_model_call():
+    client = _FlyFixture(qualified=False)
+    with pytest.raises(ConsoleError, match="REQUIRES_QUALIFICATION"):
+        console._fly(client, _fly_args(), stdin=io.StringIO(), ui=None)
+    assert client.calls == []
+
+
+def test_fly_refuses_plan_without_successful_model_and_tool_receipts():
+    client = _FlyFixture()
+    client.prepare = lambda _thread_id, _selection: {
+        "plan_revision_id": PLAN,
+        "model_calls": 0,
+        "successful_model_responses": 0,
+    }
+
+    with pytest.raises(ConsoleError, match="MODEL_PLAN_PROOF_MISSING"):
+        console._fly(client, _fly_args(plan_only=True), stdin=io.StringIO(), ui=None)
+
+    assert not any(call[0] == "execute" for call in client.calls)
+
+
+def test_fly_requires_short_explicit_confirmation_then_archives_verified_evidence():
+    client = _FlyFixture()
+    output = io.StringIO()
+    ui = TerminalUI(stream=output, color=True, width=100)
+    result = console._fly(client, _fly_args(), stdin=io.StringIO("fly\n"), ui=ui)
+    assert result["status"] == "verified"
+    assert ("execute", THREAD, PLAN) in client.calls
+    assert ("patch", THREAD, {"archived": True}) in client.calls
+    prepared = next(item for item in client.calls if item[0] == "prepare")
+    assert prepared[2]["message"] == "Bring the lab package back after delivery."
+    assert prepared[2]["map_content_sha256"] == "a" * 64
+    assert prepared[2]["vehicle_content_sha256"] == "b" * 64
+    assert set(prepared[2]) == {
+        "message",
+        "map_id",
+        "map_content_sha256",
+        "vehicle_id",
+        "vehicle_content_sha256",
+        "start_entity",
+    }
+    rendered = output.getvalue()
+    assert "\x1b[" in rendered
+    assert PLAN in rendered
+    assert "Planner" in rendered
+    assert "model responses" in rendered
+    assert "tool receipts" in rendered
+
+
+def test_doctor_uses_runtime_manager_readiness_fields():
+    client = _FlyFixture()
+    client.runtime = lambda: {
+        "runtime_available": True,
+        "resources_ready": True,
+        "provisioned": True,
+        "issue": None,
+    }
+    report = console._doctor(client)
+    runtime = next(item for item in report["checks"] if item["name"] == "Runtime")
+    assert report["ready"] is True
+    assert runtime == {"name": "Runtime", "status": "ready", "detail": "ready"}
+
+
+def test_doctor_rejects_partially_installed_runtime():
+    client = _FlyFixture()
+    client.runtime = lambda: {
+        "runtime_available": True,
+        "resources_ready": False,
+        "provisioned": False,
+        "issue": "RUNTIME_RESOURCES_MISSING",
+    }
+    report = console._doctor(client)
+    runtime = next(item for item in report["checks"] if item["name"] == "Runtime")
+    assert report["ready"] is False
+    assert runtime == {
+        "name": "Runtime",
+        "status": "blocked",
+        "detail": "RUNTIME_RESOURCES_MISSING",
+    }
+
+
+@pytest.mark.parametrize(
+    ("empty_method", "check_name"), [("maps", "Map catalog"), ("aircraft", "Aircraft catalog")]
+)
+def test_doctor_rejects_empty_asset_catalogs(empty_method, check_name):
+    client = _FlyFixture()
+    client.runtime = lambda: {
+        "runtime_available": True,
+        "resources_ready": True,
+        "provisioned": True,
+        "issue": None,
+    }
+    setattr(client, empty_method, lambda: {"resources": []})
+
+    report = console._doctor(client)
+
+    check = next(item for item in report["checks"] if item["name"] == check_name)
+    assert report["ready"] is False
+    assert check == {"name": check_name, "status": "blocked", "detail": "0 available"}
+
+
+def test_pair_filter_recomputes_counts_for_the_visible_selection():
+    catalog = {
+        "counts": {"qualified_builtin": 2, "compatible_requires_qualification": 1},
+        "pairs": [
+            {
+                "map_resource_id": "one",
+                "vehicle_resource_id": "x500",
+                "status": "qualified_builtin",
+            },
+            {
+                "map_resource_id": "two",
+                "vehicle_resource_id": "x500",
+                "status": "qualified_builtin",
+            },
+            {
+                "map_resource_id": "two",
+                "vehicle_resource_id": "iris",
+                "status": "compatible_requires_qualification",
+            },
+        ],
+    }
+
+    filtered = console._filter_pairs(catalog, "two", None)
+
+    assert len(filtered["pairs"]) == 2
+    assert filtered["counts"] == {
+        "qualified_builtin": 1,
+        "compatible_requires_qualification": 1,
+    }
+
+
+def test_terminal_plan_and_evidence_views_show_real_model_tools_actions_and_gates():
+    output = io.StringIO()
+    ui = TerminalUI(stream=output, color=False, width=110)
+    ui.render(
+        {
+            "plan_revision_id": PLAN,
+            "goal": "Deliver instruments and return.",
+            "model_id": "gpt-4.1",
+            "model_source": "default",
+            "model_calls": 3,
+            "planning_attempts": 1,
+            "mission_plan": {
+                "task_graph": {
+                    "nodes": [
+                        {
+                            "label": "Pick up payload",
+                            "executor": "payload_controller",
+                            "completion_evidence": ["payload attached"],
+                        }
+                    ]
+                },
+                "metrics": {"route_length_m": 42.5, "estimated_duration_s": 18.0},
+            },
+            "model_tool_proof": {
+                "tool_receipts": [
+                    {"tool_id": "plan_route", "outcome": "accepted", "call_id": "call-real"}
+                ]
+            },
+        },
+        "plan",
+    )
+    ui.render(
+        {
+            "state": "completed",
+            "execution_id": "execution-real",
+            "result": {
+                "status": "verified",
+                "contract_id": "contract-real",
+                "gates": {"landing_confirmed": True, "executor_completed": True},
+                "runtime_action_receipts": [
+                    {"step_id": "pickup", "action": "pickup", "status": "accepted", "attempts": 1}
+                ],
+                "completion_model_call": {
+                    "role": "completion",
+                    "provider": "openai",
+                    "model": "gpt-4.1",
+                    "response_id": "response-real",
+                },
+                "checkpoint_model_calls": [],
+            },
+        },
+        "evidence",
+    )
+
+    rendered = output.getvalue()
+    for expected in (
+        "Deliver instruments and return.",
+        "plan_route",
+        "Pick up payload",
+        "Landing Confirmed",
+        "pickup",
+        "response-real",
+    ):
+        assert expected in rendered
+
+
+def test_terminal_workflow_uses_accessible_symbols_and_structured_prompts():
+    output = io.StringIO()
+    ui = TerminalUI(stream=output, color=False, width=92)
+
+    ui.banner()
+    ui.choice("model", ["GPT-5.4 (gpt-5.4)", "Kimi K2.6 (kimi-k2.6)"])
+    ui.confirm_plan("plan-visible")
+    ui.status("Runtime", "ready", "PX4/Gazebo connected")
+    ui.status("Planning", "executing", "route tool active")
+    ui.error("CONSOLE_DEMO_ERROR", "No mission state was changed.")
+
+    rendered = output.getvalue()
+    for expected in (
+        "DroneDream",
+        "SELECT MODEL",
+        "01",
+        "LAUNCH CONFIRMATION",
+        "plan-visible",
+        "✓ Runtime",
+        "◆ Planning",
+        "ERROR · CONSOLE_DEMO_ERROR",
+    ):
+        assert expected in rendered
+    assert "FLIGHT CONSOLE" not in rendered
+    assert "◇" in rendered
+
+
+def test_detailed_terminal_brand_matches_the_wide_console_boundary():
+    output = io.StringIO()
+    TerminalUI(stream=output, color=False, width=108).banner()
+
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 11
+    assert max(map(len, lines)) <= 108
+    assert all(not line or line.startswith("   ") for line in lines)
+    assert "⣿⣿⣿⣿⣿⣷⣄" in output.getvalue()
+    assert "FLIGHT CONSOLE" not in output.getvalue()
+
+
+def test_interactive_shell_has_product_prompt_aliases_and_clean_exit(monkeypatch):
+    class TerminalBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    calls = []
+
+    def child_main(argv, **kwargs):
+        calls.append((argv, kwargs.get("_shell_child")))
+        return 0
+
+    monkeypatch.setattr(console, "main", child_main)
+    output, errors = TerminalBuffer(), io.StringIO()
+    code = console._shell_loop(
+        stdin=io.StringIO("maps\nexit\n"),
+        stdout=output,
+        stderr=errors,
+        no_color=True,
+    )
+
+    assert code == 0
+    assert calls == [(["--no-color", "assets", "maps"], True)]
+    assert "SYSTEM CHECK" in output.getvalue()
+    assert "Console" in output.getvalue()
+    assert "Commands" in output.getvalue()
+    assert "Display" in output.getvalue()
+    assert "mission | assets | runtime | history" in output.getvalue()
+    assert "◆ DroneDream ›" in output.getvalue()
+    assert "Flight console closed." in output.getvalue()
+    assert "(base)" not in output.getvalue()
+    assert "PS Q:" not in output.getvalue()
 
 
 def test_grant_from_different_gateway_never_reaches_core():

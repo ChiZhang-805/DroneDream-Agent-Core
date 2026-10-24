@@ -98,6 +98,11 @@ DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ = {
     "actuator_output": 5.0,
     "odometry": 10.0,
 }
+# Native camera registration requires an existing source-time bracket within
+# 20 ms. A 10 Hz odometry stream cannot supply it for most camera frames; at
+# reduced simulation RTF, waiting for the next sample also exhausts the real
+# control lease. Request real 20 ms samples only for that camera-bound path.
+CAMERA_ODOMETRY_REQUESTED_RATE_HZ = 50.0
 ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM_ENV = "PX4_ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM"
 PX4_OFFBOARD_LOSS_TIMEOUT_SECONDS = 1.0
 PX4_OFFBOARD_LOSS_HOLD_ACTION = 5
@@ -105,6 +110,14 @@ BATTERY_TRACK_START_SETTLE_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_TRANSITION_TIMEOUT_SECONDS = 15.0
 GAZEBO_PAYLOAD_STATE_DISCOVERY_SETTLE_SECONDS = 0.5
 GAZEBO_PAYLOAD_COMMAND_RETRY_SECONDS = 0.1
+# The qualified campus payload is a 0.16 m-high parcel and the delivery pads
+# are on the z=0 ground plane.  A released dynamic parcel must be placed on the
+# receiving surface after the detachable-joint transition is confirmed.  If it
+# is left to free-fall for the rest of a long return leg, DART/ODE can amplify a
+# contact instability until the world's broadphase receives a non-representable
+# AABB and aborts the simulator.
+GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M = 0.081
+GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M = 0.03
 RUNTIME_EFFECT_SCHEMA_VERSION = "dronedream.scenario_runtime_effects.v1"
 
 _T = TypeVar("_T")
@@ -510,6 +523,8 @@ class TrackPoint:
     y: float
     z: float
     speed_limit_mps: float | None = None
+    approach_speed_limit_mps: float | None = None
+    approach_distance_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -989,9 +1004,12 @@ class OffboardClientProtocol(Protocol):
     #   请求各来源的明确采样频率并保留请求回执。
     # 输入：
     #   self：已连接的飞控客户端。
+    #   camera_source_alignment_required：原生相机是否需要二十毫秒内的里程计配准。
     # 输出：
     #   evidence：逐来源速率请求结果。
-    async def configure_dynamics_telemetry_rates(self) -> dict[str, Any]: ...
+    async def configure_dynamics_telemetry_rates(
+        self, *, camera_source_alignment_required: bool = False
+    ) -> dict[str, Any]: ...
 
     # 功能：
     #   按世界和模型身份获取仿真真实姿态供限定的对齐或挂载检查。
@@ -1387,9 +1405,12 @@ class MavsdkOffboardClient:
     #   逐来源请求采样率并记录实际回执；请求成功不等于实际已经达到该频率。
     # 输入：
     #   self：已经连接的真实 MAVSDK 客户端。
+    #   camera_source_alignment_required：相机配准时请求真实五十赫兹里程计。
     # 输出：
     #   evidence：各来源请求结果及必需来源的请求汇总。
-    async def configure_dynamics_telemetry_rates(self) -> dict[str, Any]:
+    async def configure_dynamics_telemetry_rates(
+        self, *, camera_source_alignment_required: bool = False
+    ) -> dict[str, Any]:
         """Request explicit MAVSDK rates and return non-secret preflight evidence."""
 
         telemetry = self._require_system().telemetry
@@ -1403,7 +1424,9 @@ class MavsdkOffboardClient:
         )
         sources: dict[str, dict[str, Any]] = {}
         for source, method_name in requests:
-            rate_hz = DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ[source]
+            rate_hz = (CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                       if source == "odometry" and camera_source_alignment_required
+                       else DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ[source])
             method = getattr(telemetry, method_name, None)
             if not callable(method):
                 sources[source] = {
@@ -1860,8 +1883,14 @@ class MavsdkOffboardClient:
         timeout_seconds = _timeout_budget(timeout_seconds)
         system = self._require_system()
         last_health: TelemetryHealth | None = None
+        started = time.monotonic()
         try:
-            async with asyncio.timeout(timeout_seconds):
+            # The MAVSDK System object may be constructed before its connection
+            # stream has delivered the first state.  Keep that wait distinct
+            # from estimator health so an exhausted preflight reports the
+            # physical gate that actually stalled instead of a blank outer
+            # TimeoutError.
+            async with asyncio.timeout(min(30., timeout_seconds)):
                 connected = False
                 async for state in system.core.connection_state():
                     if getattr(state, "is_connected", False) is True:
@@ -1869,7 +1898,16 @@ class MavsdkOffboardClient:
                         break
                 if not connected:
                     raise RuntimeError("PX4 connection state stream ended before connecting")
+        except TimeoutError:
+            raise TimeoutError(
+                "PX4 connection-state timeout before native health telemetry"
+            ) from None
 
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0.:
+            raise TimeoutError("PX4 native-health deadline exhausted after connection")
+        try:
+            async with asyncio.timeout(remaining):
                 async for health in system.telemetry.health():
                     sample = TelemetryHealth(
                         connected=True,
@@ -2702,12 +2740,13 @@ class MavsdkOffboardClient:
                 "Gazebo payload preflight receipt is stale or belongs to another runtime"
             )
         observation = receipt.get("observation")
+        expected_detached = observation.get("detached") if isinstance(observation, dict) else None
         if (
             not isinstance(observation, dict)
             or observation.get("confirmed") is not True
-            or observation.get("detached") is not True
+            or type(expected_detached) is not bool
         ):
-            raise RuntimeError("Gazebo payload preflight detached state is not confirmed")
+            raise RuntimeError("Gazebo payload preflight attachment state is not confirmed")
         if (not observation.get("state_service")
                 and now - receipt["observed_at_unix_ms"] > 60_000):
             raise RuntimeError(
@@ -2730,13 +2769,17 @@ class MavsdkOffboardClient:
             observer["state_service"] = service
             # 旧回执只用于绑定查询入口；启动耗时较长时重新读真实状态，不能给旧事件刷新时间。
             snapshot = await self._refresh_payload_snapshot(observer)
-            if snapshot["detached"] is not True:
-                raise RuntimeError("Gazebo payload is attached before PX4 arming")
+            if snapshot["detached"] is not expected_detached:
+                raise RuntimeError("Gazebo payload state changed before PX4 arming")
         # 初态只衔接尚无事件的订阅；任何已经收到的新事件优先，不能被旧回执覆盖。
         if observer["sequence"] == 0:
             observer.update(
-                detached=True,
-                source="verified-preflight-detach-readback",
+                detached=expected_detached,
+                source=(
+                    "verified-preflight-detach-readback"
+                    if expected_detached
+                    else "verified-preflight-attach-readback"
+                ),
                 observed_at_unix_ms=receipt["observed_at_unix_ms"],
             )
 
@@ -2933,6 +2976,64 @@ class MavsdkOffboardClient:
             raise RuntimeError(
                 "Gazebo payload state readback did not confirm the requested attachment state"
             )
+        release_placement: dict[str, Any] | None = None
+        if operation == "detach" and {
+            "vehicle_model_name",
+            "payload_model_name",
+        }.issubset(parameters):
+            world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
+            if not world_name:
+                raise RuntimeError("Gazebo payload release has no bound world name")
+            payload_model_name = str(parameters["payload_model_name"])
+            sampled = await self._sample_named_gazebo_poses(
+                world_name=world_name,
+                model_names=(payload_model_name,),
+                gazebo_node=node,
+            )
+            observed = sampled[payload_model_name]
+            target = GazeboModelPose(
+                x=observed.x,
+                y=observed.y,
+                z=GAZEBO_PAYLOAD_RELEASE_SURFACE_Z_M,
+                qx=0.0,
+                qy=0.0,
+                qz=0.0,
+                qw=1.0,
+            )
+            service = await self._set_named_gazebo_pose(
+                world_name=world_name,
+                model_name=payload_model_name,
+                pose=target,
+                gazebo_node=node,
+            )
+            settled = (await self._sample_named_gazebo_poses(
+                world_name=world_name,
+                model_names=(payload_model_name,),
+                gazebo_node=node,
+            ))[payload_model_name]
+            placement_error_m = math.dist(
+                (target.x, target.y, target.z),
+                (settled.x, settled.y, settled.z),
+            )
+            if placement_error_m > GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M:
+                raise RuntimeError(
+                    "Gazebo released payload did not settle on the qualified delivery surface: "
+                    f"observed={placement_error_m:.6f}m "
+                    f"limit={GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M:.6f}m"
+                )
+            release_placement = {
+                "surface_pose_world_enu": {
+                    "x": target.x,
+                    "y": target.y,
+                    "z": target.z,
+                },
+                "placement_error_m": placement_error_m,
+                "maximum_placement_error_m": (
+                    GAZEBO_PAYLOAD_RELEASE_PLACEMENT_TOLERANCE_M
+                ),
+                "service": service,
+                "accepted": True,
+            }
         result = {
             "confirmed": True,
             "transport": protocol,
@@ -2947,6 +3048,8 @@ class MavsdkOffboardClient:
             "observed_at_unix_ms": observer["observed_at_unix_ms"],
             "raw_state": f'data: "{"detached" if observed_detached else "attached"}"',
         }
+        if release_placement is not None:
+            result["release_placement"] = release_placement
         if alignment is not None:
             alignment["alignment_attempts"] = alignment_attempts
             world_name = os.environ.get("PX4_GAZEBO_WORLD_NAME", "").strip()
@@ -4657,6 +4760,22 @@ def parse_reference_track_plan(payload: object) -> ReferenceTrackPlan:
                     if raw.get("speed_limit_mps") is not None
                     else None
                 ),
+                (
+                    _finite_float(
+                        raw.get("approach_speed_limit_mps"),
+                        f"reference point {idx}.approach_speed_limit_mps",
+                    )
+                    if raw.get("approach_speed_limit_mps") is not None
+                    else None
+                ),
+                (
+                    _finite_float(
+                        raw.get("approach_distance_m"),
+                        f"reference point {idx}.approach_distance_m",
+                    )
+                    if raw.get("approach_distance_m") is not None
+                    else None
+                ),
             )
         )
     if not points:
@@ -4715,6 +4834,15 @@ def parse_reference_track_plan(payload: object) -> ReferenceTrackPlan:
     for index, point in enumerate(points):
         if point.speed_limit_mps is not None and not 0 < point.speed_limit_mps <= 10.0:
             raise ValueError(f"reference point {index}.speed_limit_mps must be in (0, 10]")
+        if (point.approach_speed_limit_mps is None) != (point.approach_distance_m is None):
+            raise ValueError(
+                f"reference point {index} approach speed and distance must be paired"
+            )
+        if point.approach_speed_limit_mps is not None and (
+            not 0 < point.approach_speed_limit_mps <= (point.speed_limit_mps or 10.0)
+            or not 0 < point.approach_distance_m <= 50.0
+        ):
+            raise ValueError(f"reference point {index} approach profile is invalid")
     plan = ReferenceTrackPlan(
         points=points,
         track_type=track_type,
@@ -4860,6 +4988,8 @@ def _build_motion_setpoints(
     rate_hz: float,
     *,
     max_samples: int,
+    approach_speed_limit_mps: float | None = None,
+    approach_distance_m: float | None = None,
 ) -> list[Setpoint]:
     result: list[Setpoint] = []
     segments: list[tuple[TrackPoint, TrackPoint, float, float, float]] = []
@@ -4885,17 +5015,68 @@ def _build_motion_setpoints(
     if not segments:
         return result
 
-    acceleration_seconds = params.vel_limit / params.accel_limit
-    acceleration_distance = 0.5 * params.accel_limit * acceleration_seconds**2
-    if 2.0 * acceleration_distance >= cumulative_distance:
-        acceleration_seconds = math.sqrt(cumulative_distance / params.accel_limit)
-        peak_speed = params.accel_limit * acceleration_seconds
-        acceleration_distance = 0.5 * params.accel_limit * acceleration_seconds**2
-        cruise_seconds = 0.0
-    else:
+    approach_profile = (
+        approach_speed_limit_mps is not None
+        and approach_distance_m is not None
+        and approach_distance_m < cumulative_distance
+    )
+    acceleration_limit = params.accel_limit
+    final_deceleration_seconds = 0.0
+    final_deceleration_distance = 0.0
+    final_deceleration_limit = acceleration_limit
+    transition_deceleration_seconds = 0.0
+    transition_deceleration_distance = 0.0
+    if approach_profile:
+        approach_speed = min(params.vel_limit, approach_speed_limit_mps)
+        final_deceleration_distance = approach_distance_m
+        prefix_distance = cumulative_distance - final_deceleration_distance
+        minimum_prefix_distance = approach_speed**2 / (2.0 * acceleration_limit)
+        approach_profile = prefix_distance > minimum_prefix_distance
+    if approach_profile:
+        final_deceleration_limit = approach_speed**2 / (2.0 * final_deceleration_distance)
         peak_speed = params.vel_limit
-        cruise_seconds = (cumulative_distance - 2.0 * acceleration_distance) / peak_speed
-    total_seconds = 2.0 * acceleration_seconds + cruise_seconds
+        acceleration_distance = peak_speed**2 / (2.0 * acceleration_limit)
+        transition_deceleration_distance = (
+            peak_speed**2 - approach_speed**2
+        ) / (2.0 * acceleration_limit)
+        if acceleration_distance + transition_deceleration_distance > prefix_distance:
+            peak_speed = math.sqrt(
+                acceleration_limit * prefix_distance + 0.5 * approach_speed**2
+            )
+            acceleration_distance = peak_speed**2 / (2.0 * acceleration_limit)
+            transition_deceleration_distance = (
+                peak_speed**2 - approach_speed**2
+            ) / (2.0 * acceleration_limit)
+            cruise_seconds = 0.0
+        else:
+            cruise_seconds = (
+                prefix_distance - acceleration_distance - transition_deceleration_distance
+            ) / peak_speed
+        acceleration_seconds = peak_speed / acceleration_limit
+        transition_deceleration_seconds = (
+            peak_speed - approach_speed
+        ) / acceleration_limit
+        final_deceleration_seconds = approach_speed / final_deceleration_limit
+        total_seconds = (
+            acceleration_seconds
+            + cruise_seconds
+            + transition_deceleration_seconds
+            + final_deceleration_seconds
+        )
+    else:
+        acceleration_seconds = params.vel_limit / acceleration_limit
+        acceleration_distance = 0.5 * acceleration_limit * acceleration_seconds**2
+        if 2.0 * acceleration_distance >= cumulative_distance:
+            acceleration_seconds = math.sqrt(cumulative_distance / acceleration_limit)
+            peak_speed = acceleration_limit * acceleration_seconds
+            acceleration_distance = 0.5 * acceleration_limit * acceleration_seconds**2
+            cruise_seconds = 0.0
+        else:
+            peak_speed = params.vel_limit
+            cruise_seconds = (cumulative_distance - 2.0 * acceleration_distance) / peak_speed
+        transition_deceleration_seconds = acceleration_seconds
+        transition_deceleration_distance = acceleration_distance
+        total_seconds = 2.0 * acceleration_seconds + cruise_seconds
     sample_count = max(1, int(math.ceil(total_seconds * rate_hz)))
     if sample_count > max_samples:
         raise ValueError(f"setpoint schedule exceeds the {MAX_SETPOINTS}-sample limit")
@@ -4908,13 +5089,28 @@ def _build_motion_setpoints(
             progress = 0.5 * params.accel_limit * sample_time**2
         elif sample_time <= acceleration_seconds + cruise_seconds:
             progress = acceleration_distance + peak_speed * (sample_time - acceleration_seconds)
-        else:
+        elif not approach_profile or sample_time <= (
+            acceleration_seconds + cruise_seconds + transition_deceleration_seconds
+        ):
             deceleration_time = sample_time - acceleration_seconds - cruise_seconds
             progress = (
                 acceleration_distance
                 + cruise_distance
                 + peak_speed * deceleration_time
-                - 0.5 * params.accel_limit * deceleration_time**2
+                - 0.5 * acceleration_limit * deceleration_time**2
+            )
+        else:
+            final_time = (
+                sample_time
+                - acceleration_seconds
+                - cruise_seconds
+                - transition_deceleration_seconds
+            )
+            progress = (
+                cumulative_distance
+                - final_deceleration_distance
+                + approach_speed * final_time
+                - 0.5 * final_deceleration_limit * final_time**2
             )
         progress = min(cumulative_distance, max(0.0, progress))
         while segment_index < len(segments) - 1 and progress >= segments[segment_index][4] - 1e-12:
@@ -5001,6 +5197,16 @@ def build_stopped_waypoint_schedule(
             not math.isfinite(point.speed_limit_mps) or point.speed_limit_mps <= 0
         ):
             raise ValueError("stopped schedule point speed must be finite and positive")
+        if (point.approach_speed_limit_mps is None) != (point.approach_distance_m is None):
+            raise ValueError("stopped schedule approach speed and distance must be paired")
+        if point.approach_speed_limit_mps is not None and (
+            not math.isfinite(point.approach_speed_limit_mps)
+            or point.approach_speed_limit_mps <= 0
+            or point.approach_speed_limit_mps > (point.speed_limit_mps or params.vel_limit)
+            or not math.isfinite(point.approach_distance_m)
+            or point.approach_distance_m <= 0
+        ):
+            raise ValueError("stopped schedule approach profile is invalid")
     schedule: list[Setpoint] = []
     arrivals: list[int] = []
     previous, previous_yaw = points[0], initial_yaw_deg
@@ -5014,7 +5220,6 @@ def build_stopped_waypoint_schedule(
             value
             for value in (
                 params.vel_limit,
-                previous.speed_limit_mps,
                 waypoint.speed_limit_mps,
             )
             if value is not None
@@ -5025,6 +5230,8 @@ def build_stopped_waypoint_schedule(
             replace(params, vel_limit=speed),
             rate_hz,
             max_samples=remaining - hold_samples,
+            approach_speed_limit_mps=waypoint.approach_speed_limit_mps,
+            approach_distance_m=waypoint.approach_distance_m,
         )
         if not segment:
             segment = [enu_point_to_ned_setpoint(waypoint, yaw_deg=previous_yaw)]
@@ -5443,6 +5650,7 @@ def _is_recoverable_mavsdk_preflight_transport_error(error: BaseException) -> bo
 #   log_path：本次运行日志。
 #   evidence：逐次记录阶段和结果的证据容器。
 #   maximum_attempts：最多允许的连接次数，范围一到五；所有尝试共享同一准备期限。
+#   camera_source_alignment_required：原生相机运行所需的源时间配准采样频率。
 # 输出：
 #   health：真实就绪遥测；无法恢复时抛出原异常或超时。
 async def connect_preflight_with_recovery(
@@ -5455,6 +5663,7 @@ async def connect_preflight_with_recovery(
     evidence: dict[str, Any],
     maximum_attempts: int = MAVSDK_PREFLIGHT_MAX_ATTEMPTS,
     local_mode_preparation_only: bool = False,
+    camera_source_alignment_required: bool = False,
 ) -> TelemetryHealth:
     """Connect and pass readiness with bounded, pre-arm-only recovery attempts.
 
@@ -5515,8 +5724,10 @@ async def connect_preflight_with_recovery(
         rate_configurer = getattr(client, "configure_dynamics_telemetry_rates", None)
         if callable(rate_configurer):
             row["stage"] = "dynamics-telemetry-rates"
+            rate_request = (rate_configurer(camera_source_alignment_required=True)
+                            if camera_source_alignment_required else rate_configurer())
             rates = await _await_with_abort_polling(
-                asyncio.wait_for(rate_configurer(), timeout=min(5.,
+                asyncio.wait_for(rate_request, timeout=min(5.,
                     max(.001, deadline-time.monotonic()))), abort_check=abort_check)
             row["dynamics_telemetry_rates"] = rates
             required = ("position_velocity", "imu", "attitude", "odometry", "battery")
@@ -5535,8 +5746,14 @@ async def connect_preflight_with_recovery(
                 raise RuntimeError("PREFLIGHT_TELEMETRY_RATE_RECEIPT_INVALID")
         row["stage"] = "readiness"
         row['local_mode_preparation_only'] = local_mode_preparation_only
+        readiness_remaining = max(.001, deadline-time.monotonic())
+        # Reserve a narrow slice for the reader to translate its own timeout
+        # into a diagnostic health snapshot before the outer shared deadline
+        # cancels the attempt.  No readiness condition is relaxed.
+        readiness_budget = max(.001, readiness_remaining - min(.5, readiness_remaining / 10.))
+        row['readiness_timeout_seconds'] = readiness_budget
         health = await _await_with_abort_polling(
-            readiness_reader(max(.001, deadline-time.monotonic())),
+            readiness_reader(readiness_budget),
             abort_check=abort_check)
         required_health = ('connected', 'home_position_ok', 'local_position_ok')
         if not local_mode_preparation_only:

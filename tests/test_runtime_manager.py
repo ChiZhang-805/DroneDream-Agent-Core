@@ -78,19 +78,33 @@ def _runtime_resources(root: Path) -> Path:
         "payload-placement/libdronedream-payload-placement.so": b"\x7fELF\x02\x01unit-test-only",
         "camera-clock/libdronedream-camera-clock.so": b"unit-test-clock-library",
     }
-    files["camera-clock/camera-clock-runtime.json"] = json.dumps({
-        "schema_version": "dronedream.native-camera-clock.v1",
-        "clock_contract": "exact-native-sim-tick-preupdate-v1",
-        "library_sha256": hashlib.sha256(files["camera-clock/libdronedream-camera-clock.so"]).hexdigest(),
-        "sources": dict.fromkeys(('camera_clock.cpp', 'capture_clock.hpp', 'CMakeLists.txt',
-                                  'capture_clock_test.cpp'), 'a' * 64),
-    }).encode()
-    files["payload-placement/payload-placement-runtime.json"] = json.dumps({
-        "contract": PAYLOAD_CONTRACT,
-        "library_sha256": hashlib.sha256(
-            files["payload-placement/libdronedream-payload-placement.so"]).hexdigest(),
-        "sources": {"CMakeLists.txt": "a" * 64, "PayloadPlacement.cc": "b" * 64},
-    }).encode()
+    files["camera-clock/camera-clock-runtime.json"] = json.dumps(
+        {
+            "schema_version": "dronedream.native-camera-clock.v1",
+            "clock_contract": "exact-native-sim-tick-preupdate-v1",
+            "library_sha256": hashlib.sha256(
+                files["camera-clock/libdronedream-camera-clock.so"]
+            ).hexdigest(),
+            "sources": dict.fromkeys(
+                (
+                    "camera_clock.cpp",
+                    "capture_clock.hpp",
+                    "CMakeLists.txt",
+                    "capture_clock_test.cpp",
+                ),
+                "a" * 64,
+            ),
+        }
+    ).encode()
+    files["payload-placement/payload-placement-runtime.json"] = json.dumps(
+        {
+            "contract": PAYLOAD_CONTRACT,
+            "library_sha256": hashlib.sha256(
+                files["payload-placement/libdronedream-payload-placement.so"]
+            ).hexdigest(),
+            "sources": {"CMakeLists.txt": "a" * 64, "PayloadPlacement.cc": "b" * 64},
+        }
+    ).encode()
     files["native-sensors/native-sensor-runtime.json"] = json.dumps(
         {
             "wire_contract": "px4-gz-fimex-gauss",
@@ -527,28 +541,29 @@ def test_runtime_unlisted_native_dependency_cannot_inherit_manifest(tmp_path):
 #   tmp_path：隔离资源根；mode：要破坏的文件或语义边界。
 # 输出：
 #   None：由就绪拒绝断言给出结果。
-@pytest.mark.parametrize('mode', ['missing', 'bytes', 'contract'])
+@pytest.mark.parametrize("mode", ["missing", "bytes", "contract"])
 def test_runtime_payload_placement_required(tmp_path, mode):
-    resources = _runtime_resources(tmp_path / 'res')
-    runtime = resources / 'runtime'
-    library = runtime / 'payload-placement/libdronedream-payload-placement.so'
-    if mode == 'missing':
+    resources = _runtime_resources(tmp_path / "res")
+    runtime = resources / "runtime"
+    library = runtime / "payload-placement/libdronedream-payload-placement.so"
+    if mode == "missing":
         library.unlink()
-    elif mode == 'bytes':
-        library.write_bytes(b'changed')
+    elif mode == "bytes":
+        library.write_bytes(b"changed")
     else:
-        path = runtime / 'payload-placement/payload-placement-runtime.json'
+        path = runtime / "payload-placement/payload-placement-runtime.json"
         receipt = json.loads(path.read_text())
-        receipt['contract'] = 'old-set-pose'
+        receipt["contract"] = "old-set-pose"
         path.write_text(json.dumps(receipt))
-        manifest_path = runtime / 'runtime-manifest.json'
+        manifest_path = runtime / "runtime-manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for entry in manifest['files']:
-            if entry['path'] == 'payload-placement/payload-placement-runtime.json':
-                entry.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                             bytes=path.stat().st_size)
+        for entry in manifest["files"]:
+            if entry["path"] == "payload-placement/payload-placement-runtime.json":
+                entry.update(
+                    sha256=hashlib.sha256(path.read_bytes()).hexdigest(), bytes=path.stat().st_size
+                )
         manifest_path.write_text(json.dumps(manifest))
-    assert _manager(tmp_path / 'store', resources)._resources_ready() is False
+    assert _manager(tmp_path / "store", resources)._resources_ready() is False
 
 
 # 功能：
@@ -648,6 +663,11 @@ def test_runtime_setup_stops_at_failed_base_runtime_check(tmp_path, monkeypatch)
             "issue": "DRONEDREAM_RUNTIME_UNAVAILABLE",
         },
     )
+    monkeypatch.setattr(
+        manager,
+        "_bash",
+        lambda script, *, timeout: subprocess.CompletedProcess([], 1, "", "missing"),
+    )
 
     manager.start_setup()
     deadline = time.monotonic() + 2
@@ -660,6 +680,55 @@ def test_runtime_setup_stops_at_failed_base_runtime_check(tmp_path, monkeypatch)
     assert failed["active"] is False
     assert failed["error"] == "DRONEDREAM_RUNTIME_UNAVAILABLE"
     assert failed["failed_phase"] == "checkingBaseRuntime"
+
+
+# 功能：
+#   验证已发布的 PX4/Gazebo 基础镜像缺少 ROS 时由产品管理器补齐，再继续常规部署。
+# 输入：
+#   tmp_path：隔离测试目录。
+#   monkeypatch：替换 WSL 与 root 安装边界。
+# 输出：
+#   None：不返回业务数据。
+def test_runtime_provision_repairs_missing_ros_base(tmp_path, monkeypatch):
+    manager = _manager(tmp_path / "store", _runtime_resources(tmp_path / "res"))
+    statuses = iter(
+        (
+            {"runtime_available": False, "provisioned": False, "issue": "DRONEDREAM_RUNTIME_UNAVAILABLE"},
+            {"runtime_available": True, "provisioned": False, "issue": "RUNTIME_PROVISION_REQUIRED"},
+            {"runtime_available": True, "provisioned": True, "issue": None},
+        )
+    )
+    monkeypatch.setattr(manager, "status", lambda: next(statuses))
+    user_scripts: list[str] = []
+    root_scripts: list[str] = []
+
+    def fake_bash(script: str, *, timeout: float):
+        del timeout
+        user_scripts.append(script)
+        output = (
+            "ROS_MESSAGES_READY\nAUTONOMY_RUNTIME_READY\n"
+            if "AUTONOMY_RUNTIME_READY" in script
+            else ""
+        )
+        return subprocess.CompletedProcess([], 0, output, "")
+
+    def fake_root(script: str, *, timeout: float):
+        del timeout
+        root_scripts.append(script)
+        return subprocess.CompletedProcess([], 0, "DRONEDREAM_ROS_BASE_READY\n", "")
+
+    monkeypatch.setattr(manager, "_bash", fake_bash)
+    monkeypatch.setattr(manager, "_bash_root", fake_root)
+
+    result = manager.provision()
+
+    assert result["provisioned"] is True
+    assert len(root_scripts) == 1
+    assert "ros-jazzy-ros-base" in root_scripts[0]
+    assert "ros-jazzy-ros-gz-bridge" in root_scripts[0]
+    assert "ros-jazzy-rmw-cyclonedds-cpp" in root_scripts[0]
+    assert "python3-colcon-common-extensions" in root_scripts[0]
+    assert any("command -v gz" in script for script in user_scripts)
 
 
 # 功能：
@@ -860,7 +929,9 @@ def _execution_fixture(tmp_path, monkeypatch):
                 conversation_id=thread_id,
                 map_asset_id=map_asset["asset_id"],
                 vehicle_asset_id=vehicle_asset["asset_id"],
-                map_sha256=sha256_json(MapAsset.model_validate_json(map_selection.graph.read_bytes())),
+                map_sha256=sha256_json(
+                    MapAsset.model_validate_json(map_selection.graph.read_bytes())
+                ),
                 map_semantic_sha256=hashlib.sha256(map_selection.semantic.read_bytes()).hexdigest(),
                 vehicle_sha256=hashlib.sha256(
                     vehicle_selection.vehicle_sdf.read_bytes()
@@ -925,9 +996,12 @@ def test_execute_keeps_supervisor_files_outside_empty_simulation_run(tmp_path, m
     manager, arguments = _execution_fixture(tmp_path, monkeypatch)
     # 夹具必须保留两种摘要的真实差异，否则再次误用原始文件摘要也可能通过测试。
     selected = manager.store.get_thread(arguments["thread_id"])
-    graph_path = resolve_versioned_map(manager.store.get_asset_version(
-        selected["selected_map_id"], selected["selected_map_content_sha256"],
-    )).graph
+    graph_path = resolve_versioned_map(
+        manager.store.get_asset_version(
+            selected["selected_map_id"],
+            selected["selected_map_content_sha256"],
+        )
+    ).graph
     assert hashlib.sha256(graph_path.read_bytes()).hexdigest() != sha256_json(
         MapAsset.model_validate_json(graph_path.read_bytes())
     )
@@ -1187,6 +1261,89 @@ def test_active_execution_evidence_is_path_free(tmp_path):
         "result": None,
     }
     assert "run_dir" not in evidence
+
+
+def test_completed_execution_evidence_exposes_typed_model_and_action_receipts(
+    tmp_path, monkeypatch
+):
+    from dronedream_agent_app import runtime_manager as runtime_manager_module
+
+    class Dumpable:
+        def __init__(self, value):
+            self.value = value
+
+        def model_dump(self, *, mode):
+            assert mode == "json"
+            return self.value
+
+    manager = _manager(tmp_path / "store", _runtime_resources(tmp_path / "resources"))
+    thread = manager.store.create_thread("completed evidence", "gpt-4.1")
+    thread_id = str(thread["thread_id"])
+    execution_id = "execution-" + "a" * 32
+    run_dir = manager.store.missions_root / thread_id / execution_id / "simulation"
+    run_dir.mkdir(parents=True)
+    (run_dir / "workflow-result.json").write_text("{}", encoding="utf-8")
+    manager.store.append_message(
+        thread_id,
+        role="assistant",
+        kind="status",
+        content="completed",
+        metadata={
+            "execution_id": execution_id,
+            "run_dir": str(run_dir),
+            "completed_at": "2026-10-20T00:00:00Z",
+            "return_code": 0,
+        },
+    )
+    model_call = {
+        "schema_version": "dronedream.model-call.v1",
+        "provider": "openai",
+        "model": "gpt-4.1",
+        "response_id": "response-real",
+    }
+    runtime = SimpleNamespace(
+        gates=Dumpable({"landing_confirmed": True}),
+        measurements=Dumpable({"landing_state": "ON_GROUND", "pose_sample_count": 42}),
+        artifacts=SimpleNamespace(
+            world_sha256="1" * 64,
+            semantic_sha256="2" * 64,
+            vehicle_sha256="3" * 64,
+            route_sha256="4" * 64,
+            track_sha256="5" * 64,
+            clearance_sha256="6" * 64,
+            controller_params_sha256="7" * 64,
+            executor_sha256="8" * 64,
+            px4_ulogs=["flight.ulg"],
+        ),
+    )
+    result = SimpleNamespace(
+        status="verified",
+        contract_id="contract-real",
+        prepared_mission_sha256="9" * 64,
+        workflow_evidence_chain_head="a" * 64,
+        completion_assessment=Dumpable({"accepted": True, "issue_codes": []}),
+        completion_model_call=Dumpable(model_call),
+        checkpoint_decisions=[SimpleNamespace(model_call=Dumpable(model_call))],
+        runtime_action_receipts=[
+            Dumpable({"step_id": "action-001", "action": "pickup", "status": "accepted"})
+        ],
+        runtime_interruption_decisions=[],
+        plugin_hook_receipts=[],
+        runtime_evidence=runtime,
+    )
+    monkeypatch.setattr(runtime_manager_module, "read_plugin_file", lambda *args, **kwargs: b"{}")
+    monkeypatch.setattr(
+        runtime_manager_module, "decode_contract_json", lambda *args, **kwargs: result
+    )
+
+    evidence = manager.execution_evidence(thread_id)
+
+    assert evidence["result"]["completion_model_call"] == model_call
+    assert evidence["result"]["checkpoint_model_calls"] == [model_call]
+    assert evidence["result"]["runtime_action_receipts"] == [
+        {"step_id": "action-001", "action": "pickup", "status": "accepted"}
+    ]
+    assert "run_dir" not in json.dumps(evidence)
 
 
 # 功能：

@@ -169,6 +169,14 @@ class NativeStateBuffer:
         self._source_image = (NativeImagePoseBuffer(clock_domain=source_clock_domain)
                               if source_clock_domain is not None else None)
 
+    # 功能：让等待图像配对的处理器感知真实新来源；不复制状态或授予使用权限。
+    # 输入：无；输出：同域里程计接入代次，来源失效或未绑定时为 None。
+    @property
+    def source_image_revision(self) -> int | None:
+        with self._lock:
+            return (self._source_image.revision
+                    if self._issue is None and self._source_image is not None else None)
+
     # 功能：
     #   标记当前来源不可用，后续消费不得借用此前好历史绕过故障。
     # 输入：

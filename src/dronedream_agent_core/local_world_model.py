@@ -11,10 +11,13 @@ import heapq
 import math
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import chain, islice, product
+
+import numpy as np
 
 from .contracts import (
     DynamicObstacleObservation,
@@ -37,6 +40,7 @@ from .navigation_sectors import (
 )
 from .occupancy_collision import bounded_occupied_cell_boxes
 from .perception_evidence import FrozenVector3
+from .traversability import TraversableAirspace
 
 VoxelKey = tuple[int, int, int]
 Point = tuple[float, float, float]
@@ -385,6 +389,11 @@ class MetricVoxelMap:
         self._static_invalidation_owner = self._evidence_owner
         self._non_static_evidence_count = 0
         self._known_static_source_sha256: str | None = None
+        self._operating_airspace: TraversableAirspace | None = None
+        self._operating_airspace_sha256: str | None = None
+        # Cache only the immutable ground-volume mask, never live occupancy or
+        # observation validity. Candidate sweeps revisit the same local cells.
+        self._traversability_mask_cache: OrderedDict[VoxelKey, bool] = OrderedDict()
         self._qualified_route_points: tuple[Vector3, ...] = ()
         self._qualified_route_sha256: str | None = None
         self._qualified_route_minimum_clearance_m: float | None = None
@@ -881,8 +890,8 @@ class MetricVoxelMap:
             if not inside_local_cube:
                 removable = tuple(chunk_keys)
             else:
-                # 整桶严格位于保留球内时只检查年龄；球面附近仍使用原逐体素
-                # 平方距离公式，不能用近似包围盒扩大保留区域或延长来源寿命。
+                # 整桶严格位于保留球内时只检查年龄；边界桶最多 16³ 个体素，
+                # 批量计算距离，球面附近仍按原标量平方和裁决。
                 edge = self._NAVIGATION_CHUNK_EDGE_VOXELS
                 low = self._center_point_for_key(tuple(value * edge for value in chunk))
                 high = self._center_point_for_key(tuple((value + 1) * edge - 1 for value in chunk))
@@ -890,14 +899,32 @@ class MetricVoxelMap:
                                         for i in range(3)))
                 wholly_inside = farthest < retained_radius - max(1e-9, retained_radius * 1e-12)
                 local_removable: list[VoxelKey] = []
+                fresh_boundary_keys: list[VoxelKey] = []
                 for key in chunk_keys:
                     evidence = self._evidence[key]
                     if evidence.latest_monotonic_seconds < cutoff:
                         local_removable.append(key)
                     elif not wholly_inside:
-                        voxel_center = self._center_point_for_key(key)
-                        if sum((voxel_center[axis] - center[axis]) ** 2 for axis in range(3)) > maximum_distance_squared:
-                            local_removable.append(key)
+                        fresh_boundary_keys.append(key)
+                if fresh_boundary_keys:
+                    centers = (np.asarray(fresh_boundary_keys, dtype=np.float64) + .5)
+                    centers *= self.resolution_m
+                    centers += self._minimum
+                    delta = centers - center
+                    distances_squared = np.sum(delta * delta, axis=1)
+                    boundary = np.flatnonzero(
+                        np.abs(distances_squared - maximum_distance_squared)
+                        <= max(1e-9, maximum_distance_squared * 1e-12)
+                    )
+                    for index in boundary:
+                        voxel_center = self._center_point_for_key(fresh_boundary_keys[index])
+                        distances_squared[index] = sum(
+                            (voxel_center[axis] - center[axis]) ** 2 for axis in range(3)
+                        )
+                    local_removable.extend(
+                        fresh_boundary_keys[index]
+                        for index in np.flatnonzero(distances_squared > maximum_distance_squared)
+                    )
                 removable = tuple(local_removable)
             for key in removable:
                 self._evidence.pop(key, None)
@@ -906,10 +933,10 @@ class MetricVoxelMap:
                     and key not in self._known_static_free_keys
                 ):
                     self._non_static_evidence_count -= 1
-                self._occupied_keys.discard(key)
-                self._observed_free_keys.discard(key)
-                chunk_keys.discard(key)
             if removable:
+                self._occupied_keys.difference_update(removable)
+                self._observed_free_keys.difference_update(removable)
+                chunk_keys.difference_update(removable)
                 self._navigation_blocks.pop(chunk, None)
             if not chunk_keys:
                 self._evidence_keys_by_chunk.pop(chunk, None)
@@ -974,6 +1001,8 @@ class MetricVoxelMap:
             raise ValueError("known static map source must be a lowercase SHA-256 digest")
         if self._known_static_source_sha256 not in (None, source_sha256):
             raise ValueError("METRIC_STATIC_SOURCE_CHANGED: construct a new map for new assets")
+        if self._operating_airspace_sha256 not in (None, source_sha256):
+            raise ValueError("METRIC_TRAVERSABILITY_SOURCE_CHANGED")
         free: set[VoxelKey] = set()
         occupied: set[VoxelKey] = set()
         for point, is_occupied in _bounded_items(
@@ -1005,6 +1034,24 @@ class MetricVoxelMap:
         self._static_invalidation_owner = self._evidence_owner
         counts = len(free - occupied), len(occupied)
         return counts
+
+    def bind_traversable_airspace(self, airspace: TraversableAirspace, *, source_sha256: str):
+        """Bind a point-domain mask; local clearance subsequently inflates the body.
+
+        Live range rays cannot promote roofs, canopy or unparsed land to free
+        operating space. The immutable binding is preserved in model snapshots.
+        """
+        if re.fullmatch(r"[0-9a-f]{64}", source_sha256) is None:
+            raise ValueError("invalid traversability source digest")
+        if (self._known_static_source_sha256 not in (None, source_sha256)
+                or self._operating_airspace_sha256 not in (None, source_sha256)):
+            raise ValueError("METRIC_TRAVERSABILITY_SOURCE_CHANGED")
+        if airspace.radius_m != 0. or airspace.half_height_m != 0.:
+            raise ValueError("voxel traversability mask must use point geometry")
+        self._operating_airspace = airspace
+        self._operating_airspace_sha256 = source_sha256
+        self._traversability_mask_cache.clear()
+        self._navigation_blocks.clear()
 
     # 功能：
     #   冻结上游已完成净空核验的当前路线，不借用可变坐标对象。
@@ -1170,6 +1217,8 @@ class MetricVoxelMap:
         clone._non_static_evidence_count = len(keys.difference(
             clone._known_static_occupied_keys, clone._known_static_free_keys))
         clone._known_static_source_sha256 = self._known_static_source_sha256
+        clone._operating_airspace = self._operating_airspace
+        clone._operating_airspace_sha256 = self._operating_airspace_sha256
         clone._qualified_route_points = self._qualified_route_points
         clone._qualified_route_sha256 = self._qualified_route_sha256
         clone._qualified_route_minimum_clearance_m = self._qualified_route_minimum_clearance_m
@@ -1197,7 +1246,22 @@ class MetricVoxelMap:
     #   key：体素键。
     # 输出：
     #   occupied：按当前策略得到的阻塞标志。
+    def _traversability_blocks(self, key: VoxelKey) -> bool:
+        """Bounded memoization of the fixed map mask; live evidence is checked separately."""
+        if self._operating_airspace is None:
+            return False
+        blocked = self._traversability_mask_cache.get(key)
+        if blocked is None:
+            blocked = (self._operating_airspace.clearance(self._center_point_for_key(key))[0]
+                       < math.sqrt(3.) * self.resolution_m / 2)
+            if len(self._traversability_mask_cache) >= 8192:
+                self._traversability_mask_cache.popitem(last=False)
+            self._traversability_mask_cache[key] = blocked
+        return blocked
+
     def is_occupied(self, key: VoxelKey) -> bool:
+        if self._traversability_blocks(key):
+            return True
         if key in self._known_static_occupied_keys:
             return True
         probability = self.occupancy_probability(key)
@@ -1215,6 +1279,8 @@ class MetricVoxelMap:
     # 输出：
     #   free：具有空地依据的标志。
     def is_observed_free(self, key: VoxelKey) -> bool:
+        if self._traversability_blocks(key):
+            return False
         if key in self._known_static_occupied_keys:
             return False
         probability = self.occupancy_probability(key)
@@ -1410,6 +1476,23 @@ class MetricVoxelMap:
     #   allow_first_position_as_start：首点豁免。
     # 输出：
     #   valid：整条折线是否满足保守连续碰撞检查。
+    def _swept_key_bounds(self, first: Point, second: Point, half_width: float):
+        """Only voxel boxes intersecting this segment's AABB can block it.
+
+        This is an outward-rounded enumeration bound, not a collision result;
+        every nonfree candidate still receives the complete segment/box test.
+        """
+        low, high = [], []
+        for axis in range(3):
+            lower = ((min(first[axis], second[axis]) - half_width - self._minimum[axis])
+                     / self.resolution_m - .5)
+            upper = ((max(first[axis], second[axis]) + half_width - self._minimum[axis])
+                     / self.resolution_m - .5)
+            rounding = 1e-9 + 16 * math.ulp(max(abs(lower), abs(upper), 1.))
+            low.append(math.ceil(lower - rounding))
+            high.append(math.floor(upper + rounding))
+        return low, high
+
     def path_clearance_valid(
         self,
         path_m: Iterable[Vector3],
@@ -1424,10 +1507,18 @@ class MetricVoxelMap:
         points = [_frozen_vector(point) for point in _bounded_items(path_m, 200_000, "metric path")]
         if not points:
             return False
+        if (self._operating_airspace is not None
+                and self._operating_airspace.path_clearance([_point(p) for p in points])[0]
+                < required_clearance_m):
+            return False
         sample_spacing_m = self.resolution_m / 2.0
         radius = math.ceil(required_clearance_m / self.resolution_m) + 1
         neighborhood = (2 * radius + 1) ** 3
         work = 0
+        # Evidence cannot change during this synchronous, single-writer query.
+        # Reuse only free-cell classifications across its adjacent segments;
+        # a blocked cell must still be intersected against each new segment.
+        clear_keys: set[VoxelKey] = set()
         segments = list(zip(points, points[1:], strict=False)) or [(points[0], points[0])]
         for segment_index, (start, end) in enumerate(segments):
             first = _point(start)
@@ -1441,6 +1532,8 @@ class MetricVoxelMap:
             work += (count + 1) * neighborhood
             if work > _MAX_GRID_WORK:
                 raise ValueError("METRIC_PATH_WORK_BUDGET_EXCEEDED")
+            low, high = self._swept_key_bounds(
+                first, second, self.resolution_m / 2. + required_clearance_m)
             checked: set[VoxelKey] = set()
             for index in range(count + 1):
                 if allow_first_position_as_start and segment_index == 0 and index == 0:
@@ -1453,9 +1546,10 @@ class MetricVoxelMap:
                 # 半体素采样只用于枚举邻近盒；最终检查完整线段而不是采样点。
                 # 净空按各轴扩张，盒角处略保守，绝不把拐角当成可穿过的缝隙。
                 for candidate in product(
-                    *(range(key[i] - radius, key[i] + radius + 1) for i in range(3))
+                    *(range(max(key[i] - radius, low[i]), min(key[i] + radius, high[i]) + 1)
+                      for i in range(3))
                 ):
-                    if candidate in checked:
+                    if candidate in clear_keys or candidate in checked:
                         continue
                     checked.add(candidate)
                     if (
@@ -1463,6 +1557,7 @@ class MetricVoxelMap:
                         and not self.is_occupied(candidate)
                         and (not self.unknown_is_occupied or self.is_observed_free(candidate))
                     ):
+                        clear_keys.add(candidate)
                         continue
                     if _segment_hits_box(
                         first,
@@ -1490,6 +1585,7 @@ class MetricVoxelMap:
             return False
         work = 0
         reach = math.ceil(extra_clearance_m / self.resolution_m) + 1
+        clear_keys: set[VoxelKey] = set()
         segments = list(zip(points, points[1:], strict=False)) or [(points[0], points[0])]
         for start, end in segments:
             first, second = _point(start), _point(end)
@@ -1502,18 +1598,23 @@ class MetricVoxelMap:
             work += (count + 1) * (2 * reach + 1)**3
             if work > _MAX_GRID_WORK:
                 raise ValueError("METRIC_COVERAGE_WORK_BUDGET_EXCEEDED")
+            low, high = self._swept_key_bounds(
+                first, second, self.resolution_m / 2. + extra_clearance_m)
             checked = set()
             for index in range(count + 1):
                 key = self.key_for(tuple(first[a] + (second[a] - first[a]) * index / count
                                          for a in range(3)))
-                for candidate in product(*(range(k - reach, k + reach + 1) for k in key)):
-                    if candidate in checked:
+                for candidate in product(*(
+                    range(max(key[i] - reach, low[i]), min(key[i] + reach, high[i]) + 1)
+                    for i in range(3))):
+                    if candidate in clear_keys or candidate in checked:
                         continue
                     checked.add(candidate)
                     if (candidate in self._known_static_free_keys
                             and candidate not in self._invalidated_static_free_keys
                             and self.is_observed_free(candidate)
                             and not self.is_occupied(candidate)):
+                        clear_keys.add(candidate)
                         continue
                     if _segment_hits_box(first, second, self._center_point_for_key(candidate),
                                          self.resolution_m / 2 + extra_clearance_m):
@@ -1536,6 +1637,8 @@ class MetricVoxelMap:
                     "latest_source_seconds": self.latest_observation_monotonic_seconds,
                     "pruned_count": self.pruned_live_evidence_count,
                     "invalidated_static_cells": len(self._invalidated_static_free_keys)}
+        if self._operating_airspace is not None:
+            identity["traversability_source_sha256"] = self._operating_airspace_sha256
         return identity
 
     # 功能：
@@ -2380,6 +2483,9 @@ class MetricVoxelMap:
     #   classified：按所选证据顺序输出体素键和分类的迭代器，1 为空地，2 为占用。
     def _classified_navigation_evidence(self, evidence_keys=None):
         for key in (self._evidence if evidence_keys is None else evidence_keys):
+            if self._traversability_blocks(key):
+                yield key, 2
+                continue
             kind = 2 if key in self._known_static_occupied_keys else (
                 1 if key in self._observed_free_keys else (2 if key in self._occupied_keys else 0))
             if kind:

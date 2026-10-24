@@ -85,9 +85,12 @@ def resolve_grounded_vehicle_model_root(
     offset = resolve_vehicle_collision_center_offset(vehicle)
     if not isinstance(vehicle, VehicleAsset) or not math.isfinite(vehicle.body_height_m):
         raise MapRuntimeBindingsError("VEHICLE_GROUNDED_POSE_INVALID")
-    primitives = semantic.get("runtime_collision_primitives", semantic.get("collision_primitives"))
-    if not isinstance(primitives, list) or not 1 <= len(primitives) <= 100_000:
+    static = semantic.get("collision_primitives")
+    runtime = semantic.get("runtime_collision_primitives", [])
+    if (not isinstance(static, list) or not isinstance(runtime, list)
+            or not 1 <= len(static) + len(runtime) <= 100_000):
         raise MapRuntimeBindingsError("MAP_SUPPORT_GEOMETRY_MISSING")
+    primitives = [*static, *runtime]
     x = bindings.vehicle_spawn.x
     y = bindings.vehicle_spawn.y
     launch_z = bindings.mission_launch_waypoint.z

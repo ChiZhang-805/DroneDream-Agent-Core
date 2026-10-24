@@ -30,9 +30,16 @@ from .contracts import GraphRoute, MapAsset, RouteQuery, Vector3
 from .navigation import shortest_route
 from .plugin_files import read_plugin_file
 from .preferred_airspace import PreferredAirspace, checked_point
+from .traversability import TraversableAirspace
 
 GridKey = tuple[int, int, int]
 Point = tuple[float, float, float]
+
+
+@dataclass
+class _SearchBudget:
+    remaining_expansions: int
+    deadline: float | None
 
 
 @dataclass(frozen=True)
@@ -154,8 +161,16 @@ class KnownMapMetricPlanner:
             self.vehicle_radius_m, vehicle_height_m)
         self.nodes = {node.node_id: node for node in graph.nodes} if graph is not None else {}
         self._route_cache: dict[tuple[str, str, Point, Point], GraphRoute] = {}
+        self._topology_segment_cache: dict[tuple[Point, Point], bool] = {}
         self._spatial: dict[GridKey, list[int]] = defaultdict(list)
-        self._clearance_cap_m = self.policy.required_clearance_m + self.policy.resolution_m
+        # Independent route validation samples at .1 m and deducts half a
+        # sample step. Preserve that proof margin on constrained outdoor maps.
+        self._required_clearance_m = self.policy.required_clearance_m + (
+            .05 if "traversability" in semantic else 0.)
+        self._clearance_cap_m = self._required_clearance_m + self.policy.resolution_m
+        self.traversability = TraversableAirspace(
+            semantic, primitives, radius_m=self.vehicle_radius_m,
+            half_height_m=self.vehicle_half_height_m, clearance_cap_m=self._clearance_cap_m)
         # 圆形障碍检查采用机体外包球，索引必须使用同样的外包半径，不能只取最大半轴。
         expansion = math.hypot(self.vehicle_radius_m, self.vehicle_half_height_m)
         expansion += self._clearance_cap_m
@@ -212,7 +227,7 @@ class KnownMapMetricPlanner:
     def clearance(self, point: Point) -> float:
         point = checked_point(point)
         candidates = self._spatial.get(self._bin_key(point), ())
-        clearance_m = self._clearance_cap_m
+        clearance_m = min(self._clearance_cap_m, self.traversability.clearance(point)[0])
         for index in candidates:
             value = _clearance(
                 point,
@@ -240,10 +255,10 @@ class KnownMapMetricPlanner:
             first, last, first_clearance, last_clearance = pending.pop()
             distance = math.dist(first, last)
             minimum = min(first_clearance, last_clearance)
-            if minimum < self.policy.required_clearance_m:
+            if minimum < self._required_clearance_m:
                 return False
             # 到最近端点至多半段长；这是真正的连续净空证明，不是跳过中间障碍。
-            if minimum - distance / 2 >= self.policy.required_clearance_m:
+            if minimum - distance / 2 >= self._required_clearance_m:
                 continue
             # 端点余量可能只有几毫米，不能在厘米级停止并误判整条窄通道不可达。
             if distance <= 0.0001:
@@ -274,11 +289,24 @@ class KnownMapMetricPlanner:
     ) -> tuple[Point, Point]:
         if self.graph is None:
             raise ValueError("topology graph is required for bounded global planning")
-        baseline = shortest_route(
-            self.graph,
-            query.model_copy(update={"require_flight_verified_edges": False}),
-        )
-        points = [(point.x, point.y, point.z) for point in baseline.positions_m]
+        topology_bounded = True
+        try:
+            baseline = shortest_route(
+                self.graph,
+                query.model_copy(update={"require_flight_verified_edges": False}),
+            )
+        except ValueError:
+            topology_bounded = False
+            # A semantic operation point can intentionally be disconnected
+            # from the historical, flight-evidence graph.  In that case the
+            # named endpoints still bound a finite metric search; the current
+            # collision geometry, vehicle envelope and clearance validator own
+            # the route itself.  This is the path used by imported maps whose
+            # delivery zones were derived from geometry rather than authored
+            # as fixed waypoint chains.
+            points = [exact_start, exact_goal]
+        else:
+            points = [(point.x, point.y, point.z) for point in baseline.positions_m]
         # The graph supplies a broad search corridor, never an instruction to
         # snap a live vehicle or a revised semantic action pose back onto an
         # old route node.
@@ -288,18 +316,64 @@ class KnownMapMetricPlanner:
             (band.preferred_upper_z_m for point in points
              if (band := self.preferred_airspace.band_at(point)) is not None),
             default=max(point[2] for point in points))
-        return (
+        known_transit_upper = max(
+            (node.position_m.z for node in self.graph.nodes),
+            default=max(point[2] for point in points),
+        )
+        minimum_z = min(point[2] for point in points) - padding
+        if not topology_bounded:
+            # With no authored corridor there is no map fact that permits a
+            # shortcut below both named outdoor operation poses.  Keep the
+            # free-space search at or above the lower endpoint; obstacles can
+            # still make it climb or move laterally.
+            minimum_z = min(exact_start[2], exact_goal[2])
+        bounds = (
             (
                 min(point[0] for point in points) - padding,
                 min(point[1] for point in points) - padding,
-                min(point[2] for point in points) - padding,
+                minimum_z,
             ),
             (
                 max(point[0] for point in points) + padding,
                 max(point[1] for point in points) + padding,
-                max(max(point[2] for point in points) + padding, preferred_upper),
+                max(
+                    max(point[2] for point in points) + padding,
+                    preferred_upper,
+                    known_transit_upper,
+                ),
             ),
         )
+        if self.traversability.bounds_m is not None:
+            # Historical flight nodes may be above roofs. They cannot enlarge
+            # the hard ground-relative operating volume of this map revision.
+            allowed_low, allowed_high = self.traversability.bounds_m
+            bounds = ((bounds[0][0], bounds[0][1], allowed_low[2]),
+                      (bounds[1][0], bounds[1][1], allowed_high[2]))
+        return bounds
+
+    def _search_windows(self, initial: tuple[Point, Point]):
+        """Expand to the mapped domain when an endpoint box misses a real detour."""
+        low, high = initial
+        domain = self.traversability.bounds_m
+        if domain is None:
+            # Legacy maps have collision bounds, but no authored traversable
+            # layer. Retain their 3-D semantics while widening the XY search.
+            extents = [primitive_bounds(dict(item)) for item in self.primitives]
+            domain = (tuple(min([low[i], *(item[0][i] for item in extents)])
+                            for i in range(3)),
+                      tuple(max([high[i], *(item[1][i] for item in extents)])
+                            for i in range(3)))
+        full_low = (min(low[0], domain[0][0]), min(low[1], domain[0][1]), low[2])
+        full_high = (max(high[0], domain[1][0]), max(high[1], domain[1][1]), high[2])
+        yield low, high
+        expansion = self.policy.search_padding_m
+        while low[:2] != full_low[:2] or high[:2] != full_high[:2]:
+            low = (max(full_low[0], low[0] - expansion),
+                   max(full_low[1], low[1] - expansion), low[2])
+            high = (min(full_high[0], high[0] + expansion),
+                    min(full_high[1], high[1] + expansion), high[2])
+            yield low, high
+            expansion *= 2
 
     # 功能：
     #   将命名节点解析为实际端点后求解碰撞几何路线，不伪装为经过真机飞行验证的边。
@@ -353,7 +427,7 @@ class KnownMapMetricPlanner:
         """
 
         origin = (anchor.x, anchor.y, anchor.z)
-        if self.clearance(origin) >= self.policy.required_clearance_m:
+        if self.clearance(origin) >= self._required_clearance_m:
             return anchor
         if not self.policy.allow_semantic_endpoint_projection:
             return anchor
@@ -375,7 +449,7 @@ class KnownMapMetricPlanner:
                                        distance, vertical, point))
         candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         for _, _, _, point in candidates:
-            if self.clearance(point) >= self.policy.required_clearance_m:
+            if self.clearance(point) >= self._required_clearance_m:
                 return Vector3(x=point[0], y=point[1], z=point[2])
         raise ValueError("semantic route endpoint has no nearby operational pose")
 
@@ -416,11 +490,276 @@ class KnownMapMetricPlanner:
         cached = self._route_cache.get(cache_key) if not prior_corridors else None
         if cached is not None:
             return cached.model_copy(deep=True)
-        low, high = self._search_bounds(
+        initial = self._search_bounds(
             query,
             exact_start=exact_start,
             exact_goal=exact_goal,
         )
+        if self.clearance(exact_start) < self._required_clearance_m:
+            raise ValueError("metric route start violates operational clearance")
+        if self.clearance(exact_goal) < self._required_clearance_m:
+            raise ValueError("metric route goal violates operational clearance")
+        duration = self.policy.maximum_search_seconds
+        budget = _SearchBudget(self.policy.maximum_expansions,
+                               time.monotonic() + duration if duration is not None else None)
+        if self.traversability.active and not prior_corridors:
+            route = self._traversable_topology_route(query, exact_start, exact_goal, budget)
+            if route is not None:
+                self._route_cache[cache_key] = route
+                return route.model_copy(deep=True)
+        if self.traversability.active:
+            if not prior_corridors:
+                route = self._ground_roadmap_route(query, exact_start, exact_goal, budget)
+                if route is not None:
+                    self._route_cache[cache_key] = route
+                    return route.model_copy(deep=True)
+            route = self._layered_ground_route(query, exact_start, exact_goal,
+                                               initial, budget, prior_corridors)
+            if route is not None:
+                if not prior_corridors:
+                    self._route_cache[cache_key] = route
+                return route.model_copy(deep=True)
+        for low, high in self._search_windows(initial):
+            try:
+                return self._plan_in_bounds(query, exact_start, exact_goal, low, high,
+                                            budget, prior_corridors)
+            except ValueError as error:
+                if str(error) != "no metric route satisfies operational clearance":
+                    raise
+        raise ValueError("no metric route satisfies operational clearance across mapped domain")
+
+    def _layered_ground_route(self, query, exact_start, exact_goal, initial, budget, prior):
+        """Search broad XY detours before paying for every altitude in a 3-D grid.
+
+        These are genuine collision-constrained A* searches. Vertical endpoint
+        connections and every simplified segment still use the same whole-body
+        airspace proof. Uneven terrain/obstacles requiring altitude changes can
+        fall through to the full 3-D search with a reserved work/time budget.
+        """
+        domain = self.traversability.bounds_m
+        if domain is None:
+            return None
+        margin = self.vehicle_half_height_m + self._required_clearance_m + .05
+        floor, ceiling = domain[0][2] + margin, domain[1][2] - margin
+        levels = list(dict.fromkeys((max(floor, exact_start[2], exact_goal[2]),
+                                    min(ceiling, floor + 5.), ceiling)))
+        for altitude in levels:
+            if altitude > ceiling:
+                continue
+            start, goal = (*exact_start[:2], altitude), (*exact_goal[:2], altitude)
+            if (not self._segment_is_free(exact_start, start)
+                    or not self._segment_is_free(goal, exact_goal)):
+                continue
+            allotted = max(1, min(100000, budget.remaining_expansions // 3))
+            deadline = (time.monotonic() + max(0., budget.deadline - time.monotonic()) / 3
+                        if budget.deadline is not None else None)
+            layer_budget = _SearchBudget(allotted, deadline)
+            found = None
+            try:
+                for low, high in self._search_windows(initial):
+                    try:
+                        found = self._plan_in_bounds(query, start, goal,
+                            (*low[:2], altitude), (*high[:2], altitude), layer_budget, prior)
+                        break
+                    except ValueError as error:
+                        if str(error) != "no metric route satisfies operational clearance":
+                            raise
+            except ValueError as error:
+                if str(error) not in {"metric route search deadline exceeded",
+                                      "metric route search expansion budget exhausted"}:
+                    raise
+            finally:
+                budget.remaining_expansions -= allotted - layer_budget.remaining_expansions
+            if found is not None:
+                points = [exact_start,
+                          *((p.x, p.y, p.z) for p in found.positions_m), exact_goal]
+                points = [p for i, p in enumerate(points) if i == 0 or p != points[i - 1]]
+                return self._route_from_points(query, self._simplify(points))
+        return None
+
+    def _traversable_topology_route(self, query: RouteQuery, exact_start: Point,
+                                   exact_goal: Point, budget: _SearchBudget) -> GraphRoute | None:
+        """Search authored road connectivity, proving every edge in the current map.
+
+        This is a fast 2.5-D skeleton for large outdoor maps, not a canned flight
+        chain. Edges through roofs, canopy, unparsed land, or insufficient body
+        clearance are pruned during A*. A disconnected skeleton still triggers
+        the expanding metric search over the actual allowed ground volumes.
+        """
+        if self.graph is None:
+            return None
+        positions = {identifier: (n.position_m.x, n.position_m.y, n.position_m.z)
+                     for identifier, n in self.nodes.items()}
+        positions[query.start_node], positions[query.goal_node] = exact_start, exact_goal
+        neighbors: dict[str, list[str]] = defaultdict(list)
+        for edge in self.graph.edges:
+            neighbors[edge.from_node].append(edge.to_node)
+            if edge.bidirectional:
+                neighbors[edge.to_node].append(edge.from_node)
+        pending = [(math.dist(exact_start, exact_goal), 0., query.start_node)]
+        costs = {query.start_node: 0.}
+        previous: dict[str, str] = {}
+        while pending:
+            _, cost, current = heapq.heappop(pending)
+            if cost != costs.get(current):
+                continue
+            if current == query.goal_node:
+                chain = [current]
+                while chain[-1] != query.start_node:
+                    chain.append(previous[chain[-1]])
+                points = self._simplify([positions[item] for item in reversed(chain)])
+                return self._route_from_points(query, points)
+            budget.remaining_expansions -= 1
+            if budget.remaining_expansions < 0:
+                raise ValueError("metric route search expansion budget exhausted")
+            if budget.deadline is not None and time.monotonic() > budget.deadline:
+                raise ValueError("metric route search deadline exceeded")
+            start = positions[current]
+            for neighbor in neighbors[current]:
+                end = positions[neighbor]
+                candidate = cost + math.dist(start, end)
+                if candidate >= costs.get(neighbor, math.inf):
+                    continue
+                key = (start, end)
+                clear = self._topology_segment_cache.get(key)
+                if clear is None:
+                    clear = self._segment_is_free(start, end)
+                    self._topology_segment_cache[key] = clear
+                    self._topology_segment_cache[end, start] = clear
+                if not clear:
+                    continue
+                costs[neighbor] = candidate
+                previous[neighbor] = current
+                heapq.heappush(pending,
+                               (candidate + math.dist(end, exact_goal), candidate, neighbor))
+        return None
+
+    def _ground_roadmap_route(self, query, exact_start, exact_goal, budget):
+        """Preserve narrow lanes using their measured centreline, not grid luck.
+
+        Subdivide authored corridors, sample permitted open areas, and connect
+        nearby samples only after a complete swept-volume proof. This geometric
+        roadmap repairs missing graph junctions without inventing traversable
+        land or connecting pickup points through roofs.
+        """
+        altitude = max(exact_start[2], exact_goal[2])
+        start, goal = (*exact_start[:2], altitude), (*exact_goal[:2], altitude)
+        if (not self._segment_is_free(exact_start, start)
+                or not self._segment_is_free(goal, exact_goal)):
+            return None
+        points: list[Point] = []
+        ids: dict[Point, int] = {}
+        links: dict[int, set[int]] = defaultdict(set)
+        bins: dict[tuple[int, int], list[int]] = defaultdict(list)
+
+        def add(point):
+            point = (round(point[0], 6), round(point[1], 6), altitude)
+            if point not in ids:
+                if len(points) >= 30000:
+                    raise ValueError("traversable roadmap sample budget exceeded")
+                ids[point] = len(points)
+                points.append(point)
+                bins[math.floor(point[0] / 6), math.floor(point[1] / 6)].append(ids[point])
+            return ids[point]
+
+        start_id, goal_id = add(start), add(goal)
+        if start_id == goal_id and start != goal:
+            goal_id = len(points)
+            points.append(goal)
+            bins[math.floor(goal[0] / 6), math.floor(goal[1] / 6)].append(goal_id)
+        for feature in self.traversability.areas:
+            if feature.corridor_radius is not None:
+                spacing = max(.5, min(4., feature.corridor_radius))
+                previous = None
+                for first, last in zip(feature.points, feature.points[1:], strict=False):
+                    steps = max(1, math.ceil(math.dist(first, last) / spacing))
+                    for step in range(steps + 1):
+                        index = add(tuple(first[i] + (last[i] - first[i]) * step / steps
+                                          for i in range(2)))
+                        if previous is not None and previous != index:
+                            links[previous].add(index)
+                            links[index].add(previous)
+                        previous = index
+            else:
+                low, high = feature.bounds()
+                nx, ny = (math.ceil((high[i] - low[i]) / 3.) for i in range(2))
+                if nx * ny > 50000:
+                    continue  # Full metric search remains available for huge open regions.
+                for x in range(nx + 1):
+                    for y in range(ny + 1):
+                        point = (low[0] + x * 3., low[1] + y * 3., altitude)
+                        if self.clearance(point) >= self._required_clearance_m:
+                            add(point)
+        # Keep the authoritative endpoint precision even when a sample shares
+        # a rounded key. Tiny routes must not collapse onto one lattice node.
+        points[start_id], points[goal_id] = start, goal
+        queue = [(math.dist(start, goal), 0., start_id)]
+        costs = {start_id: 0.}
+        previous = {}
+        point_clearances = {}
+        while queue:
+            _, cost, current = heapq.heappop(queue)
+            if cost != costs.get(current):
+                continue
+            if current == goal_id:
+                chain = [current]
+                while chain[-1] != start_id:
+                    chain.append(previous[chain[-1]])
+                route_points = [exact_start, *(points[i] for i in reversed(chain)), exact_goal]
+                route_points = [p for i, p in enumerate(route_points)
+                                if i == 0 or p != route_points[i - 1]]
+                return self._route_from_points(query, self._simplify(route_points))
+            budget.remaining_expansions -= 1
+            if budget.remaining_expansions < 0:
+                raise ValueError("metric route search expansion budget exhausted")
+            if budget.deadline is not None and time.monotonic() > budget.deadline:
+                raise ValueError("metric route search deadline exceeded")
+            first = points[current]
+            bx, by = math.floor(first[0] / 6), math.floor(first[1] / 6)
+            neighbors = set(links[current])
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbors.update(index for index in bins.get((bx + dx, by + dy), ())
+                                     if math.dist(first, points[index]) <= 6.)
+            for neighbor in sorted(neighbors):
+                end = points[neighbor]
+                candidate = cost + math.dist(first, end)
+                if candidate >= costs.get(neighbor, math.inf):
+                    continue
+                if neighbor not in point_clearances:
+                    point_clearances[neighbor] = self.clearance(end)
+                if point_clearances[neighbor] < self._required_clearance_m:
+                    continue
+                clear = self._topology_segment_cache.get((first, end))
+                if clear is None:
+                    clear = self._segment_is_free(first, end)
+                    self._topology_segment_cache[first, end] = clear
+                    self._topology_segment_cache[end, first] = clear
+                if clear:
+                    costs[neighbor], previous[neighbor] = candidate, current
+                    heapq.heappush(queue, (candidate + math.dist(end, goal), candidate, neighbor))
+        return None
+
+    def _route_from_points(self, query: RouteQuery, points: list[Point]) -> GraphRoute:
+        if len(points) == 1:
+            points = [points[0], points[0]]
+        digest = hashlib.sha256(json.dumps(points, separators=(",", ":")).encode()).hexdigest()[:12]
+        return GraphRoute(
+            start_node=query.start_node, goal_node=query.goal_node,
+            node_ids=[query.start_node,
+                      *(f"metric-{digest}-{i:04d}" for i in range(1, len(points) - 1)),
+                      query.goal_node],
+            edge_ids=[f"metric-edge-{digest}-{i:04d}" for i in range(len(points) - 1)],
+            positions_m=[Vector3(x=p[0], y=p[1], z=p[2]) for p in points],
+            route_length_m=sum(math.dist(a, b) for a, b in zip(points, points[1:], strict=False)),
+            all_edges_flight_verified=False)
+
+    def _plan_in_bounds(
+        self, query: RouteQuery, exact_start: Point, exact_goal: Point,
+        low: Point, high: Point, budget: _SearchBudget,
+        prior_corridors: list[list[Point]] | None,
+    ) -> GraphRoute:
+        cache_key = (query.start_node, query.goal_node, exact_start, exact_goal)
         resolution = self.policy.resolution_m
         axis_counts = [math.floor((high[axis] - low[axis]) / resolution) + 1
                        for axis in range(3)]
@@ -499,15 +838,15 @@ class KnownMapMetricPlanner:
                 clearance_cache[key] = value
             return value
 
-        if self.clearance(exact_start) < self.policy.required_clearance_m:
+        if self.clearance(exact_start) < self._required_clearance_m:
             raise ValueError("metric route start violates operational clearance")
-        if self.clearance(exact_goal) < self.policy.required_clearance_m:
+        if self.clearance(exact_goal) < self._required_clearance_m:
             raise ValueError("metric route goal violates operational clearance")
-        if key_clearance(start_key) < self.policy.required_clearance_m:
+        if key_clearance(start_key) < self._required_clearance_m:
             # The exact endpoint is authoritative; retain it as a special grid node.
             point_cache[start_key] = exact_start
             clearance_cache[start_key] = self.clearance(exact_start)
-        if key_clearance(goal_key) < self.policy.required_clearance_m:
+        if key_clearance(goal_key) < self._required_clearance_m:
             point_cache[goal_key] = exact_goal
             clearance_cache[goal_key] = self.clearance(exact_goal)
 
@@ -548,7 +887,6 @@ class KnownMapMetricPlanner:
         costs = {start_key: 0.0}
         previous: dict[GridKey, GridKey] = {}
         expansions = 0
-        search_started = time.monotonic()
         while queue:
             _, cost, current = heapq.heappop(queue)
             if cost != costs.get(current):
@@ -556,13 +894,13 @@ class KnownMapMetricPlanner:
             if current == goal_key:
                 break
             expansions += 1
-            if expansions > self.policy.maximum_expansions:
+            budget.remaining_expansions -= 1
+            if budget.remaining_expansions < 0:
                 raise ValueError("metric route search expansion budget exhausted")
             if (
-                self.policy.maximum_search_seconds is not None
+                budget.deadline is not None
                 and expansions % 64 == 0
-                and time.monotonic() - search_started
-                > self.policy.maximum_search_seconds
+                and time.monotonic() > budget.deadline
             ):
                 raise ValueError("metric route search deadline exceeded")
             current_point = point(current)
@@ -571,7 +909,7 @@ class KnownMapMetricPlanner:
                 if not valid_key(neighbor):
                     continue
                 clearance = key_clearance(neighbor)
-                if clearance < self.policy.required_clearance_m:
+                if clearance < self._required_clearance_m:
                     continue
                 neighbor_point = point(neighbor)
                 horizontal = math.hypot(neighbor_point[0] - current_point[0],
@@ -585,7 +923,7 @@ class KnownMapMetricPlanner:
                                   * self.preferred_airspace.cost(neighbor_point))
                 if math.isfinite(clearance):
                     step_cost += self.policy.clearance_cost_weight / max(
-                        clearance - self.policy.required_clearance_m + 0.05,
+                        clearance - self._required_clearance_m + 0.05,
                         0.05,
                     )
                 if neighbor in penalized:

@@ -3,6 +3,7 @@ import threading
 import time
 from collections import OrderedDict
 
+from dronedream_agent_core.mission_map_refinement import MapObservationPending
 from dronedream_agent_core.model_harness.progress import progress_sink
 
 
@@ -56,6 +57,12 @@ class PreparationProgress:
             with self._lock:
                 job["state"] = "completed"
             return result
+        except MapObservationPending:
+            emit("map_refinement_pending", "已保留地图复查进度，正在等待补充观察。",
+                 "Map inspection progress is retained; an additional observation is needed.")
+            with self._lock:
+                job["state"] = "awaiting_observation"
+            raise
         except Exception:
             emit("failed", "当前阶段未能完成；具体原因将显示在正式错误或追问中。", "This stage could not complete; the final error or clarification will explain the issue.")
             with self._lock:

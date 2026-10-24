@@ -56,3 +56,13 @@ def test_verified_only_policy_fails_closed():
             _graph(),
             RouteQuery(start_node="a", goal_node="c", require_flight_verified_edges=True),
         )
+
+
+def test_delivery_destination_is_a_supported_map_semantic():
+    node = MapNode(
+        node_id="delivery-zone",
+        label="Delivery zone",
+        position_m=Vector3(x=2, y=3, z=1),
+        semantic="delivery",
+    )
+    assert node.semantic == "delivery"

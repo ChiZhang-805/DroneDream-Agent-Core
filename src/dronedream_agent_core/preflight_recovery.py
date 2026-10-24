@@ -82,7 +82,12 @@ async def run_preflight_recovery(
                 return result
             except BaseException as error:
                 last_error = error
-                row.update(status="failed", error_type=type(error).__name__)
+                message = str(error).strip()
+                row.update(
+                    status="failed",
+                    error_type=type(error).__name__,
+                    error_message=message or repr(error),
+                )
                 # 取消、进程退出不进入恢复分类；保留异常，不把取消包成超时。
                 can_retry = isinstance(error, Exception) and retryable(error, row) is True
                 row["recoverable_transport_failure"] = can_retry

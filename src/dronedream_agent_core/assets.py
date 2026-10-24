@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +26,24 @@ MAX_SEMANTIC_NODES = 1_000_000
 UNQUALIFIED_TOPOLOGY_LIMIT = (
     "This asset exposes road polylines and facility anchors, not a qualified 3-D route graph."
 )
+_CATALOG_ENTITY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class AssetQualificationError(ValueError):
     """The supplied asset cannot support the requested planning stage."""
+
+
+def _catalog_entity_id(source_name: str) -> str:
+    """Keep valid graph IDs, otherwise derive a stable ID while preserving the name as an alias."""
+    if _CATALOG_ENTITY_ID.fullmatch(source_name):
+        return source_name
+    ascii_name = (
+        unicodedata.normalize("NFKD", source_name).encode("ascii", "ignore").decode("ascii")
+    )
+    stem = re.sub(r"[^a-z0-9._-]+", "-", ascii_name.casefold()).strip("-._")
+    stem = stem[:72].rstrip("-._") or "place"
+    digest = hashlib.sha256(source_name.encode("utf-8")).hexdigest()[:12]
+    return f"{stem}-{digest}"
 
 
 # 功能：
@@ -128,10 +144,14 @@ def _planar_landmark(raw, semantic, entity_id: str, aliases: list[str]) -> Plana
     roads = semantic.get("roads")
     anchors = roads.get("facility_anchors") if isinstance(roads, dict) else None
     source = anchors.get(entity_id) if isinstance(anchors, dict) else None
-    if (raw.get("source_pointer") != pointer
-            or raw.get("semantic") not in {"landmark", "facility-anchor"}
-            or not isinstance(position, list) or len(position) != 2
-            or not isinstance(source, list) or len(source) != 2):
+    if (
+        raw.get("source_pointer") != pointer
+        or raw.get("semantic") not in {"landmark", "facility-anchor"}
+        or not isinstance(position, list)
+        or len(position) != 2
+        or not isinstance(source, list)
+        or len(source) != 2
+    ):
         raise AssetQualificationError("MAP_SEMANTIC_ENU_ANCHOR_INVALID")
     # 必须同时检查引用处和实体处；True == 1 不能冒充数值绑定。
     try:
@@ -140,8 +160,14 @@ def _planar_landmark(raw, semantic, entity_id: str, aliases: list[str]) -> Plana
         valid = False
     if not valid or position != source:
         raise AssetQualificationError("MAP_SEMANTIC_PLANAR_SOURCE_INVALID")
-    landmark = PlanarCatalogLandmark(entity_id=entity_id, aliases=aliases,
-        east_m=position[0], north_m=position[1], semantic=raw["semantic"], source_pointer=pointer)
+    landmark = PlanarCatalogLandmark(
+        entity_id=entity_id,
+        aliases=aliases,
+        east_m=position[0],
+        north_m=position[1],
+        semantic=raw["semantic"],
+        source_pointer=pointer,
+    )
     return landmark
 
 
@@ -166,7 +192,8 @@ def _bind_qualified_topology(catalog: MapCatalog, graph: MapAsset | None) -> Map
     existing_entity_ids = {entity.entity_id for entity in catalog.entities}
     graph_entities: list[CatalogEntity] = []
     for entity_id, node_id in graph.named_entities.items():
-        if entity_id in existing_entity_ids:
+        catalog_entity_id = _catalog_entity_id(entity_id)
+        if catalog_entity_id in existing_entity_ids:
             continue
         node = nodes.get(node_id)
         if node is None:
@@ -175,20 +202,21 @@ def _bind_qualified_topology(catalog: MapCatalog, graph: MapAsset | None) -> Map
             )
         graph_entities.append(
             CatalogEntity(
-                entity_id=entity_id,
+                entity_id=catalog_entity_id,
                 aliases=list(
                     dict.fromkeys(
                         [
                             entity_id,
-                            entity_id.replace("-", " "),
+                            catalog_entity_id.replace("-", " "),
                         ]
                     )
                 ),
                 position_m=node.position_m,
                 semantic=node.semantic,
-                source_pointer=f"qualified-graph/named_entities/{entity_id}",
+                source_pointer=f"qualified-graph/named_entities/{catalog_entity_id}",
             )
         )
+        existing_entity_ids.add(catalog_entity_id)
     # Revalidate the merged size/identities too; model_copy(update=...) alone
     # bypasses validation and could exceed the catalog's entity limit.
     bound = MapCatalog.model_validate_json(
@@ -348,6 +376,11 @@ def resolve_map_entity(entity: str, catalog: MapCatalog, graph: MapAsset) -> str
         resolved = graph.named_entities.get(item.entity_id)
         if resolved is not None:
             matches.add(resolved)
+            continue
+        for alias in item.aliases:
+            resolved = graph.named_entities.get(alias)
+            if resolved is not None:
+                matches.add(resolved)
     # Shared names are acceptable only when every match means the same node.
     # Otherwise the caller must clarify; list order must not choose a destination.
     if len(matches) == 1:

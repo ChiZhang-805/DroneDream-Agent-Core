@@ -53,7 +53,7 @@ def test_collection_reset_failure_still_closes(tmp_path, monkeypatch, close_fail
     route = tmp_path / "route.json"
     route.write_text('{"positions_m":[{"z":0.6}]}', encoding="utf-8")
     config = SimpleNamespace(initial_collection_mode="stream-imitation", episode_steps=100,
-                             route=route, speed_limit_mps=0.4,
+                             route=route, speed_limit_mps=6.0,
                              asset_sha256={"route": hashlib.sha256(route.read_bytes()).hexdigest()},
                              expert_role="local-navigation-policy", output_root=tmp_path,
                              model_dump=lambda **kwargs: {"fixture": True})
@@ -98,7 +98,7 @@ def test_altitude_adjustment_is_slow_and_directional(altitude, limit):
                                     ("expert_role", "recovery-policy")])
 def test_collection_mode_is_bounded(change):
     config = SimpleNamespace(initial_collection_mode="stream-imitation", episode_steps=100,
-                             expert_role="local-navigation-policy", speed_limit_mps=0.4)
+                             expert_role="local-navigation-policy", speed_limit_mps=6.0)
     setattr(config, *change)
     with pytest.raises(ValueError, match="COLLECTION_MODE_INVALID"):
         module.validate_campaign(config, 10)
@@ -110,7 +110,7 @@ def test_collection_mode_is_bounded(change):
 #   speed：超范围、布尔或非有限速度。
 # 输出：
 #   None：非法速度被明确拒绝，否则测试失败。
-@pytest.mark.parametrize('speed', [0.09, 1.21, True, float('nan'), float('inf')])
+@pytest.mark.parametrize('speed', [4.99, 6.01, True, float('nan'), float('inf')])
 def test_campaign_rejects_runner_speed_mismatch(speed):
     config = SimpleNamespace(initial_collection_mode='stream-imitation', episode_steps=100,
                              expert_role='local-navigation-policy', speed_limit_mps=speed)

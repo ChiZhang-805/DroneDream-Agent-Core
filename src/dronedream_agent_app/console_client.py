@@ -49,12 +49,46 @@ _SAFE_REMOTE_ERRORS = frozenset(
         "MODEL_PROVIDER_FAILED",
         "MODEL_USAGE_SETTLEMENT_FAILED",
         "INSUFFICIENT_ALLOWANCE",
+        "THREAD_NOT_FOUND",
+        "LIVE_TELEMETRY_NOT_READY",
+        "EXECUTION_EVIDENCE_NOT_FOUND",
+        "MISSION_CLARIFICATION_REQUIRED",
     }
 )
+_SAFE_REMOTE_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,95}$")
+
+
+def _public_remote_error(detail: object, status_code: int) -> str:
+    """Return a bounded service code while keeping arbitrary response text private."""
+    if isinstance(detail, dict):
+        code = detail.get("code")
+        if isinstance(code, str) and (
+            code in _SAFE_REMOTE_ERRORS
+            or (status_code == 409 and _SAFE_REMOTE_ERROR_CODE.fullmatch(code))
+        ):
+            return code
+    if isinstance(detail, str):
+        candidate = detail.strip()
+        if candidate in _SAFE_REMOTE_ERRORS or (
+            status_code == 409 and _SAFE_REMOTE_ERROR_CODE.fullmatch(candidate)
+        ):
+            return candidate
+        prefix = candidate.split(":", 1)[0]
+        if status_code == 409 and _SAFE_REMOTE_ERROR_CODE.fullmatch(prefix):
+            return prefix
+    return f"CONSOLE_HTTP_{status_code}"
 
 
 class ConsoleError(RuntimeError):
     """Public error codes contain neither service response bodies nor credentials."""
+
+
+class ConsoleClarificationRequired(ConsoleError):
+    """A bounded set of model questions needed before a plan can be prepared."""
+
+    def __init__(self, fields: list[str]):
+        super().__init__("MISSION_CLARIFICATION_REQUIRED")
+        self.fields = fields
 
 
 class ConsolePlanningSelection(AppModel):
@@ -242,11 +276,21 @@ class ProductConsoleClient:
                     error = value.get("error")
                     if cloud and isinstance(error, dict):
                         detail = error.get("code")
-                    code = (
-                        detail
-                        if isinstance(detail, str) and detail in _SAFE_REMOTE_ERRORS
-                        else (f"CONSOLE_HTTP_{response.status_code}")
-                    )
+                    if (
+                        response.status_code == 409
+                        and isinstance(detail, dict)
+                        and detail.get("code") == "MISSION_CLARIFICATION_REQUIRED"
+                        and isinstance(detail.get("fields"), list)
+                        and 1 <= len(detail["fields"]) <= 16
+                        and all(
+                            isinstance(item, str) and 0 < len(item.strip()) <= 240
+                            for item in detail["fields"]
+                        )
+                    ):
+                        raise ConsoleClarificationRequired(
+                            [item.strip() for item in detail["fields"]]
+                        )
+                    code = _public_remote_error(detail, response.status_code)
                     raise ConsoleError(code)
                 result = value.get("data") if cloud else value
                 if not isinstance(result, dict):
@@ -301,6 +345,39 @@ class ProductConsoleClient:
         runtime = self._request("GET", "/v1/runtime/status")
         return runtime
 
+    def runtime_setup(self) -> dict:
+        """Read the bounded Runtime installation/setup progress snapshot."""
+        return self._request("GET", "/v1/runtime/setup")
+
+    def start_runtime_setup(self) -> dict:
+        """Start the product-owned Runtime setup workflow without bypassing its manager."""
+        return self._request("POST", "/v1/runtime/setup")
+
+    def provision_runtime(self) -> dict:
+        """Ask the product Runtime manager to verify and provision its owned environment."""
+        return self._request("POST", "/v1/runtime/provision", timeout=600)
+
+    def models(self) -> dict:
+        """Return the exact model catalog shared with the desktop application."""
+        return self._request("GET", "/v1/models")
+
+    def maps(self) -> dict:
+        """Return reviewed map resources; catalog admission is not execution qualification."""
+        return self._request("GET", "/v1/map-resource-catalog")
+
+    def aircraft(self) -> dict:
+        """Return reviewed aircraft resources and their declared sensor limits."""
+        return self._request("GET", "/v1/vehicle-resource-catalog")
+
+    def asset_pairs(self) -> dict:
+        """Return the map/aircraft compatibility and qualification matrix."""
+        return self._request("GET", "/v1/asset-pair-catalog")
+
+    def list_threads(self, *, include_archived: bool = False) -> dict:
+        """List current account-bound local tasks, optionally including the archive."""
+        suffix = "?include_archived=true" if include_archived else ""
+        return self._request("GET", "/v1/threads" + suffix)
+
     # 功能：
     #   创建共享后端的任务会话，不调用模型、不产生飞行权限。
     # 输入：
@@ -323,13 +400,30 @@ class ProductConsoleClient:
         thread = self._request("GET", self._thread_path(thread_id))
         return thread
 
+    def patch_thread(self, thread_id: str, changes: dict) -> dict:
+        """Update only server-validated task metadata such as archive and pin state."""
+        allowed = {
+            "title",
+            "selected_model",
+            "selected_map_id",
+            "selected_map_content_sha256",
+            "selected_vehicle_id",
+            "selected_vehicle_content_sha256",
+            "locale",
+            "pinned",
+            "archived",
+        }
+        if not changes or set(changes) - allowed:
+            raise ConsoleError("CONSOLE_THREAD_PATCH_INVALID")
+        return self._request("PATCH", self._thread_path(thread_id), changes)
+
     # 功能：
-    #   为任务当前选中的托管模型申请与桌面同范围的短期授权；不读取供应商 API Key。
+    #   为一次完整任务阶段申请有界 job 授权；不读取供应商 API Key。
     # 输入：
     #   self：当前客户端。
     #   thread：服务返回的任务及当前选中模型。
     # 输出：
-    #   connection：只用于下一次业务请求的模型授权字段。
+    #   connection：只用于当前规划或执行阶段的模型授权字段。
     def _connection(self, thread: dict) -> dict:
         thread_id = thread.get("thread_id", "")
         self._thread_path(thread_id)
@@ -351,7 +445,7 @@ class ProductConsoleClient:
             "POST",
             "/grants",
             {
-                "scope": "assistant",
+                "scope": "job",
                 "scope_reference": thread_id,
                 "provider": model["provider"],
                 "model": model["model"],
@@ -392,8 +486,10 @@ class ProductConsoleClient:
             "input_channel": "api",
         }
         request = MissionPrepareRequest.model_validate(payload)
+        # The larger reasoning models can legitimately spend more than ten minutes
+        # completing the model-and-tool planning pass for a full campus mission.
         plan = self._request(
-            "POST", path + "/prepare", request.model_dump(mode="json"), timeout=600
+            "POST", path + "/prepare", request.model_dump(mode="json"), timeout=1200
         )
         return plan
 
@@ -467,9 +563,12 @@ class ProductConsoleClient:
         path = self._thread_path(thread_id) + "/live-frame"
         deadline = time.monotonic() + 10.0
         try:
-            with self._http.stream("GET", self.session.core_url + path,
-                    headers=self._headers(cloud=False, accept="image/png"),
-                    timeout=httpx.Timeout(10.0, connect=5.0)) as response:
+            with self._http.stream(
+                "GET",
+                self.session.core_url + path,
+                headers=self._headers(cloud=False, accept="image/png"),
+                timeout=httpx.Timeout(10.0, connect=5.0),
+            ) as response:
                 if response.is_redirect:
                     raise ConsoleError("CONSOLE_REDIRECT_REJECTED")
                 if not response.is_success:
@@ -486,7 +585,7 @@ class ProductConsoleClient:
                         raise ConsoleError("CONSOLE_RESPONSE_TOO_LARGE")
                     chunks.extend(chunk)
                 png = bytes(chunks)
-                if (len(png) < 33 or png[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"):
+                if len(png) < 33 or png[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
                     raise ConsoleError("CONSOLE_FRAME_HEADER_INVALID")
                 width, height = struct.unpack(">II", png[16:24])
                 if not (0 < width <= 4096 and 0 < height <= 4096 and width * height <= 8_388_608):

@@ -77,6 +77,48 @@ def test_loopback_api_requires_random_session_token(tmp_path):
     assert len(response.json()["models"]) == 7
 
 
+def test_missing_execution_evidence_returns_a_stable_public_error(tmp_path):
+    token = "e" * 64
+    identity = VerifiedIdentity(
+        owner_account_id="account-evidence",
+        tenant_id=None,
+        organization_id=None,
+        issuer="https://example.supabase.co/auth/v1",
+        expires_at=2_000_000_000,
+    )
+    store = AppStore(tmp_path / "app")
+    thread = store.create_thread("No execution yet", "gpt-5.4", "en-US")
+    memory_path = tmp_path / "account-memory.sqlite3"
+    AccountMemoryStore(memory_path).bind_thread(
+        MemoryOwnerScope(
+            owner_account_id=identity.owner_account_id,
+            tenant_id=identity.tenant_id,
+            organization_id=identity.organization_id,
+            source_edition="autonomy",
+        ),
+        str(thread["thread_id"]),
+    )
+    client = TestClient(
+        create_app(
+            store=store,
+            token=token,
+            account_memory_path=memory_path,
+            identity_verifier=lambda supplied: identity,
+        )
+    )
+
+    response = client.get(
+        f"/v1/threads/{thread['thread_id']}/execution-evidence",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-DroneDream-Identity-Token": "signed-owner",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "EXECUTION_EVIDENCE_NOT_FOUND"}
+
+
 # 功能：验证本地鉴权接口先预览、再删除过期暂存，并立即返回零剩余候选。
 # 输入：tmp_path：隔离应用数据根。
 # 输出：None：通过 HTTP 响应和磁盘状态断言结果。

@@ -288,7 +288,7 @@ def test_current_map_contract_rejects_retired_vehicle_geometry(tmp_path: Path) -
 #   tmp_path：临时语义文件目录。
 # 输出：
 #   None：不返回业务数据。
-def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
+def test_metric_geometry_route_exports_with_campus_cruise_speed(
     tmp_path: Path,
 ) -> None:
     graph = _graph()
@@ -310,7 +310,7 @@ def test_metric_geometry_route_exports_with_conservative_vehicle_bounded_speed(
 
     track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
 
-    assert [point.speed_limit_mps for point in track.points] == [0.6, 0.6, 0.6]
+    assert [point.speed_limit_mps for point in track.points] == [4.0, 4.0, 4.0]
 
 
 def test_return_route_must_end_at_qualified_launch_waypoint(tmp_path: Path) -> None:
@@ -427,6 +427,35 @@ def test_named_route_edge_speed_is_capped_by_vehicle(tmp_path: Path) -> None:
     vehicle = _vehicle().model_copy(update={"max_speed_mps": 0.7})
     track = route_to_px4_track(route, graph, semantic_path, vehicle=vehicle)
     assert all(point.speed_limit_mps <= 0.7 for point in track.points)
+
+
+# 功能：
+#   验证几何规划器生成的接入边与默认航迹稳定性门禁使用相同的三米每秒上限。
+# 输入：
+#   tmp_path：临时语义文件目录。
+# 输出：
+#   None：不返回业务数据。
+def test_metric_route_speed_satisfies_default_stability_gate(tmp_path: Path) -> None:
+    graph = _graph()
+    route = GraphRoute(
+        start_node="roof-launch",
+        goal_node="dock-a",
+        node_ids=["roof-launch", "metric-join-0001", "dock-a"],
+        edge_ids=["metric-edge-test-0000", "metric-edge-test-0001"],
+        positions_m=[
+            graph.nodes[0].position_m,
+            graph.nodes[0].position_m.model_copy(update={"x": 2.5}),
+            graph.nodes[1].position_m,
+        ],
+        route_length_m=10.0,
+        all_edges_flight_verified=False,
+    )
+    semantic_path = tmp_path / "semantic.json"
+    semantic_path.write_text(json.dumps(_semantic()), encoding="utf-8")
+
+    track = route_to_px4_track(route, graph, semantic_path, vehicle=_vehicle())
+
+    assert all(point.speed_limit_mps <= 4.0 for point in track.points)
 
 
 # 功能：

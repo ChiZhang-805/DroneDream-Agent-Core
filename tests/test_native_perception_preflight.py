@@ -234,7 +234,9 @@ def test_preflight_reads_actual_progressing_health_file(tmp_path):
         writer = asyncio.create_task(publisher())
         try:
             result = await wait_for_native_perception(path, timeout_seconds=1)
-            assert result["ready"] and result["independent_frames"] >= 3
+            # File polling may legitimately skip an intermediate publisher update.
+            # Readiness requires two distinct frames spanning the 100 ms window.
+            assert result["ready"] and result["independent_frames"] >= 2
         finally:
             await writer
 

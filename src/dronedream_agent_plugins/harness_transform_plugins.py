@@ -212,10 +212,21 @@ def _apply_retry_budget(
 def _deduplicate_targets(*, value: SemanticPlan, **_: Any) -> SemanticPlan:
     value = _validated_copy(value)
     targets: list[str] = []
-    for target in value.ordered_targets:
+    speed_preferences = []
+    for target, speed_preference in zip(
+        value.ordered_targets, value.speed_preferences, strict=True
+    ):
         if not targets or targets[-1] != target:
             targets.append(target)
-    optimized_plan = _validated_copy(value.model_copy(update={"ordered_targets": targets}))
+            speed_preferences.append(speed_preference)
+    optimized_plan = _validated_copy(
+        value.model_copy(
+            update={
+                "ordered_targets": targets,
+                "speed_preferences": speed_preferences,
+            }
+        )
+    )
     return optimized_plan
 
 
@@ -235,12 +246,12 @@ def _phase_speed_envelope(
     if not isinstance(configured, dict):
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     default_caps = {
-        "launch": 1.0,
-        "transit": 2.0,
-        "stairs": 0.8,
-        "pickup": 0.5,
-        "return": 2.0,
-        "land": 0.5,
+        "launch": 20.0,
+        "transit": 20.0,
+        "stairs": 5.0,
+        "pickup": 20.0,
+        "return": 20.0,
+        "land": 20.0,
     }
     raw_caps = configured.get("phase_speed_caps_mps", {})
     if (
@@ -272,8 +283,9 @@ def _corner_speed_envelope(
     value = _validated_copy(value)
     configured = {} if configuration is None else configuration
     threshold_deg = policy_number(configured, "minimum_turn_angle_deg", 35.0, 5.0, 175.0)
-    # 拐点到达速度应足够低，并且不得覆盖原轨迹中已经更严格的速度上限。
-    corner_speed_mps = policy_number(configured, "corner_speed_limit_mps", 0.3, 0, 5.0)
+    # Default outdoor turns retain the agreed 5 m/s lower cruise target. Live
+    # geometry and the flight controller may still decelerate when necessary.
+    corner_speed_mps = policy_number(configured, "corner_speed_limit_mps", 5.0, 0, 6.0)
     if corner_speed_mps <= 0:
         raise ValueError("PLUGIN_POLICY_CONFIGURATION_INVALID")
     points = list(value.points)
@@ -292,9 +304,15 @@ def _corner_speed_envelope(
             for a, b in zip(incoming, outgoing, strict=True)
         )
         turn_angle_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
-        if turn_angle_deg >= threshold_deg:
+        if turn_angle_deg >= threshold_deg and current.approach_speed_limit_mps is None:
             points[index] = current.model_copy(
-                update={"speed_limit_mps": min(current.speed_limit_mps, corner_speed_mps)}
+                update={
+                    "approach_speed_limit_mps": min(
+                        current.approach_speed_limit_mps or current.speed_limit_mps,
+                        corner_speed_mps,
+                    ),
+                    "approach_distance_m": max(current.approach_distance_m or 0.0, 3.0),
+                }
             )
     limited_track = _validated_copy(value.model_copy(update={"points": points}))
     return limited_track

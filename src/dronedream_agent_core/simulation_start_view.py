@@ -46,7 +46,10 @@ def select_simulation_start_view(*, index, frames, model_root):
     rays = np.column_stack((np.ones(xs.size), (1 - 2 * xs.ravel()) * tangent,
                             (1 - 2 * ys.ravel()) * tangent * height / width)) @ rotation.T
     rays /= np.linalg.norm(rays, axis=1)[:, None]
-    distance = min(far, 6.)
+    # Use the calibrated sensor range: nearby open ground may have useful
+    # building faces beyond six metres. This predicts heading only; runtime
+    # localization still requires actual sensor observations.
+    distance = far
     limits = MapAlignmentLimits()
     reference = root + center
     for degrees in (0, 15, -15, 30, -30, 45, -45, 60, -60, 90, -90, 135, -135, 180):

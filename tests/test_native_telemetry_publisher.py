@@ -1,10 +1,106 @@
 import asyncio
+import copy
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from dronedream_agent_core.native_telemetry_publisher import NativeTelemetryPublisher
+
+
+# 功能：发布频率必须有界且为真实数值，拒绝会造成忙循环或伪造配置的输入。
+# 输入：rate：非法请求频率。
+# 输出：构造时拒绝，不启动线程或订阅。
+@pytest.mark.parametrize("rate", [None, True, "50", 0, -1, 19.9, 100.1, float("nan"),
+                                  float("inf"), 10**1000])
+def test_publication_rate_is_bounded(rate):
+    with pytest.raises(ValueError, match="NATIVE_PUBLICATION_RATE_INVALID"):
+        NativeTelemetryPublisher(object(), lambda *_: None, publication_rate_hz=rate)
+
+
+# 功能：相机路径保留每份 50 Hz 原生里程计，默认路径仍为 20 Hz；重复缓存不续期。
+# 输入：monkeypatch：只控制调度钟和线程执行；真实协议解析、来源历史和配对仍执行。
+# 输出：慢位置缓存不限制独立里程计推进，选帧保留真实源时间和未知协方差。
+@pytest.mark.parametrize("rate", [None, 50.0])
+def test_camera_publication_preserves_source_cadence_and_duplicate_time(monkeypatch, rate):
+    from test_native_image_pose import payload
+
+    import dronedream_agent_core.native_telemetry_publisher as module
+    from dronedream_agent_core.native_image_pose import NativeImagePoseBuffer
+
+    elapsed = 0.0
+    received = []
+    pose_history = NativeImagePoseBuffer(clock_domain="camera-run")
+
+    class Client:
+        # 功能：位置来源比里程计慢，返回同一份真实位置缓存而不重新计时。
+        # 输入：timeout：调用者保留的等待上限。
+        # 输出：固定位置来源时间。
+        async def sample_position_velocity_ned(self, timeout):
+            assert timeout == .1
+            return SimpleNamespace(received_at_unix_ms=1000)
+
+        # 功能：每 20 ms 推进一份原始里程计，100 ms 后故意停流以检查重复缓存。
+        # 输入：max_age：调用者保留的时效上限。
+        # 输出：来源时间独立于发布时刻的原始协议包。
+        def latest_dynamics_telemetry(self, max_age):
+            assert max_age == .25
+            offset = min(100, round(elapsed * 1000) // 20 * 20)
+            return payload(1_000_000 + offset * 1000, 10.0 + offset / 1000,
+                           1000 + offset)["dynamics"]
+
+    # 功能：把发布得到的原始里程计送入正式源时钟配对缓存，不修改其时间或内容。
+    # 输入：observed、dynamics：发布器独立复制的快照。
+    # 输出：八次受控调度之后停止，保持测试与实际机器负载无关。
+    def publish(observed, dynamics):
+        assert observed.received_at_unix_ms == 1000
+        received.append(copy.deepcopy(dynamics["sources"]["odometry"]))
+        bound = payload()
+        bound["dynamics"] = dynamics
+        pose_history.ingest(bound, available_at_monotonic=10.0 + elapsed)
+        if len(received) == 8:
+            publisher._stop.set()
+
+    # 功能：消除测试线程调度抖动，仍执行正式发布回调及全部协议校验。
+    # 输入：callback、args：原线程调用及实参。
+    # 输出：回调结果。
+    async def inline(callback, *args):
+        return callback(*args)
+
+    # 功能：推进实际请求的等待间隔，不替换传感器时刻或续期旧观测。
+    # 输入：awaitable、timeout：发布循环请求的停止等待。
+    # 输出：等待超时，驱动下一个确定性发布周期。
+    async def advance(awaitable, timeout):
+        nonlocal elapsed
+        awaitable.close()
+        elapsed += timeout
+        raise TimeoutError
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: elapsed))
+    monkeypatch.setattr(module, "asyncio", SimpleNamespace(
+        Event=asyncio.Event, to_thread=inline, wait_for=advance))
+    options = {} if rate is None else {"publication_rate_hz": rate}
+    publisher = NativeTelemetryPublisher(Client(), publish, **options)
+    asyncio.run(publisher._run())
+    expected = [1_000_000, 1_040_000, 1_100_000] if rate is None else list(
+        range(1_000_000, 1_100_001, 20_000))
+    assert sorted({row["timestamp_us"] for row in received}) == expected
+    assert publisher.summary["target_rate_hz"] == (20.0 if rate is None else 50.0)
+    assert publisher.summary["unique_source_count"] == len(expected)
+    assert publisher.summary["published_count"] == 8
+    assert publisher.summary["error_count"] == 0
+    assert received[-1] == received[-2]
+    assert received[-1]["received_at_unix_ms"] == 1100
+    assert received[-1]["mavlink_source"]["received_monotonic_seconds"] == 10.1
+    if rate is not None:
+        for offset in range(10, 100, 20):
+            aligned = pose_history.align(image_timestamp_ns=(1_000_000 + offset * 1000) * 1000,
+                clock_domain="camera-run", image_received_unix_ms=1000 + offset,
+                now_unix_ms=1140, now_monotonic=10.14,
+                maximum_range_m=10., maximum_acceleration_mps2=1.)
+            assert abs(aligned.source_skew_us) == 10_000
+            assert aligned.source_evidence["pose_extrapolated"] is False
+            assert aligned.source_evidence["received_at_unix_ms"] == 1000 + offset - 10
 
 
 # 功能：

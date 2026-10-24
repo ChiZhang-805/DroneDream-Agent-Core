@@ -1,0 +1,1317 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "source_image": "gazebo/materials/textures/kumpula-orthophoto.jpg",
+  "source_crs": "EPSG:3879",
+  "origin": [
+    25497920,
+    6676880
+  ],
+  "corridors": [
+    {
+      "id": "supp-gadolin1-southwest-paved-walk",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          95.938,
+          167.812
+        ],
+        [
+          98.125,
+          161.562
+        ],
+        [
+          105.0,
+          154.375
+        ],
+        [
+          114.375,
+          141.875
+        ],
+        [
+          122.188,
+          132.812
+        ],
+        [
+          131.25,
+          122.812
+        ],
+        [
+          136.875,
+          115.625
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible broad paved walk between the long Gadolin 1 building and the triangular garden; follows the building side around the garden.",
+        "observed_centerline_pixels": [
+          [
+            1107,
+            263
+          ],
+          [
+            1114,
+            283
+          ],
+          [
+            1136,
+            306
+          ],
+          [
+            1166,
+            346
+          ],
+          [
+            1191,
+            375
+          ],
+          [
+            1220,
+            407
+          ],
+          [
+            1238,
+            430
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-vaino7-southwest-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          24.781,
+          152.875
+        ],
+        [
+          28.125,
+          149.688
+        ],
+        [
+          33.125,
+          145.312
+        ],
+        [
+          36.562,
+          142.812
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Short visible frontage access from southeast corner of southwest residential block to the diagonal campus lane.",
+        "observed_centerline_pixels": [
+          [
+            879.3,
+            310.8
+          ],
+          [
+            890,
+            321
+          ],
+          [
+            906,
+            335
+          ],
+          [
+            917,
+            343
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-vaino7-parking-garage-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          36.562,
+          163.844
+        ],
+        [
+          39.375,
+          160.625
+        ],
+        [
+          44.062,
+          155.938
+        ],
+        [
+          46.875,
+          153.125
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible apron south of parking garage to the diagonal street.",
+        "observed_centerline_pixels": [
+          [
+            917,
+            275.7
+          ],
+          [
+            926,
+            286
+          ],
+          [
+            941,
+            301
+          ],
+          [
+            950,
+            310
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-vaino7-northeast-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          66.562,
+          183.75
+        ],
+        [
+          70.312,
+          180.0
+        ],
+        [
+          73.125,
+          176.875
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Open frontage apron southeast of northeast residential block; avoids tree clusters around the original handoff.",
+        "observed_centerline_pixels": [
+          [
+            1013,
+            212
+          ],
+          [
+            1025,
+            224
+          ],
+          [
+            1034,
+            234
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-north-courtyard-path",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          130.0,
+          219.375
+        ],
+        [
+          133.75,
+          221.25
+        ],
+        [
+          139.062,
+          221.562
+        ],
+        [
+          144.375,
+          218.438
+        ],
+        [
+          148.125,
+          218.438
+        ]
+      ],
+      "width_m": 2.2,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible path below the sandbox and above the white small canopy, joining the internal courtyard path; tree exclusions still apply.",
+        "observed_centerline_pixels": [
+          [
+            1216,
+            98
+          ],
+          [
+            1228,
+            92
+          ],
+          [
+            1245,
+            91
+          ],
+          [
+            1262,
+            101
+          ],
+          [
+            1274,
+            101
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-northwest-street-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          120.312,
+          186.25
+        ],
+        [
+          119.375,
+          184.062
+        ],
+        [
+          119.688,
+          181.875
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Street-facing paved frontage of northwest block; original courtyard handoff was beside canopy/shrubbery.",
+        "observed_centerline_pixels": [
+          [
+            1185,
+            204
+          ],
+          [
+            1182,
+            211
+          ],
+          [
+            1183,
+            218
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-southwest-street-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          143.75,
+          168.438
+        ],
+        [
+          141.875,
+          165.938
+        ],
+        [
+          140.0,
+          164.375
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Street-facing open verge and paving beside southwest block, joining the road past parking bays.",
+        "observed_centerline_pixels": [
+          [
+            1260,
+            261
+          ],
+          [
+            1254,
+            269
+          ],
+          [
+            1248,
+            274
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-central-parking-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          178.625,
+          167.406
+        ],
+        [
+          181.25,
+          164.688
+        ],
+        [
+          183.75,
+          161.875
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Paved connection from southern facade to parking aisle; keeps away from courtyard trees.",
+        "observed_centerline_pixels": [
+          [
+            1371.6,
+            264.3
+          ],
+          [
+            1380,
+            273
+          ],
+          [
+            1388,
+            282
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-northeast-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          202.469,
+          198.625
+        ],
+        [
+          198.438,
+          195.938
+        ],
+        [
+          195.0,
+          193.438
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Short paved path southwest of northeast block into the central inter-building path.",
+        "observed_centerline_pixels": [
+          [
+            1447.9,
+            164.4
+          ],
+          [
+            1435,
+            173
+          ],
+          [
+            1424,
+            181
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-southeast-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          202.312,
+          185.312
+        ],
+        [
+          197.5,
+          181.875
+        ],
+        [
+          194.062,
+          179.375
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Paved/shadowed gap northwest of southeast block to central path; not across the roof.",
+        "observed_centerline_pixels": [
+          [
+            1447.4,
+            207
+          ],
+          [
+            1432,
+            218
+          ],
+          [
+            1421,
+            226
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-gadolin4-northern-row-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          174.875,
+          227.125
+        ],
+        [
+          170.938,
+          223.75
+        ],
+        [
+          168.75,
+          221.562
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible front access from northern row southwest facade to the diagonal internal path.",
+        "observed_centerline_pixels": [
+          [
+            1359.6,
+            73.2
+          ],
+          [
+            1347,
+            84
+          ],
+          [
+            1340,
+            91
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-north-road-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          86.562,
+          244.688
+        ],
+        [
+          90.938,
+          240.938
+        ],
+        [
+          97.188,
+          237.5
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Small visible frontage opening and pavement to the north-running campus street.",
+        "observed_centerline_pixels": [
+          [
+            1077,
+            17
+          ],
+          [
+            1091,
+            29
+          ],
+          [
+            1111,
+            40
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-accelerator-northeast-arrival",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          10.625,
+          -179.375
+        ],
+        [
+          15.625,
+          -176.875
+        ],
+        [
+          20.312,
+          -177.5
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible paved driveway at northeast side of Accelerator Laboratory; relocates former rear tree-edge handoff.",
+        "observed_centerline_pixels": [
+          [
+            834,
+            1374
+          ],
+          [
+            850,
+            1366
+          ],
+          [
+            865,
+            1368
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-accelerator-annex-north-access",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -37.812,
+          -181.25
+        ],
+        [
+          -41.562,
+          -183.75
+        ],
+        [
+          -48.438,
+          -177.188
+        ],
+        [
+          -56.875,
+          -167.812
+        ],
+        [
+          -64.688,
+          -158.75
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Observed parking aisle southwest of the parked-car row, reaching the paved northwestern apron of the annex; vehicle occupancy must be checked before flight.",
+        "observed_centerline_pixels": [
+          [
+            679,
+            1380
+          ],
+          [
+            667,
+            1388
+          ],
+          [
+            645,
+            1367
+          ],
+          [
+            618,
+            1337
+          ],
+          [
+            593,
+            1308
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-ernst4-shared-paved-arrival",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -74.062,
+          -181.562
+        ],
+        [
+          -78.438,
+          -177.188
+        ],
+        [
+          -81.875,
+          -172.188
+        ],
+        [
+          -87.188,
+          -170.0
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Shared paved arrival near the small Ernst Lindelof structure; exact doorway is not claimed. Avoids the original shrub-lined rear path.",
+        "observed_centerline_pixels": [
+          [
+            563,
+            1381
+          ],
+          [
+            549,
+            1367
+          ],
+          [
+            538,
+            1351
+          ],
+          [
+            521,
+            1344
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-vaino13-southeast-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -96.25,
+          26.875
+        ],
+        [
+          -93.438,
+          23.75
+        ],
+        [
+          -90.0,
+          20.625
+        ]
+      ],
+      "width_m": 2.5,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible pavement around southeast tip of the U-shaped residential building to main street; rear tree-side point replaced.",
+        "observed_centerline_pixels": [
+          [
+            492,
+            714
+          ],
+          [
+            501,
+            724
+          ],
+          [
+            512,
+            734
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-vaino15-southwest-perimeter",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -197.188,
+          -15.312
+        ],
+        [
+          -189.688,
+          -23.75
+        ],
+        [
+          -181.25,
+          -32.5
+        ],
+        [
+          -173.438,
+          -39.062
+        ],
+        [
+          -164.375,
+          -44.062
+        ],
+        [
+          -158.125,
+          -37.812
+        ],
+        [
+          -149.062,
+          -28.438
+        ],
+        [
+          -139.375,
+          -18.75
+        ],
+        [
+          -130.0,
+          -9.375
+        ],
+        [
+          -120.625,
+          -0.312
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible exterior footpath along southwest wing, then parking perimeter and southeast frontage lane; no straight cut through U-shaped building.",
+        "observed_centerline_pixels": [
+          [
+            169,
+            849
+          ],
+          [
+            193,
+            876
+          ],
+          [
+            220,
+            904
+          ],
+          [
+            245,
+            925
+          ],
+          [
+            274,
+            941
+          ],
+          [
+            294,
+            921
+          ],
+          [
+            323,
+            891
+          ],
+          [
+            354,
+            860
+          ],
+          [
+            384,
+            830
+          ],
+          [
+            414,
+            801
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-limingantie35-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -195.625,
+          215.0
+        ],
+        [
+          -197.812,
+          217.188
+        ],
+        [
+          -199.688,
+          215.938
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible street-side paved frontage; avoids connecting original rear point through roof.",
+        "observed_centerline_pixels": [
+          [
+            174,
+            112
+          ],
+          [
+            167,
+            105
+          ],
+          [
+            161,
+            109
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-limingantie33-frontage",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -205.938,
+          202.188
+        ],
+        [
+          -208.75,
+          204.375
+        ],
+        [
+          -210.625,
+          205.0
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Street-side frontage on the northwest side of the residential building.",
+        "observed_centerline_pixels": [
+          [
+            141,
+            153
+          ],
+          [
+            132,
+            146
+          ],
+          [
+            126,
+            144
+          ]
+        ]
+      }
+    },
+    {
+      "id": "supp-limingantie40-driveway",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          -183.906,
+          238.594
+        ],
+        [
+          -180.625,
+          235.938
+        ],
+        [
+          -176.562,
+          239.062
+        ]
+      ],
+      "width_m": 2.0,
+      "ground_z_m": 0,
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "Visible short driveway and pavement from southeast corner to Limingantie.",
+        "observed_centerline_pixels": [
+          [
+            211.5,
+            36.5
+          ],
+          [
+            222,
+            45
+          ],
+          [
+            235,
+            35
+          ]
+        ]
+      }
+    }
+  ],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": [
+    {
+      "node_id": "city-35321-handoff",
+      "old_position_m": {
+        "x": 117.906,
+        "y": 143.263,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 114.375,
+        "y": 141.875,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          1166,
+          346
+        ],
+        "note": "Relocate slightly away from southwest facade onto clearly visible broad paved walk.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-35635-handoff",
+      "old_position_m": {
+        "x": 62.001,
+        "y": 188.94,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 66.562,
+        "y": 183.75,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          1013,
+          212
+        ],
+        "note": "Relocate from tree/shrub-adjacent corner onto visible southeast frontage apron.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-45774-handoff",
+      "old_position_m": {
+        "x": 132.083,
+        "y": 203.039,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 120.312,
+        "y": 186.25,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          1185,
+          204
+        ],
+        "note": "Use street-facing paved staging point instead of tree/shrub-adjacent courtyard side.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-45907-handoff",
+      "old_position_m": {
+        "x": 152.391,
+        "y": 182.113,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 143.75,
+        "y": 168.438,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          1260,
+          261
+        ],
+        "note": "Use street-facing paving on southwest block, not courtyard tree-side marker.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-39082-handoff",
+      "old_position_m": {
+        "x": 83.752,
+        "y": 247.158,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 86.562,
+        "y": 244.688,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          1077,
+          17
+        ],
+        "note": "Use visible north street frontage within image extent; original point was at clipped boundary.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "osm-facility-29032068-handoff",
+      "old_position_m": {
+        "x": 5.665,
+        "y": -204.202,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": 10.625,
+        "y": -179.375,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          834,
+          1374
+        ],
+        "note": "Original point is on the southeast rear tree edge. Use the visible northeast driveway beside same Accelerator Laboratory.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-29466-handoff",
+      "old_position_m": {
+        "x": -34.513,
+        "y": -185.506,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -37.812,
+        "y": -181.25,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          679,
+          1380
+        ],
+        "note": "Move annex marker away from roof edge into visible northern paved access.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-7772-handoff",
+      "old_position_m": {
+        "x": -68.368,
+        "y": -199.949,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -74.062,
+        "y": -181.562,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          563,
+          1381
+        ],
+        "note": "Shared nearby paved arrival for this small structure; actual doorway still requires ground review.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-33940-handoff",
+      "old_position_m": {
+        "x": -129.869,
+        "y": 67.181,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -96.25,
+        "y": 26.875,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          492,
+          714
+        ],
+        "note": "Move from northwestern rear treeline to visible southeast frontage of same U-shaped complex.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-36723-handoff",
+      "old_position_m": {
+        "x": -202.938,
+        "y": 3.381,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -197.188,
+        "y": -15.312,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          169,
+          849
+        ],
+        "note": "Use visible southwest perimeter path of same residential complex, away from rear treeline.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-61860-handoff",
+      "old_position_m": {
+        "x": -188.853,
+        "y": 205.872,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -195.625,
+        "y": 215.0,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          174,
+          112
+        ],
+        "note": "Move rear marker to visible Limingantie-facing frontage of same building.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-50834-handoff",
+      "old_position_m": {
+        "x": -195.17,
+        "y": 190.714,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -205.938,
+        "y": 202.188,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          141,
+          153
+        ],
+        "note": "Move garden-side marker to visible Limingantie-facing frontage of same building.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    },
+    {
+      "node_id": "city-49032-handoff",
+      "old_position_m": {
+        "x": -228.937,
+        "y": 182.376,
+        "z": 2.0
+      },
+      "new_position_m": {
+        "x": -231.875,
+        "y": 184.375,
+        "z": 2.0
+      },
+      "evidence": {
+        "source": "orthophoto-visual-review",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "pixel_frame": "1600x1600 north-up inspection; source image 2048x2048; x_px=(east+250)*3.2,y_px=(250-north)*3.2",
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "new_pixel": [
+          58,
+          210
+        ],
+        "note": "Use street-side staging outside roof projection, on the observed frontage pavement.",
+        "location_kind": "candidate-ground-handoff-staging-not-door-recognition"
+      }
+    }
+  ],
+  "unresolved_observations": [
+    {
+      "scope": "northwest forest survey connections",
+      "reason": "Several surveyed forest tracks are hidden beneath tree canopies; cannot treat road centerline alone as clear airspace.",
+      "next_action": "Expand orthophoto/world to include road detours, or collect calibrated simulator/ground views of the corridor; include canopy height and clearance."
+    },
+    {
+      "scope": "cropped northern residential handoffs and eastern perimeter homes",
+      "reason": "Some source buildings and access paths extend outside current 500m square; boundary metadata is incomplete.",
+      "next_action": "Expand registered map coverage, preserve current ENU origin and reobserve each missing connection."
+    }
+  ]
+}

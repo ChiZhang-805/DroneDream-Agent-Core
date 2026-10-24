@@ -11,7 +11,7 @@ from dronedream_agent_core.optical_map import compile_optical_map
 
 # 功能：阻止小型共享网格的大量实例在索引检查前耗尽内存。
 # 输入：tmp_path：独立测试目录；monkeypatch：解析器测试替身。
-# 输出：无；真实索引预算必须在第九份 8192 三角形实例转换为列表前触发。
+# 输出：无；真实索引预算必须在第三十三份 8192 三角形实例转换为列表前触发。
 def test_total_mesh_budget_is_checked_before_list_expansion(tmp_path, monkeypatch):
     import dronedream_agent_core.optical_map as optical
 
@@ -27,12 +27,12 @@ def test_total_mesh_budget_is_checked_before_list_expansion(tmp_path, monkeypatc
             expanded.append(True)
             return []
 
-    monkeypatch.setattr(optical, "_obj_triangles", lambda *_: Triangles())
+    monkeypatch.setattr(optical, "_obj_triangles", lambda *_: (Triangles(), True))
     (tmp_path / "mesh.obj").write_bytes(cube())
-    path, digest = world(tmp_path, visual('<mesh><uri>mesh.obj</uri></mesh>') * 9)
+    path, digest = world(tmp_path, visual('<mesh><uri>mesh.obj</uri></mesh>') * 33)
     with pytest.raises(ValueError, match="MESH_TRIANGLE_BUDGET_EXCEEDED"):
         compile_optical_map(path, expected_world_sha256=digest)
-    assert len(expanded) == 8
+    assert len(expanded) == 32
 
 
 # 功能：拒绝过深的用户地图模型嵌套，返回确定错误而不是递归崩溃。
@@ -105,6 +105,36 @@ def cube():
     ).encode()
 
 
+# 功能：生成与官方校园地图相同的凸四边形 OBJ 写法，验证编译器确定性三角化。
+# 输入：无。
+# 输出：六个有向四边形组成的闭合盒 OBJ。
+def quad_cube():
+    vertices = [
+        (-1, -1, -1),
+        (1, -1, -1),
+        (1, 1, -1),
+        (-1, 1, -1),
+        (-1, -1, 1),
+        (1, -1, 1),
+        (1, 1, 1),
+        (-1, 1, 1),
+    ]
+    faces = [
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    ]
+    return (
+        "\n".join("v " + " ".join(map(str, v)) for v in vertices)
+        + "\n"
+        + "\n".join("f " + " ".join(str(i + 1) for i in f) for f in faces)
+        + "\n"
+    ).encode()
+
+
 # 功能：证明定位只使用真实半径，不匹配两倍大小的避障外包球。
 # 输入：pytest 独立临时目录。
 # 输出：无。
@@ -168,6 +198,46 @@ def test_closed_mesh_first_surface_and_inside_rejection(tmp_path):
     assert (
         receipt["resource_dependencies"]["cube.obj"]["sha256"] == hashlib.sha256(cube()).hexdigest()
     )
+
+
+# 功能：证明官方地图使用的凸四边形闭合网格会被三角化，而不是因格式差异阻断飞行。
+# 输入：独立临时目录。
+# 输出：十二个三角形，且外部射线命中保持原始绕序。
+def test_convex_quad_mesh_is_triangulated(tmp_path):
+    (tmp_path / "cube.obj").write_bytes(quad_cube())
+    path, digest = world(tmp_path, visual("<mesh><uri>cube.obj</uri></mesh>", "4 0 0 0 0 0"))
+    index, primitives, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert len(primitives[0]["triangles"]) == 12
+    match = index.match([[3, 0.2, 0.1]], MapAlignmentLimits(), sensor_origins_world_m=[0, 0.2, 0.1])
+    assert match.valid[0]
+    np.testing.assert_allclose(match.normals[0], [-1, 0, 0])
+
+
+# 功能：允许渲染器使用单个平面四边形表示地表，并正确三角化凹多边形。
+# 输入：独立临时目录。
+# 输出：平面地表得到两个三角形；凹面得到三个且不越过凹口的三角形。
+def test_planar_ground_quad_and_concave_face_are_supported(tmp_path):
+    (tmp_path / "ground.obj").write_text(
+        "v -2 -2 0\nv 2 -2 0\nv 2 2 0\nv -2 2 0\nf 1 2 3 4\n",
+        encoding="utf-8",
+    )
+    path, digest = world(tmp_path, visual("<mesh><uri>ground.obj</uri></mesh>"))
+    index, primitives, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert len(primitives[0]["triangles"]) == 2
+    match = index.match([[0, 0, 0]], MapAlignmentLimits(), sensor_origins_world_m=[0, 0, 2])
+    assert match.valid[0]
+
+    (tmp_path / "ground.obj").write_text(
+        "v 0 0 0\nv 2 0 0\nv 1 1 0\nv 2 2 0\nv 0 2 0\nf 1 2 3 4 5\n",
+        encoding="utf-8",
+    )
+    _, primitives, _ = compile_optical_map(path, expected_world_sha256=digest)
+    assert len(primitives[0]["triangles"]) == 3
+    area = sum(
+        np.linalg.norm(np.cross(np.subtract(t[1], t[0]), np.subtract(t[2], t[0]))) / 2
+        for t in primitives[0]["triangles"]
+    )
+    assert area == pytest.approx(3.0)
 
 
 # 功能：不支持的形状/坐标约定必须报错，而不是遗漏障碍或改用碰撞外包。

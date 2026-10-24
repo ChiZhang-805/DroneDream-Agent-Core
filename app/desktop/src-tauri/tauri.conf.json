@@ -39,7 +39,8 @@
     "licenseFile": "../../../LICENSE",
     "externalBin": [
       "binaries/dronedream-autonomy-core",
-      "binaries/dronedream-plugin-isolator"
+      "binaries/dronedream-plugin-isolator",
+      "binaries/dronedream-live"
     ],
     "resources": {
       "resources/runtime": "runtime",

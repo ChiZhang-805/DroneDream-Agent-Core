@@ -1363,15 +1363,18 @@ def test_tracking_recovery_settles_fixed_target_with_bounded_radial_feedforward(
         return client
 
     client = asyncio.run(exercise())
+    # The shipped radial controller has a 1.5 m/s ceiling. This small error
+    # stays below it: the 0.8/s gain must point at the fixed recovery target,
+    # not reuse the route's 0.8 m/s tangential feedforward.
     assert vars(client.velocity) == {
-        "north_m_s": pytest.approx(0.053333333333333344),
-        "east_m_s": pytest.approx(0.05333333333333339),
-        "down_m_s": pytest.approx(-0.026666666666666696),
+        "north_m_s": pytest.approx(0.08),
+        "east_m_s": pytest.approx(0.08),
+        "down_m_s": pytest.approx(-0.04),
         "yaw_deg": 30.0,
     }
     assert math.sqrt(
         client.velocity.north_m_s**2 + client.velocity.east_m_s**2 + client.velocity.down_m_s**2
-    ) == pytest.approx(0.08)
+    ) == pytest.approx(0.12)
     target = json.loads((tmp_path / "target.json").read_text(encoding="utf-8"))
     assert target["tracking_recovery_active"] is True
 
@@ -1943,8 +1946,16 @@ def test_tracking_recovery_feedforward_damps_velocity_toward_target() -> None:
             down_m_s=0.0,
         ),
         target_setpoint=target,
+        maximum_speed_mps=0.08,
     )
     assert bounded_away_correction == pytest.approx((0.08, 0.0, 0.0))
+
+    default_bounded_correction = executor._recovery_position_velocity_feedforward(
+        observed=SimpleNamespace(north_m=-9., east_m=0., down_m=-.5,
+                                 north_m_s=0., east_m_s=0., down_m_s=0.),
+        target_setpoint=target,
+    )
+    assert default_bounded_correction == pytest.approx((1.5, 0., 0.))
 
 
 def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> None:
@@ -3363,8 +3374,8 @@ def test_tracking_gate_tolerates_bounded_along_route_lag_but_not_cross_track_err
     assert along_state["controller_position_error_m"] == pytest.approx(0.06)
     assert along_state["route_cross_track_error_m"] == pytest.approx(0.0)
     assert along_state["route_along_track_lag_m"] == pytest.approx(0.06)
-    assert along_state["route_along_track_lag_limit_m"] == pytest.approx(0.15)
-    assert along_state["route_along_track_lag_rejoin_limit_m"] == pytest.approx(0.1125)
+    assert along_state["route_along_track_lag_limit_m"] == pytest.approx(0.25)
+    assert along_state["route_along_track_lag_rejoin_limit_m"] == pytest.approx(0.1875)
 
     args.run_dir = tmp_path / "cross"
     cross_result = asyncio.run(
@@ -3432,7 +3443,9 @@ def test_tracking_gate_requires_tighter_along_route_rejoin_after_recovery(
         executor._tracking_gate_tick(
             args=args,
             base=SimpleNamespace(),
-            client=Client(north_m=0.87),
+            # 20 cm remains inside the 25 cm outer limit but outside the
+            # shipped 18.75 cm recovery hysteresis, so recovery must continue.
+            client=Client(north_m=0.80),
             planned_setpoint=planned,
             coordinate_contract=contract,
             phase_path=tmp_path / "still-recovering-phase.json",
@@ -3442,14 +3455,14 @@ def test_tracking_gate_requires_tighter_along_route_rejoin_after_recovery(
             planned_velocity_ned_mps=(0.15, 0.0, 0.0),
         )
     )
-    assert still_recovering == (False, pytest.approx(0.13))
+    assert still_recovering == (False, pytest.approx(0.20))
 
     args.run_dir = tmp_path / "rejoined"
     rejoined = asyncio.run(
         executor._tracking_gate_tick(
             args=args,
             base=SimpleNamespace(),
-            client=Client(north_m=0.89),
+            client=Client(north_m=0.82),
             planned_setpoint=planned,
             coordinate_contract=contract,
             phase_path=tmp_path / "rejoined-phase.json",
@@ -3510,7 +3523,7 @@ def test_tracking_gate_separates_along_lag_hold_from_cross_track_recovery(
         executor._tracking_gate_tick(
             args=args,
             base=SimpleNamespace(),
-            client=Client(north_m=0.84, east_m=0.0),
+            client=Client(north_m=0.74, east_m=0.0),
             planned_setpoint=planned,
             coordinate_contract=contract,
             phase_path=tmp_path / "along-phase.json",
@@ -3522,7 +3535,7 @@ def test_tracking_gate_separates_along_lag_hold_from_cross_track_recovery(
             context={"semantic_approach_damping_active": True},
         )
     )
-    assert along_hold == (False, pytest.approx(0.16))
+    assert along_hold == (False, pytest.approx(0.26))
     assert args._last_tracking_local_recovery_control_required is False
 
     args.run_dir = tmp_path / "cross"

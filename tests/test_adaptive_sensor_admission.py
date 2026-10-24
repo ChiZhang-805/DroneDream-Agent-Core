@@ -238,12 +238,14 @@ def test_action_specific_margin_veto_preserves_threat_forecast(monkeypatch):
         request,
         primitives,
         *,
+        motion_check=None,
         candidate_check=None,
         preferred_speed_mps=None,
     ):
         result = real(
             request,
             primitives,
+            motion_check=motion_check,
             candidate_check=candidate_check,
             preferred_speed_mps=preferred_speed_mps,
         )
@@ -298,15 +300,19 @@ def test_absent_budget_does_not_rewrite_historical_command_identity():
 #   age_ms：真实观测到本次评估之间的毫秒数。
 # 输出：
 #   无。
-@pytest.mark.parametrize("age_ms", [320, 350, 500])
-def test_early_candidate_veto_retains_original_budget_and_braking(age_ms):
+@pytest.mark.parametrize("age_ms", [280, 320, 350, 500])
+def test_early_candidate_veto_retains_original_budget_and_braking(age_ms, monkeypatch):
+    import dronedream_agent_core.runtime_local_safety as safety
     from dronedream_agent_core.contracts import RuntimeLocalSafetyCommand
 
+    search = Mock(side_effect=AssertionError("expired source cannot fund any motion candidate"))
+    monkeypatch.setattr(safety, "predictive_safety_decision", search)
     source = observation()
     command = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
         static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_000 + age_ms)
     assert command.decision.action == "hold"
-    assert command.decision.evaluated_candidate_count > 1
+    search.assert_not_called()
+    assert command.decision.evaluated_candidate_count == 1  # Only the actual brake forecast.
     assert command.decision.predicted_path_m
     assert command.decision.braking_prediction_velocity_mps is not None
     assert command.observation_budget.source_observed_at_unix_ms == 10_000
@@ -316,11 +322,47 @@ def test_early_candidate_veto_retains_original_budget_and_braking(age_ms):
     assert "OBSERVATION_CONTROL_BUDGET_EXHAUSTED" in command.decision.issue_codes
     wire = command.model_dump(mode="json")
     assert RuntimeLocalSafetyCommand.model_validate(wire) == command
+    monkeypatch.undo()
     fresh = evaluate_runtime_local_safety(observation=source, vehicle=_vehicle(),
         static_primitives=[], required_clearance_m=.1, generated_at_unix_ms=10_020)
     wire["decision"] = fresh.decision.model_dump(mode="json")
     with pytest.raises(ValueError, match="exceeds its observation budget"):
         RuntimeLocalSafetyCommand.model_validate(wire)
+
+
+def test_common_deadline_brake_keeps_measured_momentum_and_real_obstacle():
+    source = observation(current_velocity_mps=Vector3(x=1., y=0., z=0.))
+    wall = dict(name="ahead-wall", center_x=1., center_y=0., center_z=1.,
+                size_x=.2, size_y=5., size_z=3.)
+    command = evaluate_runtime_local_safety(
+        observation=source, vehicle=_vehicle().model_copy(update={"max_acceleration_mps2": 1.5}),
+        static_primitives=[wall], required_clearance_m=.1, generated_at_unix_ms=10_320,
+    )
+    decision = command.decision
+    assert decision.action == "hold"
+    assert decision.selected_velocity_mps == Vector3(x=0., y=0., z=0.)
+    assert decision.braking_prediction_velocity_mps.x == pytest.approx(.7)
+    assert decision.predicted_path_m[0].x == pytest.approx(.14)
+    assert decision.threat_obstacle_id == "static:ahead-wall"
+    assert decision.minimum_predicted_clearance_m < 0
+    assert command.observation_budget.control_deadline_unix_ms == 10_350
+
+
+def test_fresh_candidate_specific_failure_still_searches_for_safe_alternative():
+    # 279 ms still leaves the unchanged 70 ms publication budget; a wall makes
+    # the nominal trajectory invalid, but an actually checked alternative fits.
+    source = observation(stream_age_seconds=.279, target_position_m=Vector3(x=3., y=0., z=1.))
+    wall = dict(name="ahead-wall", center_x=3., center_y=0., center_z=1.,
+                size_x=.1, size_y=6., size_z=3.)
+    command = evaluate_runtime_local_safety(
+        observation=source, vehicle=_vehicle(), static_primitives=[wall],
+        required_clearance_m=.1, generated_at_unix_ms=10_279,
+    )
+    assert command.decision.action == "replan"
+    assert command.decision.evaluated_candidate_count > 1
+    assert command.decision.selected_velocity_mps.y != 0
+    assert command.observation_budget.disposition == "control-eligible"
+    assert command.valid_until_unix_ms == 10_350
 
 
 @pytest.mark.parametrize("confidence,age", [(.1, .01), (.95, 1.1), (.1, 10.)])

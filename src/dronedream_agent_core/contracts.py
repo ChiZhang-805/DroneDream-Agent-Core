@@ -556,7 +556,7 @@ class HybridControlLease(StrictModel):
     episode: int = Field(ge=1, strict=True)
     started_at_unix_ms: int = Field(ge=0, strict=True)
     expires_at_unix_ms: int = Field(ge=0, strict=True)
-    maximum_speed_mps: float = Field(gt=0, le=0.25)
+    maximum_speed_mps: float = Field(gt=0, le=5.0)
     maximum_distance_m: float = Field(gt=0, le=0.35)
     reason: Literal["model-delay-bounded-bridge"] = "model-delay-bounded-bridge"
 
@@ -602,9 +602,9 @@ class RuntimeLocalSafetyCommand(StrictModel):
     # colocated while representing different control intentions.
     navigation_goal_id: str | None = Field(default=None, min_length=1, max_length=160)
     tracking_recovery_active: bool = False
-    navigation_control_authority: Literal[
-        "route-fallback", "model-required", "bounded-hybrid"
-    ] = "route-fallback"
+    navigation_control_authority: Literal["route-fallback", "model-required", "bounded-hybrid"] = (
+        "route-fallback"
+    )
     hybrid_lease: HybridControlLease | None = None
     model_navigation_authorized: bool = False
     model_call_id: str | None = None
@@ -660,19 +660,27 @@ class RuntimeLocalSafetyCommand(StrictModel):
         offset = self.estimator_to_world_position_offset_m
         if self.navigation_control_authority == "bounded-hybrid":
             lease = self.hybrid_lease
-            if (lease is None or lease.navigation_goal_id != self.navigation_goal_id
-                    or self.model_navigation_authorized or self.requested_control_intent is not None
-                    or self.evaluated_target_position_m is None
-                    or any((offset.x, offset.y, offset.z))
-                    or self.source == "simulation-ground-truth"
-                    or not lease.started_at_unix_ms <= self.generated_at_unix_ms
-                    < self.valid_until_unix_ms <= lease.expires_at_unix_ms):
+            if (
+                lease is None
+                or lease.navigation_goal_id != self.navigation_goal_id
+                or self.model_navigation_authorized
+                or self.requested_control_intent is not None
+                or self.evaluated_target_position_m is None
+                or any((offset.x, offset.y, offset.z))
+                or self.source == "simulation-ground-truth"
+                or not lease.started_at_unix_ms
+                <= self.generated_at_unix_ms
+                < self.valid_until_unix_ms
+                <= lease.expires_at_unix_ms
+            ):
                 raise ValueError("HYBRID_COMMAND_BINDING_INVALID")
             if self.decision.action != "hold":
                 velocity = self.decision.selected_velocity_mps
-                if (self.observation_budget is None
-                        or math.hypot(velocity.x, velocity.y, velocity.z)
-                        > lease.maximum_speed_mps + 1e-9):
+                if (
+                    self.observation_budget is None
+                    or math.hypot(velocity.x, velocity.y, velocity.z)
+                    > lease.maximum_speed_mps + 1e-9
+                ):
                     raise ValueError("HYBRID_COMMAND_SPEED_OR_OBSERVATION_INVALID")
         elif self.hybrid_lease is not None:
             raise ValueError("HYBRID_LEASE_REQUIRES_HYBRID_AUTHORITY")
@@ -746,11 +754,36 @@ class VehicleAsset(StrictModel):
     body_height_m: float = Field(ge=0.05, le=3.0)
     collision_center_offset_model_m: Vector3 | None = None
     max_speed_mps: float = Field(gt=0.0, le=20.0)
+    qualified_cruise_max_mps: float | None = Field(default=None, gt=0.0, le=20.0, strict=True)
     max_acceleration_mps2: float = Field(gt=0.0, le=30.0)
     qualified_range_m: float = Field(gt=0.0, le=1_000_000.0)
     reserve_battery_percent: float = Field(ge=10.0, le=90.0)
     max_pickup_payload_kg: float = Field(ge=0.0, le=20.0)
     sensors: list[str] = Field(min_length=1, max_length=24)
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_qualification(self, handler: Any) -> dict[str, Any]:
+        result = handler(self)
+        if self.qualified_cruise_max_mps is None:
+            # Existing unmodified asset contracts retain their canonical hash.
+            result.pop("qualified_cruise_max_mps", None)
+        return result
+
+    @property
+    def operational_max_speed_mps(self) -> float:
+        """The executable ceiling; design performance alone cannot raise qualification."""
+        limits = [self.max_speed_mps]
+        if self.qualified_cruise_max_mps is not None:
+            limits.append(self.qualified_cruise_max_mps)
+        # model_copy(update=...) does not run validators; never let a corrupted
+        # zero/NaN qualification fall back to the larger design limit.
+        if any(type(value) not in (int, float) or not math.isfinite(value)
+               or not 0.0 < value <= 20.0 for value in limits):
+            raise ValueError("operational speed limits must be finite and positive")
+        if (self.qualified_cruise_max_mps is not None
+                and self.qualified_cruise_max_mps > self.max_speed_mps):
+            raise ValueError("qualified cruise speed exceeds the design speed envelope")
+        return min(limits)
 
     # 功能：
     #   校验空机重量与碰撞中心位置，缺失偏移保持未知，不替代运行资格检查。
@@ -760,6 +793,7 @@ class VehicleAsset(StrictModel):
     #   self：质量关系与几何包络一致的机型资产。
     @model_validator(mode="after")
     def validate_collision_center(self) -> VehicleAsset:
+        _ = self.operational_max_speed_mps
         if self.dry_mass_kg > self.max_takeoff_mass_kg:
             raise ValueError("vehicle dry mass exceeds maximum takeoff mass")
         # 挂载机构额定载荷和起飞总重是独立限制；实际任务取二者较小值，不能改写资产额定值。
@@ -785,6 +819,7 @@ class MapNode(StrictModel):
         "corridor",
         "outdoor",
         "pickup",
+        "delivery",
     ]
 
 
@@ -1154,6 +1189,21 @@ class TaskGraphArtifact(StrictModel):
     graph: TaskGraph
 
 
+class SemanticSpeedPreference(StrictModel):
+    """Model-selected desired speed for one semantic route leg."""
+
+    target_node: str = Field(min_length=1, max_length=160)
+    cruise_speed_mps: float = Field(gt=0.0, le=20.0)
+    approach_speed_mps: float = Field(gt=0.0, le=20.0)
+    rationale: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def approach_must_not_exceed_cruise(self) -> SemanticSpeedPreference:
+        if self.approach_speed_mps > self.cruise_speed_mps:
+            raise ValueError("approach speed cannot exceed cruise speed")
+        return self
+
+
 class SemanticPlan(StrictModel):
     schema_version: Literal["dronedream.semantic-plan.v1"] = "dronedream.semantic-plan.v1"
     ordered_targets: list[str] = Field(min_length=1, max_length=64)
@@ -1164,7 +1214,14 @@ class SemanticPlan(StrictModel):
         "energy-conserving",
         "few-transitions",
     ] = "balanced"
+    speed_preferences: list[SemanticSpeedPreference] = Field(min_length=1, max_length=64)
     rationale_summary: str = Field(min_length=1, max_length=600)
+
+    @model_validator(mode="after")
+    def speed_preferences_follow_target_order(self) -> SemanticPlan:
+        if [item.target_node for item in self.speed_preferences] != self.ordered_targets:
+            raise ValueError("speed preferences must exactly follow ordered targets")
+        return self
 
     # 功能：
     #   只截短不承载控制权的解释文字，避免因过长说明重试已结构正确的计划。
@@ -1211,6 +1268,7 @@ class PlannerValidation(StrictModel):
     accepted: bool
     deterministic_gates: dict[str, bool] = Field(min_length=1, max_length=32)
     issue_codes: list[str] = Field(default_factory=list, max_length=32)
+    repair_instructions: list[str] = Field(default_factory=list, max_length=32)
 
 
 class RoutePoint(StrictModel):
@@ -1373,6 +1431,19 @@ class Px4TrackPoint(StrictModel):
     z: float
     phase: Literal["launch", "transit", "stairs", "pickup", "return", "land"]
     speed_limit_mps: float = Field(gt=0.0, le=20.0)
+    approach_speed_limit_mps: float | None = Field(default=None, gt=0.0, le=20.0)
+    approach_distance_m: float | None = Field(default=None, gt=0.0, le=50.0)
+
+    @model_validator(mode="after")
+    def validate_approach_profile(self) -> Px4TrackPoint:
+        if (self.approach_speed_limit_mps is None) != (self.approach_distance_m is None):
+            raise ValueError("approach speed and distance must be provided together")
+        if (
+            self.approach_speed_limit_mps is not None
+            and self.approach_speed_limit_mps > self.speed_limit_mps
+        ):
+            raise ValueError("approach speed cannot exceed cruise speed")
+        return self
 
 
 class WorldTrackPoint(StrictModel):
@@ -1526,6 +1597,7 @@ class RuntimeActionAdapterDefinition(StrictModel):
         "mavsdk-camera",
         "gazebo-payload",
         "payload-transition",
+        "local-safety",
         "ros2-service",
     ]
     default_parameters: dict[str, Any] = Field(default_factory=dict)
@@ -1581,6 +1653,7 @@ class RuntimeActionExecutionStep(StrictModel):
         "mavsdk-camera",
         "gazebo-payload",
         "payload-transition",
+        "local-safety",
         "ros2-service",
     ]
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -1991,8 +2064,8 @@ class RuntimeOperatorTakeoverGrant(StrictModel):
     hold_ack_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     decision_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     grant_token_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    maximum_horizontal_speed_mps: float = Field(gt=0.0, le=3.0)
-    maximum_vertical_speed_mps: float = Field(gt=0.0, le=2.0)
+    maximum_horizontal_speed_mps: float = Field(gt=0.0, le=6.0)
+    maximum_vertical_speed_mps: float = Field(gt=0.0, le=3.0)
     maximum_yaw_rate_dps: float = Field(gt=0.0, le=180.0)
     deterministic_gates: dict[str, bool] = Field(min_length=1, max_length=32)
     issued_at: datetime

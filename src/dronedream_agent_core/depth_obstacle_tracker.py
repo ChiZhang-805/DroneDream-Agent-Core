@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+import numpy as np
+
 from .collision import _clearance, _finite, _validated_primitive, primitive_bounds
 from .contracts import DynamicObstacleObservation, OnboardPerceptionFrame, Vector3
+from .local_map_alignment import MapAlignmentLimits, MapSurfaceIndex
 
 Point = tuple[float, float, float]
 VoxelKey = tuple[int, int, int]
@@ -57,11 +60,14 @@ class _StaticPrimitiveIndex:
         self._exclusion_m = float(exclusion_m)
         self._bins: dict[VoxelKey, list[int]] = defaultdict(list)
         self._large_primitives: list[int] = []
+        self._large_primitive_bins: list[tuple[int, VoxelKey, VoxelKey]] = []
         self._candidate_cache: OrderedDict[QueryKey, tuple[int, ...]] = OrderedDict()
         entries = 0
         for index, primitive in enumerate(self.primitives):
-            # 宽阶段索引也要包含最终净空查询的一毫米探针，否则格边界会漏选基元。
-            low, high = primitive_bounds(dict(primitive), exclusion_m + self._PROBE_M)
+            # 曲面净空使用点探针的对角半径；普通格与大基元旁表都必须包住同一包络。
+            low, high = primitive_bounds(
+                dict(primitive), exclusion_m + math.hypot(self._PROBE_M, self._PROBE_M)
+            )
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[i] > high[i] for i in range(3)
             ):
@@ -72,6 +78,7 @@ class _StaticPrimitiveIndex:
             if needed > self._MAX_BINS_PER_PRIMITIVE or entries + needed > self._MAX_BIN_ENTRIES:
                 # 超预算仅改变索引策略，不删除建筑物或把未知区域判为空闲。
                 self._large_primitives.append(index)
+                self._large_primitive_bins.append((index, first, last))
                 continue
             entries += needed
             for x in range(first[0], last[0] + 1):
@@ -112,7 +119,7 @@ class _StaticPrimitiveIndex:
         return key
 
     # 功能：
-    #   1. 按完整膨胀格范围复用候选编号，始终纳入未建立格索引的大基元。
+    #   1. 按完整膨胀格范围复用候选编号，纳入与查询格相交的未索引大基元。
     #   2. 缓存同时限制查询数和单项编号数；大查询仍全量计算，不因缓存预算遗漏障碍。
     # 输入：
     #   self：当前不可变地图的索引。
@@ -137,7 +144,11 @@ class _StaticPrimitiveIndex:
             for z in range(low[2], high[2] + 1)
             for index in self._bins.get((x, y, z), ())
         }
-        indices.update(self._large_primitives)
+        # 大基元只因索引容量被放到旁表，不能因此在每个端点重算远方建筑。
+        # 整个查询格范围已包住定位余量；格区间不相交才排除，边界接触仍保留。
+        indices.update(index for index, first, last in self._large_primitive_bins
+                       if all(first[axis] <= high[axis] and last[axis] >= low[axis]
+                              for axis in range(3)))
         candidates = tuple(sorted(indices))
         if len(candidates) <= self._MAX_CACHED_CANDIDATES:
             self._candidate_cache[key] = candidates
@@ -265,6 +276,7 @@ class DepthMotionTracker:
         self,
         *,
         known_static_primitives: list[dict[str, Any]] | None = None,
+        known_static_surfaces: MapSurfaceIndex | None = None,
         voxel_size_m: float = 0.35,
         minimum_points: int = 3,
         association_distance_m: float = 1.2,
@@ -309,6 +321,12 @@ class DepthMotionTracker:
             if primitives
             else None
         )
+        if known_static_surfaces is not None and not isinstance(
+            known_static_surfaces, MapSurfaceIndex
+        ):
+            raise ValueError("DEPTH_TRACK_STATIC_SURFACES_INVALID")
+        self._static_surfaces = known_static_surfaces
+        self._static_exclusion_m = float(static_exclusion_m)
         self._tracks: dict[int, _Track] = {}
         self._next_track_id = 1
         self._last_frame_time: float | None = None
@@ -333,6 +351,63 @@ class DepthMotionTracker:
         key = tuple(math.floor(value) for value in scaled)
         return key
 
+    # 功能：以真实射线首交解释静态网格端点；只排除动态假设，不修改占据射线。
+    # 输入：唯一端点及真实起点、定位误差；输出：可由首个可见静态面解释的端点集合。
+    def _known_surface_points(
+        self, rays: dict[Point, Point], *, uncertainty_m: float
+    ) -> set[Point]:
+        if self._static_surfaces is None or not rays:
+            return set()
+        tolerance = self._static_exclusion_m + uncertainty_m
+        # 超出既有表面关联器的有效误差包络时，不推断静态身份。
+        # 即使误差过大，原始点仍进入占据融合及动态关联。
+        if not 0.0 < tolerance <= 2.0:
+            return set()
+        limits = MapAlignmentLimits(
+            maximum_association_distance_m=tolerance,
+            maximum_residual_p95_m=min(0.08, tolerance),
+            huber_scale_m=min(0.02, tolerance),
+        )
+        points = list(rays)
+        explained: set[Point] = set()
+        for start in range(0, len(points), 512):
+            batch = points[start:start + 512]
+            endpoints = np.asarray(batch, dtype=float)
+            origins = np.asarray([rays[point] for point in batch], dtype=float)
+            lengths = np.linalg.norm(endpoints - origins, axis=1)
+            # 零长度及越过关联器坐标域的点不适于首交证明，但不会从原始帧删掉。
+            eligible = ((lengths >= 1e-6)
+                        & (np.abs(endpoints).max(axis=1) <= 1e6)
+                        & (np.abs(origins).max(axis=1) <= 1e6))
+            if not eligible.any():
+                continue
+            matches = self._static_surfaces.match(
+                endpoints[eligible], limits, sensor_origins_world_m=origins[eligible],
+                # 定位误差沿斜视射线可放大；旧的等长深度前缀会先截掉真实首交。
+                # 非零误差使用既有完整首交，仍受局部候选及网格工作量预算约束。
+                observed_range_prefix=uncertainty_m == 0.0,
+            )
+            if matches.surface_ranges_m is None:
+                continue
+            # 法向距离小不足以证明身份：切向很远、位于网格孔洞后方或静态面
+            # 前方的独立目标仍须保留。必须同时吻合真实射线的首交深度。
+            directions = ((endpoints[eligible] - origins[eligible])
+                          / lengths[eligible, None])
+            incidence = np.abs(np.sum(matches.normals * directions, axis=1))
+            usable_incidence = incidence > 1e-12
+            # 平移定位误差投影到射线距离为 sigma/|n·ray|；固定的测距表面余量
+            # 仍是原值，不能一起除以入射角而吞掉近切向的独立前景目标。
+            range_tolerance = self._static_exclusion_m + np.divide(
+                uncertainty_m, incidence, out=np.zeros_like(incidence),
+                where=usable_incidence,
+            )
+            accepted = (matches.valid & usable_incidence
+                        & (np.abs(lengths[eligible] - matches.surface_ranges_m)
+                           <= range_tolerance))
+            selected = np.flatnonzero(eligible)[accepted]
+            explained.update(batch[int(index)] for index in selected)
+        return explained
+
     # 功能：
     #   将可靠且非地图表面的不重复端点按二十六邻域聚类，不修改原始占据射线。
     # 输入：
@@ -348,6 +423,7 @@ class DepthMotionTracker:
         # stays occupied in fusion and collision safety, even beside a wall.
         uncertainty_m = 3.0 * math.sqrt(frame.localization_covariance_m2)
         quality_by_point: dict[Point, float] = {}
+        origins_by_point: dict[Point, Point] = {}
         for ray in frame.range_rays:
             if not ray.hit or ray.confidence < 0.35:
                 continue
@@ -358,11 +434,17 @@ class DepthMotionTracker:
             ):
                 continue
             if point not in quality_by_point:
-                buckets[self._key(point)].append(point)
                 quality_by_point[point] = ray.confidence
+                origins_by_point[point] = _point(ray.origin_m)
             else:
                 # Repeating one point cannot create independent support.
                 quality_by_point[point] = min(quality_by_point[point], ray.confidence)
+        known_surface_points = self._known_surface_points(
+            origins_by_point, uncertainty_m=uncertainty_m
+        )
+        for point in quality_by_point:
+            if point not in known_surface_points:
+                buckets[self._key(point)].append(point)
         pending = set(buckets)
         clusters: list[_Cluster] = []
         neighbor_offsets = [
@@ -474,6 +556,9 @@ class DepthMotionTracker:
             for track_id, track in self._tracks.items()
             if 0.0
             < observed_at_monotonic_seconds - track.observed_at_seconds
+            <= self.maximum_track_age_seconds
+            and 0.0
+            < (frame.observed_at_unix_ms - track.observed_at_unix_ms) / 1_000
             <= self.maximum_track_age_seconds
         }
         available = set(previous)

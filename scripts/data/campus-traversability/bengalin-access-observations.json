@@ -1,0 +1,220 @@
+{
+  "schema_version": "dronedream.ground-observations.v1",
+  "coordinate_frame": "ENU",
+  "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+  "corridors": [
+    {
+      "id": "fringe-bengalin-east-bend",
+      "kind": "path",
+      "centerline_xy_m": [
+        [
+          233,
+          222
+        ],
+        [
+          231,
+          220
+        ],
+        [
+          232,
+          218
+        ],
+        [
+          233,
+          216
+        ],
+        [
+          234,
+          214
+        ],
+        [
+          235,
+          212
+        ],
+        [
+          236,
+          210
+        ],
+        [
+          238,
+          208
+        ],
+        [
+          241,
+          205
+        ],
+        [
+          245,
+          202
+        ],
+        [
+          249,
+          199
+        ],
+        [
+          251,
+          197
+        ],
+        [
+          252,
+          195.3
+        ],
+        [
+          254,
+          194
+        ],
+        [
+          256,
+          194
+        ],
+        [
+          260,
+          195
+        ],
+        [
+          264,
+          196
+        ],
+        [
+          266,
+          195
+        ]
+      ],
+      "width_m": 3.0,
+      "ground_z_m": 0.0,
+      "evidence": {
+        "source": "registered-orthophoto-visual-review-with-official-land-cover",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "adjoining_image_sha256": "8a7f91a02dfdc987e6909497aaec283cdccf82627ed4d6693c3adf975ac6be06",
+        "adjoining_image_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25498100%2C6677020%2C25498230%2C6677160&width=1560&height=1680&format=image%2Fjpeg",
+        "adjoining_image_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "ground_classification_sources": [
+          {
+            "layer": "maanpeite_paallystetty_tie_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_paallystetty_tie_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "2c711716bdd7aa0cacaa5c5d6a73f6090ca314b1ba3ad836e5b2e27051246050",
+            "features": 1,
+            "retrieved_at": "2026-10-23T19:58:53.513820+00:00"
+          },
+          {
+            "layer": "maanpeite_paallystamaton_tie_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_paallystamaton_tie_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "4cba32a26346de84bbb885672d74feafb0a004edb7357e51a6945d8d1f1d79b6",
+            "features": 1,
+            "retrieved_at": "2026-10-23T19:58:51.183115+00:00"
+          },
+          {
+            "layer": "maanpeite_muu_avoin_matala_kasvillisuus_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_muu_avoin_matala_kasvillisuus_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "3f48e448bf47178441701b34829794b2470ddef62bcfb88e7a61c46c655b453b",
+            "features": 6,
+            "retrieved_at": "2026-10-23T19:58:51.505774+00:00"
+          }
+        ],
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "The visible curved unpaved access and open verge east of the southwest courtyard tree tips, continuing to the existing Hameentie street. Dense curve points preserve the real bend; a straight chord cuts the western tree crown. The 2024 official unpaved-road layer and registered 2025/2023 imagery both show this ground connection."
+      }
+    },
+    {
+      "id": "fringe-bengalin-east-highway",
+      "kind": "road",
+      "centerline_xy_m": [
+        [
+          266,
+          195
+        ],
+        [
+          263,
+          180
+        ],
+        [
+          260,
+          165
+        ],
+        [
+          256,
+          150
+        ],
+        [
+          252,
+          135
+        ],
+        [
+          248,
+          120
+        ],
+        [
+          244,
+          105
+        ],
+        [
+          240,
+          90
+        ],
+        [
+          235,
+          77
+        ],
+        [
+          228,
+          73
+        ],
+        [
+          221,
+          71
+        ],
+        [
+          215,
+          70
+        ]
+      ],
+      "width_m": 6.0,
+      "ground_z_m": 0.0,
+      "evidence": {
+        "source": "registered-orthophoto-visual-review-with-official-land-cover",
+        "image_sha256": "b55169b513d4a132a31bd6720cab464797498bcc5a1ec9eb9abf0efba25a1cb6",
+        "adjoining_image_sha256": "8a7f91a02dfdc987e6909497aaec283cdccf82627ed4d6693c3adf975ac6be06",
+        "adjoining_image_url": "https://kartta.hsy.fi/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=taustakartat_ja_aluejaot%3AOrtoilmakuva_2023&styles=&srs=EPSG%3A3879&bbox=25498100%2C6677020%2C25498230%2C6677160&width=1560&height=1680&format=image%2Fjpeg",
+        "adjoining_image_year": 2023,
+        "crs": "EPSG:3879",
+        "origin": [
+          25497920,
+          6676880
+        ],
+        "ground_classification_sources": [
+          {
+            "layer": "maanpeite_paallystetty_tie_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_paallystetty_tie_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "2c711716bdd7aa0cacaa5c5d6a73f6090ca314b1ba3ad836e5b2e27051246050",
+            "features": 1,
+            "retrieved_at": "2026-10-23T19:58:53.513820+00:00"
+          },
+          {
+            "layer": "maanpeite_paallystamaton_tie_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_paallystamaton_tie_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "4cba32a26346de84bbb885672d74feafb0a004edb7357e51a6945d8d1f1d79b6",
+            "features": 1,
+            "retrieved_at": "2026-10-23T19:58:51.183115+00:00"
+          },
+          {
+            "layer": "maanpeite_muu_avoin_matala_kasvillisuus_2024",
+            "url": "https://kartta.hsy.fi/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=asuminen_ja_maankaytto%3Amaanpeite_muu_avoin_matala_kasvillisuus_2024&srsName=EPSG%3A3879&bbox=25498140%2C6677060%2C25498195%2C6677115%2CEPSG%3A3879&outputFormat=application%2Fjson",
+            "sha256": "3f48e448bf47178441701b34829794b2470ddef62bcfb88e7a61c46c655b453b",
+            "features": 6,
+            "retrieved_at": "2026-10-23T19:58:51.505774+00:00"
+          }
+        ],
+        "status": "candidate-requires-geometry-and-simulation-qualification",
+        "note": "The visible continuous Hameentie carriageway east of the campus forest, from the Bengalinpolku footway exit south to the previously traced road junction. This extends observed roadway coverage, not a straight shortcut through the forest."
+      }
+    }
+  ],
+  "areas": [],
+  "exclusions": [],
+  "handoff_corrections": []
+}

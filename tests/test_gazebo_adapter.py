@@ -19,6 +19,7 @@ from dronedream_agent_core.gazebo_adapter import (
     SimulationRuntimeError,
     _advance_closed_loop_progress_anchors,
     _bounded_executor_subphase_extension_allowed,
+    _confirm_payload_attached_before_flight,
     _detach_payload_before_flight,
     _distance_to_polyline,
     _effective_local_speed_limit_mps,
@@ -1179,6 +1180,7 @@ def test_payload_spawn_is_bound_to_the_attach_checkpoint(tmp_path: Path) -> None
     assert spec["attach_topic"] == "/payload/attach"
     assert spec["detach_topic"] == "/payload/detach"
     assert spec["output_topic"] == "/payload/state"
+    assert spec["initially_detached"] is True
 
     vehicle_sdf.write_text(
         """<sdf version="1.9"><model name="my_drone">
@@ -1193,6 +1195,110 @@ def test_payload_spawn_is_bound_to_the_attach_checkpoint(tmp_path: Path) -> None
             checkpoint_contract_path=checkpoint_path,
             track=track,
         )
+
+
+def test_release_payload_spawns_attached_at_the_launch_mount(tmp_path: Path) -> None:
+    vehicle_sdf = tmp_path / "model.sdf"
+    vehicle_sdf.write_text(
+        """<sdf version="1.9"><model name="my_drone">
+        <plugin filename="gz-sim-detachable-joint-system" name="DetachableJoint">
+        <child_model>takeout_payload</child_model>
+        <attach_topic>/payload/attach</attach_topic>
+        <detach_topic>/payload/detach</detach_topic>
+        <output_topic>/payload/state</output_topic>
+        </plugin></model></sdf>""",
+        encoding="utf-8",
+    )
+    payload_sdf = tmp_path / "takeout-payload.sdf"
+    payload_sdf.write_text(
+        '<sdf version="1.9"><model name="takeout_payload"><link name="payload"/></model></sdf>',
+        encoding="utf-8",
+    )
+    action_path = tmp_path / "runtime-actions.json"
+    action_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.runtime-action-execution.v1",
+                "contract_id": "mission-release",
+                "task_graph_sha256": "a" * 64,
+                "domain_action_catalog_sha256": "b" * 64,
+                "adapter_catalog_sha256": "c" * 64,
+                "steps": [
+                    {
+                        "schema_version": "dronedream.runtime-action-step.v1",
+                        "step_id": "action-001",
+                        "task_id": "release",
+                        "action": "delivery.release-payload",
+                        "target_node": "delivery-zone",
+                        "trigger": "checkpoint",
+                        "checkpoint_id": "checkpoint-001",
+                        "runtime_executor": "native.payload.release",
+                        "adapter_id": "runtime.payload.gazebo-detachable-joint",
+                        "driver": "gazebo-payload",
+                        "parameters": {
+                            "operation": "detach",
+                            "payload_mount_offset_model_m": [0.0, 0.0, 0.12],
+                        },
+                        "required_success_evidence": ["payload released"],
+                        "max_attempts": 1,
+                        "fallback": "return",
+                        "timeout_seconds": 25,
+                        "authority": "actuate",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkpoint_path = tmp_path / "runtime-checkpoints.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.runtime-checkpoints.v1",
+                "contract_id": "mission-release",
+                "checkpoints": [
+                    {
+                        "checkpoint_id": "checkpoint-001",
+                        "segment_id": "segment-001",
+                        "task_id": "release",
+                        "track_point_index": 1,
+                        "target_node": "delivery-zone",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    track = Px4Track.model_validate(
+        {
+            "coordinate_contract": {
+                "model_root_world_enu_m": [0.0, 0.0, 0.0],
+                "collision_center_offset_model_m": [0.0, 0.0, 0.228],
+            },
+            "points": [
+                {"x": 0, "y": 0, "z": 1, "phase": "launch", "speed_limit_mps": 1},
+                {"x": 1, "y": 2, "z": 1, "phase": "transit", "speed_limit_mps": 1},
+            ],
+            "source_world_points": [
+                {"east_m": -41.0, "north_m": -83.0, "up_m": 1.5},
+                {"east_m": -56.665, "north_m": -83.016, "up_m": 2.0},
+            ],
+            "waypoint_hold_seconds": 0.4,
+        }
+    )
+
+    spec = _payload_spawn_spec(
+        vehicle_sdf=vehicle_sdf,
+        runtime_action_contract_path=action_path,
+        checkpoint_contract_path=checkpoint_path,
+        track=track,
+    )
+
+    assert spec is not None
+    assert spec["sdf_path"] == payload_sdf
+    assert spec["initially_detached"] is False
+    assert spec["track_point_index"] == 0
+    assert spec["pose"] == pytest.approx((-41.0, -83.0, 1.392))
 
 
 def test_payload_spawn_rejects_missing_current_action_mount_binding(tmp_path: Path) -> None:
@@ -1361,6 +1467,35 @@ def test_payload_preflight_detach_requires_positive_state_readback(
                 env={},
             )
     assert any(command[3] == "/payload/detach" for command in commands if len(command) > 3)
+
+
+# 功能：随航载荷必须由两个推进中的原生关节快照证明已经挂载。
+# 输入：连续 Gazebo 物理时步；输出：绑定状态服务的已挂载回执。
+def test_payload_preflight_attachment_requires_advancing_joint_state(monkeypatch) -> None:
+    from dronedream_agent_core import payload_state_query
+
+    iterations = iter((41, 42))
+
+    def query(*_args, **_kwargs):
+        return {
+            "detached": False,
+            "iteration": next(iterations),
+            "source": "gazebo-ecm-joint-query",
+            "observed_at_unix_ms": 1_000,
+        }
+
+    monkeypatch.setattr(payload_state_query, "query_attachment_state", query)
+    evidence = _confirm_payload_attached_before_flight(
+        "gz",
+        state_service="/world/test/model/payload/attachment_state",
+        output_topic="/payload/state",
+        env={},
+        timeout=1.0,
+    )
+
+    assert evidence["confirmed"] is True
+    assert evidence["detached"] is False
+    assert evidence["physics_iteration"] == 42
 
 
 # 功能：

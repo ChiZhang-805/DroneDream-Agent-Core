@@ -47,6 +47,39 @@ def test_qualified_range_rejects_non_finite_track_points(tmp_path: Path) -> None
         builder._verified_track_distance_m(tmp_path)
 
 
+def test_independent_range_evidence_is_bound_to_airframe_and_controller(
+    tmp_path: Path,
+) -> None:
+    builder = _load_builder()
+    vehicle = tmp_path / "vehicle"
+    vehicle.mkdir()
+    (vehicle / "model.sdf").write_text("exact-airframe", encoding="utf-8")
+    controller = tmp_path / "controller.json"
+    controller.write_text('{"vel_limit":6}', encoding="utf-8")
+    receipt = tmp_path / "capability.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "dronedream.vehicle-capability-evidence.v1",
+                "status": "verified",
+                "vehicle_sdf_sha256": builder._sha256(vehicle / "model.sdf"),
+                "controller_params_sha256": builder._sha256(controller),
+                "qualified_range_m": 594.8,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert builder._independently_qualified_range_m(
+        receipt, vehicle_source=vehicle, controller_params=controller
+    ) == pytest.approx(594.8)
+    controller.write_text('{"vel_limit":1.2}', encoding="utf-8")
+    with pytest.raises(ValueError, match="CONTROLLER_PARAMS_SHA256_MISMATCH"):
+        builder._independently_qualified_range_m(
+            receipt, vehicle_source=vehicle, controller_params=controller
+        )
+
+
 def test_pickup_index_comes_from_matching_checkpoint_and_payload_evidence(
     tmp_path: Path,
 ) -> None:

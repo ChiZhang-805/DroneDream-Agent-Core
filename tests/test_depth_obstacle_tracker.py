@@ -229,6 +229,20 @@ def test_missing_depth_detection_retains_original_observation_and_ages():
     assert returned.age_seconds == 0
 
 
+# 功能：仿真源时钟快于宿主循环时，也必须按观测源年龄淘汰动态目标，不能永久悬停。
+# 输入：宿主单调时间只前进 0.1 秒、源时间已前进 2 秒的空深度帧。
+# 输出：超过跟踪寿命的旧动态目标被移除。
+def test_source_clock_expiry_cannot_be_hidden_by_slow_host_clock():
+    tracker = DepthMotionTracker(minimum_dynamic_speed_mps=0.1)
+    tracker.update(_frame(1, 1.0), observed_at_monotonic_seconds=0.1)
+    assert len(tracker.update(_frame(2, 1.2), observed_at_monotonic_seconds=0.2)) == 1
+    empty = _frame(3, 1.3).model_copy(update={"observed_at_unix_ms": 2_200})
+    for ray in empty.range_rays:
+        ray.hit = False
+        ray.observed_at_monotonic_seconds = 0.3
+    assert tracker.update(empty, observed_at_monotonic_seconds=0.3) == []
+
+
 # 功能：
 #   验证速度超限的错误关联不会删除已有障碍，也不会伪造新鲜位置。
 # 输入：

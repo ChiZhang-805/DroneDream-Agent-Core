@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from .local_map_alignment import MapSurfaceIndex
+from .map_surface_geometry import MAX_INDEX_MESH_TRIANGLES, MAX_MESH_TRIANGLES
 from .plugin_files import portable_plugin_path, read_plugin_file
 
 
@@ -61,57 +62,134 @@ def _pose(node):
     return transform
 
 
-# 功能：从闭合、有向 OBJ 三角网格读取实际表面；不以碰撞胶囊或外包盒代替孔洞。
+# 功能：从 OBJ 网格读取实际表面；确定性三角化凸平面多边形，并保留开放的平面地表。
 # 输入：raw：有界 OBJ 内容；scale：三个正缩放因子。
-# 输出：缩放后的三角形数组；开放、反向连接、非三角形或退化表面被明确拒绝。
+# 输出：缩放后的三角形数组；凹面、非平面面、非流形、开放立体壳或退化表面被明确拒绝。
 def _obj_triangles(raw, scale):
-    vertices, faces = [], []
+    vertices, polygons = [], []
     for line in raw.decode("utf-8").splitlines():
         fields = line.partition("#")[0].split()
         if not fields:
             continue
         if fields[0] == "v":
             vertices.append(_numbers(" ".join(fields[1:]), 3))
-            if len(vertices) > 8192:
+            if len(vertices) > MAX_MESH_TRIANGLES:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] == "f":
-            if len(fields) != 4:
-                raise ValueError("OPTICAL_MAP_TRIANGLES_REQUIRED")
+            if len(fields) < 4 or len(fields) > 257:
+                raise ValueError("OPTICAL_MAP_FACE_VERTEX_COUNT_INVALID")
             try:
                 ids = [int(f.split("/")[0]) for f in fields[1:]]
                 ids = [i - 1 if i > 0 else len(vertices) + i for i in ids]
             except ValueError as exc:
                 raise ValueError("OPTICAL_MAP_MESH_INDEX_INVALID") from exc
-            if len(set(ids)) != 3 or any(i < 0 or i >= len(vertices) for i in ids):
+            if len(set(ids)) != len(ids) or any(i < 0 or i >= len(vertices) for i in ids):
                 raise ValueError("OPTICAL_MAP_MESH_INDEX_INVALID")
-            faces.append(ids)
-            if len(faces) > 8192:
+            polygons.append(ids)
+            if len(polygons) > MAX_MESH_TRIANGLES:
                 raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
         elif fields[0] not in {"vn", "vt", "o", "g", "s", "usemtl", "mtllib"}:
             raise ValueError("OPTICAL_MAP_OBJ_DIRECTIVE_UNSUPPORTED")
-    if not vertices or not faces:
+    if not vertices or not polygons:
         raise ValueError("OPTICAL_MAP_MESH_EMPTY")
+
+    scaled_vertices = np.asarray(vertices) * scale
+    faces = []
+    for polygon in polygons:
+        points = scaled_vertices[np.asarray(polygon)]
+        # Newell's method yields a stable authoring normal for any convex planar
+        # polygon, including the quads emitted by Gazebo's map asset pipeline.
+        normal = np.sum(np.cross(points, np.roll(points, -1, axis=0)), axis=0)
+        normal_length = float(np.linalg.norm(normal))
+        span = max(float(np.ptp(points, axis=0).max()), 1.0)
+        tolerance = 1e-10 * span
+        if normal_length <= tolerance * tolerance:
+            raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
+        unit_normal = normal / normal_length
+        if np.max(np.abs((points - points[0]) @ unit_normal)) > tolerance:
+            raise ValueError("OPTICAL_MAP_FACE_NONPLANAR")
+        # Project onto the dominant plane and use deterministic ear clipping.
+        # Real building roofs often have a concave footprint, so a fan from the
+        # first vertex would create triangles outside the authored surface.
+        drop_axis = int(np.argmax(np.abs(unit_normal)))
+        projected = np.delete(points, drop_axis, axis=1)
+        signed_area = float(
+            np.sum(
+                projected[:, 0] * np.roll(projected[:, 1], -1)
+                - np.roll(projected[:, 0], -1) * projected[:, 1]
+            )
+            / 2
+        )
+        if abs(signed_area) <= tolerance * tolerance:
+            raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
+        orientation = 1.0 if signed_area > 0 else -1.0
+
+        def cross2(a, b, c):
+            ab, ac = b - a, c - a
+            return float(ab[0] * ac[1] - ab[1] * ac[0])
+
+        def inside_or_on(point, a, b, c):
+            turns = orientation * np.array(
+                [cross2(a, b, point), cross2(b, c, point), cross2(c, a, point)]
+            )
+            return bool(np.all(turns >= -tolerance * tolerance))
+
+        remaining = list(range(len(polygon)))
+        polygon_faces = []
+        while len(remaining) > 3:
+            clipped = False
+            for position, current in enumerate(remaining):
+                previous = remaining[position - 1]
+                following = remaining[(position + 1) % len(remaining)]
+                a, b, c = projected[[previous, current, following]]
+                if orientation * cross2(a, b, c) <= tolerance * tolerance:
+                    continue
+                if any(
+                    inside_or_on(projected[candidate], a, b, c)
+                    for candidate in remaining
+                    if candidate not in {previous, current, following}
+                ):
+                    continue
+                polygon_faces.append(
+                    (polygon[previous], polygon[current], polygon[following])
+                )
+                del remaining[position]
+                clipped = True
+                break
+            if not clipped:
+                raise ValueError("OPTICAL_MAP_FACE_SIMPLE_REQUIRED")
+        a, b, c = projected[remaining]
+        if orientation * cross2(a, b, c) <= tolerance * tolerance:
+            raise ValueError("OPTICAL_MAP_FACE_SIMPLE_REQUIRED")
+        polygon_faces.append(tuple(polygon[i] for i in remaining))
+        for face in polygon_faces:
+            faces.append(face)
+            if len(faces) > MAX_MESH_TRIANGLES:
+                raise ValueError("OPTICAL_MAP_MESH_BUDGET_EXCEEDED")
+
     edges = {}
     for a, b, c in faces:
         for i, j in ((a, b), (b, c), (c, a)):
             edges[(i, j)] = edges.get((i, j), 0) + 1
-    if any(n != 1 or edges.get((j, i)) != 1 for (i, j), n in edges.items()):
+    if any(n != 1 or edges.get((j, i), 0) > 1 for (i, j), n in edges.items()):
         raise ValueError("OPTICAL_MAP_CLOSED_ORIENTED_MESH_REQUIRED")
+    closed = all(edges.get((j, i)) == 1 for i, j in edges)
     adjacency = {}
     for i, j in edges:
         adjacency.setdefault(i, set()).add(j)
-    seen, pending = set(), [faces[0][0]]
-    while pending:
-        vertex = pending.pop()
-        if vertex in seen:
-            continue
-        seen.add(vertex)
-        pending.extend(adjacency[vertex] - seen)
-    if len(seen) != len(adjacency):
-        # Nested shells need an explicit solid/void contract. Never guess which
-        # component is a cavity or merge their normals by total signed volume.
-        raise ValueError("OPTICAL_MAP_DISCONNECTED_MESH_REQUIRES_SOLID_CONTRACT")
-    triangles = (np.asarray(vertices) * scale)[np.asarray(faces)]
+        adjacency.setdefault(j, set()).add(i)
+    components, unseen = [], set(adjacency)
+    while unseen:
+        seen, pending = set(), [min(unseen)]
+        while pending:
+            vertex = pending.pop()
+            if vertex in seen:
+                continue
+            seen.add(vertex)
+            pending.extend(adjacency[vertex] - seen)
+        components.append(seen)
+        unseen -= seen
+    triangles = scaled_vertices[np.asarray(faces)]
     if np.any(
         np.linalg.norm(
             np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1
@@ -119,15 +197,44 @@ def _obj_triangles(raw, scale):
         < 1e-12
     ):
         raise ValueError("OPTICAL_MAP_MESH_DEGENERATE")
-    centered = triangles - triangles[0, 0]
-    volume = float(
-        np.sum(np.einsum("ij,ij->i", centered[:, 0], np.cross(centered[:, 1], centered[:, 2]))) / 6
-    )
-    if not math.isfinite(volume) or abs(volume) < 1e-12:
-        raise ValueError("OPTICAL_MAP_MESH_VOLUME_INVALID")
+    if closed:
+        volume_signs = []
+        for component in components:
+            component_triangles = triangles[
+                np.asarray([face[0] in component for face in faces], dtype=bool)
+            ]
+            centered = component_triangles - component_triangles[0, 0]
+            volume = float(
+                np.sum(
+                    np.einsum(
+                        "ij,ij->i", centered[:, 0], np.cross(centered[:, 1], centered[:, 2])
+                    )
+                )
+                / 6
+            )
+            if not math.isfinite(volume) or abs(volume) < 1e-12:
+                raise ValueError("OPTICAL_MAP_MESH_VOLUME_INVALID")
+            volume_signs.append(math.copysign(1.0, volume))
+        if len(set(volume_signs)) != 1:
+            # Opposite-wound disconnected shells may encode voids or nested
+            # cavities. That semantic needs an explicit solid contract.
+            raise ValueError("OPTICAL_MAP_DISCONNECTED_MESH_REQUIRES_SOLID_CONTRACT")
+    else:
+        # A render mesh may deliberately be an open, zero-thickness ground
+        # sheet. Accept only one globally coplanar component; an open 3-D shell
+        # still means missing physical surfaces and must fail closed.
+        if len(components) != 1:
+            raise ValueError("OPTICAL_MAP_DISCONNECTED_MESH_REQUIRES_SOLID_CONTRACT")
+        referenced = scaled_vertices[np.asarray(sorted(adjacency))]
+        plane_normal = np.cross(triangles[0, 1] - triangles[0, 0],
+                                triangles[0, 2] - triangles[0, 0])
+        plane_normal /= np.linalg.norm(plane_normal)
+        span = max(float(np.ptp(referenced, axis=0).max()), 1.0)
+        if np.max(np.abs((referenced - triangles[0, 0]) @ plane_normal)) > 1e-10 * span:
+            raise ValueError("OPTICAL_MAP_CLOSED_ORIENTED_MESH_REQUIRED")
     # Preserve authoring winding: single-sided rendering culls its backfaces.
     # Normalizing winding here would change the surface visible to the camera.
-    return triangles
+    return triangles, closed
 
 
 # 功能：核验包内资源路径和内容身份；禁止绝对路径、链接、越界读取及累积超额资源。
@@ -272,14 +379,15 @@ def compile_optical_map(
                     scale = _numbers(shape.findtext("scale", "1 1 1"), 3)
                     if np.min(scale) <= 0:
                         raise ValueError("OPTICAL_MAP_MESH_SCALE_INVALID")
-                    triangles = _obj_triangles(mesh, scale)
+                    triangles, mesh_closed = _obj_triangles(mesh, scale)
                     mesh_triangle_count += len(triangles)
                     # Enforce the index-wide budget BEFORE allocating nested
                     # Python lists. Repeated instances count even when they
                     # share one small OBJ resource.
-                    if mesh_triangle_count > 65_536:
+                    if mesh_triangle_count > MAX_INDEX_MESH_TRIANGLES:
                         raise ValueError("OPTICAL_MAP_MESH_TRIANGLE_BUDGET_EXCEEDED")
                     primitive["triangles"] = triangles.tolist()
+                    primitive["mesh_closed"] = mesh_closed
                     double_sided = visual.findtext("material/double_sided", "false").strip().lower()
                     if double_sided not in {"true", "false", "1", "0"}:
                         raise ValueError("OPTICAL_MAP_DOUBLE_SIDED_INVALID")

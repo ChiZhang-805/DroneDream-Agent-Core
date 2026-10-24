@@ -17,6 +17,7 @@ from dronedream_agent_core.contracts import (
     MissionRequest,
     ModelCallRecord,
     PlanCritique,
+    Px4Track,
     RouteClearanceReport,
     SemanticPlan,
     TaskGraph,
@@ -27,6 +28,7 @@ from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.model_harness.model_port import StructuredCallResult
 from dronedream_agent_core.orchestrator import (
     MissionPreparationBlocked,
+    _apply_model_speed_preferences,
     _bind_explicit_intent_constraints,
     _bind_product_intent_defaults,
     _bind_task_graph_action_contracts,
@@ -355,11 +357,33 @@ def test_dual_review_consensus_uses_the_conservative_rejection_and_keeps_every_r
 
 def test_non_review_consensus_dissent_fails_closed_instead_of_discarding_a_call() -> None:
     first = _model_result(
-        SemanticPlan(ordered_targets=["pickup"], rationale_summary="Direct."),
+        SemanticPlan(
+            ordered_targets=["pickup"],
+            speed_preferences=[
+                {
+                    "target_node": "pickup",
+                    "cruise_speed_mps": 3.5,
+                    "approach_speed_mps": 0.8,
+                    "rationale": "Precise pickup approach.",
+                }
+            ],
+            rationale_summary="Direct.",
+        ),
         call_suffix="a",
     )
     second = _model_result(
-        SemanticPlan(ordered_targets=["office"], rationale_summary="Return."),
+        SemanticPlan(
+            ordered_targets=["office"],
+            speed_preferences=[
+                {
+                    "target_node": "office",
+                    "cruise_speed_mps": 4.0,
+                    "approach_speed_mps": 0.7,
+                    "rationale": "Controlled landing approach.",
+                }
+            ],
+            rationale_summary="Return.",
+        ),
         call_suffix="b",
     )
 
@@ -442,6 +466,20 @@ def test_semantic_plan_bounds_explanatory_prose_without_changing_control_fields(
         {
             "ordered_targets": ["pickup", "office"],
             "route_policy": "clearance-first",
+            "speed_preferences": [
+                {
+                    "target_node": "pickup",
+                    "cruise_speed_mps": 3.4,
+                    "approach_speed_mps": 0.8,
+                    "rationale": "Precise pickup approach.",
+                },
+                {
+                    "target_node": "office",
+                    "cruise_speed_mps": 4.5,
+                    "approach_speed_mps": 0.7,
+                    "rationale": "Open return then landing.",
+                },
+            ],
             "rationale_summary": "x" * 900,
         }
     )
@@ -874,21 +912,148 @@ def test_task_graph_requires_exact_catalog_evidence_not_a_negated_substring() ->
         _validate_task_graph(graph, _contract(), _map(), catalog)
 
 
+def _semantic_plan_vehicle() -> VehicleAsset:
+    return VehicleAsset(
+        asset_id="test-vehicle", name="Test vehicle", dry_mass_kg=2.0,
+        max_takeoff_mass_kg=3.0, body_radius_m=0.3, body_height_m=0.4,
+        max_speed_mps=6.0, max_acceleration_mps2=1.5, qualified_range_m=100.0,
+        reserve_battery_percent=30.0, max_pickup_payload_kg=0.1, sensors=["depth"],
+    )
+
+
 def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
     plan = SemanticPlan(
         ordered_targets=["stale-gate", "pickup", "office"],
+        speed_preferences=[
+            {
+                "target_node": "stale-gate",
+                "cruise_speed_mps": 3.0,
+                "approach_speed_mps": 0.8,
+                "rationale": "Stale destination.",
+            },
+            {
+                "target_node": "pickup",
+                "cruise_speed_mps": 5.4,
+                "approach_speed_mps": 0.8,
+                "rationale": "Pickup approach.",
+            },
+            {
+                "target_node": "office",
+                "cruise_speed_mps": 5.0,
+                "approach_speed_mps": 0.7,
+                "rationale": "Return approach.",
+            },
+        ],
         rationale_summary="Old destination then current mission.",
     )
     with pytest.raises(MissionPreparationBlocked, match="SEMANTIC_PLAN_UNAUTHORIZED_TARGET"):
-        _validate_semantic_plan(plan, _contract(), _map())
+        _validate_semantic_plan(plan, _contract(), _map(), _semantic_plan_vehicle())
 
 
 def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
     plan = SemanticPlan(
         ordered_targets=["pickup", "office"],
+        speed_preferences=[
+            {
+                "target_node": "pickup",
+                "cruise_speed_mps": 5.4,
+                "approach_speed_mps": 0.8,
+                "rationale": "Pickup approach.",
+            },
+            {
+                "target_node": "office",
+                "cruise_speed_mps": 5.0,
+                "approach_speed_mps": 0.7,
+                "rationale": "Return approach.",
+            },
+        ],
         rationale_summary="Current target and contract return.",
     )
-    _validate_semantic_plan(plan, _contract(), _map())
+    _validate_semantic_plan(plan, _contract(), _map(), _semantic_plan_vehicle())
+
+
+def test_model_speed_preferences_bind_distinct_limits_to_each_route_leg() -> None:
+    routes = [
+        GraphRoute(
+            start_node="office",
+            goal_node="pickup",
+            node_ids=["office", "outbound", "pickup"],
+            edge_ids=["metric-edge-1", "metric-edge-2"],
+            positions_m=[
+                Vector3(x=0, y=0, z=1),
+                Vector3(x=5, y=0, z=3),
+                Vector3(x=10, y=0, z=2),
+            ],
+            route_length_m=11,
+            all_edges_flight_verified=False,
+        ),
+        GraphRoute(
+            start_node="pickup",
+            goal_node="office",
+            node_ids=["pickup", "return", "office"],
+            edge_ids=["metric-edge-3", "metric-edge-4"],
+            positions_m=[
+                Vector3(x=10, y=0, z=2),
+                Vector3(x=5, y=2, z=3),
+                Vector3(x=0, y=0, z=1),
+            ],
+            route_length_m=12,
+            all_edges_flight_verified=False,
+        ),
+    ]
+    track = Px4Track.model_validate(
+        {
+            "coordinate_contract": {
+                "model_root_world_enu_m": [0, 0, 0],
+                "collision_center_offset_model_m": [0, 0, 0.2],
+            },
+            "points": [
+                {"x": 0, "y": 0, "z": 1, "phase": "launch", "speed_limit_mps": 5.0},
+                {"x": 5, "y": 0, "z": 3, "phase": "transit", "speed_limit_mps": 5.0},
+                {"x": 10, "y": 0, "z": 2, "phase": "pickup", "speed_limit_mps": 5.0},
+                {"x": 5, "y": 2, "z": 3, "phase": "return", "speed_limit_mps": 5.0},
+                {"x": 0, "y": 0, "z": 1, "phase": "land", "speed_limit_mps": 5.0},
+            ],
+            "source_world_points": [
+                {"east_m": 0, "north_m": 0, "up_m": 1},
+                {"east_m": 5, "north_m": 0, "up_m": 3},
+                {"east_m": 10, "north_m": 0, "up_m": 2},
+                {"east_m": 5, "north_m": 2, "up_m": 3},
+                {"east_m": 0, "north_m": 0, "up_m": 1},
+            ],
+            "waypoint_hold_seconds": 0.4,
+        }
+    )
+    plan = SemanticPlan(
+        ordered_targets=["pickup", "office"],
+        speed_preferences=[
+            {
+                "target_node": "pickup",
+                "cruise_speed_mps": 3.2,
+                "approach_speed_mps": 0.8,
+                "rationale": "Slow near the pickup area.",
+            },
+            {
+                "target_node": "office",
+                "cruise_speed_mps": 4.5,
+                "approach_speed_mps": 0.6,
+                "rationale": "Faster open return before landing.",
+            },
+        ],
+        rationale_summary="Use different speeds for different conditions.",
+    )
+
+    limited = _apply_model_speed_preferences(track, routes, plan.speed_preferences)
+
+    assert [point.speed_limit_mps for point in limited.points] == [5.0, 3.2, 3.2, 4.5, 4.5]
+    assert [point.approach_speed_limit_mps for point in limited.points] == [
+        None,
+        None,
+        0.8,
+        None,
+        0.6,
+    ]
+    assert [point.speed_limit_mps for point in track.points] == [5.0] * 5
 
 
 def test_explicit_safety_priority_must_be_structured_not_only_goal_prose() -> None:
@@ -1061,6 +1226,34 @@ def test_intent_critic_keeps_a_real_target_semantic_mismatch() -> None:
     assert normalized.accepted is False
     assert normalized.issue_codes == ["TARGET_ENTITY_MISMATCH"]
     assert discarded == ["MISSING_PAYLOAD_MASS_CONSTRAINT"]
+
+
+def test_intent_critic_cannot_relabel_explicit_collection_as_delivery() -> None:
+    request = MissionRequest(
+        conversation_id="conversation-test",
+        message=(
+            "Take off from the Science High School pickup point, collect the algebra "
+            "notes from Exactum, and return to the Science High School pickup point."
+        ),
+        start_entity="school-pickup",
+    )
+    intent = IntentArtifact(
+        goal="collect the algebra notes and return",
+        start_entity="school-pickup",
+        target_entity="exactum-pickup",
+        return_entity="school-pickup",
+        payload_action="pickup",
+    )
+    critique = IntentCritique(
+        accepted=False,
+        issue_codes=["PAYLOAD_ACTION_MISMATCH", "MISSING_DELIVERY_RELEASE_ACTION"],
+        repair_instructions=["Change pickup to delivery.release-payload."],
+    )
+
+    normalized, discarded = _normalize_intent_critique_scope(critique, intent, request)
+
+    assert normalized == IntentCritique(accepted=True)
+    assert discarded == critique.issue_codes
 
 
 def test_manifest_conditions_recommend_plugins_without_hardcoded_plugin_ids() -> None:

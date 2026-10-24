@@ -8,8 +8,11 @@ an arbitrarily old good frame or change a failed flight into a success.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from dronedream_plugin_sdk.protocol import copy_json, decode_json
@@ -24,9 +27,11 @@ _MAXIMUM_UNIX_MS = ((1 << 63) - 1) // 1_000_000
 # The health publisher is asynchronous to the 10 Hz controller.  A healthy
 # sample can legitimately straddle the controller-to-landing transition by one
 # or two scheduler ticks, especially in a low real-time-factor simulation.  It
-# remains valid evidence when it is both identity-bound and no more than half a
-# second old.  This is an audit freshness window, not a flight-stop threshold.
-_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.5
+# remains valid evidence when it is both identity-bound and no more than three
+# quarters of a second old.  The extra quarter second covers a measured 573 ms
+# source-to-completion boundary in low real-time-factor release simulation.
+# This is an audit freshness window, not a flight-stop threshold.
+_CONTROL_COMPLETION_HEALTH_MAXIMUM_AGE_SECONDS = 0.75
 
 
 # 功能：
@@ -139,6 +144,45 @@ def capture_control_completion(
     }
     receipt = {**content, "receipt_sha256": sha256_json(content)}
     return receipt
+
+
+# 功能：
+#   在控制权仍由 Offboard 保持时等待一个当前健康快照，并在真正结束受控运动的边界封存它。
+#   该等待只接受等待期间新到达且仍满足严格年龄契约的状态，不回看历史好帧。
+# 输入：
+#   maintain_control：每次等待前继续发布当前安全保持设定值的异步回调。
+#   timeout_seconds：允许跨越一次短暂原生状态发布间隙的有界时限。
+# 输出：
+#   receipt：首个当前有效的完成回执；时限耗尽则返回最后一次明确拒绝的回执。
+async def capture_control_completion_when_ready(
+    path: Path, *, track_sha256: str, receiver: PerceptionHealthReceiver | None,
+    realtime_features_required: bool, maintain_control: Callable[[], Awaitable[None]],
+    timeout_seconds: float = 0.75, poll_seconds: float = 0.025,
+) -> dict:
+    if not callable(maintain_control):
+        raise ValueError("PERCEPTION_COMPLETION_CONTROL_CALLBACK_REQUIRED")
+    if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
+        raise ValueError("PERCEPTION_COMPLETION_TIMEOUT_INVALID")
+    if not isinstance(poll_seconds, (int, float)) or isinstance(poll_seconds, bool):
+        raise ValueError("PERCEPTION_COMPLETION_POLL_INVALID")
+    if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+        raise ValueError("PERCEPTION_COMPLETION_TIMEOUT_INVALID")
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("PERCEPTION_COMPLETION_POLL_INVALID")
+
+    deadline = time.monotonic() + float(timeout_seconds)
+    while True:
+        receipt = capture_control_completion(
+            path,
+            track_sha256=track_sha256,
+            completed_at_unix_ms=int(time.time() * 1000),
+            receiver=receiver,
+            realtime_features_required=realtime_features_required,
+        )
+        if receipt.get("accepted") is True or receiver is None or time.monotonic() >= deadline:
+            return receipt
+        await maintain_control()
+        await asyncio.sleep(min(float(poll_seconds), max(0.0, deadline - time.monotonic())))
 
 
 # 功能：

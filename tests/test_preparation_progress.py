@@ -31,6 +31,7 @@ def test_request_account_isolation_bounded_events_and_late_callbacks():
         for index in range(150):
             report_progress("route", str(index), str(index))
         return "result"
+
     assert mailbox.run(key, operation) == "result"
     snapshot = mailbox.read(key, 0)
     assert snapshot["state"] == "completed" and len(snapshot["events"]) == 128
@@ -80,7 +81,33 @@ def test_model_progress_explains_scope_and_reports_measured_time():
 
 def test_candidate_summary_excludes_private_or_unneeded_reasoning():
     events = []
-    report_artifact_progress(lambda *args: events.append(args), SemanticPlan(ordered_targets=["office", "pickup", "office"], rationale_summary="not-for-progress"))
+    report_artifact_progress(
+        lambda *args: events.append(args),
+        SemanticPlan(
+            ordered_targets=["office", "pickup", "office"],
+            speed_preferences=[
+                {
+                    "target_node": "office",
+                    "cruise_speed_mps": 3.5,
+                    "approach_speed_mps": 0.8,
+                    "rationale": "Initial office approach.",
+                },
+                {
+                    "target_node": "pickup",
+                    "cruise_speed_mps": 3.6,
+                    "approach_speed_mps": 0.8,
+                    "rationale": "Pickup approach.",
+                },
+                {
+                    "target_node": "office",
+                    "cruise_speed_mps": 4.5,
+                    "approach_speed_mps": 0.7,
+                    "rationale": "Return approach.",
+                },
+            ],
+            rationale_summary="not-for-progress",
+        ),
+    )
     assert "office → pickup → office" in events[0][1]
     assert "尚不是飞行许可" in events[0][1]
     assert "not-for-progress" not in str(events)
@@ -88,9 +115,13 @@ def test_candidate_summary_excludes_private_or_unneeded_reasoning():
 
 def test_progress_endpoint_requires_login_and_accepts_safe_cursor(tmp_path):
     store = AppStore(tmp_path)
-    identity = VerifiedIdentity("account-test", None, None, "https://example.supabase.co/auth/v1", 2_000_000_000)
+    identity = VerifiedIdentity(
+        "account-test", None, None, "https://example.supabase.co/auth/v1", 2_000_000_000
+    )
     headers = {"Authorization": "Bearer " + "a" * 64, "X-DroneDream-Identity-Token": "test-session"}
-    with TestClient(create_app(store=store, token="a" * 64, identity_verifier=lambda _: identity)) as client:
+    with TestClient(
+        create_app(store=store, token="a" * 64, identity_verifier=lambda _: identity)
+    ) as client:
         url = "/v1/threads/thread-test/preparation-progress?request_id=aaaaaaaaaaaaaaaa"
         assert client.get(url).status_code in (401, 403)
         assert client.get(url, headers=headers).json() == {"state": "pending", "events": []}

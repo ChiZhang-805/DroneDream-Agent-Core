@@ -66,6 +66,73 @@ def test_supervisor_recovers_in_order():
     asyncio.run(scenario())
 
 
+# 功能：最终预检失败保存可读异常正文，不能把有物理含义的超时退化为空白 TimeoutError。
+# 输入：无；输出：失败证据同时包含异常类型及健康阶段消息。
+def test_supervisor_preserves_bounded_failure_message():
+    async def scenario():
+        evidence = {}
+
+        async def attempt(_remaining, _row):
+            raise TimeoutError("PX4 readiness timeout; local_position_ok=false")
+
+        with pytest.raises(TimeoutError, match="local_position_ok=false"):
+            await run_preflight_recovery(
+                attempt=attempt,
+                recover=lambda: asyncio.sleep(0),
+                retryable=lambda _error, _row: False,
+                motion_requested=lambda: False,
+                abort_check=lambda: None,
+                evidence=evidence,
+                timeout_seconds=1,
+            )
+        failed = evidence["attempts"][0]
+        assert failed["error_type"] == "TimeoutError"
+        assert failed["error_message"] == (
+            "PX4 readiness timeout; local_position_ok=false"
+        )
+
+    asyncio.run(scenario())
+
+
+# 功能：真实健康订阅超时明确报告最后一帧状态，并区分连接流与估计器健康流。
+# 输入：停留在未取得本地位置的 MAVSDK 健康夹具；输出：带最后健康字段的有限超时。
+def test_native_health_timeout_reports_last_physical_gate():
+    base = _base_module()
+
+    async def scenario():
+        connection_closed, health_closed = [], []
+
+        async def connection_state():
+            try:
+                yield SimpleNamespace(is_connected=True)
+            finally:
+                connection_closed.append(True)
+
+        async def native_health():
+            try:
+                yield SimpleNamespace(
+                    is_global_position_ok=False,
+                    is_home_position_ok=True,
+                    is_local_position_ok=False,
+                    is_armable=False,
+                )
+                await asyncio.Event().wait()
+            finally:
+                health_closed.append(True)
+
+        client = object.__new__(base.MavsdkOffboardClient)
+        client._system = SimpleNamespace(
+            core=SimpleNamespace(connection_state=connection_state),
+            telemetry=SimpleNamespace(health=native_health),
+        )
+        with pytest.raises(TimeoutError, match="local_position_ok=false"):
+            await client.wait_until_local_position_ready(.03)
+        assert connection_closed == [True]
+        assert health_closed == [True]
+
+    asyncio.run(scenario())
+
+
 # 功能：
 #   真实客户端只接受飞控明确未解锁状态，所有分支都关闭检查订阅。
 # 输入：
@@ -447,7 +514,8 @@ def test_transport_checks_actual_required_rate_receipts(tmp_path, state):
 # 功能：证明视觉定位依赖的遥测先于就绪等待启动，且不跳过原有飞控就绪检查。
 # 输入：tmp_path：隔离日志路径；就绪替身仅在获得采样率请求后返回。
 # 输出：顺序断言以及真实执行过的就绪检查回执，不请求解锁。
-def test_sensor_rates_precede_localization_readiness(tmp_path):
+@pytest.mark.parametrize("camera_bound", [False, True])
+def test_sensor_rates_precede_localization_readiness(tmp_path, camera_bound):
     base = _base_module()
     order = []
 
@@ -455,7 +523,10 @@ def test_sensor_rates_precede_localization_readiness(tmp_path):
         # 功能：记录遥测配置阶段，提供完整且成功的独立请求回执。
         # 输入：无。
         # 输出：按来源列出的模拟速率请求。
-        async def configure_dynamics_telemetry_rates(self):
+        async def configure_dynamics_telemetry_rates(
+            self, *, camera_source_alignment_required=False
+        ):
+            assert camera_source_alignment_required is camera_bound
             order.append('rates')
             return {'sources': {key: {'status': 'requested'} for key in
                     ('position_velocity', 'imu', 'attitude', 'odometry', 'battery')},
@@ -471,7 +542,7 @@ def test_sensor_rates_precede_localization_readiness(tmp_path):
 
     result = asyncio.run(base.connect_preflight_with_recovery(Client(), connection='test-only',
         readiness_timeout_seconds=2, abort_check=lambda: None, log_path=tmp_path/'log',
-        evidence={}))
+        evidence={}, camera_source_alignment_required=camera_bound))
     assert result.armable
     assert order == ['rates', 'readiness']
 

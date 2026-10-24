@@ -337,6 +337,8 @@ class SensorArrivalScheduler:
             raise ValueError("SENSOR_ARRIVAL_RATE_INVALID")
         self._period = 1.0 / rate_hz
         self._last_attempt = -math.inf
+        self._last_processed = -math.inf
+        self._unpaired_source_revision = None
 
     # 功能：
     #   仅为未处理、仍在原始来源期限内的新帧提供唤醒提示，不使旧样本重新变新。
@@ -348,18 +350,26 @@ class SensorArrivalScheduler:
     # 输出：
     #   eligible：新帧、频率与故障条件都满足时为 True。
     def eligible(self, *, now_monotonic: float, sample_monotonic: float | None,
-                 processed_sample_monotonic: float, fault_active: bool) -> bool:
+                 processed_sample_monotonic: float, fault_active: bool,
+                 source_revision: int | None = None) -> bool:
         if (type(fault_active) is not bool or fault_active or sample_monotonic is None
                 or any(not _finite_number(x)
                        for x in (now_monotonic, sample_monotonic,
                                  processed_sample_monotonic))
                 or now_monotonic < 0 or sample_monotonic < 0):
             return False
+        source_advanced = bool(
+            type(source_revision) is int and source_revision >= 0
+            and self._unpaired_source_revision is not None
+            and source_revision > self._unpaired_source_revision
+            and now_monotonic >= self._last_attempt
+            and now_monotonic >= self._last_processed + self._period
+        )
         eligible = bool(
             0 <= now_monotonic - sample_monotonic
             <= LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
             and sample_monotonic > processed_sample_monotonic
-            and now_monotonic >= self._last_attempt + self._period
+            and (now_monotonic >= self._last_attempt + self._period or source_advanced)
         )
         return eligible
 
@@ -375,6 +385,25 @@ class SensorArrivalScheduler:
                 or now_monotonic < 0 or now_monotonic < self._last_attempt):
             raise ValueError("SENSOR_ARRIVAL_CLOCK_INVALID")
         self._last_attempt = now_monotonic
+        self._last_processed = now_monotonic
+        self._unpaired_source_revision = None
+
+    # 功能：未配对尝试只限制重复轮询；实际新里程计到达可提前重试，重处理仍受原频率约束。
+    # 输入：真实尝试时刻、尝试前来源代次与是否已选到完整配对。
+    # 输出：无；不推进图像来源时间，也不把重发缓存当作新来源。
+    def record_source_selection(self, *, now_monotonic: float,
+                                source_revision: int | None, paired: bool) -> None:
+        if (type(paired) is not bool or (source_revision is not None
+                and (type(source_revision) is not int or source_revision < 0))):
+            raise ValueError("SENSOR_ARRIVAL_SOURCE_INVALID")
+        if paired:
+            self.record_attempt(now_monotonic=now_monotonic)
+            return
+        if (not _finite_number(now_monotonic) or now_monotonic < 0
+                or now_monotonic < self._last_attempt):
+            raise ValueError("SENSOR_ARRIVAL_CLOCK_INVALID")
+        self._last_attempt = now_monotonic
+        self._unpaired_source_revision = source_revision
 
 
 # 功能：

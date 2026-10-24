@@ -27,6 +27,7 @@ Point = tuple[float, float, float]
 CONSERVATIVE_VEHICLE_ENVELOPE_SCALE = 1.2
 PREFERRED_TRANSIT_CLEARANCE_M = 0.35
 _MAX_ROUTE_SAMPLES = 250_000
+_MAX_ROUTE_COLLISION_WORK = 50_000_000
 
 
 # 功能：按共享预算反求足够的搜索净空，保守预留最大本地余量，避免搜索与验收使用两套假设。
@@ -127,7 +128,7 @@ def build_localization_recovery_budget(
             ),
             "motion_mode": "nominal",
             "local_perception_revalidation_required": False,
-            "maximum_speed_mps": 1.0,
+            "maximum_speed_mps": 5.0,
             "localization_deficit_m": 0.0,
         }
     structural_room = (
@@ -139,8 +140,9 @@ def build_localization_recovery_budget(
     # Global-localization covariance is not a collision observation and must
     # not become a one-vote mission veto.  When the already validated physical
     # corridor still has room for local perception plus a tracking allowance,
-    # keep flying slowly and revalidate every frame.  A larger covariance
-    # merely lowers the speed; it does not command a stop or landing.
+    # keep flying within a bounded operational envelope and revalidate every
+    # frame. Covariance alone must not collapse an otherwise clear route to
+    # walking speed; actual local geometry still slows or stops the aircraft.
     if structural_room <= 0:
         raise ValueError("route cannot support bounded localization recovery")
     # Controller tracking is relative to the same live estimator frame.  Keep
@@ -151,7 +153,7 @@ def build_localization_recovery_budget(
         **planned,
         "motion_mode": "local-perception-recovery",
         "local_perception_revalidation_required": True,
-        "maximum_speed_mps": max(0.05, min(0.12, structural_room * 0.8)),
+        "maximum_speed_mps": min(5.0, max(3.0, structural_room * 5.0)),
         "localization_deficit_m": float(deficit),
         "measured_uncertainty_m": float(assessment["reserved_uncertainty_m"]),
     }
@@ -574,11 +576,26 @@ def validate_route_clearance(
     route = GraphRoute.model_validate(route.model_dump(mode="python"), strict=True)
     semantic, semantic_sha256 = _load(semantic_path)
     primitives = planning_collision_primitives(semantic)
+    from .traversability import TraversableAirspace
+    traversability = TraversableAirspace(
+        semantic, primitives, radius_m=vehicle_diameter_m / 2,
+        half_height_m=vehicle_height_m / 2)
+    # The hard operating-volume clearance is capped, so an obstacle farther
+    # than that cap cannot lower any sample's minimum or cause a collision.
+    # Conservative full-rotation bounds preserve the exact report while avoiding
+    # O(samples * every building cell) on detailed campus footprints.
+    bounded_primitives = None
+    if traversability.active:
+        expansion = math.hypot(vehicle_diameter_m / 2, vehicle_height_m / 2)
+        expansion += traversability.cap
+        bounded_primitives = [(primitive, *primitive_bounds(primitive, expansion))
+                              for primitive in primitives]
     route_points = [(point.x, point.y, point.z) for point in route.positions_m]
     segments = list(zip(route_points, route_points[1:], strict=False))
     if not segments:
         segments = [(route_points[0], route_points[0])]
     sample_count = 0
+    collision_work = 0
     minimum = math.inf
     minimum_point = route_points[0]
     minimum_primitive = ""
@@ -597,16 +614,46 @@ def validate_route_clearance(
             f"Checking {len(segments)} continuous segments against {len(primitives)} collision primitives, using a {vehicle_diameter_m:.2f} m wide and {vehicle_height_m:.2f} m high vehicle envelope.\n\nSamples are at most {sample_interval_m:.2f} m apart; half the actual sample spacing is deducted from clearance to conservatively cover gaps between samples. Clear endpoints alone do not establish a clear segment.\n\nEach candidate is checked separately, retaining minimum gaps and potential conflicts. Unchecked segments are not passed. Static map checks do not replace live sensor checks.")
     for segment_index, (start, end) in enumerate(segments):
         samples = _segment_samples(start, end, sample_interval_m)
-        if (
-            sample_count + len(samples) > _MAX_ROUTE_SAMPLES
-            or (sample_count + len(samples)) * len(primitives) > 50_000_000
-        ):
+        if sample_count + len(samples) > _MAX_ROUTE_SAMPLES:
+            raise ValueError("route collision query budget exceeded")
+        candidates = primitives
+        if bounded_primitives is not None:
+            # Bound the broad phase too: many short segments must not turn
+            # distant geometry into an unbounded bounds-scan workload.
+            collision_work += len(bounded_primitives)
+            if collision_work > _MAX_ROUTE_COLLISION_WORK:
+                raise ValueError("route collision query budget exceeded")
+            low = tuple(min(start[i], end[i]) for i in range(3))
+            high = tuple(max(start[i], end[i]) for i in range(3))
+            candidates = [primitive for primitive, minimum, maximum in bounded_primitives
+                          if all(minimum[i] <= high[i] and maximum[i] >= low[i]
+                                 for i in range(3))]
+        # Charge only the exact queries that will run after the conservative
+        # broad phase. Distant building cells do not multiply every sample.
+        # The original finite work ceiling still applies across all segments.
+        collision_work += len(samples) * len(candidates)
+        if collision_work > _MAX_ROUTE_COLLISION_WORK:
             raise ValueError("route collision query budget exceeded")
         # 有符号保守距离是 1-Lipschitz；任意段内点到最近端点最多半步距。
         penalty_m = math.dist(start, end) / (2 * (len(samples) - 1))
         segment_minimum = math.inf
         for point in samples:
-            for primitive in primitives:
+            if traversability.active:
+                area_clearance, area_name = traversability.clearance(point)
+                area_clearance -= penalty_m
+                segment_minimum = min(segment_minimum, area_clearance)
+                if area_clearance < minimum:
+                    minimum, minimum_point = area_clearance, point
+                    minimum_primitive = area_name
+                if area_clearance < -penetration_tolerance_m:
+                    collision_count += 1
+                    if len(collisions) < 100:
+                        collisions.append(RouteCollision(
+                            sample_index=sample_count,
+                            position_m=Vector3(x=point[0], y=point[1], z=point[2]),
+                            primitive_name=area_name,
+                            clearance_m=area_clearance))
+            for primitive in candidates:
                 clearance = (
                     _clearance(
                         point,

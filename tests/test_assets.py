@@ -30,16 +30,22 @@ def test_source_bound_planar_landmark_is_context_not_flight_target(tmp_path):
     path = tmp_path / "semantic.json"
     _write_semantic(path, include_pickup_binding=True)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["roads"] = {"facility_anchors": {"cafeteria": [30., 6.245]}}
-    raw["entities"].append({"entity_id": "cafeteria", "aliases": ["食堂"],
-        "semantic": "landmark", "position_m": [30., 6.245],
-        "source_pointer": "/roads/facility_anchors/cafeteria"})
+    raw["roads"] = {"facility_anchors": {"cafeteria": [30.0, 6.245]}}
+    raw["entities"].append(
+        {
+            "entity_id": "cafeteria",
+            "aliases": ["食堂"],
+            "semantic": "landmark",
+            "position_m": [30.0, 6.245],
+            "source_pointer": "/roads/facility_anchors/cafeteria",
+        }
+    )
     path.write_text(json.dumps(raw), encoding="utf-8")
     catalog = load_map_catalog(path)
     assert len(catalog.entities) == 3
     assert all(entity.entity_id != "cafeteria" for entity in catalog.entities)
     landmark = catalog.planar_landmarks[0]
-    assert (landmark.east_m, landmark.north_m) == (30., 6.245)
+    assert (landmark.east_m, landmark.north_m) == (30.0, 6.245)
     assert landmark.flight_target_available is False
     assert "position_m" not in landmark.model_dump()
     view = _intent_map_catalog_view(catalog)
@@ -60,17 +66,22 @@ def test_planar_landmark_requires_exact_non_actuating_source(tmp_path, mutation)
     path = tmp_path / "semantic.json"
     _write_semantic(path, include_pickup_binding=True)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["roads"] = {"facility_anchors": {"facility": [1., 2.]}}
-    entity = {"entity_id": "facility", "aliases": ["facility"], "semantic": "landmark",
-              "position_m": [1., 2.], "source_pointer": "/roads/facility_anchors/facility"}
+    raw["roads"] = {"facility_anchors": {"facility": [1.0, 2.0]}}
+    entity = {
+        "entity_id": "facility",
+        "aliases": ["facility"],
+        "semantic": "landmark",
+        "position_m": [1.0, 2.0],
+        "source_pointer": "/roads/facility_anchors/facility",
+    }
     if mutation == "missing":
         raw.pop("roads")
     elif mutation == "mismatch":
-        raw["roads"]["facility_anchors"]["facility"] = [1., 3.]
+        raw["roads"]["facility_anchors"]["facility"] = [1.0, 3.0]
     elif mutation == "bool":
-        entity["position_m"] = [True, 2.]
+        entity["position_m"] = [True, 2.0]
     elif mutation == "source-bool":
-        raw["roads"]["facility_anchors"]["facility"] = [True, 2.]
+        raw["roads"]["facility_anchors"]["facility"] = [True, 2.0]
     elif mutation == "pointer":
         entity["source_pointer"] = "/unrelated/facility"
     else:
@@ -91,7 +102,7 @@ def test_large_map_uses_same_geometry_budget_across_planning_boundaries(tmp_path
     path = tmp_path / "semantic.json"
     _write_semantic(path, include_pickup_binding=True)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["dense_geometry"] = [[1., 2., 3., 4., 5.] for _ in range(MAX_JSON_NODES // 6 + 1)]
+    raw["dense_geometry"] = [[1.0, 2.0, 3.0, 4.0, 5.0] for _ in range(MAX_JSON_NODES // 6 + 1)]
     path.write_text(json.dumps(raw), encoding="utf-8")
     assert read_map_semantic_object(path) == raw
     assert _semantic(path) == raw
@@ -284,6 +295,49 @@ def test_qualified_graph_binding_exposes_topology_without_semantic_invention(
     )
 
 
+def test_graph_display_name_gets_stable_catalog_id_and_remains_resolvable(tmp_path: Path) -> None:
+    semantic_path = tmp_path / "semantic.json"
+    _write_semantic(semantic_path, include_pickup_binding=True)
+    graph = MapAsset.model_validate(
+        {
+            "asset_id": "city-map",
+            "name": "City map",
+            "nodes": [
+                {
+                    "node_id": "launch",
+                    "label": "Launch",
+                    "position_m": {"x": 0, "y": 0, "z": 2},
+                    "semantic": "launch",
+                },
+                {
+                    "node_id": "handoff",
+                    "label": "Chemicum",
+                    "position_m": {"x": 10, "y": 0, "z": 2},
+                    "semantic": "delivery",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "route",
+                    "from_node": "launch",
+                    "to_node": "handoff",
+                    "distance_m": 10,
+                    "minimum_clearance_m": 1,
+                    "speed_limit_mps": 1,
+                }
+            ],
+            "named_entities": {"A.I. Virtasen aukio 1": "handoff"},
+        }
+    )
+
+    catalog = load_map_catalog(semantic_path, qualified_graph=graph)
+    place = next(item for item in catalog.entities if "A.I. Virtasen aukio 1" in item.aliases)
+
+    assert place.entity_id.startswith("a.i.-virtasen-aukio-1-")
+    assert resolve_map_entity(place.entity_id, catalog, graph) == "handoff"
+    assert resolve_map_entity("A.I. Virtasen aukio 1", catalog, graph) == "handoff"
+
+
 def test_generic_map_semantics_are_not_tied_to_school_map(tmp_path: Path) -> None:
     """A separately authored warehouse retains its own identity, names and metre coordinates."""
     semantic_path = tmp_path / "semantic.json"
@@ -371,8 +425,6 @@ def test_entity_preflight_uses_only_the_active_catalog_and_graph(tmp_path: Path)
 
     assert resolve_map_entity("办公室起降坪", catalog, graph) == "launch"
     assert resolve_map_entity("takeout-pickup-pad", catalog, graph) == "pickup"
-    assert map_entity_is_mentioned(
-        "fly to 外卖取餐点 and return", "takeout-pickup-pad", catalog
-    )
+    assert map_entity_is_mentioned("fly to 外卖取餐点 and return", "takeout-pickup-pad", catalog)
     with pytest.raises(AssetQualificationError, match="UNRESOLVED_MAP_ENTITY"):
         resolve_map_entity("retired-pickup-location", catalog, graph)

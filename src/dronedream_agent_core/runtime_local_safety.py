@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .collision import assess_tracking_corridor_budget
+from .collision import assess_tracking_corridor_budget, minimum_vehicle_clearances
 from .contracts import (
     BodyFrameControlIntent,
     ControlObservationBudget,
@@ -16,13 +16,17 @@ from .contracts import (
     Vector3,
     VehicleAsset,
 )
-from .control_timing import LOCAL_DISPATCH_RESERVE_MS
+from .control_timing import (
+    LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 from .control_uncertainty import localization_uncertainty_margin_m
 from .dynamic_safety import predictive_braking_decision, predictive_safety_decision
 from .hashing import sha256_json
 from .motion_envelope import RUNTIME_PREDICTION_HORIZON_SECONDS, prediction_query_radius_m
 from .observation_validity import observation_validity, publication_deadline
 from .realtime_feature_encoders import body_to_world_enu
+from .traversability import TraversableAirspace
 from .vertical_navigation import VerticalMotionGuard
 from .yaw_command_envelope import YawCommandEnvelope
 
@@ -114,7 +118,7 @@ def runtime_safety_query_radius_m(
             current_velocity_mps=tuple(
                 getattr(observation.current_velocity_mps, axis) for axis in "xyz"
             ),
-            maximum_speed_mps=min(vehicle.max_speed_mps, maximum_speed_mps),
+            maximum_speed_mps=min(vehicle.operational_max_speed_mps, maximum_speed_mps),
             horizon_seconds=RUNTIME_PREDICTION_HORIZON_SECONDS,
             vehicle_radius_m=vehicle.body_radius_m,
             vehicle_height_m=vehicle.body_height_m,
@@ -182,6 +186,7 @@ def evaluate_runtime_local_safety(
     qualified_route_clearance_m: float | None = None,
     current_localization_covariance_m2: float | None = None,
     relative_perception_uncertainty_margin_m: float | None = None,
+    operating_airspace: TraversableAirspace | None = None,
 ) -> RuntimeLocalSafetyCommand:
     if not _finite_scalar(command_horizon_seconds) or not 0.05 <= command_horizon_seconds <= 1.0:
         raise ValueError("command horizon must be in [0.05, 1.0] seconds")
@@ -212,7 +217,7 @@ def evaluate_runtime_local_safety(
                 or generated_at_unix_ms < hybrid_lease.started_at_unix_ms
                 or hybrid_lease.expires_at_unix_ms - generated_at_unix_ms < 50):
             raise ValueError("HYBRID_EVALUATION_CONTEXT_INVALID")
-        maximum_speed_mps = min(maximum_speed_mps or .25, hybrid_lease.maximum_speed_mps)
+        maximum_speed_mps = min(maximum_speed_mps or 5.0, hybrid_lease.maximum_speed_mps)
         validity_milliseconds = min(validity_milliseconds,
             hybrid_lease.expires_at_unix_ms - generated_at_unix_ms)
     elif hybrid_lease is not None:
@@ -298,15 +303,14 @@ def evaluate_runtime_local_safety(
     # The vehicle asset describes a hardware envelope, not permission to
     # exceed the active mission track's qualified speed.  The runtime passes
     # the tighter track/profile bound here so an avoidance manoeuvre cannot
-    # turn a 0.34 m/s precision route into a 1.2 m/s local correction.
+    # exceed the active route's authorized speed.
     planner_max_speed_mps = min(
-        vehicle.max_speed_mps,
-        maximum_speed_mps if maximum_speed_mps is not None else vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
+        maximum_speed_mps if maximum_speed_mps is not None else vehicle.operational_max_speed_mps,
     )
     if tracking_recovery_active:
         planner_max_speed_mps = min(
             planner_max_speed_mps,
-            0.35,
             # Recovery must catch a moving route clock instead of becoming a
             # permanent slower mode. Keep the original 0.45 gain inside the
             # final 0.2 m, then add catch-up authority only outside that
@@ -339,11 +343,11 @@ def evaluate_runtime_local_safety(
             and loaded
             and motion_guard.envelope is None
         ):
-            # Degrade an unqualified simulated payload to a walking-speed
-            # envelope.  The same missing evidence remains a hard restriction
-            # on real hardware, but it must not become a one-vote mission veto
-            # in Gazebo where geometry and telemetry remain available.
-            planner_max_speed_mps = min(planner_max_speed_mps, .12)
+            # Gazebo still has signed static geometry and live telemetry here.
+            # Keep a deliberate approach envelope for an unqualified payload,
+            # but do not turn an otherwise valid campus leg into walking speed.
+            # Real hardware retains its independent hard restriction.
+            planner_max_speed_mps = min(planner_max_speed_mps, 5.0)
     # Absolute map-position uncertainty and image/state alignment uncertainty
     # are different budgets.  A qualified route corridor funds the former;
     # body-relative depth validity only needs the additional displacement that
@@ -391,14 +395,12 @@ def evaluate_runtime_local_safety(
             ):
                 # Absolute-map covariance may temporarily exceed a narrow
                 # route budget even while signed static geometry, fresh body-
-                # relative depth and PX4 tracking all agree.  Continue at a
-                # clearance-scaled speed that can still satisfy the route's
-                # duration contract; a fixed 0.12 m/s ceiling made long but
-                # valid missions mathematically unable to finish before their
-                # own qualified timeout.
+                # relative depth and PX4 tracking all agree. Continue inside
+                # the model-selected limit; local collision prediction still
+                # slows or stops for actual nearby geometry.
                 local_bridge_speed_mps = min(
-                    0.35,
-                    max(0.12, float(qualified_route_clearance_m) * 0.8),
+                    5.0,
+                    max(3.0, float(qualified_route_clearance_m) * 5.0),
                 )
                 planner_max_speed_mps = min(
                     planner_max_speed_mps,
@@ -420,7 +422,7 @@ def evaluate_runtime_local_safety(
     # farther from the route.  Actual hardware overspeed still exceeds the
     # vehicle limit and therefore retains the independent braking path.
     planner_max_speed_mps = min(
-        vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
         max(preferred_planner_speed_mps, measured_speed_mps),
     )
     request = LocalPlannerRequest(
@@ -443,6 +445,11 @@ def evaluate_runtime_local_safety(
         perception_stream_age_seconds=observation.stream_age_seconds,
         localization_covariance_m2=observation.localization_covariance_m2,
     )
+    if operating_airspace is not None and (
+        operating_airspace.radius_m + 1e-9 < request.vehicle_radius_m
+        or operating_airspace.half_height_m * 2 + 1e-9 < request.vehicle_height_m
+    ):
+        raise ValueError("runtime traversability envelope is smaller than the controlled aircraft")
     source_ms = min(observation.observed_at_unix_ms,
                     generated_at_unix_ms - math.ceil(observation.stream_age_seconds * 1000))
     ego_speed = math.hypot(observation.current_velocity_mps.x,
@@ -482,17 +489,72 @@ def evaluate_runtime_local_safety(
     #   allowed：候选当前具有实际控制预算时为真。
     def candidate_current(velocity, clearance, yaw):
         nonlocal first_rejected_budget
+        if operating_airspace is not None:
+            origin = tuple(getattr(observation.current_position_m, axis) for axis in "xyz")
+            end = tuple(origin[i] + velocity[i] * request.prediction_horizon_seconds
+                        for i in range(3))
+            clearance = min(clearance, operating_airspace.path_clearance([origin, end])[0])
         validity = candidate_validity(velocity, clearance, yaw)
         allowed = validity.disposition == "control-eligible"
         if not allowed and first_rejected_budget is None:
             first_rejected_budget = (validity, max(0., clearance - required_clearance_m))
         return allowed
 
+    def check_motion(candidate_request, velocity, path):
+        issues = motion_guard.check(candidate_request, velocity, path) if motion_guard else []
+        if operating_airspace is not None:
+            gap, _ = operating_airspace.path_clearance(path)
+            if gap < candidate_request.required_clearance_m:
+                issues = [*issues, "TRAVERSABLE_AIRSPACE_BOUNDARY"]
+        return issues
+
+    # Every ordinary candidate shares this absolute upper bound, regardless
+    # of its speed or clearance. Searching another hundred paths cannot recover
+    # time that has already expired and only delays the next camera frame.
+    common_deadline_ms = min(
+        source_ms + math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000),
+        inherited_deadline,
+    )
+    common_budget_exhausted = (
+        source_ms >= 0
+        and generated_at_unix_ms + LOCAL_DISPATCH_RESERVE_MS >= common_deadline_ms
+    )
+    if (common_budget_exhausted and measured_speed_mps <= 0.25
+            and observation.stream_healthy
+            and observation.stream_age_seconds <= request.maximum_perception_age_seconds
+            and not observation.dynamic_obstacles):
+        # Preserve the existing separately bounded static-egress proof: a
+        # slow aircraft inside a conservative obstacle may still need it.
+        # An open-space route has no such exception to the source deadline.
+        origin = tuple(getattr(observation.current_position_m, axis) for axis in "xyz")
+        origin_clearance = minimum_vehicle_clearances(
+            [origin], static_primitives, radius_m=request.vehicle_radius_m,
+            half_height_m=request.vehicle_height_m / 2,
+        )[0][0]
+        common_budget_exhausted = origin_clearance >= required_clearance_m
+    common_budget_reason = (
+        "source-deadline-exhausted" if generated_at_unix_ms >= common_deadline_ms
+        else "processing-or-response-budget-exhausted"
+    )
+
+    # The map's permitted ground volumes remain mandatory even when live depth
+    # sees empty space above a roof or the local model proposes a shortcut.
     # 已知负载资格不满足时无需枚举几十个必败候选，直接走同一条保留惯性证据的制动路径。
-    if motion_guard is None:
+    if common_budget_exhausted:
+        decision = predictive_braking_decision(
+            request, static_primitives,
+            issue_codes=[
+                "OBSERVATION_CONTROL_BUDGET_EXHAUSTED",
+                "OBSERVATION_" + common_budget_reason.upper().replace("-", "_"),
+                "CANDIDATE_TIME_BUDGET_EXHAUSTED",
+                *(motion_guard.issues if motion_guard is not None else []),
+            ],
+        )
+    elif motion_guard is None:
         decision = predictive_safety_decision(
             request,
             static_primitives,
+            motion_check=check_motion if operating_airspace is not None else None,
             candidate_check=candidate_current,
             preferred_speed_mps=preferred_planner_speed_mps,
         )
@@ -503,13 +565,30 @@ def evaluate_runtime_local_safety(
         decision = predictive_safety_decision(
             request,
             static_primitives,
-            motion_check=motion_guard.check,
+            motion_check=check_motion,
             candidate_check=candidate_current,
             preferred_speed_mps=preferred_planner_speed_mps,
         )
+    if operating_airspace is not None:
+        path = [tuple(getattr(observation.current_position_m, axis) for axis in "xyz"),
+                *(tuple(getattr(p, axis) for axis in "xyz") for p in decision.predicted_path_m)]
+        gap, name = operating_airspace.path_clearance(path)
+        if gap < decision.minimum_predicted_clearance_m:
+            decision = decision.model_copy(update={"minimum_predicted_clearance_m": gap,
+                                                  "threat_obstacle_id": name})
     adaptive_deadline_ms = None
     observation_budget = None
-    if (decision.action == "hold" and first_rejected_budget is not None
+    if common_budget_exhausted:
+        observation_budget = ControlObservationBudget(
+            source_observed_at_unix_ms=source_ms,
+            control_deadline_unix_ms=common_deadline_ms,
+            disposition="context-only", reason=common_budget_reason,
+            clearance_margin_m=max(
+                0., decision.minimum_predicted_clearance_m - required_clearance_m),
+            uncertainty_margin_m=uncertainty_margin_m,
+            downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+        )
+    elif (decision.action == "hold" and first_rejected_budget is not None
             and "CANDIDATE_TIME_BUDGET_EXHAUSTED" in decision.issue_codes):
         # 这是被拒运动的预算，不是给紧急制动重新授予运动资格。
         # 保留原刹停预测、候选数和其他拒绝原因，不能用另一次预测覆盖证据。

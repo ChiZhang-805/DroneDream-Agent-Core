@@ -15,6 +15,7 @@ from dronedream_plugin_sdk.protocol import encode_json
 from .assets import MAX_SEMANTIC_BYTES, _load_object, _text, _text_list
 from .contracts import GraphRoute, MapAsset, MapCatalog, RouteQuery
 from .hashing import sha256_json
+from .map_gap_refinement import diagnose_map_gaps
 from .navigation import shortest_route
 
 MAX_INCLUDED_NODES = 96
@@ -257,6 +258,7 @@ def build_map_reasoning_context(
                     "start_node": start,
                     "goal_node": goal,
                     "issue_codes": ["MAP_TOPOLOGY_DISCONNECTED"],
+                    "next_action": "map.refine_traversability",
                 }
             )
             continue
@@ -364,6 +366,10 @@ def build_map_reasoning_context(
         ],
         "semantic_environment": _semantic_summary(semantic_path, catalog.semantic_sha256),
         "catalog_known_limits": catalog.known_limits[:16],
+        "map_refinement": {
+            key: value for key, value in diagnose_map_gaps(graph, focus).items()
+            if key != "components"
+        },
         "model_authority": {
             "may_reason_about": [
                 "task-order",

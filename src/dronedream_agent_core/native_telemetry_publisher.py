@@ -33,6 +33,7 @@ class NativeTelemetryPublisher:
     #   publish：在线程中执行的同步快速发布回调，不能包含持久化写入。
     #   persist：可选的同步证据回调；独立任务以最新值覆盖方式低频执行。
     #   persist_interval_seconds：两次常规证据写入之间的最短间隔。
+    #   publication_rate_hz：缓存通道频率；相机配对可跟上 50 Hz 原生里程计，不增订阅。
     # 输出：
     #   None：不返回业务数据。
     def __init__(
@@ -42,6 +43,7 @@ class NativeTelemetryPublisher:
         *,
         persist: Callable[[Any, dict], None] | None = None,
         persist_interval_seconds: float = 0.5,
+        publication_rate_hz: float = 1.0 / PUBLICATION_PERIOD_SECONDS,
     ) -> None:
         for name, callback in (("publish", publish), ("persist", persist)):
             if callback is None and name == "persist":
@@ -55,8 +57,12 @@ class NativeTelemetryPublisher:
                 or not math.isfinite(persist_interval_seconds)
                 or persist_interval_seconds <= 0):
             raise ValueError("NATIVE_PERSIST_INTERVAL_INVALID")
+        if (type(publication_rate_hz) not in (int, float)
+                or not 20 <= publication_rate_hz <= 100):
+            raise ValueError("NATIVE_PUBLICATION_RATE_INVALID")
         self.client, self.publish, self.persist = client, publish, persist
         self.persist_interval_seconds = float(persist_interval_seconds)
+        self._publication_period_seconds = 1.0 / publication_rate_hz
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._persist_task: asyncio.Task | None = None
@@ -66,7 +72,7 @@ class NativeTelemetryPublisher:
         self._persist_generation = 0
         self._persisted_generation = 0
         self.summary: dict[str, object] = {
-            "target_rate_hz": 1.0 / PUBLICATION_PERIOD_SECONDS,
+            "target_rate_hz": float(publication_rate_hz),
             "published_count": 0,
             "unique_source_count": 0,
             "error_count": 0, "last_issue": None, "persisted_count": 0,
@@ -240,7 +246,7 @@ class NativeTelemetryPublisher:
                 self.summary["error_count"] += 1
                 self.summary["last_issue"] = f"{type(error).__name__}:{error}"
                 # 原文件及原始期限保持不变，消费者继续按期限拒绝过期状态。
-            remaining = max(0.0, PUBLICATION_PERIOD_SECONDS - (time.monotonic() - started))
+            remaining = max(0.0, self._publication_period_seconds - (time.monotonic() - started))
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=remaining)
         self._publication_finished.set()

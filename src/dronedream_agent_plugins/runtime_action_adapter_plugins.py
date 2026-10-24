@@ -414,6 +414,98 @@ def plugin_definitions() -> list[PluginDefinition]:
             ],
         ),
         _definition(
+            plugin_id="runtime-actions.release-area",
+            name="释放区域验证",
+            description="用当前机载深度、定位和预测净空确认载荷释放位置可用。",
+            order=28,
+            adapters=[
+                _adapter(
+                    adapter_id="runtime.payload.release-area",
+                    executors=["native.payload.verify-release-area"],
+                    driver="local-safety",
+                    defaults={
+                        "minimum_clearance_m": 0.75,
+                        "maximum_age_seconds": 1.0,
+                        "maximum_position_error_m": 0.35,
+                    },
+                    schema={
+                        "type": "object",
+                        "required": [
+                            "operation",
+                            "minimum_clearance_m",
+                            "maximum_age_seconds",
+                            "maximum_position_error_m",
+                            "arguments",
+                        ],
+                        "properties": {
+                            "operation": {"const": "verify-release-area"},
+                            "minimum_clearance_m": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "maximum_age_seconds": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 5,
+                            },
+                            "maximum_position_error_m": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 1,
+                            },
+                            "arguments": {"type": "object"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    authority="control",
+                    timeout_seconds=8.0,
+                )
+            ],
+        ),
+        _definition(
+            plugin_id="runtime-actions.clearance-measurement",
+            name="净空测量",
+            description="用当前机载深度和定位观测测量目标位置的实际预测净空。",
+            order=29,
+            adapters=[
+                _adapter(
+                    adapter_id="runtime.maintenance.clearance-measurement",
+                    executors=["native.maintenance.measure-clearance"],
+                    driver="local-safety",
+                    defaults={
+                        "maximum_age_seconds": 1.0,
+                        "maximum_position_error_m": 0.35,
+                    },
+                    schema={
+                        "type": "object",
+                        "required": [
+                            "operation",
+                            "maximum_age_seconds",
+                            "maximum_position_error_m",
+                            "arguments",
+                        ],
+                        "properties": {
+                            "operation": {"const": "measure-clearance"},
+                            "maximum_age_seconds": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 5,
+                            },
+                            "maximum_position_error_m": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 1,
+                            },
+                            "arguments": {"type": "object"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    authority="control",
+                    timeout_seconds=8.0,
+                )
+            ],
+        ),
+        _definition(
             plugin_id="runtime-actions.ros2-domain-services",
             name="ROS 2 领域动作桥",
             description="将核验、热成像、激光、维修和信标动作路由到具备正向响应的 ROS 2 服务。",
@@ -426,8 +518,6 @@ def plugin_definitions() -> list[PluginDefinition]:
                         "native.emergency.verify-drop-zone",
                         "native.inspection.confirm-defect",
                         "native.maintenance.inspect-joint",
-                        "native.maintenance.measure-clearance",
-                        "native.payload.verify-release-area",
                         "native.sensor.capture-thermal",
                         "native.sensor.lidar-scan",
                         "native.survey.waypoint-sample",

@@ -27,6 +27,8 @@ from dronedream_agent_core.contracts import (
 )
 from dronedream_agent_core.evidence import EvidenceChain
 from dronedream_agent_core.hashing import sha256_json
+from dronedream_agent_core.mission_launch_binding import default_launch_node
+from dronedream_agent_core.mission_map_refinement import prepare_ground_routes
 from dronedream_agent_core.model_harness.boundary import (
     HARD_MAXIMUM_REPAIR_CYCLES,
     HarnessInputEnvelope,
@@ -76,6 +78,7 @@ from .asset_runtime_resolver import (
 )
 from .custom_models import ModelConnection
 from .harness_design_service import HarnessDesignService
+from .map_refinement_source import map_observation_source
 from .plugin_manager import PluginManager
 from .storage import AppStore
 
@@ -145,7 +148,9 @@ def _canonical_sha256(value: object) -> str:
 #   output_dir：当前计划目录；evidence：完整证据链；tool_receipts：完整工具回执。
 # 输出：
 #   evidence_ids、tool_ids、index：证据链末端引用、工具引用和完整索引的文件绑定。
-def _output_receipt_references(output_dir: Path, evidence: list[EvidenceRecord], tool_receipts: list[ToolReceipt]) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, object]]:
+def _output_receipt_references(
+    output_dir: Path, evidence: list[EvidenceRecord], tool_receipts: list[ToolReceipt],
+) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, object]]:
     EvidenceChain.verify(evidence)
     payload = {
         "schema_version": "dronedream.harness-receipt-index.v1",
@@ -168,9 +173,45 @@ def _output_receipt_references(output_dir: Path, evidence: list[EvidenceRecord],
 
 
 # 功能：
+#   投影模型实际生成的任务图与工具回执，供所有客户端验证计划来源。
+# 输入：
+#   prepared：已验证任务。
+# 输出：
+#   proof：不依赖公开网页资产绑定的模型与工具证明。
+def _model_tool_proof(prepared) -> dict[str, object]:
+    return {
+        "schema_version": "dronedream.model-tool-proof.v1",
+        "task_graph": {
+            "nodes": [
+                {
+                    "node_id": node.task_id,
+                    "action": node.action,
+                    "target": node.target_node,
+                    "depends_on": list(node.depends_on),
+                    "success_evidence": list(node.success_evidence),
+                }
+                for node in prepared.task_graph.nodes
+            ]
+        },
+        "tool_requests": [
+            {
+                "call_id": receipt.call_id,
+                "tool_id": receipt.tool_id,
+                "plugin_id": receipt.plugin_id,
+            }
+            for receipt in prepared.tool_receipts
+        ],
+        "tool_receipts": [
+            receipt.model_dump(mode="json") for receipt in prepared.tool_receipts
+        ],
+    }
+
+
+# 功能：
 #   将已准备的任务投影到界面协议，保留插件动作和实际规划预算，不赋予飞行权限。
 # 输入：
-#   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本；maximum_planning_rounds：配置上限。
+#   prepared：已验证任务；input_metadata：请求绑定；public_*：公开资产标识与版本。
+#   maximum_planning_rounds：配置上限。
 # 输出：
 #   artifact：供界面展示与摘要绑定的计划对象。
 def _public_planner_artifact(
@@ -190,17 +231,7 @@ def _public_planner_artifact(
         character not in "0123456789abcdef" for character in context_sha256
     ):
         raise ValueError("PUBLIC_HARNESS_CONTEXT_SHA256_INVALID")
-    nodes = [
-        {
-            "node_id": node.task_id,
-            "action": node.action,
-            "target": node.target_node,
-            "depends_on": list(node.depends_on),
-            "success_evidence": list(node.success_evidence),
-        }
-        for node in prepared.task_graph.nodes
-    ]
-    tool_receipts = [receipt.model_dump(mode="json") for receipt in prepared.tool_receipts]
+    proof = _model_tool_proof(prepared)
     return {
         "schema_version": "dronedream.autonomy.planner-response.v1",
         "status": "draft",
@@ -217,16 +248,9 @@ def _public_planner_artifact(
             {"role": "target", "entity": prepared.intent.target_entity},
             {"role": "return", "entity": prepared.intent.return_entity},
         ],
-        "task_graph": {"nodes": nodes},
-        "tool_requests": [
-            {
-                "call_id": receipt.call_id,
-                "tool_id": receipt.tool_id,
-                "plugin_id": receipt.plugin_id,
-            }
-            for receipt in prepared.tool_receipts
-        ],
-        "tool_receipts": tool_receipts,
+        "task_graph": proof["task_graph"],
+        "tool_requests": proof["tool_requests"],
+        "tool_receipts": proof["tool_receipts"],
         "assumptions": list(prepared.intent.assumptions),
         "blockers": [],
         "repair": {
@@ -732,24 +756,7 @@ class MissionService:
         }
         effective_input_metadata["preferred_airspace"] = preferred_context
         if start_entity == "__auto__":
-            launch_node_ids = {node.node_id for node in graph.nodes if node.semantic == "launch"}
-            launch_aliases = [
-                alias
-                for alias, node_id in graph.named_entities.items()
-                if node_id in launch_node_ids
-            ]
-            if not launch_aliases:
-                raise ValueError("MAP_LAUNCH_ENTITY_REQUIRED")
-            launch_aliases.sort(
-                key=lambda value: (
-                    0
-                    if any(term in value.casefold() for term in ("launch", "start", "起飞", "起点"))
-                    else 1,
-                    len(value),
-                    value,
-                )
-            )
-            start_entity = launch_aliases[0]
+            start_entity = default_launch_node(graph, semantic_path)
         catalog = load_map_catalog(semantic_path, qualified_graph=graph)
         mission_root = self.store.missions_root / thread_id
         mission_root.mkdir(parents=True, exist_ok=True)
@@ -818,19 +825,18 @@ class MissionService:
             mode="json"
         )
         effective_input_metadata["model_harness_runtime"] = runtime_envelope.model_dump(mode="json")
-        tool_registry = self.plugin_manager.build_tool_registry(
-            environment=ToolEnvironment(
-                map_graph=graph,
-                semantic_path=semantic_path,
-                vehicle_diameter_m=vehicle.body_radius_m * 2,
-                vehicle_height_m=vehicle.body_height_m,
-                waypoint_hold_seconds=0.4,
-                vehicle=vehicle,
-                broker_factory=broker_factory,
-                planning_phase="initial",
-            ),
-            snapshot=plugin_snapshot,
-        )
+        def build_map_tools(path: Path):
+            return self.plugin_manager.build_tool_registry(
+                environment=ToolEnvironment(
+                    map_graph=graph, semantic_path=path,
+                    vehicle_diameter_m=vehicle.body_radius_m * 2,
+                    vehicle_height_m=vehicle.body_height_m,
+                    waypoint_hold_seconds=0.4, vehicle=vehicle,
+                    broker_factory=broker_factory, planning_phase="initial",
+                ), snapshot=plugin_snapshot,
+            )
+
+        tool_registry = build_map_tools(semantic_path)
         extension_registry = self.plugin_manager.build_extension_registry(
             snapshot=plugin_snapshot,
             broker_factory=broker_factory,
@@ -989,6 +995,13 @@ class MissionService:
                 ],
                 harness_topology_override=harness_topology_override,
                 harness_revision_binding=harness_revision_binding,
+                map_refinement=lambda focus, directory, budget: prepare_ground_routes(
+                    graph=graph, vehicle=vehicle, semantic_path=semantic_path,
+                    source_loader=lambda: map_observation_source(
+                        self.store.get_asset_version(map_id, map_content_sha256)),
+                    model_ports=list(model_ports.values()), focus_nodes=focus,
+                    output_dir=directory, maximum_model_calls=budget),
+                tool_registry_factory=build_map_tools,
             )
             resources.callback(orchestrator.close)
             prepared = orchestrator.prepare(
@@ -1274,6 +1287,7 @@ class MissionService:
                 ],
             },
         }
+        summary["model_tool_proof"] = _model_tool_proof(prepared)
         public_bindings = effective_input_metadata.get("public_asset_bindings")
         if isinstance(public_bindings, dict):
             planner_artifact = _public_planner_artifact(
@@ -1297,7 +1311,8 @@ class MissionService:
             summary["integration_artifact_sha256"] = _canonical_sha256(planner_artifact)
             # 传递被摘要绑定的原始字节，防止 JavaScript 把 1.0、指数和键序重编码。
             summary["integration_artifact_canonical_json"] = json.dumps(
-                planner_artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                planner_artifact, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
             )
         notification_outputs, notification_receipts = extension_registry.invoke_multiple(
             "notifications.plan-ready",

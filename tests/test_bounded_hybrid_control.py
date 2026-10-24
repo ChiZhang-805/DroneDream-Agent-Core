@@ -34,7 +34,7 @@ def tick(arbiter, t, **changes):
         route_sha256='a' * 64, goal_id='office', sensors_and_route_ready=True,
         model_live=False, model_call_id=None, model_reason='model-lease-expired')
     data.update(changes)
-    data.setdefault("model_speed_mps", .25 if data["model_live"] else None)
+    data.setdefault("model_speed_mps", 4.0 if data["model_live"] else None)
     return arbiter.update(**data)
 
 
@@ -45,7 +45,7 @@ def test_bridge_preserves_model_speed_ceiling(speed):
     a = BoundedHybridArbiter()
     for index, t in enumerate((0., .15, .31)):
         tick(a, t, model_live=True, model_call_id=str(index), model_speed_mps=speed)
-    assert tick(a, .4).maximum_speed_mps == min(.25, speed)
+    assert tick(a, .4).maximum_speed_mps == min(1.5, speed)
     tick(a, .5, model_live=True, model_call_id="zero", model_speed_mps=0.)
     assert tick(a, .6) is None
 
@@ -78,7 +78,7 @@ def test_lease_has_fixed_deadline_and_cannot_renew_after_timeout():
     a = BoundedHybridArbiter()
     arm(a)
     first = tick(a, .4)
-    assert first.maximum_speed_mps == .25
+    assert first.maximum_speed_mps == 4.0
     assert tick(a, .8).expires_at_unix_ms == first.expires_at_unix_ms
     assert tick(a, 1.9) is None
     assert tick(a, 2.0) is None

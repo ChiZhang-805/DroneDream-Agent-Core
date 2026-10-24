@@ -34,7 +34,7 @@ def validate_campaign(config, duration_seconds):
             or config.expert_role not in ("local-navigation-policy", "precision-maneuver-policy")):
         raise ValueError("RISK_CONTEXT_COLLECTION_MODE_INVALID")
     if (type(config.speed_limit_mps) not in (int, float)
-            or not 0.1 <= config.speed_limit_mps <= 1.2):
+            or not 5.0 <= config.speed_limit_mps <= 6.0):
         raise ValueError("RISK_CONTEXT_RUNNER_SPEED_LIMIT_INVALID")
     duration = float(duration_seconds)
     return duration

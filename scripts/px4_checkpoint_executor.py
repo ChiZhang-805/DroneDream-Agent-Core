@@ -18,6 +18,7 @@ import stat
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from dronedream_agent_core.asset_payload_qualification import decide_asset_checkpoint
 from dronedream_agent_core.collision import validate_route_clearance
 from dronedream_agent_core.contracts import (
     GraphRoute,
@@ -75,7 +77,7 @@ from dronedream_agent_core.flight_command_cleanup import (
 )
 from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.localization_evidence import native_localization_evidence
-from dronedream_agent_core.perception_lifecycle import capture_control_completion
+from dronedream_agent_core.perception_lifecycle import capture_control_completion_when_ready
 from dronedream_agent_core.plugin_contracts import PluginResourcePolicy
 from dronedream_agent_core.plugin_files import check_plain_plugin_path, read_plugin_file
 from dronedream_agent_core.process_capture import capture_process
@@ -169,6 +171,11 @@ _LOCAL_CONTROL_PHASES = {
 _ENCLOSING_EXECUTOR_STATE_KEY = "enclosing_executor_state"
 _MODEL_AUTHORITY_HOLD_LATCH_SPEED_MPS = 0.05
 _CONTROL_TRANSPORT_INITIAL_RESERVE_MS = LOCAL_TRANSPORT_BUDGET_MS
+# Windows/WSL IPC can occasionally take just over one 50 ms controller tick
+# even after a long run of faster sends.  Start a real executor with the largest
+# duration observed in release acceptance plus the existing 12 ms headroom.
+# Unit-level adapters retain the protocol minimum unless they explicitly opt in.
+_CONTROL_TRANSPORT_RELEASE_RESERVE_MS = 65
 _CONTROL_TRANSPORT_HEADROOM_MS = 12
 _STATIONARY_ROUTE_SETPOINT_COMPLETION_TOLERANCE_M = 0.08
 # The actuator transport remains at 20 Hz, but the deterministic local planner
@@ -185,21 +192,26 @@ _INDEPENDENT_ROUTE_TARGET_REFRESH_RATE_HZ = 0.5
 # process is busy.  In an already-qualified static corridor, stopping on every
 # such pause creates a start/stop limit cycle even though the executor still
 # has current PX4 pose and revalidates the remaining segment every tick.  The
-# bridge is deliberately bounded below route cruise speed and cannot advance
-# the schedule or cross an action checkpoint; fresh perception remains
-# mandatory for dynamic evidence and for selecting the next route point.
+# bridge is bounded by a freshly revalidated static segment and cannot cross
+# an action checkpoint. A simulated camera normally updates below the flight
+# control rate; that ordinary cadence must not turn an open campus leg into a
+# walking-speed leg. Fresh perception remains mandatory for dynamic evidence
+# and for selecting the next route point.
 _STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_GAP_SECONDS = 4.0
-_STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS = 0.20
+_STATIC_CORRIDOR_PERCEPTION_BRIDGE_MAX_SPEED_MPS = 5.0
 # 仿真中的动作检查点仍需先飞抵目标，不能因为相机短暂刷新就永久悬停；
 # 但接近速度必须低于普通走廊桥接，且本许可只覆盖接近，不授权执行载荷动作。
-_STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS = 0.10
+_STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS = 0.75
 # A route controller must not stop merely because an asynchronous local-safety
 # result misses a millisecond-scale dispatch lease.  Between independently
 # healthy assessments, the signed static corridor and current PX4 state own a
 # bounded continuity controller.  New obstacle/localization decisions still
 # preempt it on their next datagram; total producer loss reaches the same
-# finite gap limit and then holds.
-_STATIC_CORRIDOR_CONTROL_CONTINUITY_MAX_SPEED_MPS = 0.35
+# finite gap limit and then holds. The accepted seed already carries the
+# model-selected track limit and a complete swept-volume decision, so this cap
+# permits the model's normal campus cruise instead of replacing it with a
+# second, lower speed policy.
+_STATIC_CORRIDOR_CONTROL_CONTINUITY_MAX_SPEED_MPS = 5.0
 _STATIC_CORRIDOR_PERCEPTION_BRIDGE_ISSUES = frozenset(
     {
         "PERCEPTION_STREAM_UNHEALTHY",
@@ -337,6 +349,13 @@ class ControlInputLeaseUnavailable(UserDirectedLanding):
     """Pre-dispatch rejection only: no motion command was sent to the adapter."""
 
 
+def _operational_controller_params(params: Any, vehicle: VehicleAsset | None) -> Any:
+    """Tighten execution in memory while retaining the original controller evidence."""
+    if vehicle is None:
+        return params
+    return replace(params, vel_limit=min(params.vel_limit, vehicle.operational_max_speed_mps))
+
+
 class SpawnRelativeOffboardClient:
     """Expose spawn-relative NED while the underlying PX4 client remains local-NED."""
 
@@ -364,6 +383,7 @@ class SpawnRelativeOffboardClient:
         heading_policy: str = "measured-hold",
         independent_route_control: bool = False,
         maximum_yaw_rate_deg_s: float = 20.0,
+        maximum_speed_mps: float | None = None,
         world_name: str | None = None,
         gazebo_vehicle_model_name: str | None = None,
         heading_evidence_path: Path | None = None,
@@ -375,6 +395,9 @@ class SpawnRelativeOffboardClient:
         self._heading_policy = heading_policy
         self._independent_route_control = independent_route_control
         self._maximum_yaw_rate_deg_s = maximum_yaw_rate_deg_s
+        if maximum_speed_mps is not None and not finite_positive_number(maximum_speed_mps):
+            raise ValueError("operational speed limit must be finite and positive")
+        self._maximum_speed_mps = maximum_speed_mps
         self._world_name = world_name
         self._gazebo_vehicle_model_name = gazebo_vehicle_model_name
         flush_interval = float(heading_evidence_flush_interval_seconds)
@@ -400,6 +423,13 @@ class SpawnRelativeOffboardClient:
     #   attribute：底层对应属性或绑定方法。
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+    def _validate_operational_velocity(self, velocity: Any) -> None:
+        """Reject an unauthorized setpoint before it reaches either PX4 transport."""
+        speed = math.hypot(velocity.north_m_s, velocity.east_m_s, velocity.down_m_s)
+        if (not math.isfinite(speed) or self._maximum_speed_mps is not None
+                and speed > self._maximum_speed_mps + 1e-6):
+            raise UserDirectedLanding("velocity command exceeds the operational speed envelope")
 
     # 功能：
     #   计算跨越正负一百八十度边界时的最短航向误差。
@@ -692,6 +722,7 @@ class SpawnRelativeOffboardClient:
         *,
         yaw_deg: float,
     ) -> None:
+        self._validate_operational_velocity(velocity)
         await self._client.set_position_velocity_ned(
             type(setpoint)(
                 north_m=self._origin.north_m + setpoint.north_m,
@@ -753,6 +784,7 @@ class SpawnRelativeOffboardClient:
     # 输出：
     #   None：不返回业务数据。
     async def _forward_velocity_ned(self, velocity: Any, *, yaw_deg: float) -> None:
+        self._validate_operational_velocity(velocity)
         await self._client.set_velocity_ned(
             type(velocity)(
                 north_m_s=velocity.north_m_s,
@@ -865,7 +897,14 @@ def _compile_replacement_schedule(
     rate_hz: float,
 ) -> tuple[list[Any], tuple[int, ...]]:
     points = [
-        base.TrackPoint(point.x, point.y, point.z, point.speed_limit_mps)
+        base.TrackPoint(
+            point.x,
+            point.y,
+            point.z,
+            point.speed_limit_mps,
+            point.approach_speed_limit_mps,
+            point.approach_distance_m,
+        )
         for point in replacement.track.points
     ]
     if len(points) < 2:
@@ -2731,7 +2770,156 @@ async def _execute_ros2_domain_action(
 
 
 # 功能：
-#   按明确驱动分派相机、载荷或 ROS 动作，装卸阶段分别核对接触前、接入后和负载稳定条件。
+#   用动作期间持续更新的机载安全观测确认释放点有足够净空，结果绑定到同一条短时安全命令。
+# 输入：
+#   run_dir：当前仿真运行目录；parameters：释放净空阈值；setpoint_refresh：实时安全刷新回调。
+# 输出：
+#   output：含观测摘要、位置误差和预测净空的真实回执。
+async def _verify_release_area_from_local_safety(
+    *,
+    run_dir: Path,
+    parameters: dict[str, Any],
+    setpoint: Any,
+    setpoint_refresh: Callable[[Any], Awaitable[Any]] | None,
+) -> dict[str, Any]:
+    operation = str(parameters["operation"])
+    if operation not in {"verify-release-area", "measure-clearance"}:
+        raise RuntimeError(f"unsupported local safety operation: {operation}")
+    minimum_clearance_m = (
+        float(parameters["minimum_clearance_m"])
+        if operation == "verify-release-area"
+        else None
+    )
+    maximum_age_seconds = float(parameters["maximum_age_seconds"])
+    maximum_position_error_m = float(parameters.get("maximum_position_error_m", 0.35))
+    observation_path = run_dir / "depth-local-safety-observation.json"
+    command_path = run_dir / "depth-local-safety-command.json"
+    history_path = run_dir / "depth-local-safety-history.jsonl"
+    deadline = asyncio.get_running_loop().time() + 4.0
+    last_issue = "local safety evidence unavailable"
+    while asyncio.get_running_loop().time() < deadline:
+        if setpoint_refresh is not None:
+            await setpoint_refresh(setpoint)
+        try:
+            observation: RuntimeLocalSafetyObservation
+            command: RuntimeLocalSafetyCommand
+            paired_record = _read_latest_local_safety_history_pair(history_path)
+            if paired_record is not None:
+                observation, command = paired_record
+            else:
+                command_before = read_plugin_file(command_path, limit=MAX_MESSAGE_BYTES)
+                observation_raw = read_plugin_file(observation_path, limit=MAX_MESSAGE_BYTES)
+                command_after = read_plugin_file(command_path, limit=MAX_MESSAGE_BYTES)
+                if command_before != command_after:
+                    last_issue = "local safety command changed while reading"
+                    await asyncio.sleep(0.05)
+                    continue
+                observation = RuntimeLocalSafetyObservation.model_validate(
+                    decode_json(observation_raw, limit=MAX_MESSAGE_BYTES)
+                )
+                command = RuntimeLocalSafetyCommand.model_validate(
+                    decode_json(command_after, limit=MAX_MESSAGE_BYTES)
+                )
+            now_unix_ms = int(time.time() * 1000)
+            age_seconds = (now_unix_ms - observation.observed_at_unix_ms) / 1000.0
+            if (
+                command.observation_sha256 != sha256_json(observation)
+                or command.observation_sequence != observation.sequence
+                or command.source != observation.source
+            ):
+                last_issue = "local safety observation and command are not paired"
+            elif (
+                not observation.stream_healthy
+                or age_seconds < 0.0
+                or age_seconds > maximum_age_seconds
+                or command.valid_until_unix_ms <= now_unix_ms
+            ):
+                last_issue = "local safety observation is stale or unhealthy"
+            elif command.evaluated_target_position_m != observation.target_position_m:
+                last_issue = "local safety target binding does not match the observation"
+            else:
+                position_error_m = math.dist(
+                    (
+                        observation.current_position_m.x,
+                        observation.current_position_m.y,
+                        observation.current_position_m.z,
+                    ),
+                    (
+                        observation.target_position_m.x,
+                        observation.target_position_m.y,
+                        observation.target_position_m.z,
+                    ),
+                )
+                clearance_m = command.decision.minimum_predicted_clearance_m
+                if position_error_m > maximum_position_error_m:
+                    last_issue = "aircraft has not settled at the release checkpoint"
+                elif minimum_clearance_m is not None and clearance_m < minimum_clearance_m:
+                    last_issue = "predicted release clearance is below the required minimum"
+                else:
+                    if operation == "measure-clearance":
+                        return {
+                            "confirmed": True,
+                            "transport": "onboard-local-safety",
+                            "operation": operation,
+                            "evidence": ["clearance measured", "measurement pose bound"],
+                            "observation_sequence": observation.sequence,
+                            "observation_sha256": command.observation_sha256,
+                            "observation_age_seconds": age_seconds,
+                            "position_error_m": position_error_m,
+                            "maximum_position_error_m": maximum_position_error_m,
+                            "minimum_predicted_clearance_m": clearance_m,
+                            "measurement_pose_bound": True,
+                            "safety_action": command.decision.action,
+                        }
+                    return {
+                        "confirmed": True,
+                        "transport": "onboard-local-safety",
+                        "operation": "verify-release-area",
+                        "evidence": ["release area clear"],
+                        "observation_sequence": observation.sequence,
+                        "observation_sha256": command.observation_sha256,
+                        "observation_age_seconds": age_seconds,
+                        "position_error_m": position_error_m,
+                        "minimum_predicted_clearance_m": clearance_m,
+                        "required_clearance_m": minimum_clearance_m,
+                        "safety_action": command.decision.action,
+                    }
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            last_issue = type(error).__name__
+        await asyncio.sleep(0.05)
+    raise RuntimeError(f"release area verification failed: {last_issue}")
+
+
+def _read_latest_local_safety_history_pair(
+    path: Path,
+) -> tuple[RuntimeLocalSafetyObservation, RuntimeLocalSafetyCommand] | None:
+    if not path.is_file():
+        return None
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - MAX_MESSAGE_BYTES), os.SEEK_SET)
+        tail = stream.read(MAX_MESSAGE_BYTES)
+    for raw_line in reversed(tail.splitlines()):
+        if not raw_line.strip():
+            continue
+        try:
+            record = decode_json(raw_line, limit=MAX_MESSAGE_BYTES)
+            observation = RuntimeLocalSafetyObservation.model_validate(record["observation"])
+            command = RuntimeLocalSafetyCommand.model_validate(record["command"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if (
+            command.observation_sequence == observation.sequence
+            and command.source == observation.source
+            and command.observation_sha256 == sha256_json(observation)
+        ):
+            return observation, command
+    return None
+
+
+# 功能：
+#   按明确驱动分派相机、载荷、机载安全或 ROS 动作，装卸阶段核对真实状态。
 # 输入：
 #   base：控制维持基础工具。
 #   client：实际飞控和设备客户端。
@@ -2757,6 +2945,7 @@ async def _invoke_runtime_action_driver(
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
     control_maintained_externally: bool = False,
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
     if step.driver == "mavsdk-camera":
         simulation_capture = _verified_simulation_onboard_rgb_capture(step.parameters)
@@ -2841,6 +3030,15 @@ async def _invoke_runtime_action_driver(
                 "return_authorized": True,
             }
         raise RuntimeError(f"unsupported payload transition operation: {operation}")
+    if step.driver == "local-safety":
+        if run_dir is None:
+            raise RuntimeError("local safety action requires the current run directory")
+        return await _verify_release_area_from_local_safety(
+            run_dir=run_dir,
+            parameters=step.parameters,
+            setpoint=setpoint,
+            setpoint_refresh=setpoint_refresh,
+        )
     if step.driver == "ros2-service":
         return await _execute_ros2_domain_action(
             step.parameters, timeout_seconds=step.timeout_seconds
@@ -3026,6 +3224,20 @@ def _observed_runtime_action_evidence(
                 "return authorized",
             ]
         return []
+    if step.driver == "local-safety":
+        if (
+            output.get("operation") == "verify-release-area"
+            and output.get("minimum_predicted_clearance_m", -math.inf)
+            >= output.get("required_clearance_m", math.inf)
+        ):
+            return ["release area clear"]
+        if (
+            output.get("operation") == "measure-clearance"
+            and output.get("measurement_pose_bound") is True
+            and isinstance(output.get("minimum_predicted_clearance_m"), (int, float))
+        ):
+            return ["clearance measured", "measurement pose bound"]
+        return []
     evidence = output.get("evidence", [])
     if not isinstance(evidence, list) or not all(isinstance(item, str) for item in evidence):
         return []
@@ -3059,6 +3271,7 @@ async def _await_runtime_action_while_holding(
     setpoint_refresh: Callable[[Any], Awaitable[Any]] | None = None,
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
+    run_dir: Path | None = None,
 ) -> tuple[dict[str, Any], RuntimeInterruptDetected | None]:
     refresh_lock = asyncio.Lock()
     refresh_interval_seconds = max(0.02, 0.8 / rate_hz)
@@ -3105,6 +3318,7 @@ async def _await_runtime_action_while_holding(
             sample_observer=sample_observer,
             target_frame_position_resolver=target_frame_position_resolver,
             control_maintained_externally=True,
+            run_dir=run_dir,
         )
     )
     pending_interruption: RuntimeInterruptDetected | None = None
@@ -3220,6 +3434,7 @@ async def _execute_runtime_action_step(
                 setpoint_refresh=setpoint_refresh,
                 sample_observer=sample_observer,
                 target_frame_position_resolver=target_frame_position_resolver,
+                run_dir=run_dir,
             )
             pending_interruption = pending_interruption or detected
             if not isinstance(output, dict):
@@ -4550,13 +4765,11 @@ def _route_tracking_error_components(
     )
     _control_scalar(signed_lag_m, "along-track lag")
     _control_scalar(cross_track_error_m, "cross-track error", minimum=0)
-    # Bound the reference lead to at most one second of the qualified
-    # velocity, with absolute floors/ceilings for very slow and fast tracks.
-    # Live PX4 evidence on the 0.15 m/s School Map corridor measured a stable
-    # 10.8 cm along-route lag, so a 0.75 s (11.25 cm) window sat directly on
-    # normal controller variance.  One second retains a strict time bound
-    # without turning harmless longitudinal response into recovery chatter.
-    along_track_lag_limit_m = max(0.10, min(0.75, planned_speed_mps))
+    # Permit roughly one second of ordinary longitudinal response lag. This
+    # component remains on the already-qualified route and does not consume
+    # cross-track clearance. A fixed 0.75 m ceiling forced a 5 m/s route clock
+    # to pause every fraction of a second even during healthy open flight.
+    along_track_lag_limit_m = max(0.25, min(5.0, planned_speed_mps))
     # Once the outer lag bound is crossed, keep the fixed-target recovery
     # context active until the aircraft has regained a quarter of that time
     # budget.  Releasing at the same boundary made the worker and executor
@@ -4590,7 +4803,7 @@ def _recovery_position_velocity_feedforward(
     target_setpoint: Any,
     gain_s_inverse: float = 0.8,
     velocity_damping: float = 0.5,
-    maximum_speed_mps: float = 0.08,
+    maximum_speed_mps: float = 5.0,
     deadband_m: float = 0.005,
 ) -> tuple[float, float, float]:
     """Provide bounded radial assistance to PX4's precision position loop.
@@ -5229,15 +5442,24 @@ def _read_stale_local_safety_command(
 # 功能：
 #   解释命令与观测为何不可用，记录解析、序号、摘要及时效差异，但不提供飞行许可。
 # 输入：
-#   args：当前命令与观测文件路径。
+#   args：当前实时配对接收端；无接收端时使用命令与观测文件路径。
 # 输出：
 #   diagnostic：配对状态和错误原因字典。
 def _local_safety_pair_diagnostic(args: argparse.Namespace) -> dict[str, Any]:
     """Explain why a command pair is unavailable without authorizing it."""
 
     diagnostic: dict[str, Any] = {"checked_at_unix_ms": int(time.time() * 1_000)}
+    receiver = getattr(args, "_local_safety_receiver", None)
+    pair = receiver.read_latest() if receiver is not None else None
+    if receiver is not None:
+        diagnostic["pair_source"] = "live-channel"
+        if pair is None:
+            diagnostic["command_parse"] = "not-received"
+            return diagnostic
+    else:
+        diagnostic["pair_source"] = "durable-files"
     try:
-        command = RuntimeLocalSafetyCommand.model_validate(
+        command = pair[1] if pair is not None else RuntimeLocalSafetyCommand.model_validate(
             read_runtime_object(args.local_safety_command)
         )
         diagnostic.update(
@@ -5254,7 +5476,7 @@ def _local_safety_pair_diagnostic(args: argparse.Namespace) -> dict[str, Any]:
         diagnostic["command_parse"] = f"{type(error).__name__}:{error}"
         return diagnostic
     try:
-        observation = RuntimeLocalSafetyObservation.model_validate(
+        observation = pair[0] if pair is not None else RuntimeLocalSafetyObservation.model_validate(
             read_runtime_object(args.local_safety_observation)
         )
         diagnostic.update(
@@ -5400,8 +5622,8 @@ def _local_safety_control_context_diagnostic(
             "evaluated_target_distance_m": None,
         }
     # Recovery is a strict subset of the ordinary route envelope: the local
-    # planner caps its speed at 0.2 m/s and the executor applies an even slower
-    # radial rejoin command.  A command proven safe for ordinary tracking may
+    # planner tapers speed as it closes on the fixed target. A command proven
+    # safe for ordinary tracking may
     # therefore be consumed while *entering* recovery when it is bound to the
     # same target.  The reverse is unsafe: a recovery-only verdict did not
     # evaluate the faster ordinary command, so leaving recovery must wait for
@@ -5744,7 +5966,7 @@ def _local_safety_command_matches_required_authority(
                 fallback_speed = math.hypot(velocity.x, velocity.y, velocity.z)
                 qualified_simulation_fallback = bool(
                     "SIMULATION_QUALIFIED_STATIC_ROUTE_FALLBACK" in decision.issue_codes
-                    and fallback_speed <= 0.12 + 1e-9
+                    and fallback_speed <= 5.0 + 1e-9
                 )
         return (command.navigation_control_authority == "route-fallback"
                 and not command.model_navigation_authorized
@@ -5883,6 +6105,7 @@ async def _apply_local_safety(
         return planned_setpoint
     loop = asyncio.get_running_loop()
     deadline = loop.time() + args.local_safety_repair_timeout_seconds
+    operational_speed_mps = getattr(args, "_operational_max_speed_mps", math.inf)
     repair_absolute_deadline = loop.time() + float(
         getattr(args, "local_safety_repair_absolute_timeout_seconds", 60.0)
     )
@@ -6075,6 +6298,7 @@ async def _apply_local_safety(
                     seed_velocity.x ** 2 + seed_velocity.y ** 2 + seed_velocity.z ** 2
                 )
                 continuity_speed_mps = min(
+                    operational_speed_mps,
                     (
                         _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
                         if action_checkpoint_goal
@@ -6546,6 +6770,7 @@ async def _apply_local_safety(
                     getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                 ),
                 maximum_speed_mps=min(
+                    operational_speed_mps,
                     float(
                         getattr(
                             args,
@@ -6734,9 +6959,8 @@ async def _apply_local_safety(
                     velocity_damping=float(
                         getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                     ),
-                    maximum_speed_mps=float(
-                        getattr(args, "tracking_recovery_assist_max_speed_mps", 0.08)
-                    ),
+                    maximum_speed_mps=min(operational_speed_mps, float(
+                        getattr(args, "tracking_recovery_assist_max_speed_mps", 5.0))),
                     deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
                 )
                 if tracking_recovery_active
@@ -8534,15 +8758,15 @@ async def _follow_runtime_target(
     standoff_m = float(parameters.get("standoff_m", 2.0))
     altitude_offset_m = float(parameters.get("altitude_offset_m", 1.0))
     maximum_speed_mps = min(
-        float(parameters.get("maximum_speed_mps", 1.0)),
-        vehicle.max_speed_mps,
+        float(parameters.get("maximum_speed_mps", 5.0)),
+        vehicle.operational_max_speed_mps,
     )
     if not (
         1.0 <= duration <= 300.0
         and 0.5 <= update_rate_hz <= 10.0
         and 0.5 <= standoff_m <= 20.0
         and -5.0 <= altitude_offset_m <= 20.0
-        and 0.1 <= maximum_speed_mps <= 3.0
+        and 5.0 <= maximum_speed_mps <= 6.0
     ):
         raise UserDirectedLanding(
             "dynamic follow parameters are outside the bounded safety contract"
@@ -8998,6 +9222,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--hybrid-route-sha256")
     parser.add_argument("--simulation-teacher-control", action="store_true")
     parser.add_argument("--teacher-payload-checkpoints", action="store_true")
+    parser.add_argument("--asset-qualification-checkpoints", action="store_true")
     parser.add_argument("--local-safety-command-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-runtime-stale-grace-seconds", type=float, default=8.0)
     parser.add_argument("--local-safety-repair-timeout-seconds", type=float, default=15.0)
@@ -9027,7 +9252,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tracking-recovery-assist-max-speed-mps",
         type=float,
-        default=0.08,
+        default=5.0,
     )
     parser.add_argument(
         "--tracking-recovery-assist-velocity-damping",
@@ -9390,7 +9615,14 @@ async def _fly_runtime_replacement(
             "action_checkpoint_goal": active_action_checkpoint_goal,
         }
         points = [
-            base.TrackPoint(point.x, point.y, point.z, point.speed_limit_mps)
+            base.TrackPoint(
+                point.x,
+                point.y,
+                point.z,
+                point.speed_limit_mps,
+                point.approach_speed_limit_mps,
+                point.approach_distance_m,
+            )
             for point in artifact.track.points
         ]
         checkpoint_indices = _schedule_checkpoint_indices(
@@ -10156,6 +10388,14 @@ def _apply_native_preflight_tracking_budget(args: argparse.Namespace, receipt: d
 # 输出：
 #   None：不返回业务数据。
 async def _run(args: argparse.Namespace, base: ModuleType) -> None:
+    if getattr(args, "asset_qualification_checkpoints", False) and (
+        not getattr(args, "independent_route_control", False)
+        or args.require_model_control_authority or not args.local_safety_required
+        or getattr(args, "simulation_teacher_control", False)
+        or getattr(args, "teacher_payload_checkpoints", False)
+        or args.checkpoint_contract is None or args.runtime_action_contract is None
+    ):
+        raise ValueError("asset qualification requires independent native safety and bound actions")
     if getattr(args, "independent_route_control", False) and (
         args.require_model_control_authority or not args.local_safety_required
         or getattr(args, "simulation_teacher_control", False)
@@ -10255,7 +10495,9 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         args.tracking_corridor_policy,
         track=frozen_track,
     )
-    params = base.load_controller_params(args.params)
+    params = _operational_controller_params(
+        base.load_controller_params(args.params), args._runtime_vehicle_asset)
+    args._operational_max_speed_mps = float(params.vel_limit)
     plan = base.build_setpoint_schedule_plan(
         reference.points,
         params,
@@ -10469,6 +10711,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         )
 
     native_publisher = None
+    args._runtime_stage = "initialize-runtime-evidence"
     try:
         args._control_application_writer = BoundedRuntimeEvidenceWriter(
             args.run_dir / "runtime-state" / "control-application-writer.json",
@@ -10483,9 +10726,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             client,
             publish_independent_native_state,
             persist=persist_independent_native_state,
+            publication_rate_hz=(base.CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                if getattr(args, "perception_health_channel", None) is not None else 20.0),
         )
         args._independent_native_publisher_active = True
         native_publisher.start()
+        args._runtime_stage = "connect-and-await-native-health"
         health = await base.connect_preflight_with_recovery(
             client,
             connection=args.connection,
@@ -10494,6 +10740,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             log_path=args.log,
             evidence=timing["preflight_connection"],
             local_mode_preparation_only=getattr(args, 'local_reference_prearm', False),
+            camera_source_alignment_required=(
+                getattr(args, "perception_health_channel", None) is not None),
         )
         if getattr(args, 'local_reference_prearm', False):
             # Recovery ends before the first mode request. From here onward the
@@ -10501,12 +10749,14 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             mode_preparer = getattr(client, 'prepare_local_offboard_mode', None)
             if not callable(mode_preparer):
                 raise RuntimeError('LOCAL_PREARM_CLIENT_UNSUPPORTED')
+            args._runtime_stage = "prepare-local-offboard-mode"
             health = await base._await_with_abort_polling(
                 mode_preparer(command_attempts=command_attempts,
                     evidence=timing.setdefault('local_reference_prearm', {}),
                     timeout_seconds=min(180., args.takeoff_timeout_seconds)),
                 abort_check=abort_check,
             )
+        args._runtime_stage = "verify-firmware-readiness"
         if not health.armable or not health.home_position_ok or not health.local_position_ok:
             raise RuntimeError("PX4 readiness gate rejected checkpointed flight")
         timing["offboard_loss_failsafe"] = await base._await_with_abort_polling(
@@ -10624,6 +10874,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             heading_policy=args.heading_policy,
             independent_route_control=args.independent_route_control,
             maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
+            maximum_speed_mps=float(params.vel_limit),
             world_name=args.world,
             gazebo_vehicle_model_name=args.gazebo_vehicle_model_name,
             heading_evidence_path=(args.run_dir / "runtime-state" / "px4-heading-tracking.json"),
@@ -10638,6 +10889,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             client,
             publish_independent_native_state,
             persist=persist_independent_native_state,
+            publication_rate_hz=(base.CAMERA_ODOMETRY_REQUESTED_RATE_HZ
+                if getattr(args, "perception_health_channel", None) is not None else 20.0),
         )
         args._independent_native_publisher_active = True
         native_publisher.start()
@@ -10685,12 +10938,17 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             args.require_model_control_authority or args.simulation_teacher_control
             or getattr(args, "independent_route_control", False)
         ):
-            from dronedream_agent_core.native_preflight import wait_for_native_perception
+            from dronedream_agent_core.native_preflight import (
+                wait_for_initialized_native_perception,
+                wait_for_native_perception,
+            )
 
             timing["native_perception_preflight"] = await base._await_with_setpoint_keepalive(
                 client,
-                wait_for_native_perception(
+                wait_for_initialized_native_perception(
                     args.run_dir / "depth-perception-health.json",
+                    initialization_deadline=started + args.takeoff_timeout_seconds,
+                    initialization_evidence=timing.setdefault("static_map_initialization", {}),
                     minimum_route_clearance_m=_native_route_preflight_clearance(args),
                     receiver=getattr(args, "_perception_health_receiver", None),
                     evidence=timing.setdefault("native_perception_preflight_diagnostics", {}),
@@ -11395,7 +11653,16 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 checkpoint_started = loop.time()
                 while True:
                     try:
-                        if getattr(args, "teacher_payload_checkpoints", False):
+                        if getattr(args, "asset_qualification_checkpoints", False):
+                            base._raise_if_external_abort_requested(args.abort_file)
+                            if runtime_interrupt_probe is not None:
+                                interruption = runtime_interrupt_probe()
+                                if interruption is not None:
+                                    raise interruption
+                            decision = decide_asset_checkpoint(request, checkpoint_contract)
+                            _atomic_json(request_path.with_name(
+                                f"{checkpoint.checkpoint_id}.asset-decision.json"), decision)
+                        elif getattr(args, "teacher_payload_checkpoints", False):
                             base._raise_if_external_abort_requested(args.abort_file)
                             if runtime_interrupt_probe is not None:
                                 interruption = runtime_interrupt_probe()
@@ -11474,8 +11741,10 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                         "decision_sha256": sha256_json(decision),
                         "continue_authorized": decision.continue_authorized,
                         "assessment_action": decision.assessment.action,
-                        "decision_source": ("simulation-payload-teacher"
-                            if getattr(args, "teacher_payload_checkpoints", False) else "model"),
+                        "decision_source": ("physical-asset-qualification"
+                            if getattr(args, "asset_qualification_checkpoints", False) else (
+                            "simulation-payload-teacher"
+                            if getattr(args, "teacher_payload_checkpoints", False) else "model")),
                     }
                 )
                 if not decision.continue_authorized:
@@ -11560,12 +11829,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             # _tracking_gate_tick already completed this control period.
         _assert_all_runtime_actions_completed(runtime_action_contract, completed_action_step_ids)
         timing["track_end_t"] = time.monotonic() - started
-        timing["perception_control_completion"] = capture_control_completion(
+        timing["perception_control_completion"] = await capture_control_completion_when_ready(
             args.run_dir / "depth-perception-health.json",
             track_sha256=active_track_sha256,
-            completed_at_unix_ms=int(time.time() * 1000),
             receiver=getattr(args, "_perception_health_receiver", None),
             realtime_features_required=not args.independent_route_control,
+            maintain_control=lambda: client.set_position_ned(setpoint),
         )
         _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
         timing["controlled_land_start_t"] = time.monotonic() - started
@@ -11611,12 +11880,12 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             )
             timing["active_track_sha256"] = active_track_sha256
             timing["track_end_t"] = time.monotonic() - started
-            timing["perception_control_completion"] = capture_control_completion(
+            timing["perception_control_completion"] = await capture_control_completion_when_ready(
                 args.run_dir / "depth-perception-health.json",
                 track_sha256=active_track_sha256,
-                completed_at_unix_ms=int(time.time() * 1000),
                 receiver=getattr(args, "_perception_health_receiver", None),
                 realtime_features_required=not args.independent_route_control,
+                maintain_control=lambda: client.set_position_ned(setpoint),
             )
             _atomic_json(phase_path, {"phase": "LANDING", "checkpoint_id": None})
             timing["controlled_land_start_t"] = time.monotonic() - started
@@ -11771,6 +12040,10 @@ async def _run_with_live_snapshots(args: argparse.Namespace, base: ModuleType) -
 #   exit_code：任务及清理成功时为零，普通执行失败时为二。
 def main() -> int:
     args = _parse_args()
+    # This reserve never extends a source deadline.  It makes the first live
+    # dispatch reject a short remaining lease before transport, after which the
+    # existing adaptive measurement may raise the reserve further.
+    args._measured_transport_reserve_ms = _CONTROL_TRANSPORT_RELEASE_RESERVE_MS
     base = _load_base(args.base_executor)
     try:
         # 先加载真实 SDK 的稳定对象图，再进入专属执行进程的保留作用域。
@@ -11806,8 +12079,15 @@ def main() -> int:
             base._log(args.log, "checkpoint executor completed successfully")
             return 0
     except Exception as exc:
-        base._log(args.log, f"checkpoint executor failure: {exc}")
-        print(f"checkpoint PX4 executor failed: {exc}", file=sys.stderr)
+        runtime_stage = str(getattr(args, "_runtime_stage", "initialize-executor"))
+        error_summary = f"{type(exc).__name__}: {str(exc).strip() or repr(exc)}"
+        base._log(args.log, f"checkpoint executor failure during {runtime_stage}: {error_summary}")
+        base._log(args.log, traceback.format_exc().rstrip())
+        print(
+            f"checkpoint PX4 executor failed during {runtime_stage}: {error_summary}",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
         return 2
 
 

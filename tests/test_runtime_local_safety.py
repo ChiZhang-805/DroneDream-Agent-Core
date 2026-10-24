@@ -120,7 +120,7 @@ def test_command_binds_tracking_recovery_mode_and_target() -> None:
     assert command.tracking_recovery_active is True
     assert command.evaluated_target_position_m == observation.target_position_m
     velocity = command.decision.selected_velocity_mps
-    assert math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) <= 0.350001
+    assert math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) <= 0.800001
 
 
 # 功能：
@@ -316,7 +316,7 @@ def test_qualified_route_separates_absolute_localization_from_relative_alignment
     degraded_speed = math.hypot(
         degraded_velocity.x, degraded_velocity.y, degraded_velocity.z
     )
-    assert 0.12 < degraded_speed <= 0.240001
+    assert 0.24 < degraded_speed <= 0.300001
     assert degraded.observation_sha256 == sha256_json(observation)
 
     structurally_narrow = evaluate_runtime_local_safety(

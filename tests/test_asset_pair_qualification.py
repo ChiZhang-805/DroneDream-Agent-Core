@@ -394,6 +394,109 @@ def test_prepares_hash_bound_round_trip_for_real_runtime(tmp_path: Path) -> None
     assert (work_root / "qualification-plan.json").is_file()
 
 
+def test_imports_recorded_flight_bytes_without_replanning(tmp_path: Path, monkeypatch) -> None:
+    from dronedream_agent_core import asset_pair_qualification as qualification
+
+    map_archive, vehicle_archive = _fixtures(tmp_path)
+    recorded_root = tmp_path / "flown"
+    flown = prepare_asset_pair_qualification(
+        map_archive=map_archive, vehicle_archive=vehicle_archive, work_root=recorded_root)
+    # Track and clearance formatting must survive byte-for-byte, since real
+    # runtime evidence hashes these files, not their parsed/re-encoded objects.
+    for name in ("track.json", "clearance.json"):
+        path = recorded_root / name
+        path.write_bytes(json.dumps(json.loads(path.read_bytes()), indent=4).encode())
+    flown_evidence = _runtime_evidence(flown, recorded_root)
+    for name in ("track", "clearance"):
+        flown_evidence["artifacts"][f"{name}_sha256"] = _sha(  # type: ignore[index]
+            (recorded_root / f"{name}.json").read_bytes())
+
+    def unexpected_replan(*args, **kwargs):
+        raise AssertionError("a recorded flight must not be replaced by a new route")
+
+    monkeypatch.setattr(qualification, "_round_trip_route", unexpected_replan)
+    output = tmp_path / "promotion"
+    plan = prepare_asset_pair_qualification(
+        map_archive=map_archive, vehicle_archive=vehicle_archive, work_root=output,
+        recorded_route_path=recorded_root / "route.json",
+        recorded_track_path=recorded_root / "track.json",
+        recorded_clearance_path=recorded_root / "clearance.json")
+    assert plan.route == flown.route
+    for name in ("route.json", "track.json", "clearance.json"):
+        assert (output / name).read_bytes() == (recorded_root / name).read_bytes()
+    receipt = build_pair_qualification_receipt(
+        plan=plan, work_root=output, runtime_evidence=flown_evidence,
+        environment_versions={"gazebo": "test-only"})
+    assert receipt.runtime_evidence["artifacts"] == flown_evidence["artifacts"]
+    flown_evidence["artifacts"]["world_sha256"] = "0" * 64  # type: ignore[index]
+    with pytest.raises(AssetPairQualificationError, match="RUNTIME_ARTIFACT_MISMATCH:world_sha256"):
+        build_pair_qualification_receipt(
+            plan=plan, work_root=output, runtime_evidence=flown_evidence,
+            environment_versions={"gazebo": "test-only"})
+
+
+@pytest.mark.parametrize(("filename", "mutation", "issue"), [
+    ("track.json", "world", "TRACK_ROUTE_MISMATCH"),
+    ("track.json", "local", "TRACK_EXECUTION_MISMATCH"),
+    ("track.json", "frame", "TRACK_FRAME_MISMATCH"),
+    ("track.json", "speed", "TRACK_EXECUTION_MISMATCH"),
+    ("clearance.json", "route", "CLEARANCE_BINDING_INVALID"),
+    ("clearance.json", "semantic", "CLEARANCE_BINDING_INVALID"),
+    ("clearance.json", "overstated", "CLEARANCE_INVALID"),
+])
+def test_recorded_flight_rejects_unbound_artifacts(
+    tmp_path: Path, filename: str, mutation: str, issue: str,
+) -> None:
+    map_archive, vehicle_archive = _fixtures(tmp_path)
+    recorded_root = tmp_path / "flown"
+    prepare_asset_pair_qualification(
+        map_archive=map_archive, vehicle_archive=vehicle_archive, work_root=recorded_root)
+    path = recorded_root / filename
+    artifact = json.loads(path.read_bytes())
+    if mutation == "world":
+        artifact["source_world_points"][1]["east_m"] += 1
+    elif mutation == "local":
+        artifact["points"][1]["x"] += 1
+    elif mutation == "frame":
+        artifact["coordinate_contract"]["model_root_world_enu_m"][0] += 1
+    elif mutation == "speed":
+        artifact["points"][1]["speed_limit_mps"] = 2.0
+    elif mutation in {"route", "semantic"}:
+        artifact[f"{mutation}_sha256"] = "0" * 64
+    elif mutation == "overstated":
+        artifact["minimum_clearance_m"] += 1
+    path.write_bytes(_json(artifact))
+    with pytest.raises(AssetPairQualificationError, match=f"RECORDED_{issue}"):
+        prepare_asset_pair_qualification(
+            map_archive=map_archive, vehicle_archive=vehicle_archive,
+            work_root=tmp_path / "promotion",
+            recorded_route_path=recorded_root / "route.json",
+            recorded_track_path=recorded_root / "track.json",
+            recorded_clearance_path=recorded_root / "clearance.json")
+
+
+def test_recorded_flight_requires_all_three_original_files(tmp_path: Path) -> None:
+    with pytest.raises(AssetPairQualificationError, match="RECORDED_ARTIFACTS_INCOMPLETE"):
+        prepare_asset_pair_qualification(
+            map_archive=tmp_path / "map.ddpkg", vehicle_archive=tmp_path / "vehicle.ddpkg",
+            work_root=tmp_path / "promotion", recorded_route_path=tmp_path / "route.json")
+
+
+def test_recorded_route_encoding_cannot_be_rewritten_at_promotion(tmp_path: Path) -> None:
+    map_archive, vehicle_archive = _fixtures(tmp_path)
+    recorded_root = tmp_path / "flown"
+    prepare_asset_pair_qualification(
+        map_archive=map_archive, vehicle_archive=vehicle_archive, work_root=recorded_root)
+    path = recorded_root / "route.json"
+    path.write_bytes(_json(json.loads(path.read_bytes())))
+    with pytest.raises(AssetPairQualificationError, match="RECORDED_ROUTE_ENCODING_INVALID"):
+        prepare_asset_pair_qualification(
+            map_archive=map_archive, vehicle_archive=vehicle_archive,
+            work_root=tmp_path / "promotion",
+            recorded_route_path=path, recorded_track_path=recorded_root / "track.json",
+            recorded_clearance_path=recorded_root / "clearance.json")
+
+
 # 功能：
 #   验证缺少机型绑定时停止准备，不能悄悄使用默认飞机。
 # 输入：

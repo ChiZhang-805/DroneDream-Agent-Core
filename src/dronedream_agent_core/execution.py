@@ -270,7 +270,19 @@ def _completion_verifier_input(
             "maximum_canonical_json_bytes": COMPLETION_VERIFIER_INPUT_MAX_BYTES,
             "unbounded_artifact_lists_represented_by_count_and_sha256": True,
         },
-        "mission_contract": prepared.contract.model_dump(mode="json"),
+        "mission_contract": {
+            "schema_version": prepared.contract.schema_version,
+            "contract_id": prepared.contract.contract_id,
+            "conversation_id": prepared.contract.conversation_id,
+            "goal": prepared.contract.goal,
+            "start_node": prepared.contract.start_node,
+            "target_node": prepared.contract.target_node,
+            "return_node": prepared.contract.return_node,
+            "payload_action": prepared.contract.payload_action,
+            "constraints": list(prepared.contract.constraints),
+            "immutable_safety_rules": list(prepared.contract.immutable_safety_rules),
+            "full_contract_sha256": sha256_json(prepared.contract),
+        },
         "execution_authorization": {
             "contract_confirmation_verified": True,
             "confirmed_contract_id": prepared.contract.contract_id,
@@ -323,7 +335,18 @@ def _completion_verifier_input(
             for decision in runtime_interruption_decisions
         ],
         "runtime_action_receipts": [
-            receipt.model_dump(mode="json") for receipt in runtime_action_receipts
+            {
+                "step_id": receipt.step_id,
+                "task_id": receipt.task_id,
+                "action": receipt.action,
+                "status": receipt.status,
+                "attempts": receipt.attempts,
+                "observed_success_evidence": list(receipt.observed_success_evidence),
+                "deterministic_gates": receipt.deterministic_gates,
+                "issue_codes": list(receipt.issue_codes),
+                "full_receipt_sha256": sha256_json(receipt),
+            }
+            for receipt in runtime_action_receipts
         ],
         "runtime_evidence": _runtime_evidence_for_completion(runtime),
         "offboard_timing": {

@@ -112,7 +112,7 @@ def stability_first_route(graph: MapAsset, query: RouteQuery) -> GraphRoute:
     def edge_cost(edge: MapEdge) -> float:
         qualification_penalty = 0.0 if edge.qualification == "flight-verified" else 4.0
         transition_penalty = 0.75
-        speed_penalty = max(0.0, edge.speed_limit_mps - 1.2) * 2.0
+        speed_penalty = max(0.0, edge.speed_limit_mps - 6.0) * 2.0
         cost = edge.distance_m + qualification_penalty + transition_penalty + speed_penalty
         return cost
 

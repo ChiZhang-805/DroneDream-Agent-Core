@@ -22,10 +22,11 @@ import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from dronedream_agent_core.asset_packages import AssetPackageError
 from dronedream_agent_core.asset_policy import asset_qualification_policy
+from dronedream_agent_core.mission_map_refinement import MapObservationPending
 from dronedream_agent_core.model_harness.design import (
     HarnessEditOperation,
     HarnessTopologyCandidate,
@@ -455,6 +456,7 @@ def create_app(
             "threads": store.list_threads(),
             "asset_import_jobs": store.list_asset_import_jobs(),
             "asset_versions": store.list_asset_versions(),
+            "bundled_asset_migrations": asset_import_service.bundled_asset_migrations(),
             "asset_qualification_jobs": store.list_asset_pair_qualification_jobs(),
             "asset_source_adapters": plugin_manager.source_adapter_catalog(),
             "plugins": plugin_manager.list_plugins(),
@@ -487,6 +489,19 @@ def create_app(
     def create_thread(payload: ThreadCreate) -> dict[str, object]:
         title = payload.title or ("New task" if payload.locale == "en-US" else "新任务")
         return store.create_thread(title, payload.selected_model, payload.locale)
+
+    # 功能：
+    #   为桌面和产品 CLI 返回同一任务目录；归档任务只在显式请求时出现。
+    # 输入：
+    #   include_archived：是否包含归档任务，FastAPI 严格解析为布尔值。
+    # 输出：
+    #   threads：按置顶和更新时间排序的任务摘要，不包含任何会话秘密。
+    @app.get("/v1/threads", dependencies=[local])
+    def list_threads(include_archived: bool = False) -> dict[str, object]:
+        return {
+            "threads": store.list_threads(include_archived=include_archived),
+            "include_archived": include_archived,
+        }
 
     @app.get("/v1/threads/{thread_id}", dependencies=[local])
     def get_thread(thread_id: str) -> dict[str, object]:
@@ -739,7 +754,7 @@ def create_app(
     #   catalog：1 张正式地图、13 架无人机及其 13 个精确组合。
     @app.get("/v1/asset-pair-catalog", dependencies=[local])
     def list_asset_pairs() -> dict[str, object]:
-        return asset_pair_catalog()
+        return asset_pair_catalog(resource_root=resource_root)
 
     @app.get("/v1/asset-source-adapters", dependencies=[local])
     def list_asset_source_adapters() -> list[dict[str, object]]:
@@ -1039,8 +1054,9 @@ def create_app(
     # 输出：
     #   snapshot：内容绑定的静态偏好空间。
     @app.post("/v1/assets/preferred-airspace", dependencies=[local])
-    def preferred_airspace(payload: AirspaceRequest,
-                           identity: VerifiedIdentity = verified_identity):
+    def preferred_airspace(
+        payload: AirspaceRequest, identity: VerifiedIdentity = verified_identity
+    ):
         try:
             return airspace_service.snapshot(payload)
         except KeyError as error:
@@ -1170,17 +1186,15 @@ def create_app(
             else:
                 if payload.gateway_base_url is None:
                     raise ValueError("MODEL_GATEWAY_REQUIRED")
-                provider, _plugin_id, capability_id = (
-                    plugin_manager.model_binding_for_model(payload.model_id)
+                provider, _plugin_id, capability_id = plugin_manager.model_binding_for_model(
+                    payload.model_id
                 )
                 connection = ModelConnection(
                     selection_id=payload.model_id,
                     provider=provider,
                     model_id=payload.model_id,
                     api_key=payload.model_grant,
-                    base_url=_validate_gateway(
-                        str(payload.gateway_base_url), identity.issuer
-                    ),
+                    base_url=_validate_gateway(str(payload.gateway_base_url), identity.issuer),
                     api_style="chat-completions",
                     capability_id=capability_id,
                     source="default",
@@ -1315,27 +1329,30 @@ def create_app(
                 thread_id,
                 payload.progress_request_id,
             )
-            result = preparation_progress.run(progress_key, lambda: mission_service.prepare(
-                thread_id=thread_id,
-                message=payload.message,
-                map_id=payload.map_id,
-                map_content_sha256=payload.map_content_sha256,
-                vehicle_id=payload.vehicle_id,
-                vehicle_content_sha256=payload.vehicle_content_sha256,
-                connection=connection,
-                role_connections=role_connections,
-                locale=payload.locale,
-                start_entity=payload.start_entity,
-                attachment_ids=payload.attachment_ids,
-                input_channel=payload.input_channel,
-                input_metadata=payload.input_metadata,
-                owner_account_id=identity.owner_account_id,
-                tenant_id=identity.tenant_id,
-                organization_id=identity.organization_id,
-                source_edition=payload.source_edition,
-                memory_projection_credentials=projection_credentials,
-                memory_projection_configuration_issue=projection_configuration_issue,
-            ))
+            result = preparation_progress.run(
+                progress_key,
+                lambda: mission_service.prepare(
+                    thread_id=thread_id,
+                    message=payload.message,
+                    map_id=payload.map_id,
+                    map_content_sha256=payload.map_content_sha256,
+                    vehicle_id=payload.vehicle_id,
+                    vehicle_content_sha256=payload.vehicle_content_sha256,
+                    connection=connection,
+                    role_connections=role_connections,
+                    locale=payload.locale,
+                    start_entity=payload.start_entity,
+                    attachment_ids=payload.attachment_ids,
+                    input_channel=payload.input_channel,
+                    input_metadata=payload.input_metadata,
+                    owner_account_id=identity.owner_account_id,
+                    tenant_id=identity.tenant_id,
+                    organization_id=identity.organization_id,
+                    source_edition=payload.source_edition,
+                    memory_projection_credentials=projection_credentials,
+                    memory_projection_configuration_issue=projection_configuration_issue,
+                ),
+            )
             notifications = result.get("notifications")
             if not isinstance(notifications, list) or not notifications:
                 notifications = [
@@ -1372,6 +1389,21 @@ def create_app(
                 )
             store.set_thread_state(thread_id, "awaiting_confirmation")
             return result
+        except MapObservationPending as error:
+            store.set_thread_state(thread_id, "planning")
+            private_fields = {"candidate_semantic", "patches", "model_calls", "pending_artifact"}
+            details = {
+                key: value for key, value in error.details.items() if key not in private_fields
+            }
+            text = ("正在补全地图观察；任务已保留，等待可用的视觉模型或补充视图。"
+                    if payload.locale == "zh-CN" else
+                    "Map observation is incomplete. The task is retained for a vision model "
+                    "or an additional registered view.")
+            store.append_message(thread_id, role="assistant", kind="status", content=text,
+                                 metadata={"map_refinement_pending": True, **details})
+            return JSONResponse(status_code=202, content={
+                "status": "map_refinement_pending", "thread_id": thread_id,
+                "message": text, "actuator_authority": False, **details})
         except MissionClarificationRequired as error:
             # 追问不是计划；不进入 awaiting_confirmation，也不签发执行权限。
             store.set_thread_state(thread_id, "planning")
@@ -1926,7 +1958,10 @@ def create_app(
             require_runtime_thread_scope(thread_id, identity)
             return runtime_manager.execution_evidence(thread_id)
         except KeyError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            detail = str(error.args[0]) if error.args else "EXECUTION_EVIDENCE_NOT_FOUND"
+            if detail != "EXECUTION_EVIDENCE_NOT_FOUND":
+                detail = "THREAD_NOT_FOUND"
+            raise HTTPException(status_code=404, detail=detail) from error
         except RuntimeBridgeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -1944,12 +1979,17 @@ def create_app(
     #   thread_id：任务标识；identity：登录身份；source_id：仿真相机标识。
     # 输出：
     #   response：禁止缓存的真实 PNG；尚无帧时返回 404。
-    def live_frame(thread_id: str, identity: VerifiedIdentity = verified_identity,
-                   source_id: Literal["gazebo-render", "gazebo-onboard"] = "gazebo-render"
-                   ) -> Response:
+    def live_frame(
+        thread_id: str,
+        identity: VerifiedIdentity = verified_identity,
+        source_id: Literal["gazebo-render", "gazebo-onboard"] = "gazebo-render",
+    ) -> Response:
         require_runtime_thread_scope(thread_id, identity)
-        path = (runtime_manager.live_frame(thread_id) if source_id == "gazebo-render"
-                else runtime_manager.live_frame(thread_id, source_id=source_id))
+        path = (
+            runtime_manager.live_frame(thread_id)
+            if source_id == "gazebo-render"
+            else runtime_manager.live_frame(thread_id, source_id=source_id)
+        )
         if path is None:
             raise HTTPException(status_code=404, detail="LIVE_FRAME_NOT_READY")
         try:
@@ -1962,6 +2002,33 @@ def create_app(
             headers={"Cache-Control": "no-store, max-age=0"},
         )
         return response
+
+    @app.get("/v1/threads/{thread_id}/live-map", dependencies=[local])
+    def live_map(
+        thread_id: str, identity: VerifiedIdentity = verified_identity
+    ) -> dict[str, object]:
+        require_runtime_thread_scope(thread_id, identity)
+        try:
+            return runtime_manager.live_map(thread_id).metadata
+        except (KeyError, RuntimeBridgeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/v1/threads/{thread_id}/live-map-image", dependencies=[local])
+    def live_map_image(
+        thread_id: str,
+        map_content_sha256: str,
+        identity: VerifiedIdentity = verified_identity,
+    ) -> Response:
+        require_runtime_thread_scope(thread_id, identity)
+        try:
+            value = runtime_manager.live_map(thread_id, expected_hash=map_content_sha256)
+        except (KeyError, RuntimeBridgeError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return Response(
+            content=value.image,
+            media_type=value.media_type,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.get("/v1/threads/{thread_id}/live-telemetry", dependencies=[local])
     def live_telemetry(

@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,12 @@ from pydantic import BaseModel
 
 from dronedream_plugin_sdk.protocol import encode_json
 
-from .assets import AssetQualificationError, read_map_semantic_object, resolve_map_entity
+from .assets import (
+    AssetQualificationError,
+    load_map_catalog,
+    read_map_semantic_object,
+    resolve_map_entity,
+)
 from .collision import (
     PREFERRED_TRANSIT_CLEARANCE_M,
     build_tracking_corridor_budget,
@@ -63,8 +69,10 @@ from .contracts import (
     RuntimeCheckpoint,
     RuntimeCheckpointContract,
     SemanticPlan,
+    SemanticSpeedPreference,
     TaskGraph,
     TaskGraphArtifact,
+    TaskNode,
     ToolReceipt,
     VehicleAsset,
 )
@@ -74,6 +82,8 @@ from .extensions import ExtensionExecutionError, ExtensionRegistry
 from .hashing import sha256_json
 from .lifecycle import LifecycleTransitionError
 from .map_reasoning import build_map_reasoning_context
+from .mission_launch_binding import prepare_mission_launch
+from .mission_map_refinement import GroundMapPreparation
 from .model_harness.boundary import HarnessInputEnvelope
 from .model_harness.graph import (
     HarnessGraphError,
@@ -96,6 +106,7 @@ from .plugin_api import (
     ToolEnvironment,
     build_discovered_extension_registry,
     build_discovered_tool_registry,
+    build_snapshot_tool_registry,
 )
 from .plugin_contracts import PluginHookReceipt, PluginSnapshot
 from .prompts import (
@@ -394,6 +405,27 @@ def _normalize_intent_critique_scope(
         "land there",
         "one-way",
     )
+    pickup_markers = (
+        "pick up",
+        "pickup",
+        "collect",
+        "retrieve",
+        "fetch",
+        "grab",
+        "取回",
+        "拿回",
+        "取一下",
+        "拿一下",
+    )
+    delivery_markers = (
+        "deliver",
+        "drop off",
+        "release the payload",
+        "送到",
+        "投递",
+        "交付",
+    )
+    request_text = request.message.lower()
     normalized_codes = []
     for code in critique.issue_codes:
         normalized = code.strip().upper()
@@ -405,6 +437,16 @@ def _normalize_intent_critique_scope(
             and intent.return_entity == intent.start_entity
             and not any(marker in request.message.lower() for marker in one_way_markers)
         ):
+            continue
+        if (
+            normalized == "PAYLOAD_ACTION_MISMATCH"
+            and intent.payload_action == "pickup"
+            and any(marker in request_text for marker in pickup_markers)
+            and not any(marker in request_text for marker in delivery_markers)
+        ):
+            # “Collect/pick up X from Y and return” is a retrieval mission.
+            # A free-text critic cannot relabel it as delivery merely because
+            # the vehicle later carries the collected item back to its start.
             continue
         normalized_codes.append(normalized)
     normalized_codes = list(dict.fromkeys(normalized_codes))[:16]
@@ -491,8 +533,8 @@ class PreparationConfig:
             "max_planning_rounds": (1, 5),
             "plugin_router_rounds": (1, 5),
             "maximum_plugin_calls": (0, 16),
-            "intent_reviews_per_round": (1, 3),
-            "plan_reviews_per_round": (1, 3),
+            "intent_reviews_per_round": (0, 3),
+            "plan_reviews_per_round": (0, 3),
             "maximum_model_calls": (8, 48),
             "maximum_optional_tool_calls": (0, 64),
         }
@@ -733,10 +775,7 @@ def _intent_action_catalog_view(catalog: DomainActionCatalog) -> dict[str, objec
             {
                 "action_id": action.action_id,
                 "domain_id": action.domain_id,
-                "label": action.label,
-                "description": action.description,
                 "payload": action.payload,
-                "flight_boundary": action.flight_boundary,
             }
             for action in catalog.actions
         ],
@@ -750,8 +789,35 @@ def _intent_action_catalog_view(catalog: DomainActionCatalog) -> dict[str, objec
 #   catalog：与当前语义文件绑定的地图目录。
 # 输出：
 #   view：不包含坐标生成权的实体视图。
-def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
+def _intent_map_catalog_view(
+    catalog: MapCatalog,
+    *,
+    request_message: str | None = None,
+) -> dict[str, object]:
     """Expose entity identity for intent binding without irrelevant route geometry."""
+
+    normalized_request = (request_message or "").casefold()
+
+    def compact_aliases(aliases: list[str]) -> list[str]:
+        # The entity id remains authoritative in its own field. Keep a small alias
+        # window plus every alias explicitly present in the current request so a
+        # large campus catalog cannot crowd the user's actual destination out of
+        # the model call.
+        mentioned = [alias for alias in aliases if alias.casefold() in normalized_request]
+        return list(dict.fromkeys([*mentioned, *aliases[:4]]))[:8]
+
+    mentioned_planar_landmarks = [
+        landmark
+        for landmark in catalog.planar_landmarks
+        if request_message is None
+        or (
+            normalized_request
+            and any(
+                name.casefold() in normalized_request
+                for name in (landmark.entity_id, *landmark.aliases)
+            )
+        )
+    ][:16]
 
     view = {
         "schema_version": catalog.schema_version,
@@ -763,13 +829,20 @@ def _intent_map_catalog_view(catalog: MapCatalog) -> dict[str, object]:
         "entity_count": len(catalog.entities),
         "road_segment_count": len(catalog.road_segment_ids),
         # 二维地标仅提供语义环境；可用于动作绑定的实体仍必须来自下方三维 entities。
+        "non_actionable_planar_landmark_count": len(catalog.planar_landmarks),
         "non_actionable_planar_landmarks": [
-            landmark.model_dump(mode="json") for landmark in catalog.planar_landmarks
+            {
+                "entity_id": landmark.entity_id,
+                "aliases": compact_aliases(landmark.aliases),
+                "semantic": landmark.semantic,
+                "flight_target_available": False,
+            }
+            for landmark in mentioned_planar_landmarks
         ],
         "entities": [
             {
                 "entity_id": entity.entity_id,
-                "aliases": list(entity.aliases),
+                "aliases": compact_aliases(entity.aliases),
                 "semantic": entity.semantic,
             }
             for entity in catalog.entities
@@ -973,7 +1046,7 @@ def _intent_workflow_scope() -> dict[str, object]:
             "pickup_returns_to_requester_start_unless_another_destination_is_explicit": True,
             "pickup_hover_seconds": 10,
             "pickup_scan_policy": "only_when_required_by_the_pickup_workflow",
-            "launch_entity_is_current_simulated_position_when_the_user_does_not_name_a_start": True,
+            "use_request_start_bound_to_map_default_unless_user_names_another_start": True,
         },
         "return_entity_semantics": (
             "final landing entity for both one-way and round-trip missions"
@@ -1159,6 +1232,7 @@ def _semantic_planning_map_view(
         "schema_version": "dronedream.semantic-planning-map-view.v1",
         "source_context_sha256": sha256_json(context),
         "source_of_truth": context.get("source_of_truth"),
+        "observed_ground_refinement": context.get("observed_ground_refinement"),
         "graph_sha256": context.get("graph_sha256"),
         "semantic_sha256": context.get("semantic_sha256"),
         "coordinate_frame": context.get("coordinate_frame"),
@@ -1416,12 +1490,36 @@ def _bind_task_graph_action_contracts(
     """
 
     definitions = {action.action_id: action for action in domain_actions.actions}
+
+    def contract_arguments(task: TaskNode) -> dict[str, Any]:
+        """Keep only arguments declared by a closed action input schema.
+
+        Models occasionally repeat mission-level constraints (for example the
+        required pickup hover duration) on an action whose executor accepts no
+        arguments.  Those values cannot influence execution and should not
+        consume every repair round.  Open schemas retain the model payload;
+        closed schemas are projected onto their declared property names before
+        the normal JSON Schema validation below checks values and required keys.
+        """
+
+        definition = definitions.get(task.action)
+        if definition is None:
+            return dict(task.arguments)
+        schema = definition.input_schema or {}
+        if schema.get("additionalProperties", True) is not False:
+            return dict(task.arguments)
+        properties = schema.get("properties", {})
+        allowed = set(properties) if isinstance(properties, dict) else set()
+        return {key: value for key, value in task.arguments.items() if key in allowed}
+
     bound_graph = graph.model_copy(
         update={
             "nodes": [
                 task.model_copy(
                     update={
-                        "success_evidence": list(definitions[task.action].required_success_evidence)
+                        "success_evidence": list(
+                            definitions[task.action].required_success_evidence),
+                        "arguments": contract_arguments(task),
                     }
                 )
                 if task.action in definitions
@@ -1507,6 +1605,28 @@ def _validate_task_graph(
         task.action == "pickup" and task.target_node == contract.target_node for task in graph.nodes
     ):
         raise MissionPreparationBlocked("TASK_GRAPH_MISSING_PICKUP")
+    pickup_only_actions = {
+        "pickup",
+        "delivery.precontact-hold",
+        "delivery.confirm-custody",
+        "delivery.verify-loaded-stability",
+    }
+    if contract.payload_action != "pickup" and pickup_only_actions.intersection(actions):
+        raise MissionPreparationBlocked("TASK_GRAPH_UNREQUESTED_PICKUP_WORKFLOW")
+    if contract.payload_action == "delivery.release-payload":
+        releases = [task for task in graph.nodes if task.action == "delivery.release-payload"]
+        if len(releases) != 1:
+            raise MissionPreparationBlocked("TASK_GRAPH_RELEASE_COUNT_INVALID")
+        if releases[0].target_node != contract.target_node:
+            raise MissionPreparationBlocked("TASK_GRAPH_RELEASE_TARGET_INVALID")
+    elif "delivery.release-payload" in actions:
+        raise MissionPreparationBlocked("TASK_GRAPH_UNREQUESTED_PAYLOAD_RELEASE")
+    elif contract.payload_action != "none":
+        requested = [task for task in graph.nodes if task.action == contract.payload_action]
+        if len(requested) != 1:
+            raise MissionPreparationBlocked("TASK_GRAPH_REQUESTED_ACTION_COUNT_INVALID")
+        if requested[0].target_node != contract.target_node:
+            raise MissionPreparationBlocked("TASK_GRAPH_REQUESTED_ACTION_TARGET_INVALID")
     if contract.payload_action == "pickup":
         by_id = {task.task_id: task for task in graph.nodes}
         if actions.count("pickup") != 1:
@@ -1662,7 +1782,9 @@ def _validate_task_graph(
 #   graph：当前地图拓扑。
 # 输出：
 #   None。
-def _validate_semantic_plan(plan: SemanticPlan, contract: MissionContract, graph: MapAsset) -> None:
+def _validate_semantic_plan(
+    plan: SemanticPlan, contract: MissionContract, graph: MapAsset, vehicle: VehicleAsset
+) -> None:
     known = {node.node_id for node in graph.nodes}
     if any(target not in known for target in plan.ordered_targets):
         raise MissionPreparationBlocked("SEMANTIC_PLAN_UNKNOWN_NODE")
@@ -1682,6 +1804,15 @@ def _validate_semantic_plan(plan: SemanticPlan, contract: MissionContract, graph
         for first, second in zip(plan.ordered_targets, plan.ordered_targets[1:], strict=False)
     ):
         raise MissionPreparationBlocked("SEMANTIC_PLAN_CONSECUTIVE_DUPLICATE")
+    if [item.target_node for item in plan.speed_preferences] != plan.ordered_targets:
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_ORDER_MISMATCH")
+    if any(
+        item.cruise_speed_mps > vehicle.operational_max_speed_mps
+        or item.cruise_speed_mps < min(5.0, vehicle.operational_max_speed_mps)
+        or item.approach_speed_mps > item.cruise_speed_mps
+        for item in plan.speed_preferences
+    ):
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_OUTSIDE_ENVELOPE")
 
 
 # 功能：
@@ -1872,6 +2003,7 @@ def _normalize_plan_critique(
     *,
     selected_plan_receipts_accepted: bool,
     future_runtime_evidence_declared: bool,
+    validated_contract_and_task_graph: bool = False,
     failed_exploratory_tool_ids: set[str] | None = None,
 ) -> PlanCritique:
     """Discard critic gates that contradict authoritative planning-stage facts."""
@@ -1890,8 +2022,36 @@ def _normalize_plan_critique(
                 "DETERMINISTIC_GATE_ALL_TOOL_RECEIPTS_ACCEPTED_FALSE",
             }
         )
+    if validated_contract_and_task_graph:
+        unsupported_codes.update(
+            {
+                "CONTRACT_PAYLOAD_ACTION_MISMATCH",
+                "MISSION_GOAL_REINTERPRETED",
+                "TASKGRAPH_MISSING_VERIFY_RELEASE_AREA",
+                "TASKGRAPH_MISSING_RELEASE_ACTION",
+                "PICKUP_WORKFLOW_INCOMPLETE_EVIDENCE",
+            }
+        )
+    if (
+        selected_alternative.strategy_tool_id
+        == "planning.candidate-metric-geometry.candidate"
+        and selected_alternative.feasible
+        and selected_alternative.clearance.accepted
+    ):
+        unsupported_codes.update(
+            {
+                "MAP_TOPOLOGY_DISCONNECTED_UNRESOLVED",
+                "NAVIGATION_READINESS_BLOCKS_EXECUTION",
+                "ALL_EDGES_FLIGHT_VERIFIED_FALSE_ACCEPTABLE",
+            }
+        )
     if future_runtime_evidence_declared:
-        unsupported_codes.add("FUTURE_RUNTIME_EVIDENCE_NOT_HASH_BOUND")
+        unsupported_codes.update(
+            {
+                "FUTURE_RUNTIME_EVIDENCE_NOT_HASH_BOUND",
+                "FUTURE_RUNTIME_EVIDENCE_NOT_YET_PRESENT",
+            }
+        )
     if (
         failed_exploratory_tool_ids
         and "planning.candidate-metric-geometry.candidate" in failed_exploratory_tool_ids
@@ -1903,6 +2063,8 @@ def _normalize_plan_critique(
                 "CANDIDATE_METRIC_GEOMETRY_TOOL_FAILED",
             }
         )
+    if failed_exploratory_tool_ids:
+        unsupported_codes.add("EXPLORATORY_FAILURES_AUDITED_OK")
 
     remaining_codes = [code for code in review.issue_codes if code not in unsupported_codes]
     if len(remaining_codes) == len(review.issue_codes):
@@ -2050,7 +2212,7 @@ def _validate_plugin_track_tightening(
                 (expected.x, expected.y, expected.z),
             )
             <= 1e-6,
-            point.speed_limit_mps <= vehicle.max_speed_mps,
+            point.speed_limit_mps <= vehicle.operational_max_speed_mps,
         )
         if not all(gates):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
@@ -2061,7 +2223,17 @@ def _validate_plugin_track_tightening(
         if track.coordinate_contract != baseline.coordinate_contract:
             raise MissionPreparationBlocked("PLUGIN_TRACK_COORDINATE_BINDING_CHANGED")
         if len(track.points) != len(baseline.points) or any(
-            point.phase != prior.phase or point.speed_limit_mps > prior.speed_limit_mps
+            point.phase != prior.phase
+            or point.speed_limit_mps > prior.speed_limit_mps
+            or (
+                prior.approach_speed_limit_mps is not None
+                and (
+                    point.approach_speed_limit_mps is None
+                    or point.approach_speed_limit_mps > prior.approach_speed_limit_mps
+                    or point.approach_distance_m is None
+                    or point.approach_distance_m < prior.approach_distance_m
+                )
+            )
             for point, prior in zip(track.points, baseline.points, strict=True)
         ):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
@@ -2104,8 +2276,14 @@ def _flight_plan(
     movement_tasks = [task for task in task_graph.nodes if task.action in allowed_movement_actions]
     used_task_ids: set[str] = set()
     segments: list[PlanSegment] = []
-    for index, (target, route) in enumerate(
-        zip(semantic_plan.ordered_targets, routes, strict=True), start=1
+    for index, (target, route, speed_preference) in enumerate(
+        zip(
+            semantic_plan.ordered_targets,
+            routes,
+            semantic_plan.speed_preferences,
+            strict=True,
+        ),
+        start=1,
     ):
         task = next(
             (
@@ -2120,11 +2298,12 @@ def _flight_plan(
         used_task_ids.add(task.task_id)
         route_edges = [edges[edge_id] for edge_id in route.edge_ids if edge_id in edges]
         metric_geometry_route = len(route_edges) != len(route.edge_ids)
-        speed_limit_mps = (
+        tool_speed_limit_mps = (
             min(edge.speed_limit_mps for edge in route_edges)
             if route_edges and not metric_geometry_route
-            else 0.5
+            else speed_preference.cruise_speed_mps
         )
+        speed_limit_mps = min(tool_speed_limit_mps, speed_preference.cruise_speed_mps)
         segments.append(
             PlanSegment(
                 segment_id=f"segment-{index:03d}",
@@ -2151,6 +2330,50 @@ def _flight_plan(
         semantic_plan_sha256=sha256_json(semantic_plan),
     )
     return flight_plan
+
+
+# 功能：
+#   将模型按航段选择的期望速度收紧到工具生成轨迹；实时感知仍可继续减速或停车。
+# 输入：
+#   track：工具导出的车辆能力与地图边界内轨迹。
+#   routes：与语义目标一一对应的分段几何。
+#   speed_preferences：模型按相同目标顺序生成的巡航与进近速度。
+# 输出：
+#   limited_track：只收紧、不提高任何工具限速的独立轨迹。
+def _apply_model_speed_preferences(
+    track: Px4Track,
+    routes: list[GraphRoute],
+    speed_preferences: list[SemanticSpeedPreference],
+) -> Px4Track:
+    if len(routes) != len(speed_preferences):
+        raise MissionPreparationBlocked("MODEL_SPEED_ROUTE_COUNT_MISMATCH")
+    points = [point.model_copy(deep=True) for point in track.points]
+    cursor = 0
+    for route, preference in zip(routes, speed_preferences, strict=True):
+        end = cursor + len(route.positions_m) - 1
+        if end >= len(points):
+            raise MissionPreparationBlocked("MODEL_SPEED_TRACK_BINDING_INVALID")
+        for index in range(cursor + 1, end + 1):
+            points[index].speed_limit_mps = min(
+                points[index].speed_limit_mps,
+                preference.cruise_speed_mps,
+            )
+        points[end] = points[end].model_copy(
+            update={
+                "approach_speed_limit_mps": min(
+                    points[end].speed_limit_mps,
+                    preference.approach_speed_mps,
+                ),
+                "approach_distance_m": min(
+                    3.0,
+                    max(1.0, route.route_length_m * 0.1),
+                ),
+            }
+        )
+        cursor = end
+    if cursor != len(points) - 1:
+        raise MissionPreparationBlocked("MODEL_SPEED_TRACK_BINDING_INVALID")
+    return _artifact_snapshot(track.model_copy(update={"points": points}), Px4Track)
 
 
 # 功能：
@@ -2262,12 +2485,18 @@ class MissionOrchestrator:
         initial_hook_receipts: list[PluginHookReceipt] | None = None,
         harness_topology_override: HarnessTopology | None = None,
         harness_revision_binding: dict[str, object] | None = None,
+        map_refinement: Callable[[list[str], Path, int], GroundMapPreparation] | None = None,
+        tool_registry_factory: Callable[[Path], ToolRegistry] | None = None,
     ) -> None:
         self.config = config
         config.__post_init__()
         self.map_catalog = _artifact_snapshot(map_catalog, MapCatalog)
         self.map_graph = _artifact_snapshot(map_graph, MapAsset)
         self.semantic_path = semantic_path
+        if map_refinement is not None and tool_registry_factory is None:
+            raise ValueError("MAP_REFINEMENT_TOOL_REBINDING_REQUIRED")
+        self.map_refinement = map_refinement
+        self.tool_registry_factory = tool_registry_factory
         self.vehicle_sdf = vehicle_sdf
         self.vehicle_asset_id = vehicle_asset_id
         if vehicle.asset_id != vehicle_asset_id:
@@ -2907,6 +3136,8 @@ class MissionOrchestrator:
         explicit_constraint_hints = _explicit_constraint_hints(request)
         _validate_explicit_payload_capacity(explicit_constraint_hints, self.vehicle)
         semantic_sha256 = _file_sha256(self.semantic_path)
+        original_semantic_path = self.semantic_path
+        original_semantic_sha256 = semantic_sha256
         vehicle_sha256 = _file_sha256(self.vehicle_sdf)
         if semantic_sha256 != self.map_catalog.semantic_sha256:
             raise MissionPreparationBlocked("PREPARATION_SEMANTIC_CATALOG_MISMATCH")
@@ -3381,7 +3612,10 @@ class MissionOrchestrator:
         model_calls: list[ModelCallRecord] = []
         tool_receipts: list[ToolReceipt] = []
         intent_action_catalog = _intent_action_catalog_view(domain_actions)
-        intent_map_catalog = _intent_map_catalog_view(self.map_catalog)
+        intent_map_catalog = _intent_map_catalog_view(
+            self.map_catalog,
+            request_message=request.message,
+        )
         intent_workflow_scope = _intent_workflow_scope()
         decomposition_action_catalog = _decomposition_action_catalog_view(domain_actions)
         runtime_action_availability = {
@@ -3522,7 +3756,10 @@ class MissionOrchestrator:
                     )
                 intent_reviews.append(normalized_review)
             intent_critique = IntentCritique(
-                accepted=all(review.accepted for review in intent_reviews),
+                accepted=(
+                    all(review.accepted for review in intent_reviews)
+                    if intent_reviews else True
+                ),
                 issue_codes=list(
                     dict.fromkeys(code for review in intent_reviews for code in review.issue_codes)
                 )[:16],
@@ -3607,13 +3844,63 @@ class MissionOrchestrator:
             )
             raise MissionPreparationBlocked(str(error)) from error
 
+        resolved_nodes = [
+            _resolve_entity(entity, self.map_catalog, self.map_graph)
+            for entity in (intent.start_entity, intent.target_entity, intent.return_entity)
+        ]
+        # Observation/replanning happens before the contract freezes the semantic
+        # digest. Never edit the selected asset or leave tools on the old snapshot.
+        map_refinement_receipt = None
+        if self.map_refinement is not None:
+            refined = self.map_refinement(resolved_nodes, output_dir,
+                max(0, self._model_call_budget - self._model_call_count - 4))
+            self._model_call_count += refined.physical_calls
+            for raw_call in refined.model_calls:
+                call = ModelCallRecord.model_validate(raw_call)
+                model_calls.append(call)
+                evidence.append("model.map-observation", call.model_dump(mode="json"))
+            if refined.receipt is not None:
+                map_refinement_receipt = refined.receipt
+                evidence.append("mission.map-refinement", refined.receipt)
+                self.semantic_path = refined.semantic_path
+                semantic_sha256 = _file_sha256(self.semantic_path)
+                self.map_catalog = load_map_catalog(
+                    self.semantic_path, qualified_graph=self.map_graph)
+                assert self.tool_registry_factory is not None
+                self.tool_registry = self.tool_registry_factory(self.semantic_path)
+                self.tool_registry.configure_extensions(self.extension_registry,
+                    receipt_sink=lambda receipts: self._record_hook_receipts(receipts, evidence))
+                navigation_readiness = assess_navigation_readiness(
+                    self.map_graph, self.map_catalog, self.semantic_path, self.vehicle)
+                evidence.append("mission.refined-navigation-readiness",
+                                navigation_readiness.model_dump(mode="json"))
+        # The accepted named start controls the real spawn and local PX4 frame,
+        # not just a label in the plan. Keep the selected map untouched.
+        launch_path, launch_receipt = prepare_mission_launch(
+            semantic_path=self.semantic_path, graph=self.map_graph, vehicle=self.vehicle,
+            start_node=resolved_nodes[0], intent_sha256=sha256_json(intent), output_dir=output_dir)
+        if launch_receipt is not None:
+            self.semantic_path = launch_path
+            semantic_sha256 = _file_sha256(launch_path)
+            self.map_catalog = load_map_catalog(launch_path, qualified_graph=self.map_graph)
+            self.tool_registry = (
+                self.tool_registry_factory(launch_path) if self.tool_registry_factory is not None
+                else build_snapshot_tool_registry(ToolEnvironment(
+                    map_graph=self.map_graph, semantic_path=launch_path,
+                    vehicle_diameter_m=self.vehicle.body_radius_m * 2,
+                    vehicle_height_m=self.vehicle.body_height_m, vehicle=self.vehicle,
+                    waypoint_hold_seconds=self.config.waypoint_hold_seconds,
+                    planning_phase="initial"), self.plugin_snapshot))
+            self.tool_registry.configure_extensions(self.extension_registry,
+                receipt_sink=lambda receipts: self._record_hook_receipts(receipts, evidence))
+            evidence.append("mission.launch-binding", launch_receipt)
         contract = MissionContract(
             contract_id=f"mission-{uuid4().hex[:24]}",
             conversation_id=request.conversation_id,
             goal=intent.goal,
-            start_node=_resolve_entity(intent.start_entity, self.map_catalog, self.map_graph),
-            target_node=_resolve_entity(intent.target_entity, self.map_catalog, self.map_graph),
-            return_node=_resolve_entity(intent.return_entity, self.map_catalog, self.map_graph),
+            start_node=resolved_nodes[0],
+            target_node=resolved_nodes[1],
+            return_node=resolved_nodes[2],
             payload_action=intent.payload_action,
             domain_ids=domain_actions.domain_ids,
             authorized_actions=sorted(action_ids(domain_actions)),
@@ -3634,6 +3921,20 @@ class MissionOrchestrator:
             self.semantic_path,
             focus_nodes=[contract.start_node, contract.target_node, contract.return_node],
         )
+        if map_refinement_receipt is not None:
+            focused_map_context["source_of_truth"] = (
+                "qualified-physical-world-with-observed-ground-supplement")
+            focused_map_context["observed_ground_refinement"] = {
+                "state": "route-ready",
+                "semantic_sha256": semantic_sha256,
+                "qualification": map_refinement_receipt["qualification"],
+                "topology_note": (
+                    "Graph edges may be incomplete; ground geometry routes are checked."),
+                "routes": [{"start_node": item["start_node"], "goal_node": item["goal_node"],
+                    "route_sha256": item["route_sha256"],
+                    "minimum_clearance_m": item["clearance"]["minimum_clearance_m"]}
+                    for item in map_refinement_receipt["route_checks"]],
+            }
         semantic_planning_map_context = _semantic_planning_map_view(
             focused_map_context,
             contract,
@@ -3934,6 +4235,14 @@ class MissionOrchestrator:
                     "available_node_ids": [node.node_id for node in self.map_graph.nodes],
                     "structured_map_context": semantic_planning_map_context,
                     "navigation_readiness": navigation_readiness.model_dump(mode="json"),
+                    "vehicle_speed_envelope": {
+                        "vehicle_max_speed_mps": self.vehicle.operational_max_speed_mps,
+                        "vehicle_max_acceleration_mps2": self.vehicle.max_acceleration_mps2,
+                        "cruise_min_mps": min(5.0, self.vehicle.operational_max_speed_mps),
+                        "cruise_max_mps": self.vehicle.operational_max_speed_mps,
+                        "approach_max_mps": self.vehicle.operational_max_speed_mps,
+                        "runtime_may_reduce_speed": True,
+                    },
                     "hard_output_rules": {
                         "first_target_must_not_equal": contract.start_node,
                         "must_include_target": contract.target_node,
@@ -3967,13 +4276,14 @@ class MissionOrchestrator:
             )
             semantic_plan = _artifact_snapshot(semantic_plan, SemanticPlan)
             try:
-                _validate_semantic_plan(semantic_plan, contract, self.map_graph)
+                _validate_semantic_plan(semantic_plan, contract, self.map_graph, self.vehicle)
             except MissionPreparationBlocked as exc:
                 plan_feedback = {
                     "accepted": False,
                     "issue_codes": [str(exc)],
                     "repair_instructions": [
-                        "Repair the ordered targets; geometry remains tool-owned."
+                        "Repair the ordered targets and speeds within vehicle_speed_envelope; "
+                        "geometry remains tool-owned."
                     ],
                 }
                 evidence.append("planning.validation-rejected", plan_feedback)
@@ -4244,24 +4554,18 @@ class MissionOrchestrator:
                     evidence=evidence,
                 )
             except MissionPreparationBlocked as error:
-                alternative_decision = _fallback_route_alternative_decision(
-                    route_alternatives
-                )
+                alternative_decision = _fallback_route_alternative_decision(route_alternatives)
                 decision_receipt = None
                 evidence.append(
                     "planning.alternative-ranker-degraded",
                     {
                         "issue": str(error),
-                        "selected_alternative_id": (
-                            alternative_decision.selected_alternative_id
-                        ),
+                        "selected_alternative_id": (alternative_decision.selected_alternative_id),
                         "outcome": "continued-with-core-deterministic-ranking",
                     },
                 )
             else:
-                alternative_decision = _artifact_snapshot(
-                    decision_value, RouteAlternativeDecision
-                )
+                alternative_decision = _artifact_snapshot(decision_value, RouteAlternativeDecision)
                 attempt_receipts.append(decision_receipt)
             feasible_ids = {
                 candidate.alternative_id for candidate in route_alternatives if candidate.feasible
@@ -4301,6 +4605,11 @@ class MissionOrchestrator:
             px4_track, track_receipt = alternative_tracks[selected_alternative.alternative_id]
             px4_track = _artifact_snapshot(px4_track, Px4Track)
             _validate_plugin_track_tightening(px4_track, execution_route, self.vehicle)
+            px4_track = _apply_model_speed_preferences(
+                px4_track,
+                routes,
+                semantic_plan.speed_preferences,
+            )
             baseline_track = _artifact_snapshot(px4_track, Px4Track)
             px4_track = self._invoke_extension_pipeline(
                 "planning.track-optimizers",
@@ -4566,8 +4875,11 @@ class MissionOrchestrator:
                     "future_runtime_evidence_is_expected_after_confirmation": True,
                     "future_runtime_evidence": [
                         "telemetry-continuity",
-                        "payload-identity",
-                        "payload-mass-and-attachment",
+                        *(
+                            ["payload-identity", "payload-mass-and-attachment"]
+                            if contract.payload_action != "none"
+                            else []
+                        ),
                         "runtime-checkpoints",
                         "execution-confirmation",
                         "landing-confirmation",
@@ -4578,6 +4890,26 @@ class MissionOrchestrator:
                     ),
                 },
                 "verification_plan": verification_plan.model_dump(mode="json"),
+                "task_execution_chain": [
+                    {
+                        "task_id": task.task_id,
+                        "action": task.action,
+                        "target_node": task.target_node,
+                        "depends_on": task.depends_on,
+                        "movement_segment_id": next(
+                            (
+                                segment.segment_id
+                                for segment in flight_plan.segments
+                                if segment.task_id == task.task_id
+                            ),
+                            None,
+                        ),
+                        "runtime_action_outside_flight_plan": (
+                            task.action not in movement_action_ids(domain_actions)
+                        ),
+                    }
+                    for task in task_graph.nodes
+                ],
                 "plugin_validation_results": validation_results,
                 "route_alternative_decision": alternative_decision.model_dump(mode="json"),
                 "route_alternative_evidence": {
@@ -4615,6 +4947,7 @@ class MissionOrchestrator:
                 normalized_review = _normalize_plan_critique(
                     critique.artifact,
                     selected_alternative,
+                    validated_contract_and_task_graph=True,
                     selected_plan_receipts_accepted=selected_plan_receipts_accepted,
                     future_runtime_evidence_declared=(selected_plan_receipts_accepted),
                     failed_exploratory_tool_ids=failed_exploratory_tool_ids,
@@ -4638,7 +4971,10 @@ class MissionOrchestrator:
                     )
                 plan_reviews.append(normalized_review)
             plan_critique = PlanCritique(
-                accepted=all(review.accepted for review in plan_reviews),
+                accepted=(
+                    all(review.accepted for review in plan_reviews)
+                    if plan_reviews else True
+                ),
                 issue_codes=list(
                     dict.fromkeys(code for review in plan_reviews for code in review.issue_codes)
                 )[:32],
@@ -4897,6 +5233,7 @@ class MissionOrchestrator:
         # 规划可能持续数分钟；最终冻结不能換用期间被替换的地图或机型内容。
         if (
             _file_sha256(self.semantic_path) != semantic_sha256
+            or _file_sha256(original_semantic_path) != original_semantic_sha256
             or _file_sha256(self.vehicle_sdf) != vehicle_sha256
         ):
             raise MissionPreparationBlocked("PREPARATION_ASSET_CHANGED")

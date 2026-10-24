@@ -102,9 +102,24 @@ class _PlanningPort:
                 }
             }
         elif role == "global_planner":
+            speed_limit = kwargs["input_artifact"]["vehicle_speed_envelope"]["cruise_max_mps"]
             value = {
                 "ordered_targets": ["b", "a"],
                 "route_policy": "balanced",
+                "speed_preferences": [
+                    {
+                        "target_node": "b",
+                        "cruise_speed_mps": min(3.6, speed_limit),
+                        "approach_speed_mps": min(0.9, speed_limit),
+                        "rationale": "Controlled destination approach.",
+                    },
+                    {
+                        "target_node": "a",
+                        "cruise_speed_mps": min(4.5, speed_limit),
+                        "approach_speed_mps": min(0.7, speed_limit),
+                        "rationale": "Open return then landing.",
+                    },
+                ],
                 "rationale_summary": "Offline test intent; route geometry remains tool-owned.",
             }
         else:

@@ -169,7 +169,7 @@ def test_speed_parser_never_drops_a_minus_sign_or_picks_one_of_conflicting_value
 # 输出：
 #   None：不返回业务数据。
 def test_speed_parser_and_directive_are_strict_without_aliasing_parameters() -> None:
-    assert _classified("速度1.5米每秒", "set_speed")["parameters"]["maximum_speed_mps"] == 1.5
+    assert _classified("速度5.5米每秒", "set_speed")["parameters"]["maximum_speed_mps"] == 5.5
     parameters = {"maximum_speed_mps": True, "nested": [1]}
     classification = SimpleNamespace(
         requested_action="set_speed", parameters=parameters, requires_plan_revision=True
