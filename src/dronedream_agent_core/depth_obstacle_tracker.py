@@ -60,11 +60,14 @@ class _StaticPrimitiveIndex:
         self._exclusion_m = float(exclusion_m)
         self._bins: dict[VoxelKey, list[int]] = defaultdict(list)
         self._large_primitives: list[int] = []
+        self._large_primitive_bins: list[tuple[int, VoxelKey, VoxelKey]] = []
         self._candidate_cache: OrderedDict[QueryKey, tuple[int, ...]] = OrderedDict()
         entries = 0
         for index, primitive in enumerate(self.primitives):
-            # 宽阶段索引也要包含最终净空查询的一毫米探针，否则格边界会漏选基元。
-            low, high = primitive_bounds(dict(primitive), exclusion_m + self._PROBE_M)
+            # 曲面净空使用点探针的对角半径；普通格与大基元旁表都必须包住同一包络。
+            low, high = primitive_bounds(
+                dict(primitive), exclusion_m + math.hypot(self._PROBE_M, self._PROBE_M)
+            )
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[i] > high[i] for i in range(3)
             ):
@@ -75,6 +78,7 @@ class _StaticPrimitiveIndex:
             if needed > self._MAX_BINS_PER_PRIMITIVE or entries + needed > self._MAX_BIN_ENTRIES:
                 # 超预算仅改变索引策略，不删除建筑物或把未知区域判为空闲。
                 self._large_primitives.append(index)
+                self._large_primitive_bins.append((index, first, last))
                 continue
             entries += needed
             for x in range(first[0], last[0] + 1):
@@ -115,7 +119,7 @@ class _StaticPrimitiveIndex:
         return key
 
     # 功能：
-    #   1. 按完整膨胀格范围复用候选编号，始终纳入未建立格索引的大基元。
+    #   1. 按完整膨胀格范围复用候选编号，纳入与查询格相交的未索引大基元。
     #   2. 缓存同时限制查询数和单项编号数；大查询仍全量计算，不因缓存预算遗漏障碍。
     # 输入：
     #   self：当前不可变地图的索引。
@@ -140,7 +144,11 @@ class _StaticPrimitiveIndex:
             for z in range(low[2], high[2] + 1)
             for index in self._bins.get((x, y, z), ())
         }
-        indices.update(self._large_primitives)
+        # 大基元只因索引容量被放到旁表，不能因此在每个端点重算远方建筑。
+        # 整个查询格范围已包住定位余量；格区间不相交才排除，边界接触仍保留。
+        indices.update(index for index, first, last in self._large_primitive_bins
+                       if all(first[axis] <= high[axis] and last[axis] >= low[axis]
+                              for axis in range(3)))
         candidates = tuple(sorted(indices))
         if len(candidates) <= self._MAX_CACHED_CANDIDATES:
             self._candidate_cache[key] = candidates
