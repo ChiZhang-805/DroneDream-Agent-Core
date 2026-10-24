@@ -302,6 +302,37 @@ def test_builder_consumes_exact_native_evidence_and_copies_real_files(run_eviden
     )
 
 
+@pytest.mark.parametrize("damage", [None, "unknown-source", "alignment", "binding", "time"])
+def test_native_ecm_attachment_readback_keeps_physical_gates(run_evidence, damage):
+    path = run_evidence / "runtime-actions/receipts/action-002.receipt.json"
+    receipt = json.loads(path.read_text())
+    output = receipt["output"]
+    output["state_readback_source"] = "gazebo-ecm-joint-query"
+    if damage == "unknown-source":
+        output["state_readback_source"] = "assumed-attached"
+    elif damage == "alignment":
+        readback = output["payload_mount_alignment"]["attachment_pose_readback"]
+        readback["payload_position_world_enu_m"][2] += 0.03
+        readback["alignment_error_m"] = 0.03
+    elif damage == "binding":
+        output["payload_mount_alignment"]["binding_sha256"] = "0" * 64
+    elif damage == "time":
+        receipt["started_at"] = "2025-12-31T23:59:59Z"
+    _write_json(path, receipt)
+    if damage is not None:
+        with pytest.raises(ValueError, match="ASSET_QUALIFICATION_"):
+            verify_asset_payload_run(run_evidence)
+    else:
+        before = path.read_bytes()
+        verified = verify_asset_payload_run(run_evidence)
+        assert verified["status"] == "verified"
+        assert verified["gates"]["physical_payload_attached"] is True
+        assert verified["verified_source_files_sha256"][
+            "runtime-actions/receipts/action-002.receipt.json"
+        ] == file_sha256(path)
+        assert path.read_bytes() == before
+
+
 def test_promoted_vehicle_retains_the_flown_source_bytes(run_evidence, tmp_path):
     spec = importlib.util.spec_from_file_location(
         "builder", Path(__file__).parents[1] / "scripts/build-default-assets.py"

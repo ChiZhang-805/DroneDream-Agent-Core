@@ -514,7 +514,9 @@ def verify_asset_payload_run(root: Path):
             physical_alignment
             and attach.get("detached") is False
             and attach.get("transport") == "gazebo-transport"
-            and attach.get("state_readback_source") == "gazebo-detachable-joint-event"
+            and attach.get("state_readback_source") in (
+                "gazebo-detachable-joint-event", "gazebo-ecm-joint-query"
+            )
         ),
         "physical_payload_retained": all(
             output.get("detached") is False for output in (custody, stable, returned, return_stable)
