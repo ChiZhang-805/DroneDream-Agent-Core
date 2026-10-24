@@ -416,9 +416,12 @@ class MapSurfaceIndex:
     # 输出：
     #   matches：逐点法向、偏移、残差、有效性和表面身份；无邻近原语时全部无效。
     def match(
-        self, value, limits: MapAlignmentLimits, *, sensor_origins_world_m
+        self, value, limits: MapAlignmentLimits, *, sensor_origins_world_m,
+        observed_range_prefix: bool = False,
     ) -> PlaneCorrespondences:
         points = _points(value)
+        if type(observed_range_prefix) is not bool:
+            raise ValueError("MAP_ALIGNMENT_RAY_RANGE_INVALID")
         if not isinstance(limits, MapAlignmentLimits):
             raise ValueError("MAP_ALIGNMENT_LIMITS_INVALID")
         limits = replace(limits)
@@ -447,7 +450,14 @@ class MapSurfaceIndex:
         )
         local_origin = np.einsum("nbi,bij->nbj", origins[:, None] - centers, rotations)
         world_direction = points - origins
-        world_direction /= np.linalg.norm(world_direction, axis=1, keepdims=True)
+        observed_ranges = np.linalg.norm(world_direction, axis=1)
+        world_direction /= observed_ranges[:, None]
+        # Static identity needs only the actual ray prefix, including all nearer
+        # occluders and the unchanged edge/competition margin. Registration retains
+        # its existing unlimited visibility query by default.
+        maximum_ranges = (observed_ranges + padding + max(
+            limits.minimum_face_interior_m, limits.ambiguity_distance_m)
+            if observed_range_prefix else None)
         direction = np.einsum("ni,bij->nbj", world_direction, rotations)
         enter, local_normals, interiors, face_ids, inside, planar = first_surface_hits(
             local_origin, direction, halves, self.kinds[indices], limits.minimum_face_interior_m
@@ -461,8 +471,21 @@ class MapSurfaceIndex:
                     local_origin[:, column], direction[:, column], halves[column], 0.0
                 )
                 candidates = box_inside | np.isfinite(box_enter)
+                if maximum_ranges is not None:
+                    candidates &= box_inside | (box_enter <= maximum_ranges)
                 if not np.any(candidates):
                     continue
+                mesh_ranges = (maximum_ranges[candidates].copy()
+                               if maximum_ranges is not None else None)
+                if mesh_ranges is not None:
+                    # A source inside the mesh's bounding box might be inside a
+                    # closed shell whose exit lies after the observed endpoint.
+                    # Retain the complete physical-inside test for those rays.
+                    inside_bounds = box_inside[candidates]
+                    mesh_ranges[inside_bounds] = np.linalg.norm(
+                        np.abs(local_origin[candidates, column][inside_bounds]) + halves[column],
+                        axis=1,
+                    ) + 1e-6
                 values = mesh_surface_hits(
                     local_origin[candidates, column],
                     direction[candidates, column],
@@ -472,6 +495,7 @@ class MapSurfaceIndex:
                     winding_sign=self.mesh_optics[int(global_index)][1],
                     acceleration=self.mesh_acceleration[int(global_index)],
                     work_budget=mesh_budget,
+                    maximum_ranges=mesh_ranges,
                 )
                 for destination, value in zip(
                     (enter, local_normals, interiors, face_ids, inside), values, strict=True

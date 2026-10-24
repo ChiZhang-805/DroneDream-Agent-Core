@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+import numpy as np
+
 from .collision import _clearance, _finite, _validated_primitive, primitive_bounds
 from .contracts import DynamicObstacleObservation, OnboardPerceptionFrame, Vector3
+from .local_map_alignment import MapAlignmentLimits, MapSurfaceIndex
 
 Point = tuple[float, float, float]
 VoxelKey = tuple[int, int, int]
@@ -265,6 +268,7 @@ class DepthMotionTracker:
         self,
         *,
         known_static_primitives: list[dict[str, Any]] | None = None,
+        known_static_surfaces: MapSurfaceIndex | None = None,
         voxel_size_m: float = 0.35,
         minimum_points: int = 3,
         association_distance_m: float = 1.2,
@@ -309,6 +313,12 @@ class DepthMotionTracker:
             if primitives
             else None
         )
+        if known_static_surfaces is not None and not isinstance(
+            known_static_surfaces, MapSurfaceIndex
+        ):
+            raise ValueError("DEPTH_TRACK_STATIC_SURFACES_INVALID")
+        self._static_surfaces = known_static_surfaces
+        self._static_exclusion_m = float(static_exclusion_m)
         self._tracks: dict[int, _Track] = {}
         self._next_track_id = 1
         self._last_frame_time: float | None = None
@@ -333,6 +343,50 @@ class DepthMotionTracker:
         key = tuple(math.floor(value) for value in scaled)
         return key
 
+    # 功能：以真实射线首交解释静态网格端点；只排除动态假设，不修改占据射线。
+    # 输入：唯一端点及真实起点、定位误差；输出：可由首个可见静态面解释的端点集合。
+    def _known_surface_points(
+        self, rays: dict[Point, Point], *, uncertainty_m: float
+    ) -> set[Point]:
+        if self._static_surfaces is None or not rays:
+            return set()
+        tolerance = self._static_exclusion_m + uncertainty_m
+        # 超出既有表面关联器的有效误差包络时，不推断静态身份。
+        # 即使误差过大，原始点仍进入占据融合及动态关联。
+        if not 0.0 < tolerance <= 2.0:
+            return set()
+        limits = MapAlignmentLimits(
+            maximum_association_distance_m=tolerance,
+            maximum_residual_p95_m=min(0.08, tolerance),
+            huber_scale_m=min(0.02, tolerance),
+        )
+        points = list(rays)
+        explained: set[Point] = set()
+        for start in range(0, len(points), 512):
+            batch = points[start:start + 512]
+            endpoints = np.asarray(batch, dtype=float)
+            origins = np.asarray([rays[point] for point in batch], dtype=float)
+            lengths = np.linalg.norm(endpoints - origins, axis=1)
+            # 零长度及越过关联器坐标域的点不适于首交证明，但不会从原始帧删掉。
+            eligible = ((lengths >= 1e-6)
+                        & (np.abs(endpoints).max(axis=1) <= 1e6)
+                        & (np.abs(origins).max(axis=1) <= 1e6))
+            if not eligible.any():
+                continue
+            matches = self._static_surfaces.match(
+                endpoints[eligible], limits, sensor_origins_world_m=origins[eligible],
+                observed_range_prefix=True,
+            )
+            if matches.surface_ranges_m is None:
+                continue
+            # 法向距离小不足以证明身份：切向很远、位于网格孔洞后方或静态面
+            # 前方的独立目标仍须保留。必须同时吻合真实射线的首交深度。
+            accepted = (matches.valid
+                        & (np.abs(lengths[eligible] - matches.surface_ranges_m) <= tolerance))
+            selected = np.flatnonzero(eligible)[accepted]
+            explained.update(batch[int(index)] for index in selected)
+        return explained
+
     # 功能：
     #   将可靠且非地图表面的不重复端点按二十六邻域聚类，不修改原始占据射线。
     # 输入：
@@ -348,6 +402,7 @@ class DepthMotionTracker:
         # stays occupied in fusion and collision safety, even beside a wall.
         uncertainty_m = 3.0 * math.sqrt(frame.localization_covariance_m2)
         quality_by_point: dict[Point, float] = {}
+        origins_by_point: dict[Point, Point] = {}
         for ray in frame.range_rays:
             if not ray.hit or ray.confidence < 0.35:
                 continue
@@ -358,11 +413,17 @@ class DepthMotionTracker:
             ):
                 continue
             if point not in quality_by_point:
-                buckets[self._key(point)].append(point)
                 quality_by_point[point] = ray.confidence
+                origins_by_point[point] = _point(ray.origin_m)
             else:
                 # Repeating one point cannot create independent support.
                 quality_by_point[point] = min(quality_by_point[point], ray.confidence)
+        known_surface_points = self._known_surface_points(
+            origins_by_point, uncertainty_m=uncertainty_m
+        )
+        for point in quality_by_point:
+            if point not in known_surface_points:
+                buckets[self._key(point)].append(point)
         pending = set(buckets)
         clusters: list[_Cluster] = []
         neighbor_offsets = [

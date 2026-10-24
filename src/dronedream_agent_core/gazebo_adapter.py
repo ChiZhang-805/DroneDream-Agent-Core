@@ -2973,6 +2973,15 @@ def _resolve_controlled_vehicle_pose(
     return resolved
 
 
+# 功能：绑定深度静态表面到本轮实际世界；输入原世界、语义路径及已固定摘要；输出启动参数。
+def _depth_worker_map_arguments(
+    world_sdf: Path, semantic_path: Path, input_hashes: dict[Path, str],
+) -> list[str]:
+    """Pass the run's actual world identity to static depth-surface classification."""
+    return ["--semantic", str(semantic_path), "--static-world", str(world_sdf),
+            "--static-world-sha256", input_hashes[world_sdf]]
+
+
 # 功能：
 #   明确选择当前开发源码或已安装工作进程，开发训练不得静默退回旧安装包。
 # 输入：
@@ -5074,8 +5083,7 @@ def run_px4_gazebo_track(
                     vehicle_name,
                     "--vehicle-metadata",
                     str(vehicle_metadata_path),
-                    "--semantic",
-                    str(semantic_path),
+                    *_depth_worker_map_arguments(world_sdf, semantic_path, input_hashes),
                     "--target",
                     str(local_safety_target_path),
                     "--observation",

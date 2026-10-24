@@ -83,7 +83,7 @@ class MeshRayIndex:
 
     # 功能：只枚举射线实际能触及的叶节点；不能按观测终点丢弃前后遮挡或背面。
     # 输入：最多 32 条射线、共享预算、可选首交邻域；输出：真实候选射线和原始面 ID。
-    def leaves(self, origins, directions, budget, depths=None, margin=0.0):
+    def leaves(self, origins, directions, budget, depths=None, margin=0.0, maximum_ranges=None):
         pending = [(0, np.arange(len(origins)))]
         while pending:
             node_id, rays = pending.pop()
@@ -97,6 +97,10 @@ class MeshRayIndex:
             leave = np.min(np.where(parallel, np.inf, np.maximum(first, second)), axis=1)
             hit = (leave >= np.maximum(enter, 0.0)) & (leave > 1e-9)
             hit &= ~np.any(parallel & ((origin < lo) | (origin > hi)), axis=1)
+            if maximum_ranges is not None:
+                # Prefix only: every possible occluder before the observed endpoint
+                # remains eligible. This is not an endpoint-neighborhood window.
+                hit &= enter <= maximum_ranges[rays]
             if depths is not None:
                 hit &= (np.isfinite(depths[rays]) & (enter <= depths[rays] + margin)
                         & (leave >= depths[rays] - margin))
@@ -133,7 +137,7 @@ def _mesh_leaf_hits(origins, directions, index, faces, double_sided, budget):
 # 输出：首交距离、面法向、有效面标记、三角形身份与背面/内部标记。
 def mesh_surface_hits(
     origins, directions, triangles, margin, *, double_sided=False, winding_sign=1.0,
-    acceleration=None, work_budget=None,
+    acceleration=None, work_budget=None, maximum_ranges=None,
 ):
     index = acceleration if acceleration is not None else MeshRayIndex(triangles)
     if index.triangles is not triangles:
@@ -141,6 +145,11 @@ def mesh_surface_hits(
     budget = work_budget if work_budget is not None else MeshQueryBudget()
     normal = index.normals
     count = len(origins)
+    if maximum_ranges is not None:
+        maximum_ranges = np.asarray(maximum_ranges)
+        if (maximum_ranges.shape != (count,) or maximum_ranges.dtype.kind not in "fiu"
+                or not np.isfinite(maximum_ranges).all() or np.any(maximum_ranges <= 0)):
+            raise ValueError("MAP_ALIGNMENT_RAY_RANGE_INVALID")
     result = (
         np.full(count, np.inf),
         np.zeros((count, 3)),
@@ -150,10 +159,15 @@ def mesh_surface_hits(
     )
     for start in range(0, count, _MESH_RAY_BATCH):
         o, d = origins[start : start + _MESH_RAY_BATCH], directions[start : start + _MESH_RAY_BATCH]
+        ranges = (None if maximum_ranges is None
+                  else maximum_ranges[start:start + _MESH_RAY_BATCH])
         depth, physical_depth = np.full(len(o), np.inf), np.full(len(o), np.inf)
+        search_limits = np.full(len(o), np.inf) if ranges is None else ranges.copy()
         best, physical_best = np.zeros(len(o), int), np.zeros(len(o), int)
-        for rays, faces in index.leaves(o, d, budget):
+        for rays, faces in index.leaves(o, d, budget, maximum_ranges=search_limits):
             t, visible = _mesh_leaf_hits(o[rays], d[rays], index, faces, double_sided, budget)
+            if ranges is not None:
+                t = np.where(t <= ranges[rays, None], t, np.inf)
             row = np.arange(len(rays))
             for times, distances, selected in ((t, physical_depth, physical_best),
                                                (np.where(visible, t, np.inf), depth, best)):
@@ -162,6 +176,11 @@ def mesh_surface_hits(
                 update = ((distance < distances[rays])
                           | ((distance == distances[rays]) & (face < selected[rays])))
                 distances[rays[update]], selected[rays[update]] = distance[update], face[update]
+            # Only farther-than-both known first hits can be skipped. Physical
+            # backfaces and a later visible face retain their distinct bounds.
+            np.maximum(depth, physical_depth, out=search_limits)
+            if ranges is not None:
+                np.minimum(search_limits, ranges, out=search_limits)
         # Physical inside testing is separate from the optical culling rule.
         # A reversed single-sided shell can show its far wall to an outside
         # camera; that does not put the camera physically inside the shell.
@@ -176,7 +195,7 @@ def mesh_surface_hits(
         # All facets of the actual mesh remain occluders. Reject a first hit
         # if a nearby competing facet has a materially different normal.
         crease = np.zeros(len(o), bool)
-        for rays, faces in index.leaves(o, d, budget, depth, margin):
+        for rays, faces in index.leaves(o, d, budget, depth, margin, maximum_ranges=ranges):
             t, visible = _mesh_leaf_hits(o[rays], d[rays], index, faces, double_sided, budget)
             dot = np.einsum("tj,nj->nt", normal[faces], normals[rays])
             crease[rays] |= np.any(visible & (np.abs(t - depth[rays, None]) < margin)

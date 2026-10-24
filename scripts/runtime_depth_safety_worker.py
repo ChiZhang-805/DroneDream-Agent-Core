@@ -61,6 +61,7 @@ from dronedream_agent_core.learning_observation_recorder import (
     LearningObservationRecorder,
     learning_recovery_task_context,
 )
+from dronedream_agent_core.local_map_alignment import MapSurfaceIndex
 from dronedream_agent_core.local_policy_packages import (
     LocalPolicyQualificationReceipt,
     LocalPolicySimulationAdmissionReceipt,
@@ -85,6 +86,7 @@ from dronedream_agent_core.native_state_stream import NativeStateSampler
 from dronedream_agent_core.navigation_context import build_navigation_context
 from dronedream_agent_core.navigation_snapshot import NavigationSnapshotRequest
 from dronedream_agent_core.occupancy_collision import fully_contained_box_mask
+from dronedream_agent_core.optical_map import compile_optical_map
 from dronedream_agent_core.payload_collection_contract import payload_collection_mode
 from dronedream_agent_core.perception_health_channel import PerceptionHealthPublisher
 from dronedream_agent_core.perception_runtime import (
@@ -1917,6 +1919,34 @@ def _initialize_qualified_static_map(*, source_path: Path, **inputs: Any) -> tup
     return counts
 
 
+def _load_worker_static_surfaces(
+    *, world_path: Path, expected_world_sha256: str, semantic: dict[str, Any],
+) -> tuple[MapSurfaceIndex, dict[str, Any]]:
+    """Bind motion classification to the same rendered surfaces, never exclusion volumes."""
+    index, _, receipt = compile_optical_map(
+        world_path, expected_world_sha256=expected_world_sha256)
+    canopy = semantic.get("canopy_collision_meshes", [])
+    bundles = [canopy] if isinstance(canopy, dict) else canopy
+    if not isinstance(bundles, list):
+        raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+    dependencies = receipt["resource_dependencies"]
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+        meshes = bundle.get("meshes", [bundle])
+        if not isinstance(meshes, list):
+            raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+        for mesh in meshes:
+            if (not isinstance(mesh, dict) or not isinstance(mesh.get("mesh_uri"), str)
+                    or not isinstance(mesh.get("mesh_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", mesh["mesh_sha256"])):
+                raise ValueError("DEPTH_STATIC_CANOPY_BINDING_INVALID")
+            resource = dependencies.get(mesh["mesh_uri"])
+            if resource is None or resource["sha256"] != mesh["mesh_sha256"]:
+                raise ValueError("DEPTH_STATIC_CANOPY_RESOURCE_MISMATCH:" + mesh["mesh_uri"])
+    return index, receipt
+
+
 # 功能：
 #   消除已被静态碰撞体及其既有净空带完整覆盖的感知体素；普通重叠仍保留未知突出物。
 # 输入：
@@ -2539,6 +2569,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     parser.add_argument("--vehicle", required=True)
     parser.add_argument("--vehicle-metadata", type=Path, required=True)
     parser.add_argument("--semantic", type=Path, required=True)
+    parser.add_argument("--static-world", type=Path, required=True)
+    parser.add_argument("--static-world-sha256", required=True)
     parser.add_argument("--qualified-route", type=Path)
     parser.add_argument("--qualified-clearance", type=Path)
     parser.add_argument("--target", type=Path, required=True)
@@ -2849,6 +2881,12 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
          'sha256': hashlib.sha256(Path(metric_scan_backend.__file__).read_bytes()).hexdigest()}
         if metric_scan_backend is not None else {'implementation': 'numpy-python'})
     strategic_map_context: dict[str, object] = {}
+    known_static_surfaces, optical_receipt = _load_worker_static_surfaces(
+        world_path=args.static_world, expected_world_sha256=args.static_world_sha256,
+        semantic=semantic)
+    worker_source_path = args.command.parent / "depth-worker-source.json"
+    _atomic_json(worker_source_path, {
+        **read_runtime_object(worker_source_path), "static_optical_map": optical_receipt})
     if args.bounded_hybrid_control:
         require_hybrid_provider(provider=args.local_navigation_provider,
             model_authority=args.require_model_control_authority,
@@ -3208,7 +3246,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             expected_channel, contract=LOCALIZATION_SOURCE_CONTRACT)
         cleanup.callback(localization_publisher.close)
     bridge = MetricRangeSensorBridge(mount)
-    tracker = DepthMotionTracker(known_static_primitives=primitives)
+    tracker = DepthMotionTracker(
+        known_static_primitives=primitives, known_static_surfaces=known_static_surfaces)
     # Native state progresses independently of depth rendering and inference.
     native_state_sampler = NativeStateSampler(
         args.identity_telemetry, channel_path=args.native_state_channel,
