@@ -122,7 +122,9 @@ def _mesh_leaf_hits(origins, directions, index, faces, double_sided, budget):
     h = np.cross(directions[:, None], edge2)
     det = np.einsum("tj,ntj->nt", edge1, h)
     divisor = np.where(np.abs(det) > 1e-12, det, 1.0)
-    s = origins[:, None] - index.triangles[faces, 0]
+    # 同一相机帧共享起点；只算一次起点相关的叉积，逐射线求交与预算不变。
+    shared_origins = origins[:1] if np.all(origins == origins[0]) else origins
+    s = shared_origins[:, None] - index.triangles[faces, 0]
     u = np.einsum("ntj,ntj->nt", s, h) / divisor
     q = np.cross(s, edge1)
     v = np.einsum("nj,ntj->nt", directions, q) / divisor

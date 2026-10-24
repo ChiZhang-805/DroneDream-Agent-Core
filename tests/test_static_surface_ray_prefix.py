@@ -123,3 +123,51 @@ def test_larger_ray_batches_preserve_exact_results_and_work_budget(
         if not reversed_shell:
             assert results[1][4][1]  # An inside source remains inside.
             assert not results[1][2][2]  # A crease remains unsuitable as a map support.
+
+
+# 功能：保留优化前逐射线展开的求交作为差分参照，不共用单起点计算分支。
+def _expanded_leaf_hits(origins, directions, index, faces, double_sided, budget):
+    budget.charge(len(origins) * len(faces))
+    edge1, edge2 = index.edge1[faces], index.edge2[faces]
+    h = np.cross(directions[:, None], edge2)
+    det = np.einsum("tj,ntj->nt", edge1, h)
+    divisor = np.where(np.abs(det) > 1e-12, det, 1.0)
+    s = origins[:, None] - index.triangles[faces, 0]
+    u = np.einsum("ntj,ntj->nt", s, h) / divisor
+    q = np.cross(s, edge1)
+    v = np.einsum("nj,ntj->nt", directions, q) / divisor
+    t = np.einsum("tj,ntj->nt", edge2, q) / divisor
+    hit = ((np.abs(det) > 1e-12) & (u >= -1e-10) & (v >= -1e-10)
+           & (u + v <= 1 + 1e-10) & (t > 1e-9))
+    return np.where(hit, t, np.inf), hit if double_sided else hit & (det > 1e-12)
+
+
+# 功能：共享与仅相差一 ULP 的起点都须保留完整首交、折边、内部和背面结果。
+@pytest.mark.parametrize("count", [127, 128, 129, 301])
+@pytest.mark.parametrize("origin_x,mixed_origin", [(0., False), (3., False), (0., True)])
+def test_shared_camera_origin_matches_expanded_intersections(monkeypatch, count,
+                                                            origin_x, mixed_origin):
+    triangles = _boxes(range(3, 83, 4))
+    origins = np.tile([origin_x, .2, .1], (count, 1))
+    if mixed_origin:
+        origins[::2, 1] = np.nextafter(origins[::2, 1], np.inf)
+    # Includes exact edges, near-tangent rays, misses and reversed rays.
+    directions = np.array([[1., 0., 0.], [2., .8, .9], [1., 1e-13, 0.],
+                           [1., 5., .1], [-1., 0., 0.]])[np.arange(count) % 5]
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    optimized = surface_geometry._mesh_leaf_hits
+    for winding_sign, double_sided in ((1., False), (-1., False), (-1., True)):
+        geometry = triangles if winding_sign == 1. else triangles[:, ::-1].copy()
+        index = MeshRayIndex(geometry)
+        results, budgets = [], []
+        for implementation in (_expanded_leaf_hits, optimized):
+            monkeypatch.setattr(surface_geometry, "_mesh_leaf_hits", implementation)
+            budget = MeshQueryBudget()
+            results.append(mesh_surface_hits(
+                origins, directions, geometry, .02, acceleration=index,
+                double_sided=double_sided, winding_sign=winding_sign, work_budget=budget,
+            ))
+            budgets.append(budget)
+        for expanded, shared in zip(*results, strict=True):
+            np.testing.assert_array_equal(expanded, shared)
+        assert budgets[0] == budgets[1]
