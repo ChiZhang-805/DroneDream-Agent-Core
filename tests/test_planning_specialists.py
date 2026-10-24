@@ -280,6 +280,10 @@ def test_energy_specialist_tolerates_only_serialization_noise() -> None:
 
     assert serialized_equal.accepted is True
     assert real_overrun.accepted is False
+    assert real_overrun.repair_instructions == [
+        "Re-plan a shorter connected ground-corridor route within the vehicle's "
+        "independently qualified range; do not substitute a fixed qualification track."
+    ]
 
 
 # 功能：

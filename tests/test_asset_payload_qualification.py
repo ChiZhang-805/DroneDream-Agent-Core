@@ -124,7 +124,12 @@ def run_evidence(course, tmp_path):
     actions, checkpoints = result["actions"], result["checkpoints"]
     for name, value in {
         "mission-route.json": route.model_dump(mode="json"),
-        "reference_track.json": {"points": [{"x": 0, "y": 0, "z": 0}, {"x": 3, "y": 4, "z": 0}]},
+        "reference_track.json": {
+            "points": [
+                {"x": 0, "y": 0, "z": 0, "speed_limit_mps": 6.0},
+                {"x": 3, "y": 4, "z": 0, "speed_limit_mps": 6.0},
+            ]
+        },
         "clearance.json": {"accepted": True},
         "runtime-actions.json": actions.model_dump(mode="json"),
         "runtime-checkpoints.json": checkpoints.model_dump(mode="json"),
@@ -356,7 +361,7 @@ def test_promoted_vehicle_retains_the_flown_source_bytes(run_evidence, tmp_path)
         )
     )
     controller = tmp_path / "controller.json"
-    controller.write_text("{}")
+    controller.write_text('{"vel_limit": 6.0}')
     staged, bundle = tmp_path / "staged", tmp_path / "vehicle-bundle"
     builder._stage_current_vehicle(source, controller, staged)
     builder._build_vehicle_bundle(run_evidence, bundle, staged, controller)

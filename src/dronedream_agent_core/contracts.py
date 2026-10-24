@@ -1268,6 +1268,7 @@ class PlannerValidation(StrictModel):
     accepted: bool
     deterministic_gates: dict[str, bool] = Field(min_length=1, max_length=32)
     issue_codes: list[str] = Field(default_factory=list, max_length=32)
+    repair_instructions: list[str] = Field(default_factory=list, max_length=32)
 
 
 class RoutePoint(StrictModel):

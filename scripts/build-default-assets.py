@@ -586,6 +586,36 @@ def _verified_track_distance_m(run_dir: Path) -> float:
     return distance_m
 
 
+def _independently_qualified_range_m(
+    capability_receipt: Path | None,
+    *,
+    vehicle_source: Path,
+    controller_params: Path,
+) -> float | None:
+    """Read range evidence bound to this exact airframe and controller."""
+
+    if capability_receipt is None:
+        return None
+    receipt = _json(capability_receipt)
+    required = {
+        "schema_version": "dronedream.vehicle-capability-evidence.v1",
+        "status": "verified",
+        "vehicle_sdf_sha256": _sha256(vehicle_source / "model.sdf"),
+        "controller_params_sha256": _sha256(controller_params),
+    }
+    for key, expected in required.items():
+        if receipt.get(key) != expected:
+            raise ValueError(f"DEFAULT_VEHICLE_CAPABILITY_{key.upper()}_MISMATCH")
+    qualified_range_m = receipt.get("qualified_range_m")
+    if (
+        not isinstance(qualified_range_m, (int, float))
+        or not math.isfinite(float(qualified_range_m))
+        or float(qualified_range_m) <= 0.0
+    ):
+        raise ValueError("DEFAULT_VEHICLE_CAPABILITY_RANGE_INVALID")
+    return float(qualified_range_m)
+
+
 def _verified_track_speed_limit_mps(run_dir: Path, controller_params: Path) -> float:
     """Derive the operating ceiling from the accepted, unmodified motion schedule.
 
@@ -872,6 +902,7 @@ def _build_vehicle_bundle(
     destination: Path,
     vehicle_source: Path,
     controller_params: Path,
+    capability_receipt: Path | None = None,
 ) -> None:
     _copy_tree(vehicle_source, destination / "gazebo")
     shutil.copyfile(controller_params, destination / "controller_params.json")
@@ -912,7 +943,13 @@ def _build_vehicle_bundle(
     vehicle_summary["maximum_qualified_payload_kg"] = qualified_payload_kg
     if not (run_dir / "asset-qualification-inputs.json").is_file():
         _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
-    qualified_range_m = _verified_track_distance_m(run_dir)
+    map_pair_route_m = _verified_track_distance_m(run_dir)
+    independent_range_m = _independently_qualified_range_m(
+        capability_receipt,
+        vehicle_source=vehicle_source,
+        controller_params=controller_params,
+    )
+    qualified_range_m = max(map_pair_route_m, independent_range_m or 0.0)
     qualified_speed_mps = _verified_track_speed_limit_mps(run_dir, controller_params)
     vehicle = {
         "schema_version": "dronedream.vehicle.v1",
@@ -927,8 +964,8 @@ def _build_vehicle_bundle(
         "max_speed_mps": 6.0,
         "qualified_cruise_max_mps": qualified_speed_mps,
         "max_acceleration_mps2": 1.5,
-        # Bound to the exact successfully completed Gazebo/PX4 pickup-return
-        # reference track; no value is inherited from an older route.
+        # Range is independent of the current map route. A longer value is
+        # accepted only through exact-airframe capability evidence.
         "qualified_range_m": qualified_range_m,
         "reserve_battery_percent": 30.0,
         "max_pickup_payload_kg": qualified_payload_kg,
@@ -967,7 +1004,12 @@ def _build_vehicle_bundle(
                 "mass_and_inertia_from_source_model": True,
                 "rotor_dynamics_from_source_model": True,
                 "qualified_range_m": qualified_range_m,
-                "qualified_range_basis": "completed Gazebo/PX4 pickup-return route",
+                "qualified_range_basis": (
+                    "independent exact-airframe capability evidence"
+                    if independent_range_m is not None
+                    else "completed Gazebo/PX4 pickup-return route"
+                ),
+                "map_pair_qualification_route_m": map_pair_route_m,
                 "qualified_cruise_max_mps": qualified_speed_mps,
                 "qualified_speed_basis": "completed Gazebo/PX4 reference-track speed ceiling",
                 "payload_mass_kg": qualified_payload_kg,
@@ -1204,6 +1246,7 @@ def main() -> None:
     parser.add_argument("--map-graph", type=Path, required=True)
     parser.add_argument("--vehicle-source", type=Path, required=True)
     parser.add_argument("--controller-params", type=Path, required=True)
+    parser.add_argument("--vehicle-capability-receipt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--supersedes-index", type=Path)
     parser.add_argument("--gazebo-version", required=True)
@@ -1247,6 +1290,11 @@ def main() -> None:
             vehicle_root,
             temporary / "current-vehicle",
             controller_params,
+            (
+                args.vehicle_capability_receipt.resolve()
+                if args.vehicle_capability_receipt is not None
+                else None
+            ),
         )
         output.mkdir(parents=True, exist_ok=True)
         qualified_pair = _build_qualified_pair(

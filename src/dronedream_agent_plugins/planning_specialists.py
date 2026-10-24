@@ -349,13 +349,21 @@ def _validation(
     else:
         raise ValueError("PLANNER_LAYER_UNKNOWN")
     failed = [name for name, accepted in gates.items() if not accepted]
+    issue_codes = [
+        f"PLANNER_{layer.upper().replace('-', '_')}_{name.upper()}" for name in failed
+    ]
+    repair_instructions = []
+    if layer == "energy" and "qualified_range" in failed:
+        repair_instructions = [
+            "Re-plan a shorter connected ground-corridor route within the vehicle's "
+            "independently qualified range; do not substitute a fixed qualification track."
+        ]
     validation = PlannerValidation(
         planner_id=f"planning.{layer}",
         accepted=not failed,
         deterministic_gates=gates,
-        issue_codes=[
-            f"PLANNER_{layer.upper().replace('-', '_')}_{name.upper()}" for name in failed
-        ],
+        issue_codes=issue_codes,
+        repair_instructions=repair_instructions,
     )
     return validation
 
