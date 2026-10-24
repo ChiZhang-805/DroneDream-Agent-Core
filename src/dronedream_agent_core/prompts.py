@@ -192,9 +192,9 @@ older destination or emit intermediate graph nodes; shortest-route owns those no
 For every ordered target, emit exactly one speed_preferences item in the same order.
 Choose cruise_speed_mps and approach_speed_mps from the supplied vehicle_speed_envelope.
 These are desired per-leg limits, not fixed controls. Reason from the mission, semantic
-environment, proximity to buildings, payload state, turns, and arrival precision. For an
-open campus transit leg, normally choose 4–5 m/s from the verified range; do not reduce
-speed merely because camera and control updates run at different rates. Reduce the
+environment, proximity to buildings, payload state, turns, and arrival precision.
+Both speeds must be positive and no greater than the supplied operational ceiling;
+design performance does not establish a higher qualified operating speed. Reduce the
 approach speed when
 the destination, surrounding structures, or requested action needs finer control. The
 runtime perception controller may always slow, hold, replan, return, or land. State the

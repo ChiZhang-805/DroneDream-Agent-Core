@@ -637,7 +637,7 @@ def _model_navigation_controller_lookahead_m(
 # 输出：
 #   speed_limit_mps：有效全局速度上界。
 def _effective_local_speed_limit_mps(
-    *, controller_speed_limit_mps: float, track: Px4Track
+    *, controller_speed_limit_mps: float, track: Px4Track, vehicle: VehicleAsset | None = None
 ) -> float:
     """Resolve the maximum speed authorized by both controller and track."""
 
@@ -654,6 +654,8 @@ def _effective_local_speed_limit_mps(
     speed_limit_mps = min(
         controller_speed_limit_mps, max(track_limits, default=controller_speed_limit_mps)
     )
+    if vehicle is not None:
+        speed_limit_mps = min(speed_limit_mps, vehicle.operational_max_speed_mps)
     return speed_limit_mps
 
 
@@ -3596,6 +3598,7 @@ def run_px4_gazebo_track(
     local_max_speed_mps = _effective_local_speed_limit_mps(
         controller_speed_limit_mps=controller_max_speed_mps,
         track=track,
+        vehicle=selected_vehicle,
     )
     local_safety_supported = "--local-safety-command" in executor_help.stdout
     tracking_identity_supported = "--tracking-lag-limit-m" in executor_help.stdout

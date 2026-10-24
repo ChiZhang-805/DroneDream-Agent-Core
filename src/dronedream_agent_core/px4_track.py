@@ -91,7 +91,7 @@ def route_to_px4_track(
     edge_by_id = {edge.edge_id: edge for edge in graph.edges}
     node_by_id = {node.node_id: node for node in graph.nodes}
     synthesized_speed_limit_mps = min(
-        vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
         METRIC_ROUTE_CRUISE_SPEED_MPS,
     )
     speed_limits = []
@@ -102,7 +102,7 @@ def route_to_px4_track(
                 raise ValueError(f"route references an unknown edge: {edge_id}")
             speed_limits.append(synthesized_speed_limit_mps)
         else:
-            speed_limits.append(min(edge.speed_limit_mps, vehicle.max_speed_mps))
+            speed_limits.append(min(edge.speed_limit_mps, vehicle.operational_max_speed_mps))
     if len(speed_limits) != len(route.positions_m) - 1:
         raise ValueError("route point and edge counts do not align")
 
@@ -174,7 +174,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
     )
     edges = {edge.edge_id: edge for edge in graph.edges}
     nodes = {node.node_id: node for node in graph.nodes}
-    join_speed = min(METRIC_ROUTE_CRUISE_SPEED_MPS, vehicle.max_speed_mps)
+    join_speed = min(METRIC_ROUTE_CRUISE_SPEED_MPS, vehicle.operational_max_speed_mps)
     points: list[Px4TrackPoint] = []
     world_points: list[WorldTrackPoint] = []
     target_seen = False
@@ -198,7 +198,7 @@ def runtime_route_to_px4_track(request: RuntimeTrackRequest, graph: MapAsset) ->
                 y=world.x - root_east - offset_east,
                 z=world.z - root_up - offset_up,
                 phase=phase,
-                speed_limit_mps=min(edge_speed, vehicle.max_speed_mps),
+                speed_limit_mps=min(edge_speed, vehicle.operational_max_speed_mps),
             )
         )
         world_points.append(WorldTrackPoint(east_m=world.x, north_m=world.y, up_m=world.z))

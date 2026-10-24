@@ -1013,7 +1013,7 @@ def _recorded_qualification_artifacts(
         expected = (world.y - root.y - offset.y, world.x - root.x - offset.x,
                     world.z - root.z - offset.z)
         if (math.dist((point.x, point.y, point.z), expected) > 1e-9
-                or point.speed_limit_mps > vehicle.max_speed_mps):
+                or point.speed_limit_mps > vehicle.operational_max_speed_mps):
             raise AssetPairQualificationError(
                 "ASSET_QUALIFICATION_RECORDED_TRACK_EXECUTION_MISMATCH")
     # Recheck this same geometry against the package being promoted. This does

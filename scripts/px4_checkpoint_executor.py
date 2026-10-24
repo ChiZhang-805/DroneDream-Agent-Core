@@ -349,6 +349,13 @@ class ControlInputLeaseUnavailable(UserDirectedLanding):
     """Pre-dispatch rejection only: no motion command was sent to the adapter."""
 
 
+def _operational_controller_params(params: Any, vehicle: VehicleAsset | None) -> Any:
+    """Tighten execution in memory while retaining the original controller evidence."""
+    if vehicle is None:
+        return params
+    return replace(params, vel_limit=min(params.vel_limit, vehicle.operational_max_speed_mps))
+
+
 class SpawnRelativeOffboardClient:
     """Expose spawn-relative NED while the underlying PX4 client remains local-NED."""
 
@@ -376,6 +383,7 @@ class SpawnRelativeOffboardClient:
         heading_policy: str = "measured-hold",
         independent_route_control: bool = False,
         maximum_yaw_rate_deg_s: float = 20.0,
+        maximum_speed_mps: float | None = None,
         world_name: str | None = None,
         gazebo_vehicle_model_name: str | None = None,
         heading_evidence_path: Path | None = None,
@@ -387,6 +395,9 @@ class SpawnRelativeOffboardClient:
         self._heading_policy = heading_policy
         self._independent_route_control = independent_route_control
         self._maximum_yaw_rate_deg_s = maximum_yaw_rate_deg_s
+        if maximum_speed_mps is not None and not finite_positive_number(maximum_speed_mps):
+            raise ValueError("operational speed limit must be finite and positive")
+        self._maximum_speed_mps = maximum_speed_mps
         self._world_name = world_name
         self._gazebo_vehicle_model_name = gazebo_vehicle_model_name
         flush_interval = float(heading_evidence_flush_interval_seconds)
@@ -412,6 +423,13 @@ class SpawnRelativeOffboardClient:
     #   attribute：底层对应属性或绑定方法。
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+    def _validate_operational_velocity(self, velocity: Any) -> None:
+        """Reject an unauthorized setpoint before it reaches either PX4 transport."""
+        speed = math.hypot(velocity.north_m_s, velocity.east_m_s, velocity.down_m_s)
+        if (not math.isfinite(speed) or self._maximum_speed_mps is not None
+                and speed > self._maximum_speed_mps + 1e-6):
+            raise UserDirectedLanding("velocity command exceeds the operational speed envelope")
 
     # 功能：
     #   计算跨越正负一百八十度边界时的最短航向误差。
@@ -704,6 +722,7 @@ class SpawnRelativeOffboardClient:
         *,
         yaw_deg: float,
     ) -> None:
+        self._validate_operational_velocity(velocity)
         await self._client.set_position_velocity_ned(
             type(setpoint)(
                 north_m=self._origin.north_m + setpoint.north_m,
@@ -765,6 +784,7 @@ class SpawnRelativeOffboardClient:
     # 输出：
     #   None：不返回业务数据。
     async def _forward_velocity_ned(self, velocity: Any, *, yaw_deg: float) -> None:
+        self._validate_operational_velocity(velocity)
         await self._client.set_velocity_ned(
             type(velocity)(
                 north_m_s=velocity.north_m_s,
@@ -6085,6 +6105,7 @@ async def _apply_local_safety(
         return planned_setpoint
     loop = asyncio.get_running_loop()
     deadline = loop.time() + args.local_safety_repair_timeout_seconds
+    operational_speed_mps = getattr(args, "_operational_max_speed_mps", math.inf)
     repair_absolute_deadline = loop.time() + float(
         getattr(args, "local_safety_repair_absolute_timeout_seconds", 60.0)
     )
@@ -6277,6 +6298,7 @@ async def _apply_local_safety(
                     seed_velocity.x ** 2 + seed_velocity.y ** 2 + seed_velocity.z ** 2
                 )
                 continuity_speed_mps = min(
+                    operational_speed_mps,
                     (
                         _STATIC_CORRIDOR_CHECKPOINT_APPROACH_MAX_SPEED_MPS
                         if action_checkpoint_goal
@@ -6748,6 +6770,7 @@ async def _apply_local_safety(
                     getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                 ),
                 maximum_speed_mps=min(
+                    operational_speed_mps,
                     float(
                         getattr(
                             args,
@@ -6936,9 +6959,8 @@ async def _apply_local_safety(
                     velocity_damping=float(
                         getattr(args, "tracking_recovery_assist_velocity_damping", 1.0)
                     ),
-                    maximum_speed_mps=float(
-                        getattr(args, "tracking_recovery_assist_max_speed_mps", 1.5)
-                    ),
+                    maximum_speed_mps=min(operational_speed_mps, float(
+                        getattr(args, "tracking_recovery_assist_max_speed_mps", 1.5))),
                     deadband_m=float(getattr(args, "tracking_recovery_assist_deadband_m", 0.005)),
                 )
                 if tracking_recovery_active
@@ -8737,7 +8759,7 @@ async def _follow_runtime_target(
     altitude_offset_m = float(parameters.get("altitude_offset_m", 1.0))
     maximum_speed_mps = min(
         float(parameters.get("maximum_speed_mps", 1.0)),
-        vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
     )
     if not (
         1.0 <= duration <= 300.0
@@ -10473,7 +10495,9 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         args.tracking_corridor_policy,
         track=frozen_track,
     )
-    params = base.load_controller_params(args.params)
+    params = _operational_controller_params(
+        base.load_controller_params(args.params), args._runtime_vehicle_asset)
+    args._operational_max_speed_mps = float(params.vel_limit)
     plan = base.build_setpoint_schedule_plan(
         reference.points,
         params,
@@ -10850,6 +10874,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             heading_policy=args.heading_policy,
             independent_route_control=args.independent_route_control,
             maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
+            maximum_speed_mps=float(params.vel_limit),
             world_name=args.world,
             gazebo_vehicle_model_name=args.gazebo_vehicle_model_name,
             heading_evidence_path=(args.run_dir / "runtime-state" / "px4-heading-tracking.json"),

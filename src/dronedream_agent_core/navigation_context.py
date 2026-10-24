@@ -119,7 +119,7 @@ def build_navigation_context(*, task: dict, map_context: dict, sensor_context: d
             "asset_id": vehicle.asset_id,
             "dry_mass_kg": vehicle.dry_mass_kg,
             "maximum_takeoff_mass_kg": vehicle.max_takeoff_mass_kg,
-            "maximum_speed_mps": vehicle.max_speed_mps,
+            "maximum_speed_mps": vehicle.operational_max_speed_mps,
             "maximum_acceleration_mps2": vehicle.max_acceleration_mps2,
             "body_radius_m": vehicle.body_radius_m,
             "body_height_m": vehicle.body_height_m,

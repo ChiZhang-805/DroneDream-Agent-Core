@@ -178,7 +178,6 @@ EXPLICIT_CONSTRAINT_PHRASES = {
 
 _Artifact = TypeVar("_Artifact", bound=BaseModel)
 MAX_PREPARATION_ARTIFACT_BYTES = 64 * 1024 * 1024
-VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS = 5.0
 
 
 # 功能：
@@ -1783,7 +1782,9 @@ def _validate_task_graph(
 #   graph：当前地图拓扑。
 # 输出：
 #   None。
-def _validate_semantic_plan(plan: SemanticPlan, contract: MissionContract, graph: MapAsset) -> None:
+def _validate_semantic_plan(
+    plan: SemanticPlan, contract: MissionContract, graph: MapAsset, vehicle: VehicleAsset
+) -> None:
     known = {node.node_id for node in graph.nodes}
     if any(target not in known for target in plan.ordered_targets):
         raise MissionPreparationBlocked("SEMANTIC_PLAN_UNKNOWN_NODE")
@@ -1806,7 +1807,7 @@ def _validate_semantic_plan(plan: SemanticPlan, contract: MissionContract, graph
     if [item.target_node for item in plan.speed_preferences] != plan.ordered_targets:
         raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_ORDER_MISMATCH")
     if any(
-        item.cruise_speed_mps > VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS
+        item.cruise_speed_mps > vehicle.operational_max_speed_mps
         or item.approach_speed_mps > item.cruise_speed_mps
         for item in plan.speed_preferences
     ):
@@ -2210,7 +2211,7 @@ def _validate_plugin_track_tightening(
                 (expected.x, expected.y, expected.z),
             )
             <= 1e-6,
-            point.speed_limit_mps <= vehicle.max_speed_mps,
+            point.speed_limit_mps <= vehicle.operational_max_speed_mps,
         )
         if not all(gates):
             raise MissionPreparationBlocked("PLUGIN_TRACK_SAFETY_ENVELOPE_RELAXED")
@@ -2299,7 +2300,7 @@ def _flight_plan(
         tool_speed_limit_mps = (
             min(edge.speed_limit_mps for edge in route_edges)
             if route_edges and not metric_geometry_route
-            else VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS
+            else speed_preference.cruise_speed_mps
         )
         speed_limit_mps = min(tool_speed_limit_mps, speed_preference.cruise_speed_mps)
         segments.append(
@@ -4234,12 +4235,10 @@ class MissionOrchestrator:
                     "structured_map_context": semantic_planning_map_context,
                     "navigation_readiness": navigation_readiness.model_dump(mode="json"),
                     "vehicle_speed_envelope": {
-                        "vehicle_max_speed_mps": self.vehicle.max_speed_mps,
+                        "vehicle_max_speed_mps": self.vehicle.operational_max_speed_mps,
                         "vehicle_max_acceleration_mps2": self.vehicle.max_acceleration_mps2,
-                        "verified_cruise_min_mps": 3.0,
-                        "verified_cruise_max_mps": VERIFIED_OPERATIONAL_CRUISE_CEILING_MPS,
-                        "approach_min_mps": 0.5,
-                        "approach_max_mps": 2.5,
+                        "cruise_max_mps": self.vehicle.operational_max_speed_mps,
+                        "approach_max_mps": self.vehicle.operational_max_speed_mps,
                         "runtime_may_reduce_speed": True,
                     },
                     "hard_output_rules": {
@@ -4275,13 +4274,14 @@ class MissionOrchestrator:
             )
             semantic_plan = _artifact_snapshot(semantic_plan, SemanticPlan)
             try:
-                _validate_semantic_plan(semantic_plan, contract, self.map_graph)
+                _validate_semantic_plan(semantic_plan, contract, self.map_graph, self.vehicle)
             except MissionPreparationBlocked as exc:
                 plan_feedback = {
                     "accepted": False,
                     "issue_codes": [str(exc)],
                     "repair_instructions": [
-                        "Repair the ordered targets; geometry remains tool-owned."
+                        "Repair the ordered targets and speeds within vehicle_speed_envelope; "
+                        "geometry remains tool-owned."
                     ],
                 }
                 evidence.append("planning.validation-rejected", plan_feedback)

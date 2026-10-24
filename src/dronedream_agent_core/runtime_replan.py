@@ -558,7 +558,7 @@ def _replacement_geometry_gates(
             and all(getattr(track, field) == getattr(prior_track, field) for field in settings)
         ),
         "replacement_speed_within_vehicle_envelope": all(
-            0 < point.speed_limit_mps <= vehicle.max_speed_mps for point in track.points
+            0 < point.speed_limit_mps <= vehicle.operational_max_speed_mps for point in track.points
         ),
         "replacement_clearance_semantic_bound": clearance.semantic_sha256 == semantic_sha256,
         "replacement_tracking_corridor_budget_accepted": (
@@ -972,7 +972,7 @@ def build_runtime_speed_replacement(
     if not isinstance(raw_speed, int | float) or isinstance(raw_speed, bool):
         raise RuntimeReplanError("RUNTIME_SPEED_VALUE_REQUIRED")
     speed_limit = float(raw_speed)
-    if not 0.1 <= speed_limit <= vehicle.max_speed_mps:
+    if not 0.1 <= speed_limit <= vehicle.operational_max_speed_mps:
         raise RuntimeReplanError("RUNTIME_SPEED_OUTSIDE_VEHICLE_ENVELOPE")
     current_world = _current_world_position(acknowledgement, prior_track)
     prior_world = prior_track.source_world_points

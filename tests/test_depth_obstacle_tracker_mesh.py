@@ -79,6 +79,38 @@ def test_surface_normal_proximity_alone_does_not_hide_separate_target():
     assert tracker._known_surface_points({point: origin}, uncertainty_m=.03) == set()
 
 
+# 功能：同一定位平移误差在斜视平面上产生更大深度差，不能被等长前缀误截。
+def test_oblique_pose_uncertainty_uses_complete_first_hit_and_projected_error():
+    index = MapSurfaceIndex([_mesh(center=(3., 0., 1.), half=(1., 20., 4.), yaw=0.)])
+    tracker = DepthMotionTracker(known_static_surfaces=index)
+    # 真值起点(0,-10,1)与端点(2,10,1)同时被原生定位向西平移0.1m。
+    point, origin = (1.9, 10., 1.), (-.1, -10., 1.)
+    limits = MapAlignmentLimits(maximum_association_distance_m=.22)
+    clipped = index.match([point], limits, sensor_origins_world_m=origin,
+                          observed_range_prefix=True)
+    full = index.match([point], limits, sensor_origins_world_m=origin)
+    assert not clipped.valid[0] and full.valid[0]
+    assert full.distances[0] == pytest.approx(.1)
+    assert abs(np.linalg.norm(np.array(point) - origin) - full.surface_ranges_m[0]) > .22
+    assert tracker._known_surface_points({point: origin}, uncertainty_m=.1) == {point}
+    # 同样的定位误差不能解释真正位于前方的另一目标。
+    foreground = (1.5, 10., 1.)
+    assert tracker._known_surface_points({foreground: origin}, uncertainty_m=.1) == set()
+
+
+# 功能：误差正确传播后不把静态可见区域变化变为动态目标，原始占据量测仍完整保留。
+def test_oblique_static_patch_shift_preserves_original_occupancy():
+    tracker = DepthMotionTracker(known_static_surfaces=MapSurfaceIndex([
+        _mesh(center=(3., 0., 1.), half=(1., 20., 4.), yaw=0.)]))
+    for sequence in range(1, 5):
+        points = [(1.9, 10. + d, 1. + sequence * .3 + d) for d in (-.12, 0., .12)]
+        frame = _frame(sequence, points, origin=(-.1, -10., 1.))
+        frame.localization_covariance_m2 = (.1 / 3.) ** 2
+        raw = frame.model_dump(mode="json")
+        assert tracker.update(frame, observed_at_monotonic_seconds=sequence * .1) == []
+        assert frame.model_dump(mode="json") == raw
+
+
 # 功能：超过一批的端点全部接受证明，不把第 513 个之后的真实静态点或独立目标截掉。
 def test_all_batches_are_matched_and_unexplained_tail_is_retained(monkeypatch):
     index = MapSurfaceIndex([_mesh(yaw=0.)])

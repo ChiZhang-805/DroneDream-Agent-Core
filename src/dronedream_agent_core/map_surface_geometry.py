@@ -15,7 +15,7 @@ BOX, CYLINDER, SPHERE, MESH = 0, 1, 2, 3
 MAX_MESH_TRIANGLES = 8192
 MAX_INDEX_MESH_TRIANGLES = 262_144
 _MESH_LEAF_TRIANGLES = 64
-_MESH_RAY_BATCH = 32
+_MESH_RAY_BATCH = 128
 
 
 @dataclass
@@ -82,7 +82,7 @@ class MeshRayIndex:
             array.setflags(write=False)
 
     # 功能：只枚举射线实际能触及的叶节点；不能按观测终点丢弃前后遮挡或背面。
-    # 输入：最多 32 条射线、共享预算、可选首交邻域；输出：真实候选射线和原始面 ID。
+    # 输入：最多 128 条射线、共享预算、可选首交邻域；输出：真实候选射线和原始面 ID。
     def leaves(self, origins, directions, budget, depths=None, margin=0.0, maximum_ranges=None):
         pending = [(0, np.arange(len(origins)))]
         while pending:
@@ -114,7 +114,7 @@ class MeshRayIndex:
                 pending.append((left, rays))
 
 
-# 功能：在 32 射线×64 面内精确求交，所有背面仍参加物理首交和内部判断。
+# 功能：在 128 射线×64 面内精确求交，所有背面仍参加物理首交和内部判断。
 # 输入：局部射线、索引和候选面；输出：几何交点、可见性和面法向。
 def _mesh_leaf_hits(origins, directions, index, faces, double_sided, budget):
     budget.charge(len(origins) * len(faces))

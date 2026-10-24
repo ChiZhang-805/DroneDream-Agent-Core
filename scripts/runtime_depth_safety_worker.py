@@ -2448,7 +2448,7 @@ def _load_worker_vehicle(path: Path, *, radius_m: float, height_m: float,
         raise ValueError("vehicle radius does not match runtime clearance envelope")
     if abs(vehicle.body_height_m - height_m) > 1e-6:
         raise ValueError("vehicle height does not match runtime clearance envelope")
-    if (speed_mps > vehicle.max_speed_mps + 1e-6
+    if (speed_mps > vehicle.operational_max_speed_mps + 1e-6
             or acceleration_mps2 > vehicle.max_acceleration_mps2 + 1e-6):
         raise ValueError("vehicle motion limits do not match the admitted metadata")
     return vehicle
@@ -2717,8 +2717,11 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             or flight_dynamics_envelope.domain != "simulation"):
         parser.error("flight dynamics envelope does not belong to this simulation vehicle")
     # 机体资产用于资格摘要；控制侧只收紧本次限制，不反向修改物理资产身份。
+    control_speed_mps = min(args.max_speed, vehicle.operational_max_speed_mps)
     control_vehicle = VehicleAsset.model_validate({**vehicle.model_dump(mode="python"),
-        "max_speed_mps": min(args.max_speed, vehicle.max_speed_mps),
+        "max_speed_mps": control_speed_mps,
+        "qualified_cruise_max_mps": (
+            control_speed_mps if vehicle.qualified_cruise_max_mps is not None else None),
         "body_radius_m": max(vehicle.body_radius_m, flight_dynamics_envelope.collision_radius_m
                              if flight_dynamics_envelope is not None else 0.),
         "body_height_m": max(vehicle.body_height_m, flight_dynamics_envelope.collision_height_m

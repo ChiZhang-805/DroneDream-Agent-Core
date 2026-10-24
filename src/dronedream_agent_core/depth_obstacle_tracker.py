@@ -375,14 +375,27 @@ class DepthMotionTracker:
                 continue
             matches = self._static_surfaces.match(
                 endpoints[eligible], limits, sensor_origins_world_m=origins[eligible],
-                observed_range_prefix=True,
+                # 定位误差沿斜视射线可放大；旧的等长深度前缀会先截掉真实首交。
+                # 非零误差使用既有完整首交，仍受局部候选及网格工作量预算约束。
+                observed_range_prefix=uncertainty_m == 0.0,
             )
             if matches.surface_ranges_m is None:
                 continue
             # 法向距离小不足以证明身份：切向很远、位于网格孔洞后方或静态面
             # 前方的独立目标仍须保留。必须同时吻合真实射线的首交深度。
-            accepted = (matches.valid
-                        & (np.abs(lengths[eligible] - matches.surface_ranges_m) <= tolerance))
+            directions = ((endpoints[eligible] - origins[eligible])
+                          / lengths[eligible, None])
+            incidence = np.abs(np.sum(matches.normals * directions, axis=1))
+            usable_incidence = incidence > 1e-12
+            # 平移定位误差投影到射线距离为 sigma/|n·ray|；固定的测距表面余量
+            # 仍是原值，不能一起除以入射角而吞掉近切向的独立前景目标。
+            range_tolerance = self._static_exclusion_m + np.divide(
+                uncertainty_m, incidence, out=np.zeros_like(incidence),
+                where=usable_incidence,
+            )
+            accepted = (matches.valid & usable_incidence
+                        & (np.abs(lengths[eligible] - matches.surface_ranges_m)
+                           <= range_tolerance))
             selected = np.flatnonzero(eligible)[accepted]
             explained.update(batch[int(index)] for index in selected)
         return explained

@@ -246,7 +246,7 @@ def _validation(
         # acceleration, queued actions, obstacles and model latency add time.
         gates = {
             "route_duration_finite": math.isfinite(
-                route.route_length_m / max(vehicle.max_speed_mps, 0.1)
+                route.route_length_m / max(vehicle.operational_max_speed_mps, 0.1)
             ),
             "bounded_waypoint_holds": px4_track.waypoint_hold_seconds <= 30.0,
         }
@@ -291,7 +291,7 @@ def _validation(
             "indoor_transition_clear": not indoor_route or clearance_valid,
             "indoor_speed_bounded": not indoor_route
             or all(
-                point.speed_limit_mps <= min(vehicle.max_speed_mps, 2.0)
+                point.speed_limit_mps <= min(vehicle.operational_max_speed_mps, 2.0)
                 for point in px4_track.points
             ),
         }

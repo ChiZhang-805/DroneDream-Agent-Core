@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+import dronedream_agent_core.map_surface_geometry as surface_geometry
 from dronedream_agent_core.local_map_alignment import MapAlignmentLimits, MapSurfaceIndex
 from dronedream_agent_core.map_surface_geometry import (
     MeshQueryBudget,
@@ -81,3 +82,44 @@ def test_invalid_prefix_ranges_are_rejected(ranges):
     with pytest.raises(ValueError, match="MAP_ALIGNMENT_RAY_RANGE_INVALID"):
         mesh_surface_hits(np.array([[0., .2, .1]]), np.array([[1., 0., 0.]]), _boxes([3.]),
                           .02, maximum_ranges=ranges)
+
+
+# 功能：在新批次边界与不整批上逐项对比旧 32 射线实现，保留首交、背面、内部与折边语义。
+@pytest.mark.parametrize("count", [127, 128, 129, 301])
+@pytest.mark.parametrize("reversed_shell,double_sided", [(False, False), (True, False),
+                                                       (False, True)])
+def test_larger_ray_batches_preserve_exact_results_and_work_budget(
+    monkeypatch, count, reversed_shell, double_sided,
+):
+    triangles = _boxes(range(3, 83, 4))
+    if reversed_shell:
+        triangles = triangles[:, ::-1].copy()
+    index = MeshRayIndex(triangles)
+    # Front face, inside source, two-front-face crease, miss, and reverse-direction hit.
+    origins = np.array([[0., .2, .1], [3., .2, .1], [0., 3., .1],
+                        [0., 5., .1], [84., .2, .1]])[np.arange(count) % 5]
+    directions = np.array([[1., 0., 0.], [1., 0., 0.], [1., -1., 0.],
+                           [1., 0., 0.], [-1., 0., 0.]])[np.arange(count) % 5]
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    configured_batch = surface_geometry._MESH_RAY_BATCH
+    assert configured_batch == 128
+    for ranges in (None, np.full(count, 12.)):
+        results, budgets = [], []
+        for batch in (32, configured_batch):
+            monkeypatch.setattr(surface_geometry, "_MESH_RAY_BATCH", batch)
+            budget = MeshQueryBudget()
+            results.append(mesh_surface_hits(
+                origins, directions, triangles, .02, acceleration=index,
+                double_sided=double_sided, winding_sign=-1. if reversed_shell else 1.,
+                work_budget=budget, maximum_ranges=ranges,
+            ))
+            budgets.append(budget)
+        for old, new in zip(*results, strict=True):
+            assert len(new) == count  # Includes every ray after a partial final batch.
+            np.testing.assert_array_equal(old, new)
+        assert budgets[0] == budgets[1]
+        assert budgets[1].maximum_triangle_pairs == 8_388_608
+        assert budgets[1].maximum_bound_pairs == 2_097_152
+        if not reversed_shell:
+            assert results[1][4][1]  # An inside source remains inside.
+            assert not results[1][2][2]  # A crease remains unsuitable as a map support.

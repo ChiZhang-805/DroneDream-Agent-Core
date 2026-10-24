@@ -118,7 +118,7 @@ def runtime_safety_query_radius_m(
             current_velocity_mps=tuple(
                 getattr(observation.current_velocity_mps, axis) for axis in "xyz"
             ),
-            maximum_speed_mps=min(vehicle.max_speed_mps, maximum_speed_mps),
+            maximum_speed_mps=min(vehicle.operational_max_speed_mps, maximum_speed_mps),
             horizon_seconds=RUNTIME_PREDICTION_HORIZON_SECONDS,
             vehicle_radius_m=vehicle.body_radius_m,
             vehicle_height_m=vehicle.body_height_m,
@@ -305,8 +305,8 @@ def evaluate_runtime_local_safety(
     # the tighter track/profile bound here so an avoidance manoeuvre cannot
     # turn a 0.34 m/s precision route into a 1.2 m/s local correction.
     planner_max_speed_mps = min(
-        vehicle.max_speed_mps,
-        maximum_speed_mps if maximum_speed_mps is not None else vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
+        maximum_speed_mps if maximum_speed_mps is not None else vehicle.operational_max_speed_mps,
     )
     if tracking_recovery_active:
         planner_max_speed_mps = min(
@@ -423,7 +423,7 @@ def evaluate_runtime_local_safety(
     # farther from the route.  Actual hardware overspeed still exceeds the
     # vehicle limit and therefore retains the independent braking path.
     planner_max_speed_mps = min(
-        vehicle.max_speed_mps,
+        vehicle.operational_max_speed_mps,
         max(preferred_planner_speed_mps, measured_speed_mps),
     )
     request = LocalPlannerRequest(

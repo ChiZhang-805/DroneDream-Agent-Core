@@ -586,6 +586,37 @@ def _verified_track_distance_m(run_dir: Path) -> float:
     return distance_m
 
 
+def _verified_track_speed_limit_mps(run_dir: Path, controller_params: Path) -> float:
+    """Derive the operating ceiling from the accepted, unmodified motion schedule.
+
+    The executor limits each segment by its destination point and controller.
+    Stationary points do not qualify a faster cruise speed. This is a completed
+    run's configured ceiling, not a claim that measured speed was always equal.
+    """
+    points = _json(run_dir / "reference_track.json").get("points")
+    controller_limit = _json(controller_params).get("vel_limit")
+    if (type(controller_limit) not in (int, float)
+            or not math.isfinite(controller_limit) or controller_limit <= 0.0):
+        raise ValueError("DEFAULT_ASSET_CONTROLLER_SPEED_INVALID")
+    if not isinstance(points, list) or len(points) < 2:
+        raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_INVALID")
+    previous = None
+    moving_limits: list[float] = []
+    for point in points:
+        if not isinstance(point, dict) or any(
+            type(point.get(key)) not in (int, float) or not math.isfinite(point[key])
+            for key in ("x", "y", "z", "speed_limit_mps")
+        ) or not 0.0 < point["speed_limit_mps"] <= 20.0:
+            raise ValueError("DEFAULT_ASSET_REFERENCE_SPEED_INVALID")
+        position = tuple(float(point[axis]) for axis in ("x", "y", "z"))
+        if previous is not None and math.dist(previous, position) > 0.0:
+            moving_limits.append(min(float(controller_limit), float(point["speed_limit_mps"])))
+        previous = position
+    if not moving_limits:
+        raise ValueError("DEFAULT_ASSET_REFERENCE_TRACK_DISTANCE_INVALID")
+    return max(moving_limits)
+
+
 def _artifact_identity(summary: dict[str, Any]) -> dict[str, Any]:
     """Keep export identity separate from post-export runtime qualification.
 
@@ -882,6 +913,7 @@ def _build_vehicle_bundle(
     if not (run_dir / "asset-qualification-inputs.json").is_file():
         _write_json(destination / "gazebo" / "summary.json", vehicle_summary)
     qualified_range_m = _verified_track_distance_m(run_dir)
+    qualified_speed_mps = _verified_track_speed_limit_mps(run_dir, controller_params)
     vehicle = {
         "schema_version": "dronedream.vehicle.v1",
         "asset_id": VEHICLE_ASSET_ID,
@@ -893,6 +925,7 @@ def _build_vehicle_bundle(
         "body_height_m": 0.43,
         "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.228},
         "max_speed_mps": 6.0,
+        "qualified_cruise_max_mps": qualified_speed_mps,
         "max_acceleration_mps2": 1.5,
         # Bound to the exact successfully completed Gazebo/PX4 pickup-return
         # reference track; no value is inherited from an older route.
@@ -935,6 +968,8 @@ def _build_vehicle_bundle(
                 "rotor_dynamics_from_source_model": True,
                 "qualified_range_m": qualified_range_m,
                 "qualified_range_basis": "completed Gazebo/PX4 pickup-return route",
+                "qualified_cruise_max_mps": qualified_speed_mps,
+                "qualified_speed_basis": "completed Gazebo/PX4 reference-track speed ceiling",
                 "payload_mass_kg": qualified_payload_kg,
                 "loaded_thrust_to_weight": loaded_thrust_to_weight,
                 "perception_sensor": perception,

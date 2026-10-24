@@ -912,6 +912,15 @@ def test_task_graph_requires_exact_catalog_evidence_not_a_negated_substring() ->
         _validate_task_graph(graph, _contract(), _map(), catalog)
 
 
+def _semantic_plan_vehicle() -> VehicleAsset:
+    return VehicleAsset(
+        asset_id="test-vehicle", name="Test vehicle", dry_mass_kg=2.0,
+        max_takeoff_mass_kg=3.0, body_radius_m=0.3, body_height_m=0.4,
+        max_speed_mps=6.0, max_acceleration_mps2=1.5, qualified_range_m=100.0,
+        reserve_battery_percent=30.0, max_pickup_payload_kg=0.1, sensors=["depth"],
+    )
+
+
 def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
     plan = SemanticPlan(
         ordered_targets=["stale-gate", "pickup", "office"],
@@ -938,7 +947,7 @@ def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
         rationale_summary="Old destination then current mission.",
     )
     with pytest.raises(MissionPreparationBlocked, match="SEMANTIC_PLAN_UNAUTHORIZED_TARGET"):
-        _validate_semantic_plan(plan, _contract(), _map())
+        _validate_semantic_plan(plan, _contract(), _map(), _semantic_plan_vehicle())
 
 
 def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
@@ -960,7 +969,7 @@ def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
         ],
         rationale_summary="Current target and contract return.",
     )
-    _validate_semantic_plan(plan, _contract(), _map())
+    _validate_semantic_plan(plan, _contract(), _map(), _semantic_plan_vehicle())
 
 
 def test_model_speed_preferences_bind_distinct_limits_to_each_route_leg() -> None:
