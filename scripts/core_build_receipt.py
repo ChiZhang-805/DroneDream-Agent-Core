@@ -21,6 +21,10 @@ BINARIES = (
     "dronedream-plugin-isolator-x86_64-pc-windows-msvc.exe",
     "dronedream-live-x86_64-pc-windows-msvc.exe",
 )
+PROMOTED_ASSET_PATHS = frozenset(
+    f"{RESOURCE_ROOT}/default-assets/{name}"
+    for name in ("index.json", "school-map.ddpkg", "my-drone.ddpkg")
+)
 
 
 # 功能：
@@ -35,6 +39,33 @@ def git_value(root: Path, *arguments: str) -> str:
         ["git", "-C", str(root), *arguments], text=True, encoding="utf-8", timeout=30,
     ).strip()
     return value
+
+
+# 功能：
+#   允许已构建 Runtime 的祖先提交仅补充三份默认资产，保留真实构建来源与资源摘要。
+# 输入：
+#   root：干净的发布仓库；provenance：Runtime 内原始来源记录。
+# 输出：
+#   无：源码、祖先关系或原始树身份不匹配时拒绝复用。
+def validate_runtime_source(root: Path, provenance: dict) -> None:
+    source_commit = provenance.get("source_commit")
+    if (not isinstance(source_commit, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", source_commit)
+            or provenance.get("source_repository") != source_repository_identity(root)
+            or provenance.get("working_tree_dirty") is not False):
+        raise ValueError("CORE_BUILD_RUNTIME_SOURCE_MISMATCH")
+    try:
+        source_tree = git_value(root, "rev-parse", source_commit + "^{tree}")
+        ancestor = git_value(root, "merge-base", source_commit, "HEAD")
+        changed = set(filter(None, git_value(
+            root, "diff", "--name-only", "--no-renames", "-z", source_commit, "HEAD", "--",
+        ).split("\0")))
+    except subprocess.CalledProcessError as error:
+        raise ValueError("CORE_BUILD_RUNTIME_SOURCE_MISMATCH") from error
+    if (provenance.get("source_tree") != source_tree
+            or ancestor != source_commit
+            or not changed <= PROMOTED_ASSET_PATHS):
+        raise ValueError("CORE_BUILD_RUNTIME_SOURCE_MISMATCH")
 
 
 # 功能：
@@ -135,12 +166,9 @@ def component_files(root: Path) -> dict:
     }
     if local_policy_files and not required_local_policy <= local_policy_files:
         raise ValueError("CORE_BUILD_LOCAL_POLICY_INCOMPLETE")
-    provenance = read_object(bound_file(root, f"{RESOURCE_ROOT}/runtime/provenance.json"))
-    if (provenance.get("source_commit") != git_value(root, "rev-parse", "HEAD")
-            or provenance.get("source_tree") != git_value(root, "rev-parse", "HEAD^{tree}")
-            or provenance.get("source_repository") != source_repository_identity(root)
-            or provenance.get("working_tree_dirty") is not False):
-        raise ValueError("CORE_BUILD_RUNTIME_SOURCE_MISMATCH")
+    provenance_path = f"{RESOURCE_ROOT}/runtime/provenance.json"
+    provenance = read_object(bound_file(root, provenance_path), files[provenance_path]["sha256"])
+    validate_runtime_source(root, provenance)
     plugins = read_object(add(f"{RESOURCE_ROOT}/official-plugins/index.json"))
     if not plugins.get("plugins"):
         raise ValueError("CORE_BUILD_PLUGINS_MISSING")
@@ -210,6 +238,12 @@ def build_receipt(root: Path, expected_commit: str, *, verify: bool,
         "source_tree": git_value(root, "rev-parse", "HEAD^{tree}"),
         "files": component_files(root),
     }
+    provenance_path = f"{RESOURCE_ROOT}/runtime/provenance.json"
+    provenance = read_object(
+        bound_file(root, provenance_path), receipt["files"][provenance_path]["sha256"],
+    )
+    receipt["runtime_source_commit"] = provenance["source_commit"]
+    receipt["runtime_source_tree"] = provenance["source_tree"]
     if git_value(root, "rev-parse", "HEAD") != expected_commit or git_value(
         root, "status", "--porcelain=v1", "--untracked-files=all",
     ):

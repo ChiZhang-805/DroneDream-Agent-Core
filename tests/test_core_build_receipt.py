@@ -66,8 +66,9 @@ def make_build(root: Path) -> str:
     assets.mkdir()
     packages = []
     for kind in ("map", "vehicle"):
-        (assets / f"{kind}.ddpkg").write_bytes(kind.encode())
-        packages.append({"kind": kind, "file": f"{kind}.ddpkg",
+        filename = "school-map.ddpkg" if kind == "map" else "my-drone.ddpkg"
+        (assets / filename).write_bytes(kind.encode())
+        packages.append({"kind": kind, "file": filename,
                          "sha256": hashlib.sha256(kind.encode()).hexdigest()})
     qualification_id = "asset-qualification-fixture"
     qualified_pair = {
@@ -159,6 +160,102 @@ def test_build_receipt_rejects_drift(tmp_path: Path, problem: str) -> None:
         module.build_receipt(root, commit, verify=True)
 
 
+def commit_fixture_paths(root: Path, *paths: str) -> str:
+    subprocess.run(["git", "-C", str(root), "add", "-f", "--", *paths], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"],
+                   check=True)
+    return module.git_value(root, "rev-parse", "HEAD")
+
+
+def replace_fixture_provenance(root: Path, **changes) -> None:
+    runtime = root / module.RESOURCE_ROOT / "runtime"
+    path = runtime / "provenance.json"
+    provenance = json.loads(path.read_bytes()) | changes
+    path.write_text(json.dumps(provenance), encoding="utf-8")
+    manifest_path = runtime / "runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    for entry in manifest["files"]:
+        if entry["path"] == "provenance.json":
+            entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            entry["bytes"] = path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def promote_fixture_assets(root: Path) -> str:
+    assets = root / module.RESOURCE_ROOT / "default-assets"
+    index_path = assets / "index.json"
+    index = json.loads(index_path.read_bytes())
+    for pair in [index["qualified_pair"], *index["qualified_pairs"]]:
+        for entry in pair["packages"]:
+            content = ("promoted-" + entry["kind"]).encode()
+            (assets / entry["file"]).write_bytes(content)
+            entry["sha256"] = hashlib.sha256(content).hexdigest()
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    return commit_fixture_paths(root, *sorted(module.PROMOTED_ASSET_PATHS))
+
+
+# 默认资产提交不重新定义已经飞行的 Runtime；回执区分两者并逐字节复验安装组件。
+def test_asset_only_promotion_retains_actual_runtime_identity(tmp_path: Path) -> None:
+    root = tmp_path / "core"
+    runtime_commit = make_build(root)
+    original = module.build_receipt(root, runtime_commit, verify=False)
+    runtime = root / module.RESOURCE_ROOT / "runtime"
+    original_runtime = {p.relative_to(runtime): p.read_bytes() for p in runtime.rglob("*")
+                        if p.is_file()}
+    release_commit = promote_fixture_assets(root)
+    receipt = module.build_receipt(root, release_commit, verify=False)
+    assert receipt["source_commit"] == release_commit != runtime_commit
+    assert receipt["runtime_source_commit"] == runtime_commit
+    assert receipt["runtime_source_tree"] == original["source_tree"]
+    assert module.build_receipt(root, release_commit, verify=True) == receipt
+    assert original_runtime == {p.relative_to(runtime): p.read_bytes()
+                                for p in runtime.rglob("*") if p.is_file()}
+    binary_prefix = module.BINARY_ROOT + "/"
+    assert {k: v for k, v in receipt["files"].items() if k.startswith(binary_prefix)} == {
+        k: v for k, v in original["files"].items() if k.startswith(binary_prefix)
+    }
+
+
+@pytest.mark.parametrize("changed_path", [
+    "src/flight.py", "scripts/core_build_receipt.py",
+    f"{module.RESOURCE_ROOT}/default-assets/other.ddpkg",
+])
+def test_asset_promotion_rejects_any_other_committed_change(tmp_path, changed_path):
+    root = tmp_path / "core"
+    make_build(root)
+    promote_fixture_assets(root)
+    changed = root / changed_path
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text("changed", encoding="utf-8")
+    commit = commit_fixture_paths(root, changed_path)
+    with pytest.raises(ValueError, match="RUNTIME_SOURCE_MISMATCH"):
+        module.build_receipt(root, commit, verify=False)
+
+
+def test_asset_promotion_rejects_incorrect_runtime_tree(tmp_path):
+    root = tmp_path / "core"
+    make_build(root)
+    commit = promote_fixture_assets(root)
+    replace_fixture_provenance(root, source_tree=module.git_value(root, "rev-parse", "HEAD^{tree}"))
+    with pytest.raises(ValueError, match="RUNTIME_SOURCE_MISMATCH"):
+        module.build_receipt(root, commit, verify=False)
+
+
+def test_asset_promotion_rejects_nonancestor_runtime_source(tmp_path):
+    root = tmp_path / "core"
+    make_build(root)
+    commit = promote_fixture_assets(root)
+    other_tree = module.git_value(root, "rev-parse", "HEAD^{tree}")
+    other_commit = subprocess.check_output([
+        "git", "-C", str(root), "-c", "user.name=Test", "-c",
+        "user.email=test@example.invalid", "commit-tree", other_tree,
+    ], input="unrelated source\n", text=True).strip()
+    replace_fixture_provenance(root, source_commit=other_commit, source_tree=other_tree)
+    with pytest.raises(ValueError, match="RUNTIME_SOURCE_MISMATCH"):
+        module.build_receipt(root, commit, verify=False)
+
+
 # 功能：
 #   验证危险或模糊清单路径在读取文件前被拒绝。
 # 输入：
@@ -182,8 +279,9 @@ def test_build_manifest_rejects_unsafe_paths(tmp_path: Path, relative: str) -> N
 def test_builder_preflights_before_reset_and_supports_components_only() -> None:
     source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
     assert source.index("--check-only --verify-onnx") < source.index("Reset-GeneratedDirectory")
-    assert source.index("--stage-from $PayloadPlacementRuntime --check-only") < source.index("Reset-GeneratedDirectory")
-    assert source.index("--source $CameraClockRuntime --check-only") < source.index("Reset-GeneratedDirectory")
+    reset = source.index("Reset-GeneratedDirectory")
+    assert source.index("--stage-from $PayloadPlacementRuntime --check-only") < reset
+    assert source.index("--source $CameraClockRuntime --check-only") < reset
     assert source.index("core_build_receipt.py") < source.index("if ($StageOnly)")
     assert source.index("if ($StageOnly)") < source.index('run build\n')
     assert "ReuseOfficialPluginBundle" not in source
