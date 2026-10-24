@@ -1082,6 +1082,26 @@ def _qualified_runtime_evidence(
     }
 
 
+def _navigation_evidence_sha256(map_root: Path) -> str:
+    """Return the one reviewed evidence digest bound to every navigation edge."""
+    graph = _json(map_root / "navigation-graph.json")
+    edges = graph.get("edges")
+    if not isinstance(edges, list) or not edges:
+        raise ValueError("DEFAULT_ASSET_NAVIGATION_EDGES_MISSING")
+    digests = {
+        edge.get("evidence_sha256")
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+    if (
+        len(digests) != 1
+        or not isinstance(next(iter(digests)), str)
+        or len(next(iter(digests))) != 64
+    ):
+        raise ValueError("DEFAULT_ASSET_NAVIGATION_EVIDENCE_INVALID")
+    return next(iter(digests))
+
+
 def _build_qualified_pair(
     *,
     output: Path,
@@ -1129,6 +1149,13 @@ def _build_qualified_pair(
         qualification_root=qualification_root,
         mission_evidence_path=mission_evidence_path,
     )
+    runtime_artifacts = runtime_evidence.get("artifacts")
+    if not isinstance(runtime_artifacts, dict):
+        raise ValueError("DEFAULT_ASSET_RUNTIME_ARTIFACTS_INVALID")
+    # Navigation edges are map facts assembled from the reviewed road survey.
+    # Keep that evidence identity separate from the one mission used to qualify
+    # the vehicle/map pair; a mission route must never become a reusable route.
+    runtime_artifacts["navigation_evidence_sha256"] = _navigation_evidence_sha256(map_root)
     receipt = build_pair_qualification_receipt(
         plan=plan,
         work_root=qualification_root,
