@@ -320,6 +320,26 @@ def white_silhouette(image: Image.Image) -> Image.Image:
     return output
 
 
+def save_icon_if_changed(image: Image.Image, target: Path, sizes: list[tuple[int, int]]) -> None:
+    """Preserve the tracked ICO bytes when every rendered icon frame is unchanged."""
+    candidate = target.with_suffix(".candidate.ico")
+    image.save(candidate, sizes=sizes)
+    try:
+        if target.exists():
+            with Image.open(target) as current, Image.open(candidate) as rendered:
+                current_sizes = current.ico.sizes()
+                rendered_sizes = rendered.ico.sizes()
+                if current_sizes == rendered_sizes and all(
+                    current.ico.getimage(size).convert("RGBA").tobytes()
+                    == rendered.ico.getimage(size).convert("RGBA").tobytes()
+                    for size in current_sizes
+                ):
+                    return
+        candidate.replace(target)
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
@@ -338,9 +358,10 @@ def main() -> None:
     icon_master = contain(mark, (512, 512), 28)
     for size, name in ((32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")):
         icon_master.resize((size, size), Image.Resampling.LANCZOS).save(icons / name, optimize=True)
-    icon_master.save(
+    save_icon_if_changed(
+        icon_master,
         icons / "icon.ico",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
     installer = args.repo / "app" / "desktop" / "src-tauri" / "installer"
