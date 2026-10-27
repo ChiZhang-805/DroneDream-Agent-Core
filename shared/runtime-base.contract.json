@@ -1,7 +1,7 @@
 {
   "schema_version": "dronedream.autonomy.shared-runtime-base.v1",
   "source_repository": "https://github.com/ChiZhang-805/DroneDream.git",
-  "source_commit": "e77485c157cd0593caab3238fee06286fe562522",
+  "source_commit": "4ba395c496d2f9c431333d83dade1e5d0d1d5754",
   "submodule_path": "shared/dronedream-runtime-source",
   "runtime_product_id": "DroneDreamRuntime",
   "release_manifest_url": "https://github.com/ChiZhang-805/DroneDream/releases/download/runtime-v0.1.0-beta.2/runtime-release.json",
