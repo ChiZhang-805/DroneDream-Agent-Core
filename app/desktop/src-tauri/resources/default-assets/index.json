@@ -48,6 +48,126 @@
       "receipt_sha256": "729fb0946e74bbb18fdf13a58d26e13a751ccb13cace1619658d9f3c995e2869",
       "resource_id": "dronedream-school-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.meilahti-hospital-map.v1",
+          "content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f",
+          "file": "meilahti-hospital-campus.ddpkg",
+          "kind": "map",
+          "sha256": "17cc6d691d8a79fc8096f4749574c97f5e6befced03a6276175e51b134cb3740",
+          "source_content_sha256": "a9aea94c78eea55aec34cf46ae243f7f6d1339058a96eaea4acacc7c1b9ce95b"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "a8023316427596ed87bc58f9d12746f8da274bba447b54739fa534f5a36ee01b",
+          "file": "my-drone-meilahti-hospital-campus.ddpkg",
+          "kind": "vehicle",
+          "sha256": "cdaca07ae162eb50d309c45f4114d2f98f2c13ccf79470c826529cbadd7919dd",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-6fb9cd6b77569fecb298c000",
+      "receipt_sha256": "1c76f5a3e81ff098c8d26969dca1124c7903ffc1e919ccb05f1d9e052f393fd0",
+      "resource_id": "dronedream-meilahti-hospital-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.kalasatama-waterfront-map.v1",
+          "content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b",
+          "file": "kalasatama-waterfront.ddpkg",
+          "kind": "map",
+          "sha256": "fc812b6a884e2d2b9b494c249acb80d4d52f44c35f77275add65d40e84f5516a",
+          "source_content_sha256": "d4fb2017098a1231f2f8301ac82d780d4d521cd479f9aed717148ae01b8993e7"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "59388a70b42e0d465a2eb747c26b0e2fcbb0a05a7603af4bd1364fc765ecae4e",
+          "file": "my-drone-kalasatama-waterfront.ddpkg",
+          "kind": "vehicle",
+          "sha256": "2f8930a794df30b968553d37ddade862acf4e6c5e2512093de88d9c900d81473",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-d2fb2947d03555333fc64ac4",
+      "receipt_sha256": "f8e0a073a89d69542587433e72328e5ef0570b059fd9d4ce16267d855941d8aa",
+      "resource_id": "dronedream-kalasatama-waterfront-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.vuosaari-harbour-map.v1",
+          "content_sha256": "a01938f8687cf09c11bc9aa7d2dd2c4beb798026cb3f72b55dd9656acd29e9f0",
+          "file": "vuosaari-harbour.ddpkg",
+          "kind": "map",
+          "sha256": "9e8e6eefe861b0ba348a7579ad02df248b35ff48e13c83fb604c1eb7bb09f7fc",
+          "source_content_sha256": "fd296b029774a3ffd4dc4f7c3b4325b0fd1f7e4195a10e024e81941e27672510"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "f95e72fc6c761d5a67d199ba509e19fe0126a432ff5c97ad2015e1966ac0a437",
+          "file": "my-drone-vuosaari-harbour.ddpkg",
+          "kind": "vehicle",
+          "sha256": "168490112048ec36abb7b8a0a048ecbd2358e7e2e6bd73622e0ffe2ecfa449dd",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-94994abb257e999e2f0805f6",
+      "receipt_sha256": "612d9940827305a9d54ddad605ac490e3ae3b2d588a5acb40953dcf65db2ffe1",
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.suomenlinna-map.v1",
+          "content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5",
+          "file": "suomenlinna-sea-fortress.ddpkg",
+          "kind": "map",
+          "sha256": "e66160d5b6200c9c06a078833711054f3b79f17b5eee025806ee3b3ff3f85780",
+          "source_content_sha256": "db850c955bb77070ffdb1b8c916f1b0260cee90058d1ee77904455026fe262c4"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "11acb9b89bb39a5645a10832aff60673b2fffcd83685ab2dc0134b306cc54a1a",
+          "file": "my-drone-suomenlinna-sea-fortress.ddpkg",
+          "kind": "vehicle",
+          "sha256": "d4f78ba6a506d29dea37900061d58f19c2e86ca21535d104415e353c0bb7ad63",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-49de1e9af06907248637e4be",
+      "receipt_sha256": "87b07fd62a73730565e5ff4030f9a4d2f5771698dc200ecd528e96b80a3236ed",
+      "resource_id": "dronedream-suomenlinna-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.uutela-coastal-forest-map.v1",
+          "content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd",
+          "file": "uutela-coastal-forest.ddpkg",
+          "kind": "map",
+          "sha256": "12495fa8517c4310fbd8543f30457c456e65d42f8cee81e97efc5f9eb191546f",
+          "source_content_sha256": "3e14e02d3f9851b1330b57ec1d9f948b60d7870e04aa17388c098082fe45e3c9"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "9b6c579bee35c3c895ad1c55935dc641f89b1119a01629cc80e0d51858a9312f",
+          "file": "my-drone-uutela-coastal-forest.ddpkg",
+          "kind": "vehicle",
+          "sha256": "de63ce0547b3e4e1bdb7cd77fdde00acc904f6076d7b890bb389c8914120b3ca",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-23d9556be930ad2c8f3a4ce0",
+      "receipt_sha256": "f544c79d9245fcf97fba2529b0506af24e18d39fa01a0f4e19ae51302267ecaf",
+      "resource_id": "dronedream-uutela-coastal-forest-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1"
     }
   ],
   "schema_version": "dronedream.bundled-assets.v3",

@@ -84,16 +84,18 @@ def test_agent_installer_bundles_the_qualified_default_asset_repository() -> Non
     ]
     assert "bundles" not in bundled
     asset_root = ROOT / "app" / "desktop" / "src-tauri" / "resources" / "default-assets"
-    assert sorted(
-        path.suffix
-        for path in asset_root.iterdir()
-        if path.is_file() and path.name != "index.json"
-    ) == [".ddpkg", ".ddpkg"]
+    bundled_files = [
+        path for path in asset_root.iterdir() if path.is_file() and path.name != "index.json"
+    ]
+    assert len([path for path in bundled_files if path.suffix == ".ddpkg"]) == 12
+    assert {path.name for path in bundled_files if path.suffix == ".json"} == {
+        "vehicle-capability-evidence.json"
+    }
 
     verifier = (ROOT / "scripts" / "verify-packaged-sidecar.ps1").read_text(encoding="utf-8-sig")
-    assert "expected 8 qualified map/My Drone pairs" in verifier
-    assert "$pairCatalog.map_count -ne 8" in verifier
+    assert "expected 6 qualified map/My Drone pairs" in verifier
+    assert "$pairCatalog.map_count -ne 6" in verifier
     assert "$pairCatalog.vehicle_count -ne 13" in verifier
-    assert "$pairCatalog.pair_count -ne 104" in verifier
+    assert "$pairCatalog.pair_count -ne 78" in verifier
     assert "dronedream.school-map.v1" in verifier
     assert "dronedream.my-drone.v1" in verifier

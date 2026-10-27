@@ -12,6 +12,15 @@ see [Third-party notices](THIRD_PARTY_NOTICES.md) and
 Production databases, user conversations, credentials, and private training or
 experiment records are not part of the source-code license or public export.
 
+On the managed Windows workspace, this repository lives directly at
+`Q:\DroneDream-Workspace\Agent-Core`; the product repository is its sibling
+`DroneDream`. Update these checkouts in place instead of creating dated or
+per-task source copies. Retired workspace directories are not development inputs.
+The live CLI helper takes explicit `-CredentialPath` and `-CliExecutable`
+arguments; its source, Python environment, resources, and default session output
+resolve inside this repository. The heading bench takes explicit `--assets`,
+`--semantic`, and `--native-sensor-runtime` inputs instead of historical build paths.
+
 Public source: [DroneDream-Agent-Core](https://github.com/ChiZhang-805/DroneDream-Agent-Core).
 The clean public repository starts from the current source, not private incubation
 history. School Map and My Drone are included with an explicit

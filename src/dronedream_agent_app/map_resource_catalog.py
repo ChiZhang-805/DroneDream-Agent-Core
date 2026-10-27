@@ -1,11 +1,8 @@
-"""Reviewed map resources exposed by the desktop product.
+"""Reviewed first-party map resources exposed by the desktop product."""
 
-Only the bundled, flight-qualified Kumpula Campus map is a default resource.
-Import adapters remain available for user-supplied maps, but retired demo maps
-must not reappear in the built-in catalog or a release package.
-"""
-
+import json
 from copy import deepcopy
+from pathlib import Path
 
 _KUMPULA_CAMPUS = {
     "schema_version": "dronedream.map-resource.v1",
@@ -47,7 +44,7 @@ _KUMPULA_CAMPUS = {
     "source": {
         "source_type": "bundled_ddpkg",
         "location": "dronedream://default-assets/school-map.ddpkg",
-        "expected_sha256": ("8a4b67cb8f378497131bc629510ca358a056fa8d6bf0982e0c711c8ea72c3d35"),
+        "expected_sha256": ("9cfa9aec0745160625a76e11bd4b14d73c23400fc5911a5692f35e7dd2ff63e4"),
         "source_format": "dronedream-ddpkg",
         "expected_kind": "map",
         "real_world_crs": "EPSG:3879",
@@ -55,9 +52,9 @@ _KUMPULA_CAMPUS = {
     "analysis": {
         "status": "qualified",
         "parser": "dronedream.kumpula-campus-3d.v1",
-        "building_count": 42,
-        "collision_primitive_count": 44,
-        "visual_primitive_count": 43,
+        "building_count": 85,
+        "collision_primitive_count": 5004,
+        "visual_primitive_count": 86,
         "named_buildings": ["Chemicum", "Dynamicum", "Exactum", "Physicum"],
         "named_buildings_zh": [
             "化学楼",
@@ -66,6 +63,9 @@ _KUMPULA_CAMPUS = {
             "物理楼",
         ],
         "coordinate_frame": "ENU",
+        "bounds_m": {"x": 562.5, "y": 562.5, "z": 35.0},
+        "resolution_m": 0.18,
+        "origin": {"latitude": 60.2038, "longitude": 24.9629, "altitude_m": 0},
         "notes": [
             "Building footprints and the orthophoto are real geospatial data.",
             "The bundled route was executed end to end with PX4 and Gazebo.",
@@ -76,12 +76,28 @@ _KUMPULA_CAMPUS = {
         "planning": "ready",
         "simulation": "ready",
         "flight": "qualified",
-        "qualification_id": "asset-qualification-9e8f76549880788ec9e81ef0",
+        "qualification_id": "asset-qualification-e6b4e5d8d596851ee549d46a",
         "required_inputs": [],
     },
 }
 
-_RESOURCES = (_KUMPULA_CAMPUS,)
+
+def _generated_resources() -> tuple[dict[str, object], ...]:
+    """Load build-generated Helsinki resources shipped beside this module."""
+
+    path = Path(__file__).with_name("generated_map_resources.json")
+    if not path.is_file():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "dronedream.generated-map-resources.v1":
+        raise ValueError("GENERATED_MAP_RESOURCE_SCHEMA_INVALID")
+    resources = payload.get("resources")
+    if not isinstance(resources, list):
+        raise ValueError("GENERATED_MAP_RESOURCE_LIST_INVALID")
+    return tuple(deepcopy(resource) for resource in resources)
+
+
+_RESOURCES = (_KUMPULA_CAMPUS, *_generated_resources())
 
 
 def map_resource_catalog() -> dict[str, object]:
@@ -89,13 +105,13 @@ def map_resource_catalog() -> dict[str, object]:
 
     return {
         "schema_version": "dronedream.map-resource-catalog.v1",
-        "catalog_revision": "2026-10-11.1",
+        "catalog_revision": "2026-10-27.1",
         "resources": deepcopy(list(_RESOURCES)),
     }
 
 
 def get_map_resource(resource_id: str) -> dict[str, object]:
-    """Resolve the sole reviewed built-in map and reject unknown identifiers."""
+    """Resolve one reviewed built-in map and reject unknown identifiers."""
 
     for resource in _RESOURCES:
         if resource["resource_id"] == resource_id:

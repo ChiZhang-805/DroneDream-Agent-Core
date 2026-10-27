@@ -1,0 +1,411 @@
+{
+  "generated_at": "2026-10-27",
+  "resources": [
+    {
+      "aliases": {
+        "en-US": [
+          "Meilahti Hospital Campus"
+        ],
+        "zh-CN": [
+          "梅拉赫蒂医院园区"
+        ]
+      },
+      "analysis": {
+        "asset_id": "dronedream.meilahti-hospital-map.v1",
+        "bounds_m": {
+          "x": 600,
+          "y": 600,
+          "z": 55
+        },
+        "building_count": 87,
+        "building_handoff_count": 87,
+        "collision_primitive_count": 162,
+        "coordinate_frame": "ENU",
+        "forest_region_count": 0,
+        "origin": {
+          "altitude_m": 0,
+          "latitude": 60.189,
+          "longitude": 24.907
+        },
+        "parser": "dronedream.helsinki-open-data-map.v1",
+        "resolution_m": 0.29,
+        "road_edge_count": 761,
+        "road_node_count": 711,
+        "source_page": "https://www.hus.fi/en/patient/hospitals-and-other-units",
+        "status": "qualified",
+        "tree_collision_count": 74,
+        "visual_primitive_count": 88
+      },
+      "category": "real_outdoor_3d_medical_campus",
+      "default_resource": true,
+      "description": {
+        "en-US": "A real Helsinki hospital district for outdoor medical logistics, building-to-building delivery, and restricted-area planning.",
+        "zh-CN": "用于室外医疗物流、楼间交付与限制区域规划的赫尔辛基真实医院园区。"
+      },
+      "display_name": {
+        "en-US": "Meilahti Hospital Campus",
+        "zh-CN": "梅拉赫蒂医院园区"
+      },
+      "install_mode": "bundled",
+      "license": {
+        "attribution_required": true,
+        "automated_analysis": true,
+        "commercial_use": true,
+        "name": "City of Helsinki open data CC BY 4.0",
+        "redistribution": true,
+        "spdx_id": "CC-BY-4.0"
+      },
+      "readiness": {
+        "catalog": "ready",
+        "flight": "qualified",
+        "planning": "ready",
+        "qualification_id": "asset-qualification-6fb9cd6b77569fecb298c000",
+        "required_inputs": [],
+        "simulation": "ready"
+      },
+      "resource_id": "dronedream-meilahti-hospital-map",
+      "review": {
+        "executable_content_required": false,
+        "license_reviewed": true,
+        "reviewed_at": "2026-10-27",
+        "source_commit_pinned": false,
+        "source_data_hashes_pinned": true,
+        "status": "approved"
+      },
+      "schema_version": "dronedream.map-resource.v1",
+      "source": {
+        "expected_kind": "map",
+        "expected_sha256": "17cc6d691d8a79fc8096f4749574c97f5e6befced03a6276175e51b134cb3740",
+        "location": "dronedream://default-assets/meilahti-hospital-campus.ddpkg",
+        "real_world_crs": "EPSG:3879",
+        "source_format": "dronedream-ddpkg",
+        "source_type": "bundled_ddpkg"
+      }
+    },
+    {
+      "aliases": {
+        "en-US": [
+          "Kalasatama Waterfront"
+        ],
+        "zh-CN": [
+          "卡拉萨塔马滨水区"
+        ]
+      },
+      "analysis": {
+        "asset_id": "dronedream.kalasatama-waterfront-map.v1",
+        "bounds_m": {
+          "x": 650,
+          "y": 650,
+          "z": 95
+        },
+        "building_count": 105,
+        "building_handoff_count": 105,
+        "collision_primitive_count": 452,
+        "coordinate_frame": "ENU",
+        "forest_region_count": 0,
+        "origin": {
+          "altitude_m": 0,
+          "latitude": 60.187,
+          "longitude": 24.978
+        },
+        "parser": "dronedream.helsinki-open-data-map.v1",
+        "resolution_m": 0.32,
+        "road_edge_count": 1097,
+        "road_node_count": 983,
+        "source_page": "https://hri.fi/data/en_GB/dataset/helsingin-3d-kaupunkimalli/resource/cd7ed6e8-fd77-4319-bc67-692f7dfc43de",
+        "status": "qualified",
+        "tree_collision_count": 346,
+        "visual_primitive_count": 106
+      },
+      "category": "real_outdoor_3d_urban_waterfront",
+      "default_resource": true,
+      "description": {
+        "en-US": "A real Helsinki waterfront district for high-rise inspection, construction observation, and urban delivery.",
+        "zh-CN": "用于高层巡检、施工观察与城市配送的赫尔辛基真实滨水城区。"
+      },
+      "display_name": {
+        "en-US": "Kalasatama Waterfront",
+        "zh-CN": "卡拉萨塔马滨水区"
+      },
+      "install_mode": "bundled",
+      "license": {
+        "attribution_required": true,
+        "automated_analysis": true,
+        "commercial_use": true,
+        "name": "City of Helsinki open data CC BY 4.0",
+        "redistribution": true,
+        "spdx_id": "CC-BY-4.0"
+      },
+      "readiness": {
+        "catalog": "ready",
+        "flight": "qualified",
+        "planning": "ready",
+        "qualification_id": "asset-qualification-d2fb2947d03555333fc64ac4",
+        "required_inputs": [],
+        "simulation": "ready"
+      },
+      "resource_id": "dronedream-kalasatama-waterfront-map",
+      "review": {
+        "executable_content_required": false,
+        "license_reviewed": true,
+        "reviewed_at": "2026-10-27",
+        "source_commit_pinned": false,
+        "source_data_hashes_pinned": true,
+        "status": "approved"
+      },
+      "schema_version": "dronedream.map-resource.v1",
+      "source": {
+        "expected_kind": "map",
+        "expected_sha256": "fc812b6a884e2d2b9b494c249acb80d4d52f44c35f77275add65d40e84f5516a",
+        "location": "dronedream://default-assets/kalasatama-waterfront.ddpkg",
+        "real_world_crs": "EPSG:3879",
+        "source_format": "dronedream-ddpkg",
+        "source_type": "bundled_ddpkg"
+      }
+    },
+    {
+      "aliases": {
+        "en-US": [
+          "Vuosaari Harbour"
+        ],
+        "zh-CN": [
+          "沃萨里港"
+        ]
+      },
+      "analysis": {
+        "asset_id": "dronedream.vuosaari-harbour-map.v1",
+        "bounds_m": {
+          "x": 1200,
+          "y": 1200,
+          "z": 60
+        },
+        "building_count": 62,
+        "building_handoff_count": 62,
+        "collision_primitive_count": 152,
+        "coordinate_frame": "ENU",
+        "forest_region_count": 0,
+        "origin": {
+          "altitude_m": 0,
+          "latitude": 60.2178,
+          "longitude": 25.18
+        },
+        "parser": "dronedream.helsinki-open-data-map.v1",
+        "resolution_m": 0.59,
+        "road_edge_count": 343,
+        "road_node_count": 350,
+        "source_page": "https://www.portofhelsinki.fi/en/professionals/cargo-and-passenger-harbours/vuosaari-harbour/",
+        "status": "qualified",
+        "tree_collision_count": 89,
+        "visual_primitive_count": 63
+      },
+      "category": "real_outdoor_3d_harbour",
+      "default_resource": true,
+      "description": {
+        "en-US": "A real cargo harbour area for warehouse, gate, rail, yard, and quay inspection missions.",
+        "zh-CN": "用于仓库、闸口、铁路、堆场与码头巡检任务的真实货运港区。"
+      },
+      "display_name": {
+        "en-US": "Vuosaari Harbour",
+        "zh-CN": "沃萨里港"
+      },
+      "install_mode": "bundled",
+      "license": {
+        "attribution_required": true,
+        "automated_analysis": true,
+        "commercial_use": true,
+        "name": "City of Helsinki open data CC BY 4.0",
+        "redistribution": true,
+        "spdx_id": "CC-BY-4.0"
+      },
+      "readiness": {
+        "catalog": "ready",
+        "flight": "qualified",
+        "planning": "ready",
+        "qualification_id": "asset-qualification-94994abb257e999e2f0805f6",
+        "required_inputs": [],
+        "simulation": "ready"
+      },
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "review": {
+        "executable_content_required": false,
+        "license_reviewed": true,
+        "reviewed_at": "2026-10-27",
+        "source_commit_pinned": false,
+        "source_data_hashes_pinned": true,
+        "status": "approved"
+      },
+      "schema_version": "dronedream.map-resource.v1",
+      "source": {
+        "expected_kind": "map",
+        "expected_sha256": "9e8e6eefe861b0ba348a7579ad02df248b35ff48e13c83fb604c1eb7bb09f7fc",
+        "location": "dronedream://default-assets/vuosaari-harbour.ddpkg",
+        "real_world_crs": "EPSG:3879",
+        "source_format": "dronedream-ddpkg",
+        "source_type": "bundled_ddpkg"
+      }
+    },
+    {
+      "aliases": {
+        "en-US": [
+          "Suomenlinna Sea Fortress"
+        ],
+        "zh-CN": [
+          "芬兰堡海上要塞"
+        ]
+      },
+      "analysis": {
+        "asset_id": "dronedream.suomenlinna-map.v1",
+        "bounds_m": {
+          "x": 700,
+          "y": 700,
+          "z": 45
+        },
+        "building_count": 135,
+        "building_handoff_count": 135,
+        "collision_primitive_count": 304,
+        "coordinate_frame": "ENU",
+        "forest_region_count": 0,
+        "origin": {
+          "altitude_m": 0,
+          "latitude": 60.145,
+          "longitude": 24.988
+        },
+        "parser": "dronedream.helsinki-open-data-map.v1",
+        "resolution_m": 0.34,
+        "road_edge_count": 661,
+        "road_node_count": 670,
+        "source_page": "https://suomenlinna.fi/en/area-and-buildings/",
+        "status": "qualified",
+        "tree_collision_count": 168,
+        "visual_primitive_count": 136
+      },
+      "category": "real_outdoor_3d_island_heritage",
+      "default_resource": true,
+      "description": {
+        "en-US": "A bounded real island-fortress area for pier delivery, coastal inspection, and heritage-aware routing.",
+        "zh-CN": "用于码头配送、海岸巡检与遗产保护路径规划的真实岛屿要塞区域。"
+      },
+      "display_name": {
+        "en-US": "Suomenlinna Sea Fortress",
+        "zh-CN": "芬兰堡海上要塞"
+      },
+      "install_mode": "bundled",
+      "license": {
+        "attribution_required": true,
+        "automated_analysis": true,
+        "commercial_use": true,
+        "name": "City of Helsinki open data CC BY 4.0",
+        "redistribution": true,
+        "spdx_id": "CC-BY-4.0"
+      },
+      "readiness": {
+        "catalog": "ready",
+        "flight": "qualified",
+        "planning": "ready",
+        "qualification_id": "asset-qualification-49de1e9af06907248637e4be",
+        "required_inputs": [],
+        "simulation": "ready"
+      },
+      "resource_id": "dronedream-suomenlinna-map",
+      "review": {
+        "executable_content_required": false,
+        "license_reviewed": true,
+        "reviewed_at": "2026-10-27",
+        "source_commit_pinned": false,
+        "source_data_hashes_pinned": true,
+        "status": "approved"
+      },
+      "schema_version": "dronedream.map-resource.v1",
+      "source": {
+        "expected_kind": "map",
+        "expected_sha256": "e66160d5b6200c9c06a078833711054f3b79f17b5eee025806ee3b3ff3f85780",
+        "location": "dronedream://default-assets/suomenlinna-sea-fortress.ddpkg",
+        "real_world_crs": "EPSG:3879",
+        "source_format": "dronedream-ddpkg",
+        "source_type": "bundled_ddpkg"
+      }
+    },
+    {
+      "aliases": {
+        "en-US": [
+          "Uutela Coastal Forest"
+        ],
+        "zh-CN": [
+          "乌特拉海岸森林"
+        ]
+      },
+      "analysis": {
+        "asset_id": "dronedream.uutela-coastal-forest-map.v1",
+        "bounds_m": {
+          "x": 800,
+          "y": 800,
+          "z": 45
+        },
+        "building_count": 22,
+        "building_handoff_count": 22,
+        "collision_primitive_count": 23,
+        "coordinate_frame": "ENU",
+        "forest_region_count": 6,
+        "origin": {
+          "altitude_m": 0,
+          "latitude": 60.198,
+          "longitude": 25.17
+        },
+        "parser": "dronedream.helsinki-open-data-map.v1",
+        "resolution_m": 0.39,
+        "road_edge_count": 428,
+        "road_node_count": 428,
+        "source_page": "https://www.hel.fi/en/culture-and-leisure/outdoor-activities-parks-and-nature-destinations/outdoor-recreation-areas/uutela-outdoor-recreation-area",
+        "status": "qualified",
+        "tree_collision_count": 0,
+        "visual_primitive_count": 23
+      },
+      "category": "real_outdoor_3d_coastal_forest",
+      "default_resource": true,
+      "description": {
+        "en-US": "A real coastal forest for path-constrained search, terrain-aware rescue, and protected-area planning.",
+        "zh-CN": "用于沿路搜索、地形感知救援与自然保护区规划的真实海岸森林。"
+      },
+      "display_name": {
+        "en-US": "Uutela Coastal Forest",
+        "zh-CN": "乌特拉海岸森林"
+      },
+      "install_mode": "bundled",
+      "license": {
+        "attribution_required": true,
+        "automated_analysis": true,
+        "commercial_use": true,
+        "name": "City of Helsinki open data CC BY 4.0",
+        "redistribution": true,
+        "spdx_id": "CC-BY-4.0"
+      },
+      "readiness": {
+        "catalog": "ready",
+        "flight": "qualified",
+        "planning": "ready",
+        "qualification_id": "asset-qualification-23d9556be930ad2c8f3a4ce0",
+        "required_inputs": [],
+        "simulation": "ready"
+      },
+      "resource_id": "dronedream-uutela-coastal-forest-map",
+      "review": {
+        "executable_content_required": false,
+        "license_reviewed": true,
+        "reviewed_at": "2026-10-27",
+        "source_commit_pinned": false,
+        "source_data_hashes_pinned": true,
+        "status": "approved"
+      },
+      "schema_version": "dronedream.map-resource.v1",
+      "source": {
+        "expected_kind": "map",
+        "expected_sha256": "12495fa8517c4310fbd8543f30457c456e65d42f8cee81e97efc5f9eb191546f",
+        "location": "dronedream://default-assets/uutela-coastal-forest.ddpkg",
+        "real_world_crs": "EPSG:3879",
+        "source_format": "dronedream-ddpkg",
+        "source_type": "bundled_ddpkg"
+      }
+    }
+  ],
+  "schema_version": "dronedream.generated-map-resources.v1"
+}

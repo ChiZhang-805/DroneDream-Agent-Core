@@ -17,42 +17,57 @@ from dronedream_agent_core.asset_packages import MAX_MANIFEST_BYTES
 from dronedream_agent_core.plugin_files import read_plugin_file
 from dronedream_plugin_sdk.protocol import decode_json
 
+from .map_resource_catalog import map_resource_catalog
 from .vehicle_resource_catalog import vehicle_resource_catalog
-
-_SCHOOL_MAP = {
-    "resource_id": "dronedream-school-map",
-    "display_name": {"zh-CN": "赫尔辛基大学昆普拉校区", "en-US": "Kumpula Campus"},
-    "environment_class": "outdoor_campus",
-}
 
 # The public resource identifier names the catalog entry, while the normalized
 # package identifier names the concrete map asset imported into Agent Core.
 # Exposing both prevents clients from guessing package IDs (for example,
 # ``open-rmf-office`` is backed by the installed asset ``office``).
 _BUILTIN_MAP_ASSET_IDS = {
-    "dronedream-school-map": "dronedream.school-map.v1",
+    str(resource["resource_id"]): str(
+        resource.get("analysis", {}).get("asset_id")
+        or (
+            "dronedream.school-map.v1" if resource["resource_id"] == "dronedream-school-map" else ""
+        )
+    )
+    for resource in map_resource_catalog()["resources"]
 }
 
 
 def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
     """Read display identities from this release; actual admission verifies the pair receipt."""
-    root = resource_root if resource_root is not None else (
-        Path(__file__).resolve().parents[2] / "app" / "desktop" / "src-tauri" / "resources")
+    root = (
+        resource_root
+        if resource_root is not None
+        else (Path(__file__).resolve().parents[2] / "app" / "desktop" / "src-tauri" / "resources")
+    )
     try:
         index = decode_json(
             read_plugin_file(root / "default-assets" / "index.json", limit=MAX_MANIFEST_BYTES),
-            limit=MAX_MANIFEST_BYTES)
+            limit=MAX_MANIFEST_BYTES,
+        )
         if not isinstance(index, dict) or index.get("schema_version") not in {
-            "dronedream.bundled-assets.v2", "dronedream.bundled-assets.v3",
+            "dronedream.bundled-assets.v2",
+            "dronedream.bundled-assets.v3",
         }:
             return {}
         current = index.get("qualified_pair")
-        pairs = (index.get("qualified_pairs")
-                 if index["schema_version"] == "dronedream.bundled-assets.v3" else [current])
-        if (not isinstance(pairs, list) or not 1 <= len(pairs) <= 64
-                or not isinstance(current, dict) or current not in pairs
-                or (index["schema_version"] == "dronedream.bundled-assets.v3"
-                    and index.get("default_qualification_id") != current.get("qualification_id"))):
+        pairs = (
+            index.get("qualified_pairs")
+            if index["schema_version"] == "dronedream.bundled-assets.v3"
+            else [current]
+        )
+        if (
+            not isinstance(pairs, list)
+            or not 1 <= len(pairs) <= 64
+            or not isinstance(current, dict)
+            or current not in pairs
+            or (
+                index["schema_version"] == "dronedream.bundled-assets.v3"
+                and index.get("default_qualification_id") != current.get("qualification_id")
+            )
+        ):
             return {}
         qualifications: dict[str, str] = {}
         for pair in pairs:
@@ -61,23 +76,35 @@ def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
             resource_id = pair.get("resource_id", "dronedream-school-map")
             qualification_id = pair.get("qualification_id")
             packages = pair.get("packages")
-            if (pair.get("schema_version") != "dronedream.bundled-qualified-pair.v1"
-                    or resource_id not in _BUILTIN_MAP_ASSET_IDS
-                    or resource_id in qualifications
-                    or not isinstance(qualification_id, str)
-                    or re.fullmatch(r"asset-qualification-[0-9a-f]{24}", qualification_id) is None
-                    or not isinstance(packages, list) or len(packages) != 2
-                    or any(not isinstance(package, dict) for package in packages)):
+            if (
+                pair.get("schema_version") != "dronedream.bundled-qualified-pair.v1"
+                or resource_id not in _BUILTIN_MAP_ASSET_IDS
+                or resource_id in qualifications
+                or not isinstance(qualification_id, str)
+                or re.fullmatch(r"asset-qualification-[0-9a-f]{24}", qualification_id) is None
+                or not isinstance(packages, list)
+                or len(packages) != 2
+                or any(not isinstance(package, dict) for package in packages)
+            ):
                 return {}
             identities = {(package.get("kind"), package.get("asset_id")) for package in packages}
-            if identities != {("map", _BUILTIN_MAP_ASSET_IDS[resource_id]),
-                              ("vehicle", "dronedream.my-drone.v1")}:
+            if identities != {
+                ("map", _BUILTIN_MAP_ASSET_IDS[resource_id]),
+                ("vehicle", "dronedream.my-drone.v1"),
+            }:
                 return {}
-            hashes = [pair.get("receipt_sha256"), *(package.get(field)
-                      for package in packages
-                      for field in ("sha256", "content_sha256", "source_content_sha256"))]
-            if any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
-                   for value in hashes):
+            hashes = [
+                pair.get("receipt_sha256"),
+                *(
+                    package.get(field)
+                    for package in packages
+                    for field in ("sha256", "content_sha256", "source_content_sha256")
+                ),
+            ]
+            if any(
+                not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in hashes
+            ):
                 return {}
             qualifications[resource_id] = qualification_id
         return qualifications
@@ -87,9 +114,17 @@ def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
 
 
 def _maps() -> list[dict[str, object]]:
-    """Return the sole map admitted to the built-in mission catalog."""
+    """Return every reviewed map admitted to the built-in mission catalog."""
 
-    return [deepcopy(_SCHOOL_MAP)]
+    resources = map_resource_catalog()["resources"]
+    return [
+        {
+            "resource_id": resource["resource_id"],
+            "display_name": deepcopy(resource["display_name"]),
+            "environment_class": str(resource.get("category") or "real_outdoor_3d"),
+        }
+        for resource in resources
+    ]
 
 
 def _pair_record(
@@ -158,7 +193,7 @@ def _pair_record(
 
 
 def asset_pair_catalog(*, resource_root: Path | None = None) -> dict[str, object]:
-    """Return the complete one-map by 13-aircraft compatibility matrix."""
+    """Return the complete reviewed-map by aircraft compatibility matrix."""
     maps = _maps()
     vehicles = vehicle_resource_catalog()["resources"]
     qualifications = _bundled_qualifications(resource_root)
@@ -176,7 +211,7 @@ def asset_pair_catalog(*, resource_root: Path | None = None) -> dict[str, object
     }
     return {
         "schema_version": "dronedream.asset-pair-catalog.v1",
-        "catalog_revision": "2026-10-11.1",
+        "catalog_revision": "2026-10-27.1",
         "map_count": len(maps),
         "vehicle_count": len(vehicles),
         "pair_count": len(pairs),
@@ -186,7 +221,10 @@ def asset_pair_catalog(*, resource_root: Path | None = None) -> dict[str, object
 
 
 def get_asset_pair(
-    map_resource_id: str, vehicle_resource_id: str, *, resource_root: Path | None = None,
+    map_resource_id: str,
+    vehicle_resource_id: str,
+    *,
+    resource_root: Path | None = None,
 ) -> dict[str, object]:
     """Resolve one reviewed pair, rejecting identifiers outside the catalog."""
     pair_id = f"{map_resource_id}::{vehicle_resource_id}"

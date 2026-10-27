@@ -126,8 +126,15 @@ def test_default_assets_have_content_addressed_multi_pair_boundary() -> None:
     packages = [entry for pair in pairs for entry in pair["packages"]]
 
     assert index["schema_version"] == "dronedream.bundled-assets.v3"
-    assert len(pairs) == 1
-    assert pairs[0]["resource_id"] == "dronedream-school-map"
+    assert len(pairs) == 6
+    assert {pair["resource_id"] for pair in pairs} == {
+        "dronedream-school-map",
+        "dronedream-meilahti-hospital-map",
+        "dronedream-kalasatama-waterfront-map",
+        "dronedream-vuosaari-harbour-map",
+        "dronedream-suomenlinna-map",
+        "dronedream-uutela-coastal-forest-map",
+    }
     assert index["qualified_pair"] in pairs
     assert index["default_qualification_id"] == index["qualified_pair"]["qualification_id"]
     assert len({pair["qualification_id"] for pair in pairs}) == len(pairs)
@@ -406,7 +413,9 @@ def test_default_vehicle_range_is_derived_from_the_verified_track() -> None:
     source = (repository / "scripts/build-default-assets.py").read_text(encoding="utf-8")
 
     assert "def _verified_track_distance_m(" in source
-    assert "qualified_range_m = _verified_track_distance_m(run_dir)" in source
+    assert "map_pair_route_m = _verified_track_distance_m(run_dir)" in source
+    assert "independent_range_m = _independently_qualified_range_m(" in source
+    assert "qualified_range_m = max(map_pair_route_m, independent_range_m or 0.0)" in source
     assert '"qualified_range_m": 413.213' not in source
 
     depth_qualification = (repository / "scripts/run_school_map_depth_qualification.py").read_text(

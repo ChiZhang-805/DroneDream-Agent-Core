@@ -1,20 +1,27 @@
 param(
+    [Parameter(Mandatory = $true)]
+    [string] $CredentialPath,
+    [Parameter(Mandatory = $true)]
+    [string] $CliExecutable,
+    [string] $ResourceRoot,
+    [string] $SessionRoot,
     [switch] $CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
 
-$sourceRoot = 'Q:\DroneDream-Workspace\agent-core-cli'
-$python = 'Q:\DroneDream-Workspace\Agent-Core\DroneDream-Agent-Core\.venv\Scripts\python.exe'
-$resourceRoot = 'Q:\DroneDream-Workspace\Build\CLI-Runtime-Resources-20261020-r20'
+$sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$python = Join-Path $sourceRoot '.venv\Scripts\python.exe'
+if (-not $ResourceRoot) {
+    $ResourceRoot = Join-Path $sourceRoot 'app\desktop\src-tauri\resources'
+}
 $pluginCandidates = @(
-    (Join-Path $resourceRoot 'dronedream-plugin-isolator.exe'),
-    'C:\Users\zju20\AppData\Local\DroneDream-Agent\agent-core\dronedream-plugin-isolator.exe',
-    'C:\Users\zju20\AppData\Local\DroneDream-Agent\dronedream-plugin-isolator.exe'
+    (Join-Path $sourceRoot 'app\desktop\src-tauri\binaries\dronedream-plugin-isolator-x86_64-pc-windows-msvc.exe')
 )
-$cli = 'C:\Users\zju20\AppData\Local\Programs\Python\Python311\Scripts\dronedream.exe'
-$credentialPath = 'Q:\DroneDream-Workspace\TestRuns\Natural-Language-E2E-20261013\test-account.credential.xml'
-$sessionRoot = 'Q:\DroneDream-Workspace\TestRuns\CLI-Manual-Acceptance'
+$cli = $CliExecutable
+if (-not $SessionRoot) {
+    $SessionRoot = Join-Path $sourceRoot 'artifacts\live-cli'
+}
 $project = 'yggabfynndpzymlqvnim'
 
 $requiredPaths = @($sourceRoot, $python, $resourceRoot, $cli, $credentialPath)

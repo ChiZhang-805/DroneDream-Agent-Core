@@ -32,11 +32,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--run-name', required=True)
+    parser.add_argument('--assets', type=Path, required=True)
+    parser.add_argument('--semantic', type=Path, required=True)
+    parser.add_argument('--native-sensor-runtime', type=Path, required=True)
     parser.add_argument('--expert-role', default='local-navigation-policy', choices=['local-navigation-policy', 'precision-maneuver-policy'])
     args = parser.parse_args()
     if not args.run_name or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in args.run_name):
         raise ValueError('HEADING_BENCH_RUN_NAME_INVALID')
-    root = Path('/mnt/q/DroneDream-Workspace')
     repository = Path(__file__).resolve().parents[1]
     directory = args.directory.resolve()
     evaluation = json.loads((directory/'evaluation.json').read_text())
@@ -47,9 +49,9 @@ def main():
     digest = hashlib.sha256(graph).hexdigest()
     if digest != evaluation['candidates'][selected]['sha256']:
         raise ValueError('HEADING_BENCH_MODEL_CHANGED')
-    assets = root/'Build/Native-Learning-Inputs-20260907'
+    assets = args.assets.resolve()
     paths = dict(route=directory/'yaw-bench-route.json',
-        semantic=root/'TestRuns/local-realtime-control-20260910/native-motion-calibration-inputs/semantic.json',
+        semantic=args.semantic.resolve(),
         world_sdf=assets/'map/normalized/map/gazebo/world.sdf',
         vehicle_sdf=assets/'vehicle/normalized/vehicle/gazebo/model.sdf',
         vehicle=assets/'vehicle/normalized/vehicle/vehicle.json',
@@ -63,7 +65,7 @@ def main():
         episode_steps=160, startup_timeout_seconds=300, quiesce_timeout_seconds=180,
         initial_collection_mode='stream-imitation',
         batch_static_world_visuals=True,
-        native_sensor_runtime=root/'Build/Release-Acceptance-20260916/native-sensors')
+        native_sensor_runtime=args.native_sensor_runtime.resolve())
     options = ort.SessionOptions()
     options.intra_op_num_threads = options.inter_op_num_threads = 1
     session = ort.InferenceSession(graph, sess_options=options, providers=['CPUExecutionProvider'])

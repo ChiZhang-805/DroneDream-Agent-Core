@@ -15,25 +15,30 @@ from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.asset_source_adapters import detect_asset_source, source_adapter_catalog
 
 
-def test_reviewed_catalog_only_exposes_qualified_kumpula_campus() -> None:
+def test_reviewed_catalog_exposes_the_six_qualified_first_party_maps() -> None:
     catalog = map_resource_catalog()
     resources = catalog["resources"]
     assert catalog["schema_version"] == "dronedream.map-resource-catalog.v1"
-    assert len(resources) == 1
+    assert len(resources) == 6
     assert len({item["resource_id"] for item in resources}) == len(resources)
     for resource in resources:
         assert resource["default_resource"] is True
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", resource["resource_id"])
         assert resource["review"]["status"] == "approved"
-        assert resource["license"]["spdx_id"] == "LicenseRef-CC-BY-4.0-AND-ODbL-1.0"
+        assert resource["license"]["spdx_id"] in {
+            "LicenseRef-CC-BY-4.0-AND-ODbL-1.0",
+            "CC-BY-4.0",
+        }
         assert resource["source"]["source_type"] == "bundled_ddpkg"
-        assert resource["source"]["location"] == ("dronedream://default-assets/school-map.ddpkg")
+        assert resource["source"]["location"].startswith(
+            "dronedream://default-assets/"
+        )
         assert resource["source"]["source_format"] == "dronedream-ddpkg"
         assert len(resource["source"]["expected_sha256"]) == 64
         assert resource["analysis"]["status"] == "qualified"
-        assert resource["analysis"]["building_count"] == 42
-        assert resource["analysis"]["visual_primitive_count"] == 43
-        assert resource["analysis"]["collision_primitive_count"] == 44
+        assert resource["analysis"]["building_count"] > 0
+        assert resource["analysis"]["visual_primitive_count"] > 0
+        assert resource["analysis"]["collision_primitive_count"] > 0
         assert resource["readiness"]["simulation"] == "ready"
         assert resource["readiness"]["flight"] == "qualified"
 
@@ -72,7 +77,7 @@ def test_bundled_kumpula_package_matches_catalog_and_carries_bilingual_semantics
 def test_catalog_returns_detached_values_and_rejects_unknown_id() -> None:
     first = get_map_resource("dronedream-school-map")
     first["analysis"]["building_count"] = -1
-    assert get_map_resource("dronedream-school-map")["analysis"]["building_count"] == 42
+    assert get_map_resource("dronedream-school-map")["analysis"]["building_count"] == 85
     try:
         get_map_resource("unknown")
     except KeyError:
@@ -140,5 +145,12 @@ def test_map_resource_catalog_api_is_loopback_token_protected(tmp_path) -> None:
     )
     assert response.status_code == 200
     resources = response.json()["resources"]
-    assert len(resources) == 1
-    assert resources[0]["resource_id"] == "dronedream-school-map"
+    assert len(resources) == 6
+    assert {resource["resource_id"] for resource in resources} == {
+        "dronedream-school-map",
+        "dronedream-meilahti-hospital-map",
+        "dronedream-kalasatama-waterfront-map",
+        "dronedream-vuosaari-harbour-map",
+        "dronedream-suomenlinna-map",
+        "dronedream-uutela-coastal-forest-map",
+    }
