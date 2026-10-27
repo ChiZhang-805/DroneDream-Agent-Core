@@ -3,6 +3,9 @@
     [switch]$StageOnly,
 
     [Parameter(Mandatory = $false)]
+    [string]$RuntimeBuildPython = "/home/dronedream/.local/share/dronedream-autonomy/v0.1.0/venv/bin/python",
+
+    [Parameter(Mandatory = $false)]
     [string]$LocalPolicyPackage,
 
     [Parameter(Mandatory = $false)]
@@ -28,6 +31,10 @@ if ($policyInputCount -ne 0 -and $policyInputCount -ne 3) {
     throw "Optional local policy needs package, admission and distribution licenses together"
 }
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($RuntimeBuildPython) -or
+    -not $RuntimeBuildPython.StartsWith('/')) {
+    throw "RuntimeBuildPython must be an absolute Linux path."
+}
 
 # Import narrowly owned build operations; these must never target runtime source
 # or the installed DroneDreamRuntime WSL distribution.
@@ -211,7 +218,7 @@ try {
     [System.IO.Directory]::CreateDirectory($linuxWheelBuildTemp) | Out-Null
     & wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800 `
         ("TMPDIR=" + (Convert-ToRuntimeBuildPath $linuxWheelBuildTemp)) `
-        /home/dronedream/.local/share/dronedream-autonomy/v0.1.0/venv/bin/python `
+        $RuntimeBuildPython `
         -m pip wheel --no-cache-dir --no-build-isolation --no-deps `
         --wheel-dir (Convert-ToRuntimeBuildPath $runtimeWheels) `
         (Convert-ToRuntimeBuildPath $repoRoot)
