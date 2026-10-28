@@ -3963,7 +3963,7 @@ class MissionOrchestrator:
                 for item in registry.catalog()
                 if item.get("slot_id") not in CORE_PLANNING_SLOTS
                 and item["authority"] in {"read", "plan", "simulate"}
-            ][:32]
+            ]
             if stage_runtime.contains("mission.tool-advice")
             else []
         )
@@ -3986,8 +3986,19 @@ class MissionOrchestrator:
                     )
             router_feedback: dict[str, object] | None = None
             routed: StructuredCallResult[PluginInvocationPlan]
-            missing_recommended: list[str] = []
+            remaining_calls = min(
+                self.config.maximum_plugin_calls,
+                self.config.maximum_optional_tool_calls,
+                int(harness_policies["budget"].get(
+                    "maximum_tool_calls", self.config.maximum_optional_tool_calls,
+                )),
+            )
+            completed_tools: set[str] = set()
+            attempted_inputs: set[tuple[str, str]] = set()
+            available_optional_tools = {str(item["tool_id"]): item for item in optional_catalog}
             for router_round in range(1, self.config.plugin_router_rounds + 1):
+                if remaining_calls <= 0:
+                    break
                 routed = self._call(
                     port=self.primary,
                     role="plugin_router",
@@ -3999,17 +4010,9 @@ class MissionOrchestrator:
                         "mission_request_context": _plugin_request_context(request),
                         "request_features": request_features,
                         "optional_tool_catalog": optional_catalog,
-                        "recommended_tool_ids": recommended_tool_ids,
-                        "maximum_calls": min(
-                            self.config.maximum_plugin_calls,
-                            self.config.maximum_optional_tool_calls,
-                            int(
-                                harness_policies["budget"].get(
-                                    "maximum_tool_calls",
-                                    self.config.maximum_optional_tool_calls,
-                                )
-                            ),
-                        ),
+                        "recommended_tool_ids": sorted(set(recommended_tool_ids) - completed_tools),
+                        "maximum_calls": remaining_calls,
+                        "tool_results": list(plugin_advice),
                         "advisory_only": True,
                         "harness_profile": harness_profile,
                         "router_feedback": router_feedback,
@@ -4018,46 +4021,47 @@ class MissionOrchestrator:
                     evidence=evidence,
                 )
                 model_calls.extend(_model_records(routed))
-                selected_tools = {call.tool_id for call in routed.artifact.calls}
-                missing_recommended = sorted(set(recommended_tool_ids) - selected_tools)
-                if not missing_recommended:
+                if not routed.artifact.calls and not (set(recommended_tool_ids) - completed_tools):
                     break
-                router_feedback = {
-                    "issue_code": "RECOMMENDED_PLUGIN_NOT_SELECTED",
-                    "missing_tool_ids": missing_recommended,
-                    "repair": "Select each matching recommended tool with schema-valid JSON.",
-                }
-            if missing_recommended:
-                evidence.append(
-                    "plugin.routing-recommendation-unmet",
-                    {"tool_ids": missing_recommended},
-                )
-            available_optional_tools = {str(item["tool_id"]): item for item in optional_catalog}
-            for invocation in routed.artifact.calls:
-                if invocation.tool_id not in available_optional_tools:
-                    evidence.append(
-                        "plugin.invocation-rejected",
-                        {
-                            "tool_id": invocation.tool_id,
-                            "issue_code": "PLUGIN_TOOL_NOT_IN_ROUTING_CATALOG",
-                        },
-                    )
-                    continue
-                try:
-                    arguments = invocation.parsed_arguments()
-                except ValueError:
-                    evidence.append(
-                        "plugin.invocation-rejected",
-                        {
-                            "tool_id": invocation.tool_id,
-                            "issue_code": "PLUGIN_ARGUMENTS_JSON_INVALID",
-                        },
-                    )
-                    continue
-                try:
-                    output, receipt = registry.call(invocation.tool_id, arguments)
-                except ToolExecutionError as error:
-                    receipt = error.receipt
+                for invocation in routed.artifact.calls:
+                    if remaining_calls <= 0:
+                        break
+                    remaining_calls -= 1
+                    result: dict[str, object] = {
+                        "tool_id": invocation.tool_id,
+                        "purpose": invocation.purpose,
+                        "accepted": False,
+                    }
+                    plugin_advice.append(result)
+                    if invocation.tool_id not in available_optional_tools:
+                        result["issue_codes"] = ["PLUGIN_TOOL_NOT_IN_ROUTING_CATALOG"]
+                        continue
+                    try:
+                        arguments = invocation.parsed_arguments()
+                    except ValueError:
+                        result["issue_codes"] = ["PLUGIN_ARGUMENTS_JSON_INVALID"]
+                        continue
+                    result["arguments"] = arguments
+                    input_identity = (invocation.tool_id, sha256_json(arguments))
+                    if invocation.tool_id in completed_tools or input_identity in attempted_inputs:
+                        result["issue_codes"] = ["PLUGIN_INVOCATION_ALREADY_ATTEMPTED"]
+                        continue
+                    attempted_inputs.add(input_identity)
+                    try:
+                        output, receipt = registry.call(invocation.tool_id, arguments)
+                    except ToolExecutionError as error:
+                        receipt = error.receipt
+                        result["issue_codes"] = receipt.issue_codes
+                    else:
+                        completed_tools.add(invocation.tool_id)
+                        result.update({
+                            "accepted": True,
+                            "output": (
+                                output.model_dump(mode="json")
+                                if hasattr(output, "model_dump") else output
+                            ),
+                            "output_sha256": receipt.output_sha256,
+                        })
                     self._record_tool(
                         receipt,
                         conversation_id=request.conversation_id,
@@ -4065,34 +4069,20 @@ class MissionOrchestrator:
                         evidence=evidence,
                     )
                     tool_receipts.append(receipt)
-                    plugin_advice.append(
-                        {
-                            "tool_id": invocation.tool_id,
-                            "purpose": invocation.purpose,
-                            "accepted": False,
-                            "issue_codes": receipt.issue_codes,
-                        }
-                    )
-                    continue
-                self._record_tool(
-                    receipt,
-                    conversation_id=request.conversation_id,
-                    context_store=self.context_store,
-                    evidence=evidence,
-                )
-                tool_receipts.append(receipt)
-                plugin_advice.append(
-                    {
-                        "tool_id": invocation.tool_id,
-                        "purpose": invocation.purpose,
-                        "accepted": True,
-                        "output": (
-                            output.model_dump(mode="json")
-                            if hasattr(output, "model_dump")
-                            else output
-                        ),
-                        "output_sha256": receipt.output_sha256,
-                    }
+                missing_recommended = sorted(set(recommended_tool_ids) - completed_tools)
+                router_feedback = {
+                    "missing_tool_ids": missing_recommended,
+                    "next_step": (
+                        "Use tool_results to correct arguments or select a dependent tool. "
+                        "Do not repeat completed tools or unchanged failed inputs. "
+                        "Return no calls when the available evidence is sufficient."
+                    ),
+                }
+            missing_recommended = sorted(set(recommended_tool_ids) - completed_tools)
+            if missing_recommended:
+                evidence.append(
+                    "plugin.routing-recommendation-unmet",
+                    {"tool_ids": missing_recommended},
                 )
             _write_artifact(output_dir / "03a-plugin-advice.json", plugin_advice)
             evidence.append("plugin.advice", {"results": plugin_advice})
@@ -4175,6 +4165,7 @@ class MissionOrchestrator:
                     "available_node_ids": [node.node_id for node in self.map_graph.nodes],
                     "domain_action_catalog": decomposition_action_catalog,
                     "runtime_action_adapter_catalog": runtime_action_availability,
+                    "tool_advice": plugin_advice,
                     "harness_profile": harness_profile,
                     "planning_hard_constraints": [
                         constraint
@@ -4234,6 +4225,7 @@ class MissionOrchestrator:
                     "task_graph": task_graph.model_dump(mode="json"),
                     "available_node_ids": [node.node_id for node in self.map_graph.nodes],
                     "structured_map_context": semantic_planning_map_context,
+                    "tool_advice": plugin_advice,
                     "navigation_readiness": navigation_readiness.model_dump(mode="json"),
                     "vehicle_speed_envelope": {
                         "vehicle_max_speed_mps": self.vehicle.operational_max_speed_mps,

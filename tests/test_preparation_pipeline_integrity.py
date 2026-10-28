@@ -21,6 +21,7 @@ from dronedream_agent_core.orchestrator import (
     MissionPreparationBlocked,
     PreparationConfig,
 )
+from dronedream_agent_core.tools import ToolPlugin
 
 
 class _PlanningPort:
@@ -38,6 +39,9 @@ class _PlanningPort:
         self.alter_asset = alter_asset
         self.clarification = clarification
         self.intent_inputs = []
+        self.router_inputs = []
+        self.planning_inputs = []
+        self.tool_responder = None
 
     # 功能：
     #   为每个角色提供结构化测试答案，不替换生产路径求解器、门控或任何飞行执行器。
@@ -62,8 +66,13 @@ class _PlanningPort:
         elif role in {"intent_critic", "plan_critic"}:
             value = {"accepted": True}
         elif role == "plugin_router":
-            value = {"calls": []}
+            self.router_inputs.append(kwargs["input_artifact"])
+            value = (
+                self.tool_responder(kwargs["input_artifact"])
+                if self.tool_responder else {"calls": []}
+            )
         elif role == "task_decomposer":
+            self.planning_inputs.append(kwargs["input_artifact"])
             value = {
                 "graph": {
                     "nodes": [
@@ -102,6 +111,7 @@ class _PlanningPort:
                 }
             }
         elif role == "global_planner":
+            self.planning_inputs.append(kwargs["input_artifact"])
             speed_limit = kwargs["input_artifact"]["vehicle_speed_envelope"]["cruise_max_mps"]
             value = {
                 "ordered_targets": ["b", "a"],
@@ -152,7 +162,9 @@ class _PlanningPort:
 #   change_asset：是否在计划评审响应时改写机型文件。
 # 输出：
 #   None。
-@pytest.mark.parametrize("change_asset", [False, True, "clarification"])
+@pytest.mark.parametrize(
+    "change_asset", [False, True, "clarification", "tool_chain", "tool_repair", "tool_budget"]
+)
 def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset, monkeypatch):
     graph = _graph()
     vehicle = _vehicle()
@@ -192,7 +204,8 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
     output_dir = tmp_path / "prepared"
     try:
         config = PreparationConfig(
-            provider="kimi", critic_provider="kimi", persisted_task_context=False
+            provider="kimi", critic_provider="kimi", persisted_task_context=False,
+            maximum_plugin_calls=1 if change_asset == "tool_budget" else 8,
         )
         instance = MissionOrchestrator(
             config=config,
@@ -206,6 +219,57 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
             primary_port=port,
             critic_port=port,
         )
+        executed_tools = []
+        if change_asset in {"tool_chain", "tool_repair", "tool_budget"}:
+            # More than 32 tools ensures the model also sees the last catalog entries.
+            for index in range(35):
+                instance.tool_registry.register(ToolPlugin(
+                    tool_id=f"zz-fixture.tool-{index:02d}",
+                    version="1.0.0",
+                    authority="read",
+                    input_type=None,
+                    output_type=None,
+                    input_schema={
+                        "type": "object", "properties": {"node": {"type": "string"}},
+                        "required": ["node"], "additionalProperties": False,
+                    },
+                    output_schema={
+                        "type": "object", "properties": {"node": {"type": "string"}},
+                        "required": ["node"], "additionalProperties": False,
+                    },
+                    handler=lambda value, tool=index: (
+                        executed_tools.append(tool) or {"node": "b"}
+                    ),
+                ))
+            def respond_to_tools(payload):
+                assert "zz-fixture.tool-34" in {
+                    item["tool_id"] for item in payload["optional_tool_catalog"]
+                }
+                if payload["round"] == 1:
+                    return {"calls": [{
+                        "tool_id": "zz-fixture.tool-34",
+                        "arguments_json": '{}' if change_asset == "tool_repair" else '{"node":"a"}',
+                        "purpose": "Resolve a destination from tool evidence",
+                    }, *([{
+                        "tool_id": "zz-fixture.tool-33", "arguments_json": '{"node":"a"}',
+                        "purpose": "Excess call must not execute",
+                    }] if change_asset == "tool_budget" else [])]}
+                previous = payload["tool_results"][-1]
+                if change_asset == "tool_repair":
+                    assert previous["accepted"] is False
+                    assert previous["issue_codes"][0].startswith("TOOL_INPUT_INVALID")
+                    tool_id = "zz-fixture.tool-34"
+                    node = "a"
+                else:
+                    assert previous["accepted"] is True
+                    tool_id = "zz-fixture.tool-33"
+                    node = previous["output"]["node"]
+                return {"calls": [{
+                    "tool_id": tool_id, "arguments_json": json.dumps({"node": node}),
+                    "purpose": "Use the previous tool result or corrected schema",
+                }]}
+
+            port.tool_responder = respond_to_tools
         request = _bind_development_harness_request(
             MissionRequest(
                 conversation_id="offline-pipeline",
@@ -236,6 +300,13 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
             assert not (output_dir / "prepared-mission.json").exists()
         else:
             prepared = instance.prepare(request, output_dir)
+            if change_asset in {"tool_chain", "tool_repair", "tool_budget"}:
+                assert executed_tools == ([34, 33] if change_asset == "tool_chain" else [34])
+                assert len(port.router_inputs) == (1 if change_asset == "tool_budget" else 2)
+                for planning_input in port.planning_inputs:
+                    advice = planning_input["tool_advice"]
+                    assert any(item["accepted"] and item["output"] == {"node": "b"}
+                               for item in advice)
             assert prepared.execution_route.node_ids == ["a", "b", "a"]
             assert prepared.route_clearance.accepted
             assert len(prepared.plan.segments) == 2
