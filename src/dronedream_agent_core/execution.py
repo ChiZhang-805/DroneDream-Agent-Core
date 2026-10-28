@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from dronedream_plugin_sdk.protocol import decode_json, encode_json
 
 from .assets import load_map_catalog
-from .checkpointing import CheckpointCoordinator, checkpoint_contract_for
+from .checkpointing import CheckpointCoordinator, checkpoint_contract_for, checkpoint_wait_policy
 from .context import ContextStore
 from .contracts import (
     CompletionAssessment,
@@ -1497,12 +1497,15 @@ def execute_prepared_mission(
                         prepared.runtime_actions.model_dump_json(indent=2) + "\n",
                         encoding="utf-8",
                     )
+                checkpoint_model_seconds, checkpoint_wait_seconds = checkpoint_wait_policy(
+                    model_timeout_seconds, checkpoint_timeout_seconds
+                )
                 checkpoint_coordinator = CheckpointCoordinator(
                     prepared=prepared,
                     run_dir=run_dir,
                     provider=checkpoint_provider,
                     abort_file=run_dir / "live_abort.request.json",
-                    model_timeout_seconds=model_timeout_seconds,
+                    model_timeout_seconds=checkpoint_model_seconds,
                 )
                 owned_workers.append(checkpoint_coordinator)
                 interruption_coordinator = (
@@ -1548,7 +1551,7 @@ def execute_prepared_mission(
                         executor_extra_args=extra_args,
                         checkpoint_contract_path=checkpoint_path,
                         runtime_control_dir=control_dir if runtime_session is not None else None,
-                        checkpoint_timeout_seconds=checkpoint_timeout_seconds,
+                        checkpoint_timeout_seconds=checkpoint_wait_seconds,
                         runtime_hold_timeout_seconds=runtime_hold_timeout_seconds,
                         runtime_decision_timeout_seconds=runtime_decision_timeout_seconds,
                         runtime_replan_hold_seconds=runtime_replan_hold_seconds,

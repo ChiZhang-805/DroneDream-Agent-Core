@@ -36,6 +36,19 @@ from .runtime_plugins import (
 )
 from .runtime_revision import load_active_replacement
 
+MODEL_ATTEMPTS = 3
+
+
+def checkpoint_wait_policy(model_seconds: float, wait_seconds: float) -> tuple[float, float]:
+    """Fit all model attempts and publication into the executor's wait budget.
+
+    Inputs are validated at the execution boundary. Retain the existing one-hour
+    maximum while giving ordinary slow provider calls their full retry allowance.
+    """
+    wait_seconds = max(wait_seconds, min(3600.0, MODEL_ATTEMPTS * model_seconds + 5.0))
+    model_seconds = min(model_seconds, (wait_seconds - 5.0) / MODEL_ATTEMPTS)
+    return model_seconds, wait_seconds
+
 
 # 功能：
 #   只读取已确认任务中编译的检查点合同；缺失时拒绝旧路径推导，并隔离可变对象。
@@ -162,7 +175,7 @@ class CheckpointCoordinator:
         self._port_init_error: Exception | None = None
         try:
             self.port = StructuredModelPort(
-                provider, max_attempts=3, timeout_seconds=model_timeout_seconds
+                provider, max_attempts=MODEL_ATTEMPTS, timeout_seconds=model_timeout_seconds
             )
         except Exception as error:
             self._port_init_error = error
@@ -218,7 +231,7 @@ class CheckpointCoordinator:
     #   control_dir：执行器活动计划记录目录。
     #   replacement：模型输入所绑定的已采纳替换计划；原计划时为 None。
     # 输出：
-    #   published：决定已独占发布时为真；已请求停止时为假。
+    #   published：决定已独占发布时为真；停止或计划已被替换时为假。
     def _publish_decision(
         self,
         path: Path,
@@ -232,7 +245,7 @@ class CheckpointCoordinator:
             if self._stop.is_set():
                 return published
             if load_active_replacement(control_dir) != replacement:
-                raise RuntimeError("checkpoint active revision changed before publication")
+                return published
             # 决定文件属于单个请求。重复协调器不能覆盖已发布的不同决定。
             _atomic_json(path, decision, replace_existing=False)
             self.decisions.append(decision)
@@ -257,6 +270,7 @@ class CheckpointCoordinator:
                 segment_start_index_by_id[segment.segment_id] = next_segment_start_index
                 next_segment_start_index += len(segment.path) - 1
             original_checkpoints = {item.checkpoint_id: item for item in self.contract.checkpoints}
+            known_checkpoints = dict(original_checkpoints)
             processed: set[str] = set()
             while not self._stop.wait(0.05):
                 request_paths = sorted((self.run_dir / "checkpoints").glob("*.request.json"))
@@ -291,6 +305,10 @@ class CheckpointCoordinator:
                     active_track = replacement.track
                     checkpoint = None
                     if replacement.runtime_checkpoints is not None:
+                        known_checkpoints.update({
+                            item.checkpoint_id: item
+                            for item in replacement.runtime_checkpoints.checkpoints
+                        })
                         checkpoint = next(
                             (
                                 item
@@ -299,6 +317,14 @@ class CheckpointCoordinator:
                             ),
                             None,
                         )
+                if (
+                    checkpoint is None
+                    and known_checkpoints.get(checkpoint_id) == request.checkpoint
+                ):
+                    # Requests already superseded by an adopted route remain evidence,
+                    # but must not stop monitoring the current route.
+                    processed.add(checkpoint_id)
+                    continue
                 if checkpoint is None or active_task_graph is None:
                     raise RuntimeError(
                         f"checkpoint has no hash-bound execution artifact: {checkpoint_id}"
@@ -460,7 +486,8 @@ class CheckpointCoordinator:
                         control_dir=control_dir,
                         replacement=replacement,
                     ):
-                        return
+                        processed.add(checkpoint_id)
+                        continue
                     processed.add(checkpoint_id)
                     if not decision.continue_authorized:
                         return
@@ -473,7 +500,8 @@ class CheckpointCoordinator:
                 # Compare full artifacts, since unchanged coordinates do not
                 # imply unchanged task, payload or checkpoint obligations.
                 if load_active_replacement(control_dir) != replacement:
-                    raise RuntimeError("checkpoint active revision changed during model call")
+                    processed.add(checkpoint_id)
+                    continue
                 try:
                     output_guard_receipts = validate_runtime_model_output(
                         self.extensions,
@@ -504,7 +532,8 @@ class CheckpointCoordinator:
                     control_dir=control_dir,
                     replacement=replacement,
                 ):
-                    return
+                    processed.add(checkpoint_id)
+                    continue
                 processed.add(checkpoint_id)
                 if not decision.continue_authorized:
                     return

@@ -94,6 +94,21 @@ def test_model_transport_failure_falls_back_to_deterministic_continuation() -> N
     assert decision.model_call.model == "deterministic-continuity-fallback"
 
 
+@pytest.mark.parametrize(
+    "model_seconds,wait_seconds", [(180, 180), (180, 900), (3600, 180), (.1, .1)]
+)
+def test_checkpoint_wait_covers_provider_recovery(model_seconds, wait_seconds):
+    from dronedream_agent_core.checkpointing import MODEL_ATTEMPTS, checkpoint_wait_policy
+
+    attempt_seconds, executor_seconds = checkpoint_wait_policy(model_seconds, wait_seconds)
+    assert 0 < attempt_seconds <= model_seconds
+    assert wait_seconds <= executor_seconds <= 3600
+    assert attempt_seconds * MODEL_ATTEMPTS + 5 <= executor_seconds + 1e-9
+    if model_seconds == 180 and wait_seconds == 180:
+        assert attempt_seconds == 180
+        assert executor_seconds == 545
+
+
 # 功能：
 #   验证段内部检查点在全局轨迹索引、坐标与任务绑定都有效时可以通过授权条件。
 # 输入：
@@ -191,14 +206,15 @@ def test_stale_model_call_discards_late_checkpoint_decision(tmp_path, monkeypatc
     folder = tmp_path / "checkpoints"
     folder.mkdir()
     (folder / "checkpoint-001.request.json").write_text(request.model_dump_json())
-    coordinator._run()
+    worker = threading.Thread(target=coordinator._run, daemon=True)
+    worker.start()
+    worker.join(0.3)
+    if not stop_requested:
+        assert worker.is_alive()
+    coordinator._stop.set()
+    worker.join(1)
     assert not coordinator.decisions
-    if stop_requested:
-        assert coordinator.error is None and not coordinator.abort_file.exists()
-    else:
-        assert isinstance(coordinator.error, RuntimeError)
-        assert "revision changed" in str(coordinator.error)
-        assert not coordinator.abort_file.exists()
+    assert coordinator.error is None and not coordinator.abort_file.exists()
     assert not list(folder.glob("*.decision.json"))
 
 
@@ -248,6 +264,81 @@ def _ready_coordinator(tmp_path):
     return coordinator
 
 
+@pytest.mark.parametrize("change_at", ["before-request", "model", "guard", "outage"])
+def test_adopted_route_keeps_checkpoint_monitor_running(tmp_path, monkeypatch, change_at):
+    """Discard superseded work, then publish a real decision for the new route."""
+    import threading
+    from types import SimpleNamespace
+
+    from dronedream_agent_core import checkpointing as module
+    from dronedream_agent_core.hashing import sha256_json
+
+    coordinator = _ready_coordinator(tmp_path)
+    folder = tmp_path / "checkpoints"
+    old_request = RuntimeCheckpointRequest.model_validate_json(
+        (folder / "checkpoint-001.request.json").read_text()
+    )
+    checkpoint = old_request.checkpoint.model_copy(update={"checkpoint_id": "checkpoint-629"})
+    replacement = SimpleNamespace(
+        revised_task_graph=coordinator.prepared.task_graph,
+        track=coordinator.prepared.px4_track,
+        route=SimpleNamespace(start_node="office"),
+        runtime_checkpoints=coordinator.contract.model_copy(update={"checkpoints": [checkpoint]}),
+        runtime_actions=SimpleNamespace(task_graph_sha256=sha256_json(coordinator.prepared.task_graph)),
+        deterministic_gates={"adopted": True},
+    )
+    active = [None]
+    monkeypatch.setattr(module, "load_active_replacement", lambda _: active[0])
+    original_call = coordinator.port.call
+    calls = []
+
+    def adopt():
+        active[0] = replacement
+        request = old_request.model_copy(update={"checkpoint": checkpoint})
+        (folder / "checkpoint-629.request.json").write_text(request.model_dump_json())
+
+    def call(**kwargs):
+        calls.append(kwargs["input_artifact"]["checkpoint_request"]["checkpoint"]["checkpoint_id"])
+        if active[0] is None and change_at in {"model", "outage"}:
+            adopt()
+            if change_at == "outage":
+                raise TimeoutError("provider interrupted during route adoption")
+        return original_call(**kwargs)
+
+    original_guard = module.validate_runtime_model_output
+
+    def guard(*args, **kwargs):
+        result = original_guard(*args, **kwargs)
+        if active[0] is None and change_at == "guard":
+            adopt()
+        return result
+
+    original_write = module._atomic_json
+
+    def write(path, payload, **kwargs):
+        original_write(path, payload, **kwargs)
+        coordinator._stop.set()
+
+    coordinator.port.call = call
+    monkeypatch.setattr(module, "validate_runtime_model_output", guard)
+    monkeypatch.setattr(module, "_atomic_json", write)
+    if change_at == "before-request":
+        adopt()
+    worker = threading.Thread(target=coordinator._run, daemon=True)
+    worker.start()
+    worker.join(2)
+    coordinator._stop.set()
+    worker.join(1)
+    assert not worker.is_alive()
+    assert coordinator.error is None
+    assert calls[-1] == "checkpoint-629"
+    assert not (folder / "checkpoint-001.decision.json").exists()
+    assert (folder / "checkpoint-629.decision.json").is_file()
+    assert len(coordinator.decisions) == 1
+    assert coordinator.decisions[0].continue_authorized
+    assert not coordinator.abort_file.exists()
+
+
 # 功能：
 #   在输出校验或回执写入期间停止／换计划，验证模型调用结束后仍会丢弃迟到的决定。
 # 输入：
@@ -262,6 +353,8 @@ def _ready_coordinator(tmp_path):
 def test_checkpoint_rechecks_lifecycle_after_output_guard(
     tmp_path, monkeypatch, phase, stop_requested,
 ):
+    import threading
+
     from dronedream_agent_core import checkpointing as module
 
     coordinator = _ready_coordinator(tmp_path)
@@ -325,15 +418,17 @@ def test_checkpoint_rechecks_lifecycle_after_output_guard(
     monkeypatch.setattr(module, "validate_runtime_model_output", guard)
     monkeypatch.setattr(module, "append_hook_receipts", append)
     monkeypatch.setattr(module, "_atomic_json", bounded_write)
-    coordinator._run()
+    worker = threading.Thread(target=coordinator._run, daemon=True)
+    worker.start()
+    worker.join(0.3)
+    if not stop_requested:
+        assert worker.is_alive()
+    coordinator._stop.set()
+    worker.join(1)
     assert guarded
     assert not coordinator.decisions
     assert not list((tmp_path / "checkpoints").glob("*.decision.json"))
-    if stop_requested:
-        assert coordinator.error is None and not coordinator.abort_file.exists()
-    else:
-        assert "revision changed" in str(coordinator.error)
-        assert not coordinator.abort_file.exists()
+    assert coordinator.error is None and not coordinator.abort_file.exists()
 
 
 # 功能：
