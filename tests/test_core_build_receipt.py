@@ -298,7 +298,17 @@ def test_release_builder_builds_core_wheel_with_linux_runtime_interpreter() -> N
     source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
 
     assert "wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800" in source
-    assert "/venv/bin/python `" in source
+    assert "$RuntimeBuildPython `" in source
     assert "--no-build-isolation --no-deps" in source
     assert "Convert-ToRuntimeBuildPath $runtimeWheels" in source
     assert "& $python -m pip wheel --no-deps --wheel-dir $runtimeWheels $repoRoot" not in source
+
+
+def test_release_builder_proves_packaged_http_server_can_start() -> None:
+    source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
+
+    assert 'import fastapi, multipart, uvicorn, PyInstaller' in source
+    assert "--collect-all uvicorn `" in source
+    assert "Assert-PackagedAgentCoreStarts" in source
+    assert 'GetAsync("http://127.0.0.1:$port/health")' in source
+    assert "$body.status -eq 'ready'" in source

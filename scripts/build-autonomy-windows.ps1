@@ -103,6 +103,14 @@ if (-not $SkipDependencyInstall) {
     if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed" }
 }
 
+# A skipped dependency install is valid only when the existing build environment
+# is complete.  PyInstaller can otherwise produce a successful-looking executable
+# that exits immediately because the dynamically imported HTTP server is absent.
+& $python -c "import fastapi, multipart, uvicorn, PyInstaller"
+if ($LASTEXITCODE -ne 0) {
+    throw "AGENT Core packaging dependencies are incomplete. Install the project dev dependencies before building."
+}
+
 # 提供可选模型时验证全部 ONNX；独立路线控制不要求模型包。
 if ($policyInputCount -eq 3) {
     & $python (Join-Path $repoRoot "scripts\stage_local_policy_runtime.py") `
@@ -282,6 +290,7 @@ New-Item -ItemType Directory -Force -Path $sidecarDist,$sidecarWork,$sidecarSpec
     --clean `
     --onefile `
     --name dronedream-autonomy-core `
+    --collect-all uvicorn `
     --collect-submodules dronedream_agent_plugins `
     --collect-data dronedream_agent_app `
     --distpath $sidecarDist `
@@ -289,6 +298,93 @@ New-Item -ItemType Directory -Force -Path $sidecarDist,$sidecarWork,$sidecarSpec
     --specpath $sidecarSpec `
     (Join-Path $repoRoot "app\backend_entry.py")
 if ($LASTEXITCODE -ne 0) { throw "AGENT Core sidecar build failed" }
+
+# Exercise the packaged executable itself.  Import checks alone cannot prove that
+# PyInstaller included uvicorn's dynamically selected loop and protocol modules.
+function Assert-PackagedAgentCoreStarts([string]$binary, [string]$smokeRoot) {
+    Assert-PlainBuildPath -RepositoryRoot $repoRoot -Path $smokeRoot
+    if (Test-Path -LiteralPath $smokeRoot) {
+        Assert-PlainBuildTree -RepositoryRoot $repoRoot -Path $smokeRoot
+        [System.IO.Directory]::Delete($smokeRoot, $true)
+    }
+    [System.IO.Directory]::CreateDirectory($smokeRoot) | Out-Null
+
+    $listener = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Loopback,
+        0
+    )
+    $listener.Start()
+    $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    $listener.Stop()
+
+    $token = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $stdout = Join-Path $smokeRoot 'stdout.log'
+    $stderr = Join-Path $smokeRoot 'stderr.log'
+    $process = Start-Process -FilePath $binary -ArgumentList @(
+        '--host', '127.0.0.1',
+        '--port', $port,
+        '--token', $token,
+        '--data-root', (Join-Path $smokeRoot 'data')
+    ) -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
+        -WindowStyle Hidden -PassThru
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $healthy = $false
+    try {
+        # This is a bounded build check, not an application startup deadline.
+        # The installed host waits as long as a live Core process needs.
+        for ($attempt = 0; $attempt -lt 1800; $attempt++) {
+            if ($process.HasExited) {
+                $details = if (Test-Path -LiteralPath $stderr) {
+                    (Get-Content -LiteralPath $stderr -Raw).Trim()
+                } else { '' }
+                throw "Packaged AGENT Core exited before health was ready. $details"
+            }
+            try {
+                $response = $client.GetAsync("http://127.0.0.1:$port/health").GetAwaiter().GetResult()
+                if ($response.IsSuccessStatusCode) {
+                    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() |
+                        ConvertFrom-Json
+                    if ($body.status -eq 'ready') {
+                        $healthy = $true
+                        break
+                    }
+                }
+            } catch {
+                # Startup is still in progress; the process-exit check above is decisive.
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $healthy) {
+            throw "Packaged AGENT Core did not expose a ready health endpoint during its build smoke test."
+        }
+
+        $shutdown = [System.Net.Http.HttpRequestMessage]::new(
+            [System.Net.Http.HttpMethod]::Post,
+            "http://127.0.0.1:$port/shutdown"
+        )
+        $shutdown.Headers.Authorization = `
+            [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
+        $response = $client.SendAsync($shutdown).GetAwaiter().GetResult()
+        if ([int]$response.StatusCode -ne 202) {
+            throw "Packaged AGENT Core rejected its authenticated shutdown smoke check."
+        }
+        $null = $process.WaitForExit(10000)
+    } finally {
+        $client.Dispose()
+        $handler.Dispose()
+        if (-not $process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit()
+        }
+        $process.Dispose()
+    }
+}
+
+Assert-PackagedAgentCoreStarts `
+    -binary (Join-Path $sidecarDist "dronedream-autonomy-core.exe") `
+    -smokeRoot (Join-Path $repoRoot "artifacts\sidecar-smoke")
 
 $binaryRoot = Join-Path $repoRoot "app\desktop\src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $binaryRoot | Out-Null
