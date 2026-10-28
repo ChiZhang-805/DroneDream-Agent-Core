@@ -810,7 +810,7 @@ def _parser() -> argparse.ArgumentParser:
     execute.add_argument("--model-timeout-seconds", type=float, default=180.0)
     execute.add_argument("--checkpoint-provider")
     execute.add_argument("--checkpoint-executor", type=Path)
-    execute.add_argument("--checkpoint-timeout-seconds", type=float, default=180.0)
+    execute.add_argument("--checkpoint-timeout-seconds", type=float, default=3600.0)
     execute.add_argument("--runtime-interrupt-provider")
     execute.add_argument("--runtime-hold-timeout-seconds", type=float, default=12.0)
     execute.add_argument("--runtime-decision-timeout-seconds", type=float, default=180.0)

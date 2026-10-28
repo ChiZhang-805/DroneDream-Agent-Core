@@ -95,7 +95,7 @@ def test_model_transport_failure_falls_back_to_deterministic_continuation() -> N
 
 
 @pytest.mark.parametrize(
-    "model_seconds,wait_seconds", [(180, 180), (180, 900), (3600, 180), (.1, .1)]
+    "model_seconds,wait_seconds", [(180, 180), (180, 900), (180, 3600), (3600, 180), (.1, .1)]
 )
 def test_checkpoint_wait_covers_provider_recovery(model_seconds, wait_seconds):
     from dronedream_agent_core.checkpointing import MODEL_ATTEMPTS, checkpoint_wait_policy

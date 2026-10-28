@@ -9203,7 +9203,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-executor", type=Path, required=True)
     parser.add_argument("--checkpoint-contract", type=Path)
     parser.add_argument("--runtime-action-contract", type=Path)
-    parser.add_argument("--checkpoint-timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--checkpoint-timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--runtime-control-dir", type=Path)
     parser.add_argument("--runtime-hold-timeout-seconds", type=float, default=12.0)
     parser.add_argument("--runtime-decision-timeout-seconds", type=float, default=180.0)

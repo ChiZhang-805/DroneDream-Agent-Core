@@ -380,6 +380,9 @@ function Assert-PackagedAgentCoreStarts([string]$binary, [string]$smokeRoot) {
         }
         $process.Dispose()
     }
+    # Successful startup checks leave no temporary databases or process logs.
+    Assert-PlainBuildTree -RepositoryRoot $repoRoot -Path $smokeRoot
+    Remove-Item -LiteralPath $smokeRoot -Recurse -Force
 }
 
 Assert-PackagedAgentCoreStarts `

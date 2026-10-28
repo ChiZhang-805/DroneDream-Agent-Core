@@ -1267,7 +1267,7 @@ def execute_prepared_mission(
     model_timeout_seconds: float = 180.0,
     checkpoint_provider: ProviderName | None = None,
     checkpoint_executor_path: Path | None = None,
-    checkpoint_timeout_seconds: float = 180.0,
+    checkpoint_timeout_seconds: float = 3600.0,
     runtime_interrupt_provider: ProviderName | None = None,
     runtime_hold_timeout_seconds: float = 12.0,
     runtime_decision_timeout_seconds: float = 180.0,

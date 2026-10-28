@@ -3079,7 +3079,7 @@ def run_px4_gazebo_track(
     checkpoint_contract_path: Path | None = None,
     runtime_action_contract_path: Path | None = None,
     runtime_control_dir: Path | None = None,
-    checkpoint_timeout_seconds: float = 180.0,
+    checkpoint_timeout_seconds: float = 3600.0,
     runtime_hold_timeout_seconds: float = 12.0,
     runtime_decision_timeout_seconds: float = 180.0,
     runtime_replan_hold_seconds: float = 60.0,
