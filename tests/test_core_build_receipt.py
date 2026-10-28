@@ -307,6 +307,9 @@ def test_release_builder_builds_core_wheel_with_linux_runtime_interpreter() -> N
 def test_release_builder_proves_packaged_http_server_can_start() -> None:
     source = (SCRIPT.parent / "build-autonomy-windows.ps1").read_text(encoding="utf-8")
 
+    assert source.index('pip install -e "$repoRoot[dev,local-policy]"') < source.index(
+        "generate-autonomy-assets.py"
+    )
     assert 'import fastapi, multipart, uvicorn, PyInstaller' in source
     assert "--collect-all uvicorn `" in source
     assert "Assert-PackagedAgentCoreStarts" in source

@@ -84,15 +84,6 @@ $env:DRONEDREAM_OAUTH_CLIENT_ID_AGENT = $oauthClientId
 # Keep the internal autonomy protocol identifier readable by older build tooling.
 $env:DRONEDREAM_OAUTH_CLIENT_ID_AUTONOMY = $oauthClientId
 
-& $python (Join-Path $repoRoot "scripts\verify_shared_runtime_base.py")
-if ($LASTEXITCODE -ne 0) { throw "Shared Runtime Base source contract failed" }
-
-$brandSource = Join-Path $repoRoot "app\frontend\public\brand"
-& $python (Join-Path $repoRoot "scripts\generate-autonomy-assets.py") `
-    --repo $repoRoot `
-    --source $brandSource
-if ($LASTEXITCODE -ne 0) { throw "Autonomy brand and installer asset generation failed" }
-
 if (-not $SkipDependencyInstall) {
     & $python -m pip install -e "$repoRoot[dev,local-policy]" `
         -c (Join-Path $repoRoot 'runtime\requirements-linux.txt')
@@ -102,6 +93,15 @@ if (-not $SkipDependencyInstall) {
     & npm.cmd --prefix (Join-Path $repoRoot "app\desktop") ci
     if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed" }
 }
+
+& $python (Join-Path $repoRoot "scripts\verify_shared_runtime_base.py")
+if ($LASTEXITCODE -ne 0) { throw "Shared Runtime Base source contract failed" }
+
+$brandSource = Join-Path $repoRoot "app\frontend\public\brand"
+& $python (Join-Path $repoRoot "scripts\generate-autonomy-assets.py") `
+    --repo $repoRoot `
+    --source $brandSource
+if ($LASTEXITCODE -ne 0) { throw "Autonomy brand and installer asset generation failed" }
 
 # A skipped dependency install is valid only when the existing build environment
 # is complete.  PyInstaller can otherwise produce a successful-looking executable
