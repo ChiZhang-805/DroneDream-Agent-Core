@@ -2280,6 +2280,7 @@ async def _wait_checkpoint_stable(
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
     control_maintained_externally: bool = False,
+    measure_hover_drift: bool = False,
 ) -> tuple[Any, float, float]:
     if type(control_maintained_externally) is not bool:
         raise ValueError("external settle control flag must be boolean")
@@ -2318,6 +2319,7 @@ async def _wait_checkpoint_stable(
     latest: Any | None = None
     latest_error = math.inf
     latest_speed = math.inf
+    hover_origin_ned_m: tuple[float, float, float] | None = None
 
     # 功能：
     #   在持续采样中同时检查终止与改令，不因传入一类检查而吞掉另一类信号。
@@ -2372,17 +2374,21 @@ async def _wait_checkpoint_stable(
             sample_observer(latest)
         target_frame_position = (
             target_frame_position_resolver(latest)
-            if target_frame_position_resolver is not None
+            if target_frame_position_resolver is not None and not measure_hover_drift
             else (latest.north_m, latest.east_m, latest.down_m)
         )
         if len(target_frame_position) != 3 or not all(
             math.isfinite(value) for value in target_frame_position
         ):
             raise RuntimeError("settle target-frame position is invalid")
-        latest_error = math.dist(
-            target_frame_position,
-            (setpoint.north_m, setpoint.east_m, setpoint.down_m),
-        )
+        if measure_hover_drift and hover_origin_ned_m is None:
+            # Loaded stability measures drift around the actual hover, not
+            # repeat arrival at the old pickup point. Keep this origin fixed:
+            # following a moving aircraft would conceal genuine drift.
+            hover_origin_ned_m = tuple(target_frame_position)
+        latest_error = math.dist(target_frame_position,
+            hover_origin_ned_m if measure_hover_drift else
+            (setpoint.north_m, setpoint.east_m, setpoint.down_m))
         latest_speed = math.hypot(latest.north_m_s, latest.east_m_s, latest.down_m_s)
         now = time.monotonic()
         # Approach progress is distance reduction. Once the position gate has
@@ -3022,10 +3028,12 @@ async def _invoke_runtime_action_driver(
                 sample_observer=sample_observer,
                 target_frame_position_resolver=target_frame_position_resolver,
                 control_maintained_externally=control_maintained_externally,
+                measure_hover_drift=True,
             )
             return {
                 **state,
                 "operation": operation,
+                "position_reference": "loaded-hover-start-px4-ned",
                 "position_error_m": position_error_m,
                 "speed_mps": speed_mps,
                 "loaded_hover_stable": True,

@@ -656,7 +656,7 @@ def test_loaded_stability_samples_independently_of_outer_control(tmp_path):
         client = base.FakeOffboardClient()
         client.payload_detached = False
         client.position_velocity_samples = [base.PositionVelocityNed(
-            north_m=1.0, east_m=2.0, down_m=-3.0,
+            north_m=1.26, east_m=2.0, down_m=-3.0,
             north_m_s=0.0, east_m_s=0.0, down_m_s=0.0)]
 
         # 功能：
@@ -675,12 +675,28 @@ def test_loaded_stability_samples_independently_of_outer_control(tmp_path):
             base=base, client=client, setpoint=base.Setpoint(1, 2, -3, 0),
             step=_step(operation="postattach-stability"),
             abort_file=tmp_path / "abort.json", rate_hz=100,
-            runtime_interrupt_probe=None, setpoint_refresh=refresh), timeout=.5)
+            runtime_interrupt_probe=None, setpoint_refresh=refresh,
+            target_frame_position_resolver=lambda sample: (101.26, 102, -103)), timeout=.5)
         assert output["loaded_hover_stable"] is True
         assert output["position_error_m"] == 0
+        assert output["position_reference"] == "loaded-hover-start-px4-ned"
         assert cleaned.is_set()
         assert client.setpoints == []
     asyncio.run(scenario())
+
+
+def test_loaded_hover_drift_does_not_follow_a_moving_aircraft():
+    base, executor = _modules()
+    client = base.FakeOffboardClient()
+    client.payload_detached = False
+    client.position_velocity_samples = [base.PositionVelocityNed(
+        north_m=north, east_m=2, down_m=-3,
+        north_m_s=0, east_m_s=0, down_m_s=0) for north in (1.26, 1.6)]
+    with pytest.raises(TimeoutError, match="waypoint stability timeout"):
+        asyncio.run(executor._invoke_runtime_action_driver(
+            base=base, client=client, step=_step(operation="postattach-stability"),
+            setpoint=base.Setpoint(1, 2, -3, 0), rate_hz=100,
+            runtime_interrupt_probe=None, control_maintained_externally=True))
 
 
 # 功能：
