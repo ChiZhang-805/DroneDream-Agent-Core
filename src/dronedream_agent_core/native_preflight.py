@@ -35,6 +35,9 @@ NATIVE_PREFLIGHT_MAXIMUM_AGE_MS = round(
 # even while raw camera and PX4 streams kept advancing. The current frame still
 # keeps the shared sensor lease below, so stale evidence never gains authority.
 PREFLIGHT_STABLE_WINDOW_MS = 50
+# Static geometry preparation is ground work, not an airborne takeoff phase.
+# Large maps on a busy host may need minutes before live sensing can start.
+STATIC_MAP_PREPARATION_TIMEOUT_SECONDS = 1800.0
 _TRANSIENT_PREFLIGHT_SOURCE_ISSUES = frozenset({
     "LOCALIZATION_SAMPLE_EXPIRED",
     "NATIVE_PERCEPTION_DEPTH_SOURCE_INVALID_OR_EXPIRED",
@@ -286,12 +289,14 @@ def _native_worker_alive(pid: int) -> bool:
 
 
 async def wait_for_initialized_native_perception(
-    path: Path, *, initialization_deadline: float,
+    path: Path, *, initialization_deadline: float | None = None,
     initialization_evidence: dict, **health_options,
 ) -> dict:
-    """Spend the remaining startup budget on static preparation, then observe live health."""
+    """Prepare static geometry on its own budget, then observe fresh live health."""
     root = path.parent
     started = time.monotonic()
+    if initialization_deadline is None:
+        initialization_deadline = started + STATIC_MAP_PREPARATION_TIMEOUT_SECONDS
     initialization_evidence.update(status="waiting")
     health_task = None
     health_pid = None

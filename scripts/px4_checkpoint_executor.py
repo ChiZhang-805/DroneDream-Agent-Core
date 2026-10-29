@@ -10947,7 +10947,6 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                 client,
                 wait_for_initialized_native_perception(
                     args.run_dir / "depth-perception-health.json",
-                    initialization_deadline=started + args.takeoff_timeout_seconds,
                     initialization_evidence=timing.setdefault("static_map_initialization", {}),
                     minimum_route_clearance_m=_native_route_preflight_clearance(args),
                     receiver=getattr(args, "_perception_health_receiver", None),

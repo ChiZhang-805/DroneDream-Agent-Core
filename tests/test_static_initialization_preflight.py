@@ -55,14 +55,15 @@ def test_worker_failure_is_published_and_original_error_propagates(tmp_path, mon
     assert "true voxel budget" in state["issue"]
 
 
-def test_slow_static_seed_does_not_consume_live_health_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize("preparation_seconds", [76., 420.])
+def test_slow_static_seed_does_not_consume_live_health_window(tmp_path, monkeypatch, preparation_seconds):
     source = prepare(tmp_path)
     clock, health_reads = [0.], []
     monkeypatch.setattr(native_preflight, "time", SimpleNamespace(
         monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]))
     monkeypatch.setattr(native_preflight, "_native_worker_alive", lambda pid: True)
     async def sleep(delay):
-        clock[0] += 76. if clock[0] == 0 else delay
+        clock[0] += preparation_seconds if clock[0] == 0 else delay
         source["static_initialization"]["state"] = "ready"
         write(tmp_path / "depth-worker-source.json", source)
     monkeypatch.setattr(native_preflight.asyncio, "sleep", sleep)
@@ -76,14 +77,14 @@ def test_slow_static_seed_does_not_consume_live_health_window(tmp_path, monkeypa
                 "updated_at_unix_ms": int((1000 + clock[0]) * 1000)}
     evidence, health_evidence = {}, {}
     result = asyncio.run(native_preflight.wait_for_initialized_native_perception(
-        tmp_path / "depth-perception-health.json", initialization_deadline=180.,
+        tmp_path / "depth-perception-health.json",
         initialization_evidence=evidence, evidence=health_evidence,
         receiver=SimpleNamespace(read_latest=read_health), stable_window_ms=0,
         require_realtime_features=False))
     assert result["ready"] is True
     assert not (tmp_path / "clearance.json").exists()
-    assert evidence["elapsed_seconds"] == 76.
-    assert health_reads and min(health_reads) == 76.
+    assert evidence["elapsed_seconds"] == preparation_seconds
+    assert health_reads and min(health_reads) == preparation_seconds
     assert health_evidence["elapsed_seconds"] < 1.
 
 
