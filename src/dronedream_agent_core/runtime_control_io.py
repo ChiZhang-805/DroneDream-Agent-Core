@@ -20,7 +20,7 @@ from dronedream_plugin_sdk.protocol import (
     encode_json,
 )
 
-from .plugin_files import check_plain_plugin_path, read_plugin_file
+from .plugin_files import check_plain_plugin_path
 from .plugin_values import plugin_json_value
 
 MAX_RUNTIME_REPLACEMENT_BYTES = 16 * 1024 * 1024
@@ -57,7 +57,7 @@ def transfer_runtime_file(source: Path, destination: Path) -> None:
 
 
 # 功能：
-#   有界读取普通文件并核对读取身份，拒绝重复键、非有限值、过深结构和非对象证据。
+#   读取已打开文件的完整快照，允许生产者原子发布下一份状态；拒绝半写内容和非法 JSON。
 # 输入：
 #   path：运行记录的明确本地路径。
 #   maximum_bytes：该种记录的字节上限；大型替换轨迹由宿主单独设置。
@@ -71,7 +71,21 @@ def read_runtime_object(
     node_limit: int = MAX_JSON_NODES,
 ) -> dict:
     encode_json(0, limit=maximum_bytes, node_limit=node_limit)
-    payload = read_plugin_file(path, limit=maximum_bytes)
+    check_plain_plugin_path(path)
+    with path.open("rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > maximum_bytes:
+            raise ValueError("RUNTIME_CONTROL_EVIDENCE_TOO_LARGE_OR_INVALID")
+        payload = source.read(opened.st_size + 1)
+        after = os.fstat(source.fileno())
+    if (
+        len(payload) != opened.st_size
+        or after.st_size != opened.st_size
+        or after.st_mtime_ns != opened.st_mtime_ns
+    ):
+        raise ValueError("RUNTIME_CONTROL_EVIDENCE_CHANGED_DURING_WRITE")
+    # 状态生产者用 replace 发布；目录项可更新，但已打开的旧快照仍然完整有效。
+    check_plain_plugin_path(path)
     value = decode_json(payload, limit=maximum_bytes, node_limit=node_limit)
     if not isinstance(value, dict):
         raise ValueError("RUNTIME_CONTROL_EVIDENCE_NOT_OBJECT")

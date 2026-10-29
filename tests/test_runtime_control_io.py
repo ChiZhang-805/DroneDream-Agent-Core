@@ -1,6 +1,7 @@
 """Local file ownership and bounded values; no vehicle or network execution."""
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,59 @@ from clock_fixtures import isolate_monotonic
 from dronedream_agent_core import runtime_control_io, runtime_interrupt
 from dronedream_agent_core.contracts import Vector3
 from dronedream_agent_core.plugin_values import plugin_json_value
+
+
+# 功能：验证服务原子发布新状态时，消费者仍能读完已打开的完整旧快照。
+# 输入：隔离状态文件和在文件打开后发布新状态的替身。
+# 输出：本次读取旧状态，下次读取新状态；不把正常发布判为启动失败。
+def test_runtime_read_accepts_atomic_status_publication(tmp_path, monkeypatch):
+    path = tmp_path / "status.json"
+    replacement = tmp_path / "replacement.json"
+    path.write_text('{"status":"initializing"}', encoding="utf-8")
+    replacement.write_text('{"status":"ready"}', encoding="utf-8")
+    original_open = Path.open
+
+    def open_then_publish(candidate, *args, **kwargs):
+        stream = original_open(candidate, *args, **kwargs)
+        if candidate == path and replacement.exists():
+            replacement.replace(path)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_then_publish)
+    assert runtime_control_io.read_runtime_object(path) == {"status": "initializing"}
+    assert runtime_control_io.read_runtime_object(path) == {"status": "ready"}
+
+
+# 功能：验证快照读取仍拒绝同一个打开文件被原地改写，不接受混合状态。
+# 输入：读取期间发生增长的状态文件。
+# 输出：明确报告原地写入变化。
+def test_runtime_read_rejects_in_place_write(tmp_path, monkeypatch):
+    path = tmp_path / "status.json"
+    path.write_text('{"status":"ready"}', encoding="utf-8")
+    original_fstat = os.fstat
+    calls = 0
+
+    def change_after_read(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            with path.open("ab") as writer:
+                writer.write(b" ")
+        return original_fstat(fd)
+
+    monkeypatch.setattr(runtime_control_io.os, "fstat", change_after_read)
+    with pytest.raises(ValueError, match="CHANGED_DURING_WRITE"):
+        runtime_control_io.read_runtime_object(path)
+
+
+# 功能：验证运行快照仍使用调用方字节上限。
+# 输入：超出预算的状态文件。
+# 输出：在读取正文之前拒绝超限文件。
+def test_runtime_read_retains_byte_limit(tmp_path):
+    path = tmp_path / "status.json"
+    path.write_text('{"status":"ready"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="TOO_LARGE"):
+        runtime_control_io.read_runtime_object(path, maximum_bytes=8)
 
 
 # 功能：
