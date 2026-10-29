@@ -13,7 +13,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from .control_timing import LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
+from .control_timing import (
+    LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
+)
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,7 @@ def observation_validity(
     ] = "checked-trajectory-slack",
     minimum_braking_deceleration_mps2: float | None = None,
     actuator_response_ms: int = 0,
+    maximum_observation_age_seconds: float = LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
 ) -> ObservationValidity:
     source = source_observed_at_unix_ms
 
@@ -179,7 +183,10 @@ def observation_validity(
         return result("reject", 0, "invalid-motion-or-uncertainty-bound")
     if margin_kind not in ("checked-trajectory-slack", "swept-free-distance"):
         return result("reject", 0, "invalid-margin-kind")
-    hard_ms = math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
+    if (not _nonnegative(maximum_observation_age_seconds)
+            or not 0 < maximum_observation_age_seconds <= LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS):
+        return result("reject", 0, "invalid-observation-age-bound")
+    hard_ms = math.floor(maximum_observation_age_seconds * 1000)
     deadline = min(source + hard_ms, inherited_deadline_unix_ms)
     if deadline <= now_unix_ms:
         return result("context-only", deadline, "source-deadline-exhausted")

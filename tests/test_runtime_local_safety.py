@@ -35,6 +35,31 @@ def _vehicle() -> VehicleAsset:
     return vehicle
 
 
+@pytest.mark.parametrize("state_age_ms,depth_age_ms,can_move", [
+    (30, 380, True), (300, 380, False), (30, 510, False), (-10, 380, False),
+])
+def test_asynchronous_depth_and_vehicle_state_keep_separate_deadlines(
+    state_age_ms, depth_age_ms, can_move,
+):
+    observation = RuntimeLocalSafetyObservation(
+        sequence=1, observed_at_unix_ms=10_000 - depth_age_ms,
+        state_observed_at_unix_ms=10_000 - state_age_ms,
+        source="onboard", stream_healthy=True, stream_age_seconds=depth_age_ms / 1000,
+        localization_covariance_m2=0.001,
+        current_position_m=Vector3(x=0, y=0, z=10),
+        current_velocity_mps=Vector3(x=0, y=0, z=0),
+        target_position_m=Vector3(x=5, y=0, z=10),
+    )
+    command = evaluate_runtime_local_safety(
+        observation=observation, vehicle=_vehicle(), static_primitives=[],
+        required_clearance_m=0.35, generated_at_unix_ms=10_000,
+    )
+    assert (command.decision.action != "hold") is can_move
+    if can_move:
+        assert command.valid_until_unix_ms <= observation.observed_at_unix_ms + 500
+        assert command.valid_until_unix_ms <= observation.state_observed_at_unix_ms + 350
+
+
 # 功能：
 #   横穿动态障碍触发受限动作，指令保留原观测、预测起点和短租期，不把目标当作直接执行许可。
 # 输入：

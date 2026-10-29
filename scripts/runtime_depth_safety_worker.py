@@ -219,10 +219,11 @@ def _expired_model_control_observation(
 #   position、velocity：同一原生状态样本中的当前位置与速度。
 # 输出：
 #   bound：用于本周期安全求解的重新验证观测。
-def _bind_current_control_state(observation, *, position, velocity):
+def _bind_current_control_state(observation, *, position, velocity, observed_at_unix_ms=None):
     bound = RuntimeLocalSafetyObservation.model_validate({
         **observation.model_dump(mode='python'),
-        'current_position_m': position, 'current_velocity_mps': velocity})
+        'current_position_m': position, 'current_velocity_mps': velocity,
+        'state_observed_at_unix_ms': observed_at_unix_ms})
     return bound
 
 
@@ -4185,7 +4186,8 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
             # 投影之后原生状态可能已经更新；无论深度是否过期，都用同一份
             # 当前位姿绑定安全求解和垂直约束。几何时钟、覆盖及健康结论不刷新。
             observation = _bind_current_control_state(
-                observation, position=position, velocity=velocity)
+                observation, position=position, velocity=velocity,
+                observed_at_unix_ms=native_sample.observed_at_unix_ms)
             qualified_route_clearance_m = target_payload.get("qualified_route_clearance_m")
             current_localization_covariance_m2 = None
             relative_perception_uncertainty_margin_m = None

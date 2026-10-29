@@ -504,6 +504,7 @@ class RuntimeLocalSafetyObservation(StrictModel):
     )
     sequence: int = Field(ge=1)
     observed_at_unix_ms: int = Field(ge=0)
+    state_observed_at_unix_ms: int | None = Field(default=None, ge=0, strict=True)
     source: Literal["simulation-ground-truth", "onboard", "external"]
     stream_healthy: bool
     stream_age_seconds: float = Field(ge=0.0)
@@ -529,6 +530,8 @@ class RuntimeLocalSafetyObservation(StrictModel):
         payload = handler(self)
         if self.motion_context_sha256 is None:
             payload.pop("motion_context_sha256", None)
+        if self.state_observed_at_unix_ms is None:
+            payload.pop("state_observed_at_unix_ms", None)
         return payload
 
 

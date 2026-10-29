@@ -416,10 +416,10 @@ def test_current_control_pose_does_not_refresh_depth(healthy):
         current_velocity_mps=Vector3(x=0, y=0, z=0), target_position_m=Vector3(x=2, y=0, z=1))
     position, velocity = Vector3(x=0.1, y=0, z=1), Vector3(x=0.2, y=0, z=0)
     result = depth_worker._bind_current_control_state(
-        observation, position=position, velocity=velocity)
+        observation, position=position, velocity=velocity, observed_at_unix_ms=1180)
     expected = observation.model_dump()
     expected.update(current_position_m=position.model_dump(),
-                    current_velocity_mps=velocity.model_dump())
+                    current_velocity_mps=velocity.model_dump(), state_observed_at_unix_ms=1180)
     assert result.model_dump() == expected
     assert observation.current_position_m.x == 0
 

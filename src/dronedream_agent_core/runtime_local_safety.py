@@ -18,6 +18,7 @@ from .contracts import (
 )
 from .control_timing import (
     LOCAL_DISPATCH_RESERVE_MS,
+    LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
     LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS,
 )
 from .control_uncertainty import localization_uncertainty_margin_m
@@ -459,6 +460,16 @@ def evaluate_runtime_local_safety(
     inherited_deadline = (requested_control_intent.valid_until_unix_ms
                           if requested_control_intent is not None
                           else generated_at_unix_ms + validity_milliseconds)
+    # Depth and current vehicle state have different source clocks. Preserve
+    # both deadlines: rebinding fresh PX4 state must neither renew old depth
+    # nor shorten healthy asynchronous depth to the state freshness limit.
+    observation_age_limit = LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS
+    state_ms = observation.state_observed_at_unix_ms
+    if observation.source == "onboard" and state_ms is not None:
+        observation_age_limit = LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS
+        state_deadline = (state_ms + math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000)
+                          if state_ms <= generated_at_unix_ms else 0)
+        inherited_deadline = min(inherited_deadline, state_deadline)
 
     # 功能：
     #   用同一原始时钟和不确定性检查每个候选，避免几何可行但根本没有发令时间的候选获胜。
@@ -476,6 +487,7 @@ def evaluate_runtime_local_safety(
             acceleration_bound_mps2=vehicle.max_acceleration_mps2,
             uncertainty_margin_m=uncertainty_margin_m,
             downstream_reserve_ms=LOCAL_DISPATCH_RESERVE_MS,
+            maximum_observation_age_seconds=observation_age_limit,
             angular_speed_bound_rad_s=abs(math.radians(yaw)))
         return validity
 
@@ -512,7 +524,7 @@ def evaluate_runtime_local_safety(
     # of its speed or clearance. Searching another hundred paths cannot recover
     # time that has already expired and only delays the next camera frame.
     common_deadline_ms = min(
-        source_ms + math.floor(LOCAL_SENSOR_OBSERVATION_MAXIMUM_AGE_SECONDS * 1000),
+        source_ms + math.floor(observation_age_limit * 1000),
         inherited_deadline,
     )
     common_budget_exhausted = (

@@ -287,7 +287,6 @@ $sidecarSpec = Join-Path $repoRoot "artifacts\pyinstaller-spec"
 New-Item -ItemType Directory -Force -Path $sidecarDist,$sidecarWork,$sidecarSpec | Out-Null
 & $python -m PyInstaller `
     --noconfirm `
-    --clean `
     --onefile `
     --name dronedream-autonomy-core `
     --collect-all uvicorn `
@@ -396,7 +395,6 @@ Copy-Item -LiteralPath (Join-Path $sidecarDist "dronedream-autonomy-core.exe") -
 
 & $python -m PyInstaller `
     --noconfirm `
-    --clean `
     --onefile `
     --name dronedream-live `
     --collect-data dronedream_agent_app `
