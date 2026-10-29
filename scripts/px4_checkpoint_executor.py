@@ -2244,7 +2244,7 @@ async def _run_operator_takeover(
 
 # 功能：
 #   1. 维持控制并等待连续满足精确位置和速度门槛，以实测收敛延长停滞窗口。
-#   2. 总恢复上限不随进展延长；局部模型目标不替代最终航点稳定判定。
+#   2. 普通航点持续恢复；动作检查保留期限，局部模型目标不替代最终稳定判定。
 # 输入：
 #   base：基础飞控和异步控制维持工具。
 #   client：实际遥测客户端。
@@ -2261,6 +2261,7 @@ async def _run_operator_takeover(
 #   sample_observer：实际遥测发布回调。
 #   target_frame_position_resolver：将实测位置换算到目标坐标的回调。
 #   control_maintained_externally：动作保护协程已独占控制时，仅采样与判稳，禁止重复发送位置控制。
+#   continue_navigation_recovery：普通导航点到期后继续纠偏，仍检查安全、用户改令和稳定门槛。
 # 输出：
 #   stable_result：通过连续稳定检查的样本、位置误差和速度三元组。
 async def _wait_checkpoint_stable(
@@ -2280,6 +2281,7 @@ async def _wait_checkpoint_stable(
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
     control_maintained_externally: bool = False,
+    continue_navigation_recovery: bool = False,
 ) -> tuple[Any, float, float]:
     if type(control_maintained_externally) is not bool:
         raise ValueError("external settle control flag must be boolean")
@@ -2346,8 +2348,19 @@ async def _wait_checkpoint_stable(
         hold_setpoint = await setpoint_refresh(planned_setpoint)
         return hold_setpoint
 
-    while time.monotonic() < deadline:
+    while continue_navigation_recovery or time.monotonic() < deadline:
         check_settle_interruption()
+        if continue_navigation_recovery and time.monotonic() >= deadline:
+            # A navigation waypoint is not a payload action deadline. Keep
+            # correcting the same target under live safety arbitration instead
+            # of landing solely because its small oscillation outlasted a window.
+            now = time.monotonic()
+            deadline = now + timeout_seconds
+            absolute_deadline = now + timeout_seconds * absolute_timeout_factor
+            qualified_window_deadline = absolute_deadline + stable_window_seconds + 1.0 / rate_hz
+            best_position_error_m = math.inf
+            best_hold_error_m = math.inf
+            stable_since = None
         if control_maintained_externally:
             # 动作外层的保护协程持续执行安全仲裁；稳定性测量不再竞争同一刷新锁，
             # 也不因省略刷新而发送未经仲裁的固定位置。外层仍负责异常及期限。
@@ -10112,6 +10125,7 @@ async def _fly_runtime_replacement(
                                 setpoint=setpoint,
                                 rate_hz=args.setpoint_rate_hz,
                                 timeout_seconds=(artifact.track.waypoint_settle_timeout_seconds),
+                                continue_navigation_recovery=True,
                                 # Replacement waypoints use the same model/depth-authoritative
                                 # precision controller as the original track.  Retain the
                                 # ordinary no-progress deadline, but permit a longer finite
@@ -11455,6 +11469,7 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
                             # ordinary window and every position/speed gate remains
                             # unchanged; this only extends the immutable hard ceiling.
                             absolute_timeout_factor=8.0,
+                            continue_navigation_recovery=True,
                             stable_window_seconds=reference.waypoint_stable_window_seconds,
                             position_tolerance_m=(
                                 _payload_aware_waypoint_position_tolerance_m(

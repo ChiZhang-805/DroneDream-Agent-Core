@@ -1351,6 +1351,42 @@ def test_waypoint_settle_finishes_braking_after_reaching_position_gate(
     assert error <= 0.2 and speed <= 0.15
 
 
+@pytest.mark.parametrize("operator_stops", [False, True])
+def test_navigation_settle_continues_after_window_without_accepting_oscillation(
+    monkeypatch, operator_stops: bool,
+) -> None:
+    base, executor = _modules()
+    clock = [0.0]
+    isolate_monotonic(monkeypatch, executor, lambda: clock[0])
+
+    class OscillatingClient(base.FakeOffboardClient):
+        async def sample_position_velocity_ned(self, timeout_seconds: float):
+            clock[0] += 1.0
+            speed = 0.242 if clock[0] < 125.0 else 0.10
+            return base.PositionVelocityNed(0.242, 0.0, 0.0, speed, 0.0, 0.0)
+
+    def interruption() -> None:
+        if operator_stops and clock[0] >= 110.0:
+            raise RuntimeError("operator stop")
+
+    settle = executor._wait_checkpoint_stable(
+        base=base, client=OscillatingClient(),
+        setpoint=base.Setpoint(0.0, 0.0, 0.0, 0.0), rate_hz=200.0,
+        timeout_seconds=12.0, absolute_timeout_factor=8.0,
+        stable_window_seconds=0.5, position_tolerance_m=0.25,
+        speed_tolerance_mps=0.15, continue_navigation_recovery=True,
+        abort_check=interruption,
+    )
+    if operator_stops:
+        with pytest.raises(RuntimeError, match="operator stop"):
+            asyncio.run(settle)
+        assert clock[0] == 110.0
+    else:
+        _, error, speed = asyncio.run(settle)
+        assert clock[0] >= 126.0
+        assert error <= 0.25 and speed <= 0.15
+
+
 def test_waypoint_settle_progress_never_moves_absolute_deadline() -> None:
     base, executor = _modules()
 
