@@ -351,11 +351,19 @@ def _write_current_source_package(
         metadata_path = f"{prefix}/vehicle.json"
         vehicle_metadata = json.loads(payloads[metadata_path])
         summary = json.loads(payloads[f"{prefix}/gazebo/summary.json"])
+        profile = str(summary.get("px4_sitl_model") or "x500")
+        from dronedream_agent_app.vehicle_resource_catalog import vehicle_resource_catalog
+        catalog = next((item for item in vehicle_resource_catalog()["resources"]
+                        if item["source"].get("px4_sitl_model") == (
+                            "x500_depth" if profile == "x500" else profile)), None)
+        if catalog is None:
+            raise ValueError("DEFAULT_VEHICLE_PX4_PROFILE_INVALID")
         vehicle = VehicleSummary(
-            vehicle_class="multirotor",
-            actuator_count=4,
-            rotor_count=4,
-            autopilot_profile="x500",
+            vehicle_class=("multirotor" if catalog["vehicle_class"] == "multicopter"
+                           else str(catalog["vehicle_class"])),
+            actuator_count=4 if profile == "x500" else None,
+            rotor_count=4 if profile == "x500" else None,
+            autopilot_profile=profile,
             payload_limit_kg=float(vehicle_metadata["max_pickup_payload_kg"]),
         )
         sensors = [
@@ -377,12 +385,12 @@ def _write_current_source_package(
             mass_complete=True,
             inertia_complete=True,
         )
-        if summary.get("source_model") != "model://x500_depth":
+        if not str(summary.get("source_model", "")).startswith("model://"):
             raise ValueError("DEFAULT_VEHICLE_PX4_PROFILE_INVALID")
         capabilities = [
             "gazebo",
             "content-addressed",
-            "px4.sitl-model=x500",
+            f"px4.sitl-model={profile}",
             "perception.forward-depth",
         ]
 
@@ -829,14 +837,17 @@ def _build_map_bundle(
     graph_source: Path,
     destination: Path,
     map_source: Path,
+    *,
+    asset_id: str = MAP_ASSET_ID,
+    name: str = "Kumpula Campus",
 ) -> None:
     _copy_tree(map_source, destination / "gazebo")
     if not (run_dir / 'asset-qualification-inputs.json').is_file():
         _write_current_map_contract(destination / "gazebo" / "semantic.json")
     graph = _json(graph_source)
     evidence_sha256 = _sha256(run_dir / "mission_evidence.json")
-    graph["asset_id"] = MAP_ASSET_ID
-    graph["name"] = "Kumpula Campus"
+    graph["asset_id"] = asset_id
+    graph["name"] = name
     # An acceptance flight is evidence about that run, never the source of a
     # campus road network. Keep every authored junction and surface constraint.
     _validate_ground_route_graph(
@@ -855,8 +866,8 @@ def _build_map_bundle(
         {
             "schema_version": "dronedream.asset-bundle.v1",
             "kind": "map",
-            "asset_id": MAP_ASSET_ID,
-            "name": "Kumpula Campus",
+            "asset_id": asset_id,
+            "name": name,
             "qualification_status": "qualified",
             "source": "dronedream-bundled",
             "coordinate_frame": "map_enu",
@@ -909,9 +920,12 @@ def _build_vehicle_bundle(
     vehicle_summary = _artifact_identity(_json(vehicle_source / "summary.json"))
     vehicle_sdf = (vehicle_source / "model.sdf").read_text(encoding="utf-8")
     perception = vehicle_summary.get("perception")
+    source_model = vehicle_summary.get("source_model")
     if (
-        vehicle_summary.get("source_model") != "model://x500_depth"
-        or "model://x500_depth" not in vehicle_sdf
+        not isinstance(source_model, str)
+        or not source_model.startswith("model://")
+        or source_model not in vehicle_sdf
+        or (source_model != "model://x500_depth" and "model://OakD-Lite" not in vehicle_sdf)
     ):
         raise ValueError("DEFAULT_VEHICLE_DEPTH_RUNTIME_MISSING")
     if perception is None:
@@ -926,7 +940,7 @@ def _build_vehicle_bundle(
     if (
         not isinstance(perception, dict)
         or perception.get("sensor_id") != "oakd-lite-depth"
-        or perception.get("source_model") != "model://x500_depth"
+        or perception.get("source_model") != source_model
     ):
         raise ValueError("DEFAULT_VEHICLE_PERCEPTION_CONTRACT_INVALID")
     vehicle_summary["perception"] = perception
@@ -935,7 +949,9 @@ def _build_vehicle_bundle(
         raise ValueError("DEFAULT_VEHICLE_PAYLOAD_CONTRACT_MISSING")
     dry_mass_kg = float(vehicle_summary["dry_mass_kg"])
     qualified_payload_kg = float(mission_payload["mass_kg"])
-    design_payload_limit_kg = float(vehicle_summary["maximum_qualified_payload_kg"])
+    design_payload_limit_kg = float(vehicle_summary.get(
+        "maximum_qualified_payload_kg", qualified_payload_kg
+    ))
     loaded_thrust_to_weight = float(mission_payload["loaded_thrust_to_weight"])
     if qualified_payload_kg <= 0.0 or qualified_payload_kg > design_payload_limit_kg:
         raise ValueError("DEFAULT_VEHICLE_PAYLOAD_QUALIFICATION_INVALID")
@@ -978,6 +994,14 @@ def _build_vehicle_bundle(
             "oakd-lite-depth",
         ],
     }
+    metadata_path = vehicle_source / "vehicle.json"
+    if metadata_path.is_file():
+        from dronedream_agent_core.contracts import VehicleAsset
+        source_vehicle = VehicleAsset.model_validate(_json(metadata_path))
+        vehicle.update(source_vehicle.model_dump(mode="json"))
+        vehicle.update(qualified_range_m=qualified_range_m,
+                       qualified_cruise_max_mps=qualified_speed_mps,
+                       max_pickup_payload_kg=qualified_payload_kg)
     _write_json(destination / "vehicle.json", vehicle)
     qualification = _qualification_receipt(run_dir)
     _write_json(destination / "qualification" / "receipt.json", qualification)
@@ -987,8 +1011,8 @@ def _build_vehicle_bundle(
         {
             "schema_version": "dronedream.asset-bundle.v1",
             "kind": "vehicle",
-            "asset_id": VEHICLE_ASSET_ID,
-            "name": "My Drone",
+            "asset_id": vehicle["asset_id"],
+            "name": vehicle["name"],
             "qualification_status": "qualified",
             "source": "dronedream-bundled",
             "files": {
@@ -1000,7 +1024,7 @@ def _build_vehicle_bundle(
             },
             "artifact_identity": vehicle_summary,
             "physical_material_contract": {
-                "source": "PX4 x500 pinned SDF",
+                "source": f"PX4 {source_model} pinned SDF",
                 "mass_and_inertia_from_source_model": True,
                 "rotor_dynamics_from_source_model": True,
                 "qualified_range_m": qualified_range_m,
@@ -1111,25 +1135,29 @@ def _build_qualified_pair(
     run_dir: Path,
     environment_versions: dict[str, str],
     supersedes_index: Path | None,
+    map_resource_id: str = "dronedream-school-map",
+    vehicle_resource_id: str = "px4-x500-depth",
 ) -> dict[str, Any]:
     qualified_at = datetime.fromtimestamp(
         (run_dir / "mission_evidence.json").stat().st_mtime,
         tz=UTC,
     )
+    map_manifest = _json(map_root / "manifest.json")
+    vehicle_manifest = _json(vehicle_root / "manifest.json")
     source_map = _write_current_source_package(
         source_root=map_root,
         destination=temporary / "school-map-source.ddpkg",
         kind="map",
-        asset_id=MAP_ASSET_ID,
-        name="Kumpula Campus",
+        asset_id=map_manifest["asset_id"],
+        name=map_manifest["name"],
         created_at=qualified_at,
     )
     source_vehicle = _write_current_source_package(
         source_root=vehicle_root,
         destination=temporary / "my-drone-source.ddpkg",
         kind="vehicle",
-        asset_id=VEHICLE_ASSET_ID,
-        name="My Drone",
+        asset_id=vehicle_manifest["asset_id"],
+        name=vehicle_manifest["name"],
         created_at=qualified_at,
     )
     qualification_root = temporary / "qualification"
@@ -1209,7 +1237,8 @@ def _build_qualified_pair(
     ).encode()
     return {
         "schema_version": "dronedream.bundled-qualified-pair.v1",
-        "resource_id": "dronedream-school-map",
+        "resource_id": map_resource_id,
+        "vehicle_resource_id": vehicle_resource_id,
         "qualification_id": receipt.qualification_id,
         "receipt_sha256": hashlib.sha256(receipt_payload).hexdigest(),
         "packages": packages,
@@ -1280,7 +1309,14 @@ def main() -> None:
     parser.add_argument("--ros-distribution", required=True)
     parser.add_argument("--px4-commit", required=True)
     parser.add_argument("--runtime-manifest-sha256", required=True)
+    parser.add_argument("--map-resource-id", default="dronedream-school-map")
+    parser.add_argument("--vehicle-resource-id", default="px4-x500-depth")
     args = parser.parse_args()
+    from dronedream_agent_app.map_resource_catalog import map_resource_catalog
+    map_resource = next(item for item in map_resource_catalog()["resources"]
+                        if item["resource_id"] == args.map_resource_id)
+    map_asset_id = (MAP_ASSET_ID if args.map_resource_id == "dronedream-school-map"
+                    else map_resource["analysis"]["asset_id"])
     run_dir = args.run_dir.resolve()
     output = args.output.resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
@@ -1311,7 +1347,8 @@ def main() -> None:
                             else temporary / "current-vehicle"),
             controller_params=controller_params,
         )
-        _build_map_bundle(run_dir, graph, map_root, map_source)
+        _build_map_bundle(run_dir, graph, map_root, map_source,
+                          asset_id=map_asset_id, name=map_resource["display_name"]["en-US"])
         _build_vehicle_bundle(
             run_dir,
             vehicle_root,
@@ -1339,6 +1376,8 @@ def main() -> None:
             supersedes_index=(
                 args.supersedes_index.resolve() if args.supersedes_index is not None else None
             ),
+            map_resource_id=args.map_resource_id,
+            vehicle_resource_id=args.vehicle_resource_id,
         )
         current_pair = {
             key: value

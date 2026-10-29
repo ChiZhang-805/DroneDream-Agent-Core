@@ -2385,11 +2385,13 @@ async def _wait_checkpoint_stable(
         )
         latest_speed = math.hypot(latest.north_m_s, latest.east_m_s, latest.down_m_s)
         now = time.monotonic()
-        # ``timeout_seconds`` is a no-progress deadline, not a punishment for
-        # a deliberately slow vertical settle.  Only a material decrease in
-        # measured PX4 distance to the exact signed waypoint refreshes it.
-        # The absolute deadline never moves, so noise, circling and asymptotic
-        # drift cannot keep the vehicle in Offboard indefinitely.
+        # Approach progress is distance reduction. Once the position gate has
+        # been reached, settling is a different phase: braking and correcting
+        # small oscillations need not beat the closest previous sample.
+        # Give that phase its full bounded control window while continuing to
+        # require the original position, speed and continuous-duration gates.
+        if latest_error <= position_tolerance_m:
+            deadline = max(deadline, absolute_deadline)
         if latest_error <= best_position_error_m - progress_epsilon_m:
             best_position_error_m = latest_error
             deadline = min(absolute_deadline, max(deadline, now + timeout_seconds))

@@ -48,6 +48,7 @@ from dronedream_agent_core.gazebo_adapter import (
     _progress_extension_budget_seconds,
     _publish_native_terminal_lifecycle,
     _px4_sitl_actuator_output_absolute_maximum,
+    _px4_sitl_actuator_output_channel_maxima,
     _recent_progress_extension_allowed,
     _reference_route_deviation_enforced,
     _require_local_navigation_sensor_runtime,
@@ -281,6 +282,19 @@ def test_px4_sitl_actuator_output_scale_rejects_mixed_propulsion(
     )
 
     assert _px4_sitl_actuator_output_absolute_maximum(tmp_path, "vtol") is None
+
+
+def test_mixed_propulsion_scales_follow_channel_numbers_not_xml_order(tmp_path: Path) -> None:
+    model_root = tmp_path / "Tools/simulation/gz/models/standard_vtol"
+    model_root.mkdir(parents=True)
+    (model_root / "model.sdf").write_text(
+        '<sdf><model><plugin><motorNumber>4</motorNumber><maxRotVelocity>3500</maxRotVelocity>'
+        '</plugin><plugin><motorNumber>0</motorNumber><maxRotVelocity>1500</maxRotVelocity>'
+        '</plugin></model></sdf>', encoding="utf-8",
+    )
+    assert _px4_sitl_actuator_output_channel_maxima(tmp_path, "standard_vtol") == {
+        0: 1500.0, 4: 3500.0,
+    }
 
 
 def test_heading_executor_arguments_are_explicit_and_bounded() -> None:

@@ -306,7 +306,15 @@ def test_dynamics_collectors_publish_real_sensor_shapes_without_resubscribing() 
     asyncio.run(scenario())
 
 
-def test_raw_sitl_actuator_outputs_use_explicit_vehicle_scale(monkeypatch) -> None:
+@pytest.mark.parametrize("channel_maxima, raw, normalized, ready", [
+    ({}, [800.0, 750.0, 0.0, 0.0], [0.8, 0.75, 0.0, 0.0], True),
+    ({0: 1500.0, 1: 3500.0}, [750.0, 1750.0, 0.0, 0.0], [0.5, 0.5, 0.0, 0.0], True),
+    ({0: 1500.0, 1: 3500.0}, [750.0, 1750.0, 12.0, 0.0], [0.5, 0.5, 12.0, 0.0], False),
+    ({0: 1500.0, 1: 3500.0}, [1600.0, 1750.0, 0.0, 0.0], [1600.0 / 1500, 0.5, 0.0, 0.0], False),
+])
+def test_raw_sitl_actuator_outputs_use_explicit_vehicle_scale(
+    monkeypatch, channel_maxima, raw, normalized, ready,
+) -> None:
     base = _base_module()
     monkeypatch.setenv(base.ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM_ENV, "1000")
 
@@ -317,7 +325,7 @@ def test_raw_sitl_actuator_outputs_use_explicit_vehicle_scale(monkeypatch) -> No
             async def actuator_output_status(self):
                 yield SimpleNamespace(
                     active=4,
-                    actuator=[800.0, 750.0, 0.0, 0.0],
+                    actuator=raw,
                 )
                 await release.wait()
 
@@ -327,6 +335,7 @@ def test_raw_sitl_actuator_outputs_use_explicit_vehicle_scale(monkeypatch) -> No
         client._dynamics_errors = {}
         client._dynamics_restart_counts = {}
         client._actuator_output_absolute_maximum = 1000.0
+        client._actuator_output_channel_maxima = channel_maxima
         task = asyncio.create_task(client._collect_actuator_output_status())
         try:
             for _ in range(100):
@@ -334,9 +343,12 @@ def test_raw_sitl_actuator_outputs_use_explicit_vehicle_scale(monkeypatch) -> No
                     break
                 await asyncio.sleep(0.001)
             sample = client._dynamics_samples["actuator_output"][0]
-            assert sample["raw_actuator"] == [800.0, 750.0, 0.0, 0.0]
-            assert sample["actuator"] == [0.8, 0.75, 0.0, 0.0]
-            assert sample["normalization_ready"] is True
+            assert sample["raw_actuator"] == raw
+            assert sample["actuator"] == normalized
+            assert sample["normalization_ready"] is ready
+            assert sample["normalization_channel_maxima"] == {
+                str(index): maximum for index, maximum in channel_maxima.items()
+            }
             assert sample["normalization_absolute_maximum"] == 1000.0
         finally:
             task.cancel()

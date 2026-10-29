@@ -631,19 +631,21 @@ class AssetImportService:
             ):
                 raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
             qualification_ids: list[str] = []
-            resource_ids: list[str] = []
+            resource_pairs: list[tuple[str, str]] = []
             for pair in qualified_pairs:
                 if not isinstance(pair, dict):
                     raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
                 qualification_id = pair.get("qualification_id")
                 resource_id = pair.get("resource_id")
-                if not isinstance(qualification_id, str) or not isinstance(resource_id, str):
+                vehicle_resource_id = pair.get("vehicle_resource_id", "px4-x500-depth")
+                if (not isinstance(qualification_id, str) or not isinstance(resource_id, str)
+                        or not isinstance(vehicle_resource_id, str) or not vehicle_resource_id):
                     raise AssetImportError("BUNDLED_QUALIFIED_PAIR_INVALID")
                 qualification_ids.append(qualification_id)
-                resource_ids.append(resource_id)
+                resource_pairs.append((resource_id, vehicle_resource_id))
             if (
                 len(qualification_ids) != len(set(qualification_ids))
-                or len(resource_ids) != len(set(resource_ids))
+                or len(resource_pairs) != len(set(resource_pairs))
                 or default_qualification_id not in qualification_ids
                 or not any(pair == current_pair for pair in qualified_pairs)
             ):

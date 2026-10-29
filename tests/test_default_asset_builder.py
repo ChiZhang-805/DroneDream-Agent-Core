@@ -36,6 +36,45 @@ def test_qualified_range_comes_from_the_exact_verified_track(tmp_path: Path) -> 
     assert builder._verified_track_distance_m(tmp_path) == pytest.approx(17.0)
 
 
+def test_vtol_bundle_preserves_measured_vehicle_instead_of_x500_defaults(tmp_path, monkeypatch):
+    builder = _load_builder()
+    source, output, run = (tmp_path / name for name in ("source", "output", "run"))
+    source.mkdir()
+    run.mkdir()
+    (source / "model.sdf").write_text(
+        '<sdf><model><include><uri>model://standard_vtol</uri></include>'
+        '<include><uri>model://OakD-Lite</uri></include></model></sdf>', encoding="utf-8")
+    (source / "summary.json").write_text(json.dumps({
+        "source_model": "model://standard_vtol", "px4_sitl_model": "standard_vtol",
+        "perception": {"sensor_id": "oakd-lite-depth"}, "dry_mass_kg": 5.086,
+        "mission_payload": {"mass_kg": 0.04, "loaded_thrust_to_weight": 3.58},
+    }), encoding="utf-8")
+    metadata = {
+        "schema_version": "dronedream.vehicle.v1", "asset_id": "standard-vtol",
+        "name": "Standard VTOL", "coordinate_frame": "base_link_frd",
+        "dry_mass_kg": 5.086, "max_takeoff_mass_kg": 5.126,
+        "body_radius_m": 1.2, "body_height_m": 0.249,
+        "collision_center_offset_model_m": {"x": 0., "y": 0., "z": 0.2755},
+        "max_speed_mps": 6., "max_acceleration_mps2": 0.8,
+        "qualified_range_m": 486., "reserve_battery_percent": 30.,
+        "max_pickup_payload_kg": 0.04, "sensors": ["imu", "oakd-lite-depth"],
+    }
+    (source / "vehicle.json").write_text(json.dumps(metadata), encoding="utf-8")
+    controller = source / "controller_params.json"
+    controller.write_text('{"vel_limit":6}', encoding="utf-8")
+    monkeypatch.setattr(builder, "_verified_track_distance_m", lambda *_: 486.89)
+    monkeypatch.setattr(builder, "_verified_track_speed_limit_mps", lambda *_: 4.8)
+    monkeypatch.setattr(builder, "_qualification_receipt", lambda *_: {})
+    monkeypatch.setattr(builder, "_copy_qualification_evidence", lambda *_: None)
+    builder._build_vehicle_bundle(run, output, source, controller)
+    result = json.loads((output / "vehicle.json").read_text())
+    assert result == {**metadata, "qualified_range_m": 486.89, "qualified_cruise_max_mps": 4.8}
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["asset_id"] == "standard-vtol"
+    assert manifest["name"] == "Standard VTOL"
+    assert manifest["physical_material_contract"]["perception_sensor"]["source_model"] == "model://standard_vtol"
+
+
 def test_qualified_range_rejects_non_finite_track_points(tmp_path: Path) -> None:
     builder = _load_builder()
     (tmp_path / "reference_track.json").write_text(

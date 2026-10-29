@@ -2649,7 +2649,34 @@ def _prepare_rootfs(px4_root: Path, run_dir: Path) -> tuple[Path, Path]:
 # 输入：
 #   px4_root：PX4 安装位置；px4_sitl_model：所选仿真机型。
 # 输出：
-#   reference：一致的正量程；缺失、非法或多量程混用时为 None。
+#   maxima：按电机控制通道对应的转速量程，支持混合动力机型。
+def _px4_sitl_actuator_output_channel_maxima(
+    px4_root: Path,
+    px4_sitl_model: str,
+) -> dict[int, float]:
+    """Bind each Gazebo motor command channel to its own physical rotor limit."""
+    model_sdf = px4_root / "Tools" / "simulation" / "gz" / "models" / px4_sitl_model / "model.sdf"
+    if not model_sdf.is_file():
+        return {}
+    root = ElementTree.parse(model_sdf).getroot()
+    maxima: dict[int, float] = {}
+    for plugin in root.iter("plugin"):
+        maximum = plugin.findtext("maxRotVelocity")
+        channel = plugin.findtext("motorNumber")
+        if maximum is None or channel is None:
+            continue
+        index, value = int(channel), float(maximum)
+        if not 0 <= index < 32 or not math.isfinite(value) or value <= 0:
+            raise ValueError("PX4_MOTOR_CHANNEL_SCALE_INVALID")
+        if index in maxima:
+            raise ValueError("PX4_MOTOR_CHANNEL_SCALE_DUPLICATE")
+        maxima[index] = value
+    return maxima
+
+
+# 功能：读取旧式统一电机量程；不同转子量程不得合并成同一个数值。
+# 输入：px4_root、px4_sitl_model：实际 PX4 模型位置和名称。
+# 输出：一致的正量程；缺失、非法或多量程混用时为 None。
 def _px4_sitl_actuator_output_absolute_maximum(
     px4_root: Path,
     px4_sitl_model: str,
@@ -3915,6 +3942,12 @@ def run_px4_gazebo_track(
         server_config=Path(env["GZ_SIM_SERVER_CONFIG_PATH"]),
         output=run_dir / "runtime-world",
     )
+    actuator_output_channel_maxima = _px4_sitl_actuator_output_channel_maxima(
+        px4_root,
+        px4_sitl_model,
+    )
+    if actuator_output_channel_maxima:
+        env["PX4_ACTUATOR_OUTPUT_CHANNEL_MAXIMA"] = json.dumps(actuator_output_channel_maxima)
     actuator_output_absolute_maximum = _px4_sitl_actuator_output_absolute_maximum(
         px4_root,
         px4_sitl_model,

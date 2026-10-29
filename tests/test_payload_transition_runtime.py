@@ -1317,6 +1317,40 @@ def test_waypoint_settle_precision_hard_window_keeps_strict_gates_while_convergi
 #   无。
 # 输出：
 #   None：不返回业务数据。
+@pytest.mark.parametrize("braking_finishes", [True, False])
+def test_waypoint_settle_finishes_braking_after_reaching_position_gate(
+    monkeypatch, braking_finishes: bool,
+) -> None:
+    base, executor = _modules()
+    clock = [0.0]
+    isolate_monotonic(monkeypatch, executor, lambda: clock[0])
+
+    class BrakingClient(base.FakeOffboardClient):
+        async def sample_position_velocity_ned(self, timeout_seconds: float):
+            clock[0] += 1.0
+            # The closest sample occurs first. Subsequent small oscillations
+            # do not improve that minimum, but braking eventually settles.
+            error = 0.125 if clock[0] == 1.0 else 0.19
+            speed = 0.18 if clock[0] < 20.0 or not braking_finishes else 0.10
+            return base.PositionVelocityNed(error, 0.0, 0.0, speed, 0.0, 0.0)
+
+    settle = executor._wait_checkpoint_stable(
+        base=base, client=BrakingClient(),
+        setpoint=base.Setpoint(0.0, 0.0, 0.0, 0.0), rate_hz=200.0,
+        timeout_seconds=12.0, absolute_timeout_factor=8.0,
+        stable_window_seconds=0.5, position_tolerance_m=0.2,
+        speed_tolerance_mps=0.15,
+    )
+    if not braking_finishes:
+        with pytest.raises(TimeoutError, match="timeout_kind=absolute"):
+            asyncio.run(settle)
+        assert clock[0] >= 96.0
+        return
+    _, error, speed = asyncio.run(settle)
+    assert clock[0] >= 21.0
+    assert error <= 0.2 and speed <= 0.15
+
+
 def test_waypoint_settle_progress_never_moves_absolute_deadline() -> None:
     base, executor = _modules()
 

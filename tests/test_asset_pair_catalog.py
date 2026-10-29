@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,25 @@ def test_catalog_follows_selected_release_without_source_constants(tmp_path: Pat
         pair = get_asset_pair("dronedream-school-map", "px4-x500-depth", resource_root=tmp_path)
         assert pair["qualification_id"] == qualification_id
         assert pair["status"] == "qualified_builtin"
+
+
+def test_one_map_can_have_independent_aircraft_qualifications(tmp_path: Path) -> None:
+    index = _release_index()
+    vtol = deepcopy(index["qualified_pairs"][0])
+    vtol["vehicle_resource_id"] = "px4-standard-vtol"
+    vtol["qualification_id"] = "asset-qualification-" + "7" * 24
+    next(p for p in vtol["packages"] if p["kind"] == "vehicle")["asset_id"] = "standard-vtol"
+    index["qualified_pairs"].append(vtol)
+    path = tmp_path / "default-assets" / "index.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(index), encoding="utf-8")
+    original = get_asset_pair(vtol["resource_id"], "px4-x500-depth", resource_root=tmp_path)
+    added = get_asset_pair(vtol["resource_id"], "px4-standard-vtol", resource_root=tmp_path)
+    assert original["qualification_id"] == index["qualified_pairs"][0]["qualification_id"]
+    assert added["qualification_id"] == vtol["qualification_id"]
+    assert added["qualified_vehicle_asset_id"] == "standard-vtol"
+    assert added["status"] == "qualified_builtin"
+    assert get_asset_pair(vtol["resource_id"], "px4-tiltrotor", resource_root=tmp_path)["qualification_id"] is None
 
 
 @pytest.mark.parametrize("damage", ["missing", "json", "default", "duplicate", "vehicle", "hash"])

@@ -104,6 +104,7 @@ DYNAMICS_TELEMETRY_REQUESTED_RATES_HZ = {
 # control lease. Request real 20 ms samples only for that camera-bound path.
 CAMERA_ODOMETRY_REQUESTED_RATE_HZ = 50.0
 ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM_ENV = "PX4_ACTUATOR_OUTPUT_ABSOLUTE_MAXIMUM"
+ACTUATOR_OUTPUT_CHANNEL_MAXIMA_ENV = "PX4_ACTUATOR_OUTPUT_CHANNEL_MAXIMA"
 PX4_OFFBOARD_LOSS_TIMEOUT_SECONDS = 1.0
 PX4_OFFBOARD_LOSS_HOLD_ACTION = 5
 BATTERY_TRACK_START_SETTLE_TIMEOUT_SECONDS = 15.0
@@ -1101,6 +1102,15 @@ class MavsdkOffboardClient:
             "",
         ).strip()
         self._actuator_output_absolute_maximum: float | None = None
+        self._actuator_output_channel_maxima = {
+            int(channel): float(maximum)
+            for channel, maximum in json.loads(
+                os.environ.get(ACTUATOR_OUTPUT_CHANNEL_MAXIMA_ENV, "{}")
+            ).items()
+        }
+        if any(not 0 <= channel < 32 or not math.isfinite(maximum) or maximum <= 0
+               for channel, maximum in self._actuator_output_channel_maxima.items()):
+            raise ValueError("PX4_MOTOR_CHANNEL_SCALE_INVALID")
         if raw_actuator_maximum:
             actuator_maximum = float(raw_actuator_maximum)
             if not math.isfinite(actuator_maximum) or actuator_maximum <= 0.0:
@@ -1701,7 +1711,17 @@ class MavsdkOffboardClient:
                         None,
                     )
                     native_unit_interval = max(abs(value) for value in raw_actuator) <= 1.0 + 1e-6
-                    if absolute_maximum is not None:
+                    channel_maxima = getattr(self, "_actuator_output_channel_maxima", {})
+                    if channel_maxima:
+                        actuator = [value / channel_maxima[index] if index in channel_maxima
+                                    else value for index, value in enumerate(raw_actuator)]
+                        normalization_kind = "configured-motor-channel-maxima"
+                        normalization_ready = (
+                            all(index < len(raw_actuator) for index in channel_maxima)
+                            and all(abs(value) <= 1.0 + 1e-6 if index in channel_maxima
+                                    else value == 0.0 for index, value in enumerate(actuator))
+                        )
+                    elif absolute_maximum is not None:
                         actuator = [value / absolute_maximum for value in raw_actuator]
                         normalization_kind = "configured-absolute-maximum"
                         normalization_ready = all(abs(value) <= 1.0 + 1e-6 for value in actuator)
@@ -1727,6 +1747,9 @@ class MavsdkOffboardClient:
                             "normalization_kind": normalization_kind,
                             "normalization_ready": normalization_ready,
                             "normalization_absolute_maximum": absolute_maximum,
+                            "normalization_channel_maxima": {
+                                str(index): maximum for index, maximum in channel_maxima.items()
+                            },
                         },
                     )
                     retry_delay_seconds = 0.1

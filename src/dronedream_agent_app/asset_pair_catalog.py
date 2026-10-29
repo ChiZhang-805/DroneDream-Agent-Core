@@ -35,7 +35,16 @@ _BUILTIN_MAP_ASSET_IDS = {
 }
 
 
-def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
+_BUILTIN_VEHICLE_ASSET_IDS = {
+    str(resource["resource_id"]): (
+        "dronedream.my-drone.v1" if resource["resource_id"] == "px4-x500-depth"
+        else str(resource["resource_id"]).removeprefix("px4-")
+    )
+    for resource in vehicle_resource_catalog()["resources"]
+}
+
+
+def _bundled_qualifications(resource_root: Path | None) -> dict[tuple[str, str], str]:
     """Read display identities from this release; actual admission verifies the pair receipt."""
     root = (
         resource_root
@@ -69,17 +78,19 @@ def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
             )
         ):
             return {}
-        qualifications: dict[str, str] = {}
+        qualifications: dict[tuple[str, str], str] = {}
         for pair in pairs:
             if not isinstance(pair, dict):
                 return {}
             resource_id = pair.get("resource_id", "dronedream-school-map")
+            vehicle_id = pair.get("vehicle_resource_id", "px4-x500-depth")
             qualification_id = pair.get("qualification_id")
             packages = pair.get("packages")
             if (
                 pair.get("schema_version") != "dronedream.bundled-qualified-pair.v1"
                 or resource_id not in _BUILTIN_MAP_ASSET_IDS
-                or resource_id in qualifications
+                or vehicle_id not in _BUILTIN_VEHICLE_ASSET_IDS
+                or (resource_id, vehicle_id) in qualifications
                 or not isinstance(qualification_id, str)
                 or re.fullmatch(r"asset-qualification-[0-9a-f]{24}", qualification_id) is None
                 or not isinstance(packages, list)
@@ -90,7 +101,7 @@ def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
             identities = {(package.get("kind"), package.get("asset_id")) for package in packages}
             if identities != {
                 ("map", _BUILTIN_MAP_ASSET_IDS[resource_id]),
-                ("vehicle", "dronedream.my-drone.v1"),
+                ("vehicle", _BUILTIN_VEHICLE_ASSET_IDS[vehicle_id]),
             }:
                 return {}
             hashes = [
@@ -106,7 +117,7 @@ def _bundled_qualifications(resource_root: Path | None) -> dict[str, str]:
                 for value in hashes
             ):
                 return {}
-            qualifications[resource_id] = qualification_id
+            qualifications[(resource_id, vehicle_id)] = qualification_id
         return qualifications
     except (OSError, ValueError, TypeError):
         # A missing or damaged display index cannot resurrect a retired ID.
@@ -130,18 +141,18 @@ def _maps() -> list[dict[str, object]]:
 def _pair_record(
     map_resource: dict[str, object],
     vehicle_resource: dict[str, object],
-    qualifications: dict[str, str],
+    qualifications: dict[tuple[str, str], str],
 ) -> dict[str, object]:
     map_id = str(map_resource["resource_id"])
     vehicle_id = str(vehicle_resource["resource_id"])
     vehicle_class = str(vehicle_resource["vehicle_class"])
     environment_class = str(map_resource["environment_class"])
-    qualification_id = qualifications.get(map_id) if vehicle_id == "px4-x500-depth" else None
+    qualification_id = qualifications.get((map_id, vehicle_id))
 
     if qualification_id is not None:
         status = "qualified_builtin"
         reasons = [
-            "The exact normalized My Drone/x500_depth package completed the "
+            "The exact normalized aircraft package completed the "
             "required PX4/Gazebo gates on this map.",
         ]
         required_gates: list[str] = []
@@ -182,7 +193,7 @@ def _pair_record(
             _BUILTIN_MAP_ASSET_IDS[map_id] if qualification_id is not None else None
         ),
         "qualified_vehicle_asset_id": (
-            "dronedream.my-drone.v1" if qualification_id is not None else None
+            _BUILTIN_VEHICLE_ASSET_IDS[vehicle_id] if qualification_id is not None else None
         ),
         "qualification_scope": (
             "exact_builtin_normalized_package" if qualification_id is not None else None
