@@ -156,7 +156,7 @@ def _atomic_json(
     )
 
 
-_BOUNDED_EXECUTOR_PHASES = {"WAYPOINT_SETTLE", "CHECKPOINT", "ACTION"}
+_BOUNDED_EXECUTOR_PHASES = {"CHECKPOINT", "ACTION"}
 _LOCAL_CONTROL_PHASES = {
     "PERCEPTION_REFRESH_HOLD",
     "PERCEPTION_STARTUP_HOLD",
@@ -2244,7 +2244,7 @@ async def _run_operator_takeover(
 
 # 功能：
 #   1. 维持控制并等待连续满足精确位置和速度门槛，以实测收敛延长停滞窗口。
-#   2. 普通航点持续恢复；动作检查保留期限，局部模型目标不替代最终稳定判定。
+#   2. 总恢复上限不随进展延长；局部模型目标不替代最终航点稳定判定。
 # 输入：
 #   base：基础飞控和异步控制维持工具。
 #   client：实际遥测客户端。
@@ -2261,7 +2261,6 @@ async def _run_operator_takeover(
 #   sample_observer：实际遥测发布回调。
 #   target_frame_position_resolver：将实测位置换算到目标坐标的回调。
 #   control_maintained_externally：动作保护协程已独占控制时，仅采样与判稳，禁止重复发送位置控制。
-#   continue_navigation_recovery：普通导航点到期后继续纠偏，仍检查安全、用户改令和稳定门槛。
 # 输出：
 #   stable_result：通过连续稳定检查的样本、位置误差和速度三元组。
 async def _wait_checkpoint_stable(
@@ -2281,7 +2280,6 @@ async def _wait_checkpoint_stable(
     sample_observer: Callable[[Any], None] | None = None,
     target_frame_position_resolver: (Callable[[Any], tuple[float, float, float]] | None) = None,
     control_maintained_externally: bool = False,
-    continue_navigation_recovery: bool = False,
 ) -> tuple[Any, float, float]:
     if type(control_maintained_externally) is not bool:
         raise ValueError("external settle control flag must be boolean")
@@ -2348,19 +2346,8 @@ async def _wait_checkpoint_stable(
         hold_setpoint = await setpoint_refresh(planned_setpoint)
         return hold_setpoint
 
-    while continue_navigation_recovery or time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         check_settle_interruption()
-        if continue_navigation_recovery and time.monotonic() >= deadline:
-            # A navigation waypoint is not a payload action deadline. Keep
-            # correcting the same target under live safety arbitration instead
-            # of landing solely because its small oscillation outlasted a window.
-            now = time.monotonic()
-            deadline = now + timeout_seconds
-            absolute_deadline = now + timeout_seconds * absolute_timeout_factor
-            qualified_window_deadline = absolute_deadline + stable_window_seconds + 1.0 / rate_hz
-            best_position_error_m = math.inf
-            best_hold_error_m = math.inf
-            stable_since = None
         if control_maintained_externally:
             # 动作外层的保护协程持续执行安全仲裁；稳定性测量不再竞争同一刷新锁，
             # 也不因省略刷新而发送未经仲裁的固定位置。外层仍负责异常及期限。
@@ -10107,89 +10094,8 @@ async def _fly_runtime_replacement(
                             },
                         )
                 last_setpoint = setpoint
-                if index in waypoint_arrival_indices and checkpoint is None:
-                    settle_started = loop.time()
-                    _atomic_json(
-                        phase_path,
-                        {
-                            "phase": "WAYPOINT_SETTLE",
-                            "schedule_index": index,
-                            "replacement_sequence": replacement.replacement_sequence,
-                        },
-                    )
-                    while True:
-                        try:
-                            _, position_error, speed = await _wait_checkpoint_stable(
-                                base=base,
-                                client=client,
-                                setpoint=setpoint,
-                                rate_hz=args.setpoint_rate_hz,
-                                timeout_seconds=(artifact.track.waypoint_settle_timeout_seconds),
-                                continue_navigation_recovery=True,
-                                # Replacement waypoints use the same model/depth-authoritative
-                                # precision controller as the original track.  Retain the
-                                # ordinary no-progress deadline, but permit a longer finite
-                                # hard window while measured convergence continues.
-                                absolute_timeout_factor=8.0,
-                                stable_window_seconds=(
-                                    artifact.track.waypoint_stable_window_seconds
-                                ),
-                                position_tolerance_m=(
-                                    _payload_aware_waypoint_position_tolerance_m(
-                                        configured_tolerance_m=(
-                                            artifact.track.waypoint_position_tolerance_m
-                                        ),
-                                        runtime_action_contract=runtime_action_contract,
-                                        completed_action_step_ids=completed_action_step_ids,
-                                    )
-                                ),
-                                speed_tolerance_mps=(artifact.track.waypoint_speed_tolerance_mps),
-                                abort_check=settle_abort_check,
-                                setpoint_refresh=live_settle_setpoint_refresh,
-                                sample_observer=live_settle_sample_observer,
-                                target_frame_position_resolver=(live_settle_target_frame_position),
-                            )
-                            break
-                        except RuntimeInterruptDetected as interruption:
-                            await _handle_runtime_interruption(
-                                base=base,
-                                client=client,
-                                frozen_setpoint=setpoint,
-                                interruption=interruption,
-                                control_dir=args.runtime_control_dir,
-                                phase="WAYPOINT_SETTLE",
-                                schedule_index=index,
-                                abort_file=args.abort_file,
-                                rate_hz=args.setpoint_rate_hz,
-                                hold_timeout_seconds=args.runtime_hold_timeout_seconds,
-                                decision_timeout_seconds=args.runtime_decision_timeout_seconds,
-                                replan_hold_seconds=args.runtime_replan_hold_seconds,
-                                active_track_sha256=active_track_sha256,
-                                params=params,
-                                semantic_path=args.semantic,
-                                vehicle_metadata_path=args.vehicle_metadata,
-                                coordinate_contract=replacement.coordinate_contract,
-                                telemetry_args=args,
-                            )
-                    settle_duration = loop.time() - settle_started
-                    deadline += settle_duration
-                    timing.setdefault("waypoint_settles", []).append(
-                        {
-                            "schedule_index": index,
-                            "replacement_sequence": replacement.replacement_sequence,
-                            "position_error_m": position_error,
-                            "speed_mps": speed,
-                            "duration_seconds": settle_duration,
-                        }
-                    )
-                    _atomic_json(
-                        phase_path,
-                        {
-                            "phase": "TRACK",
-                            "checkpoint_id": None,
-                            "replacement_sequence": replacement.replacement_sequence,
-                        },
-                    )
+                # Ordinary route points advance through the live tracking controller.
+                # Only task checkpoints below require a separate stable hover.
                 if checkpoint is not None:
                     _atomic_json(
                         phase_path,
@@ -10607,7 +10513,6 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
         "takeoff_gate": {"status": "not_started"},
         "preflight_connection": {},
         "checkpoints": [],
-        "waypoint_settles": [],
         "runtime_actions": [],
         "runtime_interruptions": [],
         "cleanup": {"stop_offboard": "not_needed", "land": "not_needed", "close": "pending"},
@@ -11449,97 +11354,8 @@ async def _run(args: argparse.Namespace, base: ModuleType) -> None:
             last_setpoint = setpoint
             if index == plan.track_start_index:
                 timing["track_start_t"] = time.monotonic() - started
-            if index in waypoint_arrival_indices and checkpoint is None:
-                settle_started = loop.time()
-                _atomic_json(
-                    phase_path,
-                    {"phase": "WAYPOINT_SETTLE", "schedule_index": index},
-                )
-                while True:
-                    try:
-                        _, position_error, speed = await _wait_checkpoint_stable(
-                            base=base,
-                            client=client,
-                            setpoint=setpoint,
-                            rate_hz=args.setpoint_rate_hz,
-                            timeout_seconds=reference.waypoint_settle_timeout_seconds,
-                            # A loaded aircraft in a tight local space can require more
-                            # than five ordinary settle windows to remove the final
-                            # position error.  Progress must still be measurable every
-                            # ordinary window and every position/speed gate remains
-                            # unchanged; this only extends the immutable hard ceiling.
-                            absolute_timeout_factor=8.0,
-                            continue_navigation_recovery=True,
-                            stable_window_seconds=reference.waypoint_stable_window_seconds,
-                            position_tolerance_m=(
-                                _payload_aware_waypoint_position_tolerance_m(
-                                    configured_tolerance_m=(
-                                        reference.waypoint_position_tolerance_m
-                                    ),
-                                    runtime_action_contract=runtime_action_contract,
-                                    completed_action_step_ids=completed_action_step_ids,
-                                )
-                            ),
-                            speed_tolerance_mps=reference.waypoint_speed_tolerance_mps,
-                            abort_check=settle_abort_check,
-                            setpoint_refresh=live_settle_setpoint_refresh,
-                            sample_observer=live_settle_sample_observer,
-                            target_frame_position_resolver=(live_settle_target_frame_position),
-                        )
-                        break
-                    except RuntimeInterruptDetected as interruption:
-                        _atomic_json(
-                            phase_path,
-                            {
-                                "phase": "HOLDING",
-                                "interrupted_phase": "WAYPOINT_SETTLE",
-                                "message_id": interruption.message.message_id,
-                            },
-                        )
-                        await _handle_runtime_interruption(
-                            base=base,
-                            client=client,
-                            frozen_setpoint=setpoint,
-                            interruption=interruption,
-                            control_dir=args.runtime_control_dir,
-                            phase="WAYPOINT_SETTLE",
-                            schedule_index=index,
-                            abort_file=args.abort_file,
-                            rate_hz=args.setpoint_rate_hz,
-                            hold_timeout_seconds=args.runtime_hold_timeout_seconds,
-                            decision_timeout_seconds=args.runtime_decision_timeout_seconds,
-                            replan_hold_seconds=args.runtime_replan_hold_seconds,
-                            active_track_sha256=active_track_sha256,
-                            params=params,
-                            semantic_path=args.semantic,
-                            vehicle_metadata_path=args.vehicle_metadata,
-                            coordinate_contract=coordinate_contract,
-                            telemetry_args=args,
-                        )
-                        timing["runtime_interruptions"].append(
-                            {
-                                "message_id": interruption.message.message_id,
-                                "interrupted_phase": "WAYPOINT_SETTLE",
-                                "schedule_index": index,
-                                "outcome": "resume_original",
-                            }
-                        )
-                        pending_interruption = None
-                        _atomic_json(
-                            phase_path,
-                            {"phase": "WAYPOINT_SETTLE", "schedule_index": index},
-                        )
-                settle_duration = loop.time() - settle_started
-                motion_deadline += settle_duration
-                timing["waypoint_settles"].append(
-                    {
-                        "schedule_index": index,
-                        "position_error_m": position_error,
-                        "speed_mps": speed,
-                        "duration_seconds": settle_duration,
-                    }
-                )
-                _atomic_json(phase_path, {"phase": "TRACK", "checkpoint_id": None})
+            # Ordinary route points advance through the live tracking controller.
+            # Only task checkpoints below require a separate stable hover.
             if checkpoint is not None:
                 _atomic_json(
                     phase_path,
