@@ -24,8 +24,8 @@ def test_catalog_covers_every_builtin_map_aircraft_combination_once() -> None:
     assert catalog["pair_count"] == 78
     assert len({item["pair_id"] for item in pairs}) == 78
     assert catalog["counts"] == {
-        "qualified_builtin": 6,
-        "compatible_requires_qualification": 72,
+        "qualified_builtin": 7,
+        "compatible_requires_qualification": 71,
         "incompatible": 0,
     }
 
@@ -37,12 +37,17 @@ def test_vtol_is_admitted_to_the_outdoor_campus_pending_qualification() -> None:
     assert len(vtol_pairs) == 18
     assert len(compatible) == 18
     assert len({item["map_resource_id"] for item in compatible}) == 6
-    assert all(item["status"] == "compatible_requires_qualification" for item in vtol_pairs)
+    qualified = [item for item in vtol_pairs if item["status"] == "qualified_builtin"]
+    assert [(item["map_resource_id"], item["vehicle_resource_id"]) for item in qualified] == [
+        ("dronedream-vuosaari-harbour-map", "px4-standard-vtol")]
+    assert all(item["status"] == "compatible_requires_qualification"
+               for item in vtol_pairs if item not in qualified)
 
 
 def test_only_exact_builtin_x500_depth_pairs_claim_existing_qualification() -> None:
     catalog = asset_pair_catalog()
-    qualified = [item for item in catalog["pairs"] if item["qualification_id"]]
+    qualified = [item for item in catalog["pairs"] if item["qualification_id"]
+                 and item["vehicle_resource_id"] == "px4-x500-depth"]
     assert len(qualified) == 6
     assert {item["map_resource_id"]: item["qualified_map_asset_id"] for item in qualified} == {
         "dronedream-school-map": "dronedream.school-map.v1",
@@ -71,9 +76,10 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
         / "index.json"
     )
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    expected = {item["resource_id"]: item["qualification_id"] for item in index["qualified_pairs"]}
+    expected = {(item["resource_id"], item.get("vehicle_resource_id", "px4-x500-depth")):
+                item["qualification_id"] for item in index["qualified_pairs"]}
     actual = {
-        item["map_resource_id"]: item["qualification_id"]
+        (item["map_resource_id"], item["vehicle_resource_id"]): item["qualification_id"]
         for item in asset_pair_catalog()["pairs"]
         if item["status"] == "qualified_builtin"
     }

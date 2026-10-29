@@ -168,6 +168,31 @@
       "receipt_sha256": "f544c79d9245fcf97fba2529b0506af24e18d39fa01a0f4e19ae51302267ecaf",
       "resource_id": "dronedream-uutela-coastal-forest-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.vuosaari-harbour-map.v1",
+          "content_sha256": "d9453d86d4a024534ea3d298c3bb0b5a7f16d9fb13daf0b092fd621e0588f98f",
+          "file": "vuosaari-harbour-standard-vtol.ddpkg",
+          "kind": "map",
+          "sha256": "8c4b36308f3d1114acab47c94e6d4111ca0ed36ed4383429724191acd7b4a0e6",
+          "source_content_sha256": "4c37c47253655be8c2c4a5c7ee155274bbc1d5f5c1c54aa374c028b6ca73dd36"
+        },
+        {
+          "asset_id": "standard-vtol",
+          "content_sha256": "52e6381d6447023c27fdd3ed59a06ce50653b972bf075043e11ae1d5648c2f2a",
+          "file": "standard-vtol-vuosaari-harbour.ddpkg",
+          "kind": "vehicle",
+          "sha256": "ca980945979b629129462915b1fc9bb1903e0b4300fe7aa6513aa437813ca5be",
+          "source_content_sha256": "81f090a2ffaa241a74ad32165bd9d9c0015a4da01bf500a56e3e16b4e2b6c12e"
+        }
+      ],
+      "qualification_id": "asset-qualification-fa690ccfacd75c5c9e137b97",
+      "receipt_sha256": "6d146613b92cd8a49dc4c8b632d920c071fbbc66bfdcdfff392d854b105d3f6f",
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-standard-vtol"
     }
   ],
   "schema_version": "dronedream.bundled-assets.v3",

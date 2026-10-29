@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -68,11 +69,22 @@ def test_vtol_bundle_preserves_measured_vehicle_instead_of_x500_defaults(tmp_pat
     monkeypatch.setattr(builder, "_copy_qualification_evidence", lambda *_: None)
     builder._build_vehicle_bundle(run, output, source, controller)
     result = json.loads((output / "vehicle.json").read_text())
-    assert result == {**metadata, "qualified_range_m": 486.89, "qualified_cruise_max_mps": 4.8}
+    assert not (output / "gazebo" / "vehicle.json").exists()
+    assert not (output / "gazebo" / "controller_params.json").exists()
+    assert result == {**metadata, "qualified_range_m": 486.89, "qualified_cruise_max_mps": 4.8,
+                      "sensors": [*metadata["sensors"], "odometry"]}
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["asset_id"] == "standard-vtol"
     assert manifest["name"] == "Standard VTOL"
     assert manifest["physical_material_contract"]["perception_sensor"]["source_model"] == "model://standard_vtol"
+    package = builder._write_current_source_package(
+        source_root=output, destination=tmp_path / "vehicle.ddpkg", kind="vehicle",
+        asset_id="standard-vtol", name="Standard VTOL", created_at=datetime.now(UTC),
+    )
+    inspected = builder.inspect_ddpkg(package)
+    assert inspected.asset_ir.vehicle.rotor_count == 5
+    assert inspected.asset_ir.vehicle.actuator_count == 8
+    assert inspected.asset_ir.interfaces.px4_profiles == ["standard_vtol"]
 
 
 def test_qualified_range_rejects_non_finite_track_points(tmp_path: Path) -> None:

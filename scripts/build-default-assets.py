@@ -90,11 +90,13 @@ def _canonical_json_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _copy_tree(source: Path, destination: Path) -> None:
+def _copy_tree(source: Path, destination: Path, *, exclude: tuple[str, ...] = ()) -> None:
     if not source.is_dir():
         raise FileNotFoundError(source)
     for source_file in sorted(path for path in source.rglob("*") if path.is_file()):
         relative = source_file.relative_to(source)
+        if relative.as_posix() in exclude:
+            continue
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source_file, target)
@@ -358,11 +360,14 @@ def _write_current_source_package(
                             "x500_depth" if profile == "x500" else profile)), None)
         if catalog is None:
             raise ValueError("DEFAULT_VEHICLE_PX4_PROFILE_INVALID")
+        # Counts from the pinned PX4 airframes: Standard VTOL has four lift
+        # motors, one pusher, and three controlled aerodynamic surfaces.
+        rotor_count, actuator_count = {"x500": (4, 4), "standard_vtol": (5, 8)}[profile]
         vehicle = VehicleSummary(
             vehicle_class=("multirotor" if catalog["vehicle_class"] == "multicopter"
                            else str(catalog["vehicle_class"])),
-            actuator_count=4 if profile == "x500" else None,
-            rotor_count=4 if profile == "x500" else None,
+            actuator_count=actuator_count,
+            rotor_count=rotor_count,
             autopilot_profile=profile,
             payload_limit_kg=float(vehicle_metadata["max_pickup_payload_kg"]),
         )
@@ -426,7 +431,7 @@ def _write_current_source_package(
         semantics=semantics,
         interfaces=InterfaceSummary(
             gazebo_entrypoints=[target_path],
-            px4_profiles=[] if kind == "map" else ["x500"],
+            px4_profiles=[] if kind == "map" else [profile],
         ),
         readiness=ReadinessSummary(
             maturity_ceiling="physics_ready",
@@ -915,7 +920,9 @@ def _build_vehicle_bundle(
     controller_params: Path,
     capability_receipt: Path | None = None,
 ) -> None:
-    _copy_tree(vehicle_source, destination / "gazebo")
+    # Runtime metadata belongs at the bundle root, not inside the Gazebo model.
+    _copy_tree(vehicle_source, destination / "gazebo",
+               exclude=("vehicle.json", "controller_params.json"))
     shutil.copyfile(controller_params, destination / "controller_params.json")
     vehicle_summary = _artifact_identity(_json(vehicle_source / "summary.json"))
     vehicle_sdf = (vehicle_source / "model.sdf").read_text(encoding="utf-8")
@@ -1002,6 +1009,9 @@ def _build_vehicle_bundle(
         vehicle.update(qualified_range_m=qualified_range_m,
                        qualified_cruise_max_mps=qualified_speed_mps,
                        max_pickup_payload_kg=qualified_payload_kg)
+        # The qualified PX4/MAVSDK assembly supplies estimated odometry in
+        # addition to the airframe's physical sensors; the run records it.
+        vehicle["sensors"] = list(dict.fromkeys([*source_vehicle.sensors, "odometry"]))
     _write_json(destination / "vehicle.json", vehicle)
     qualification = _qualification_receipt(run_dir)
     _write_json(destination / "qualification" / "receipt.json", qualification)
@@ -1107,23 +1117,8 @@ def _qualified_runtime_evidence(
 
 
 def _navigation_evidence_sha256(map_root: Path) -> str:
-    """Return the one reviewed evidence digest bound to every navigation edge."""
-    graph = _json(map_root / "navigation-graph.json")
-    edges = graph.get("edges")
-    if not isinstance(edges, list) or not edges:
-        raise ValueError("DEFAULT_ASSET_NAVIGATION_EDGES_MISSING")
-    digests = {
-        edge.get("evidence_sha256")
-        for edge in edges
-        if isinstance(edge, dict)
-    }
-    if (
-        len(digests) != 1
-        or not isinstance(next(iter(digests)), str)
-        or len(next(iter(digests))) != 64
-    ):
-        raise ValueError("DEFAULT_ASSET_NAVIGATION_EVIDENCE_INVALID")
-    return next(iter(digests))
+    """Bind the authored graph, including each edge's own evidence/status."""
+    return _sha256(map_root / "navigation-graph.json")
 
 
 def _build_qualified_pair(
