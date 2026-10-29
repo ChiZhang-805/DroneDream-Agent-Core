@@ -327,7 +327,8 @@ def plugin_definitions() -> list[PluginDefinition]:
                         "additionalProperties": False,
                     },
                     authority="control",
-                    timeout_seconds=35.0,
+                    # 25 秒稳定等待 + 15 秒实际关节回读 + 5 秒控制交接。
+                    timeout_seconds=45.0,
                 )
             ],
         ),
@@ -409,7 +410,8 @@ def plugin_definitions() -> list[PluginDefinition]:
                         "additionalProperties": False,
                     },
                     authority="control",
-                    timeout_seconds=20.0,
+                    # 15 秒实际关节回读 + 15 秒带载稳定等待 + 5 秒控制交接。
+                    timeout_seconds=35.0,
                 )
             ],
         ),

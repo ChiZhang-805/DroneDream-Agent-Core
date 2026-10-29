@@ -495,6 +495,8 @@ def test_runtime_action_contract_binds_handoff_and_pickup_to_checkpoint(tmp_path
     assert runtime.steps[3].parameters["operation"] == "postattach-stability"
     assert all(step.driver != "ros2-service" for step in runtime.steps)
     assert runtime.steps[0].parameters["stable_window_seconds"] == 10.0
+    for step in (runtime.steps[0], runtime.steps[2], runtime.steps[3]):
+        assert step.timeout_seconds >= step.parameters["settle_timeout_seconds"] + 15.0
     assert not {"native.payload.scan-code", "native.payload.verify-recipient"} & {
         executor for adapter in adapters.adapters for executor in adapter.runtime_executors
     }
