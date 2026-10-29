@@ -9,14 +9,17 @@ import pytest
 from test_depth_sensor_binding import frame
 
 from dronedream_agent_core.contracts import Vector3
+from dronedream_agent_core.depth_sensor_binding import DepthSensorBinding
 from dronedream_agent_core.live_localization_producer import LiveLocalizationProducer
 from dronedream_agent_core.localization_source_channel import decode_localization_source
-from dronedream_agent_core.runtime_sensor_contracts import oakd_lite_depth_sensor_contract
+from dronedream_agent_core.runtime_sensor_contracts import (
+    RuntimeSensorRegistry, oakd_lite_depth_sensor_contract,
+)
 from dronedream_agent_core.sensor_frame_clock import SensorFrameTime
 
 
 # 功能：创建真实投影器与可观测的原生状态/发布端夹具；输入：无；输出：发布器及测试端口。
-def fixture():
+def fixture(mount=None):
     native, publisher = Mock(), Mock()
     stamp = time.time_ns()
     mono = time.monotonic()
@@ -30,10 +33,27 @@ def fixture():
         conservative_variance_m2=.01, native_odometry_snapshot={"source_alignment": {}})
     native.select_source_image_pose.return_value = (stamp // 1_000_000, clock.simulation_ns, aligned)
     worker = LiveLocalizationProducer(snapshot=lambda: items, native_buffer=native,
-        publisher=publisher, mount=oakd_lite_depth_sensor_contract(), vehicle_id="quad",
+        publisher=publisher, mount=mount or oakd_lite_depth_sensor_contract(), vehicle_id="quad",
         map_sha256="a" * 64, clock_domain="test-clock", maximum_acceleration_mps2=2.,
         maximum_alignment_variance_m2=.25)
     return worker, native, publisher, items
+
+
+# 功能：验证独立定位和主控制投影使用同一机型的相机安装参数。
+# 输入：不同于 X500 的实际机体相机偏移。
+# 输出：缓存契约可与主线程契约共同登记，不发生传感器身份冲突。
+def test_nondefault_mount_matches_control_thread_projection():
+    mount = oakd_lite_depth_sensor_contract().model_copy(deep=True)
+    mount.translation_body_m = Vector3(x=.61233, y=0., z=.09278)
+    worker, _, _, items = fixture(mount)
+    worker._step()
+    _, contract = worker.prepared(items[0][1].source_unix_ns)
+    registry = RuntimeSensorRegistry()
+    binding = DepthSensorBinding(registry, vehicle_id="quad", mount=mount)
+    binding.project(items[0][0])
+    assert contract == registry.contract("oakd-lite-depth")
+    registry.register_contract(contract)
+    worker.close()
 
 
 # 功能：验证真实编码传输保留原始时间和无控制权限，不重复发布同帧；输入：无；输出：字段断言。

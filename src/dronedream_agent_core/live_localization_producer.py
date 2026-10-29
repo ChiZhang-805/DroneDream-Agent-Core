@@ -26,7 +26,7 @@ class LiveLocalizationProducer:
         self._acceleration = maximum_acceleration_mps2
         self._variance = maximum_alignment_variance_m2
         self._registry = RuntimeSensorRegistry()
-        self._binding = DepthSensorBinding(self._registry, vehicle_id=vehicle_id)
+        self._binding = DepthSensorBinding(self._registry, vehicle_id=vehicle_id, mount=mount)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._issue = None
