@@ -7137,7 +7137,15 @@ async def _apply_local_safety(
             return safe_setpoint
         if action == "hold":
             if repair_hold_setpoint is None:
-                repair_hold_setpoint = safe_setpoint
+                # Hold in PX4's measured control frame. A refreshed world pose
+                # can differ slightly from its estimator and otherwise command
+                # another small climb on every new hold episode.
+                repair_hold_setpoint = (base.Setpoint(
+                    north_m=observed.north_m,
+                    east_m=observed.east_m,
+                    down_m=observed.down_m,
+                    yaw_deg=safe_setpoint.yaw_deg,
+                ) if observed is not None else safe_setpoint)
             safe_setpoint = repair_hold_setpoint
         else:
             repair_hold_setpoint = None

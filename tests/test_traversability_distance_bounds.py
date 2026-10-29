@@ -74,6 +74,40 @@ def test_continuous_path_penalty_and_threat_match_unpruned_queries(monkeypatch):
     assert [airspace.path_clearance(path) for path in paths] == actual
 
 
+def test_threshold_path_checks_segment_interior_not_only_free_endpoints():
+    airspace = _airspace()
+    # Both endpoints are clear, but the line crosses the tree footprint.
+    path = [(-7., 0., 6.), (-1., 0., 6.)]
+    assert all(airspace.clearance(point)[0] > .5 for point in path)
+    assert not airspace.path_has_clearance(path, .5)
+    assert airspace.path_has_clearance([(-7., -6., 6.), (-1., -6., 6.)], .5)
+    assert not airspace.path_has_clearance([(-7., -6., .1)], .5)
+
+
+def test_threshold_path_acceptance_preserves_dense_geometry_clearance():
+    airspace = _airspace()
+    rng = random.Random(71)
+    for _ in range(250):
+        path = [(rng.uniform(-9., 9.), rng.uniform(-9., 9.), rng.uniform(.5, 11.))
+                for _ in range(2)]
+        if airspace.path_has_clearance(path, .2):
+            for i in range(1001):
+                point = tuple(a + (b - a) * i / 1000 for a, b in zip(*path))
+                assert airspace.clearance(point)[0] >= .2
+
+
+def test_open_segment_threshold_avoids_dense_resampling(monkeypatch):
+    airspace = _airspace()
+    original = airspace.clearance
+    calls = []
+    def measured(point):
+        calls.append(point)
+        return original(point)
+    monkeypatch.setattr(airspace, "clearance", measured)
+    assert airspace.path_has_clearance([(-7., -6., 5.), (-7., -6., 7.)], .5)
+    assert len(calls) == 2
+
+
 def test_distant_complex_polygon_in_same_bin_is_not_evaluated(monkeypatch):
     airspace = _airspace()
     points = tuple((4. + math.cos(i * math.tau / 166), 4. + math.sin(i * math.tau / 166))

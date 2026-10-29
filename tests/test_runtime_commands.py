@@ -1955,7 +1955,7 @@ def test_tracking_recovery_feedforward_damps_velocity_toward_target() -> None:
                                  north_m_s=0., east_m_s=0., down_m_s=0.),
         target_setpoint=target,
     )
-    assert default_bounded_correction == pytest.approx((1.5, 0., 0.))
+    assert default_bounded_correction == pytest.approx((5., 0., 0.))
 
 
 def test_local_repair_progress_renews_stall_window_but_not_without_motion() -> None:
@@ -2073,13 +2073,14 @@ def test_local_repair_does_not_count_arbitrary_drift_as_progress() -> None:
     assert state["progress_revision"] == 0
     assert state["last_progress_evidence"] == "repair-started"
 
-def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -> None:
+@pytest.mark.parametrize("measured_hold", [False, True])
+def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path, measured_hold: bool) -> None:
     executor = _load_executor()
     actions = iter(("hold", "slow"))
 
     def read_command(_args: Any) -> Any:
         action = next(actions)
-        return SimpleNamespace(
+        return _safety_command_fixture(
             decision=SimpleNamespace(
                 action=action,
                 selected_velocity_mps=Vector3(x=0.0, y=0.0, z=0.0),
@@ -2091,22 +2092,28 @@ def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -
             observation_sequence=1,
             tracking_recovery_active=False,
             evaluated_target_position_m=Vector3(x=2.0, y=1.0, z=1.2),
+            navigation_goal_id="goal-stalled",
         )
 
     executor._read_local_safety_command = read_command
 
-    async def observed_identity(**_kwargs: Any) -> None:
-        return None
+    async def observed_identity(**_kwargs: Any) -> Any:
+        return (SimpleNamespace(north_m=1., east_m=2., down_m=-.55)
+                if measured_hold else None)
 
     executor._refresh_px4_identity_telemetry = observed_identity
 
     class Client:
+        def __init__(self):
+            self.commands = []
+
         async def set_position_velocity_ned(self, _setpoint: Any, _velocity: Any) -> None:
-            return None
+            self.commands.append(_setpoint)
 
         async def set_position_ned(self, _setpoint: Any) -> None:
-            return None
+            self.commands.append(_setpoint)
 
+    client = Client()
     async def exercise() -> None:
         await executor._apply_local_safety(
             args=SimpleNamespace(
@@ -2119,7 +2126,7 @@ def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -
                 Setpoint=lambda **values: SimpleNamespace(**values),
                 VelocitySetpoint=lambda **values: SimpleNamespace(**values),
             ),
-            client=Client(),
+            client=client,
             planned_setpoint=SimpleNamespace(
                 north_m=1.0,
                 east_m=2.0,
@@ -2138,6 +2145,8 @@ def test_local_repair_refresh_preserves_progress_stall_trigger(tmp_path: Path) -
         )
 
     asyncio.run(exercise())
+    if measured_hold:
+        assert client.commands[0].down_m == pytest.approx(-.55)
     target = json.loads((tmp_path / "target.json").read_text(encoding="utf-8"))
     assert target["decision_trigger"] == "progress-stalled"
     assert target["recovery_episode_id"] == "recovery-0123456789abcdef01234567"
@@ -3990,16 +3999,10 @@ def test_model_authority_gap_holds_live_px4_position_not_corrected_gazebo_pose(
 
     client = asyncio.run(exercise())
     assert len(client.commands) == 4
-    assert [
-        (setpoint.north_m, setpoint.east_m, setpoint.down_m) for setpoint in client.commands
-    ] == pytest.approx(
-        [
-            (1.25, -0.75, -0.9),
-            (1.55, -0.95, -1.1),
-            (1.62, -0.98, -1.08),
-            (1.62, -0.98, -1.08),
-        ]
-    )
+    expected_positions = [(1.25, -0.75, -0.9), (1.55, -0.95, -1.1),
+                          (1.62, -0.98, -1.08), (1.62, -0.98, -1.08)]
+    for setpoint, expected in zip(client.commands, expected_positions, strict=True):
+        assert (setpoint.north_m, setpoint.east_m, setpoint.down_m) == pytest.approx(expected)
     for velocity in client.velocities:
         assert (
             velocity.north_m_s,

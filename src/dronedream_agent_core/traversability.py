@@ -342,6 +342,45 @@ class TraversableAirspace:
         cache[query] = result
         return result
 
+    def path_has_clearance(self, points: list[Point], required_clearance_m: float) -> bool:
+        """Prove the complete segments fit, refining only near a boundary.
+
+        Signed distance, and its minimum/maximum over the authored volumes,
+        is 1-Lipschitz. The nearest endpoint is at most half a segment away,
+        so this bound covers its interior without evaluating every 10 cm.
+        """
+        if not self.active:
+            return True
+        required = _number(required_clearance_m, "required clearance")
+        if not points or len(points) > 100000:
+            raise ValueError("traversability path query invalid")
+        if any(len(p) != 3 or any(type(v) not in (int, float) or not -1e9 <= v <= 1e9
+                                 for v in p) for p in points):
+            raise ValueError("traversability path coordinates invalid")
+        distances = [self.clearance(point)[0] for point in points]
+        if min(distances) < required:
+            return False
+        pending = [(a, b, da, db) for a, b, da, db in
+                   zip(points, points[1:], distances, distances[1:])]
+        work = 0
+        while pending:
+            first, last, first_clearance, last_clearance = pending.pop()
+            length = math.dist(first, last)
+            if min(first_clearance, last_clearance) - length / 2 >= required:
+                continue
+            if length <= .001:
+                return False
+            work += 1
+            if work > 250000:
+                raise ValueError("traversability path query budget exceeded")
+            middle = tuple((a + b) / 2 for a, b in zip(first, last))
+            clearance = self.clearance(middle)[0]
+            if clearance < required:
+                return False
+            pending.extend(((first, middle, first_clearance, clearance),
+                            (middle, last, clearance, last_clearance)))
+        return True
+
     def path_clearance(self, points: list[Point], *, sample_interval_m: float = .1
                        ) -> tuple[float, str]:
         """Conservative continuous swept-volume bound, including segment interiors."""

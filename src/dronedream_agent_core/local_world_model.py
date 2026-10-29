@@ -1508,8 +1508,8 @@ class MetricVoxelMap:
         if not points:
             return False
         if (self._operating_airspace is not None
-                and self._operating_airspace.path_clearance([_point(p) for p in points])[0]
-                < required_clearance_m):
+                and not self._operating_airspace.path_has_clearance(
+                    [_point(p) for p in points], required_clearance_m)):
             return False
         sample_spacing_m = self.resolution_m / 2.0
         radius = math.ceil(required_clearance_m / self.resolution_m) + 1
