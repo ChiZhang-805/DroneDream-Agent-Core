@@ -3449,7 +3449,7 @@ def run_px4_gazebo_track(
     executor_help = _run(
         [sys.executable, str(executor_path), "--help"],
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        timeout=15,
+        timeout=120,
     )
     required_executor_flags = {
         "--abort-file",
