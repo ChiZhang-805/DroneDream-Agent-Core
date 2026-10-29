@@ -91,6 +91,19 @@ def test_query_binds_request_not_cached_event(monkeypatch):
     assert result["iteration"] == 99 and result["source"] == "gazebo-ecm-joint-query"
 
 
+# 功能：区分 Gazebo 零退出码的传输超时与损坏响应；输入：CLI 文本；输出：明确异常。
+@pytest.mark.parametrize("raw,error", [
+    ("Service call timed out\n", TimeoutError), ("broken response", RuntimeError)
+])
+def test_query_reports_transport_timeout_and_preserves_invalid_output(monkeypatch, raw, error):
+    monkeypatch.setattr(query.subprocess, "run", lambda argv, **kw:
+        subprocess.CompletedProcess(argv, 0, raw, ""))
+    with pytest.raises(error) as raised:
+        query.query_attachment_state("gz", service="/world/w/model/p/attachment_state", env={})
+    if error is RuntimeError:
+        assert raw in str(raised.value)
+
+
 # 功能：证明相机冷启动无回读时先等待物理就绪，不先耗尽解除命令重试。
 # 输入：先 unknown、随后 attached 的服务；输出：初始化证据与最终分离。
 def test_preflight_waits_for_physics_before_command_budget(monkeypatch):

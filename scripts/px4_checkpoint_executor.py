@@ -2974,7 +2974,7 @@ async def _invoke_runtime_action_driver(
                 target_frame_position_resolver=target_frame_position_resolver,
                 control_maintained_externally=control_maintained_externally,
             )
-            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 3.0)
+            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 15.0)
             if state.get("detached") is not True:
                 raise RuntimeError("pre-contact hold found payload contact or attachment")
             return {
@@ -2986,7 +2986,7 @@ async def _invoke_runtime_action_driver(
                 "no_payload_contact": True,
             }
         if operation == "confirm-custody":
-            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 3.0)
+            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 15.0)
             if state.get("detached") is not False:
                 raise RuntimeError("custody confirmation found payload detached")
             physics_bound = (
@@ -3005,7 +3005,7 @@ async def _invoke_runtime_action_driver(
                 "custody_state_accepted": True,
             }
         if operation == "postattach-stability":
-            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 3.0)
+            state = await client.sample_payload_state(str(step.parameters["output_topic"]), 15.0)
             if state.get("detached") is not False:
                 raise RuntimeError("loaded-flight stability gate found payload detached")
             _, position_error_m, speed_mps = await _wait_checkpoint_stable(

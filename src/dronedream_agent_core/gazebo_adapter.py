@@ -2190,7 +2190,7 @@ def _detach_payload_before_flight(
                 last_error = "physics progress has not yet remained stable for one second"
                 if advancing_samples >= 3 and observed_at - ready_since >= 1.0:
                     break
-            except (RuntimeError, subprocess.TimeoutExpired) as error:
+            except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
                 last_error = str(error)[-1000:]
                 ready_since = None
                 previous_iteration = None
@@ -2358,7 +2358,7 @@ def _confirm_payload_attached_before_flight(
             else:
                 previous_iteration = snapshot["iteration"]
                 last_error = "waiting for the next attached physics snapshot"
-        except (RuntimeError, subprocess.TimeoutExpired) as error:
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
             last_error = str(error)[-1000:]
             previous_iteration = None
         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
@@ -2401,7 +2401,7 @@ def _detach_payload_with_snapshot(
                 previous_iteration = snapshot["iteration"]
             else:
                 previous_iteration = None
-        except (subprocess.TimeoutExpired, RuntimeError) as error:
+        except (subprocess.TimeoutExpired, TimeoutError, RuntimeError) as error:
             attempt["error"] = str(error)[-1000:]
             previous_iteration = None
         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))

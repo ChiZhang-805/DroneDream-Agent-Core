@@ -454,6 +454,59 @@ def test_slow_startup_queries_current_joint_not_old_receipt(tmp_path, monkeypatc
     asyncio.run(scenario())
 
 
+# 功能：服务发现短暂超时后重新查询真实状态，期间事件循环保持运行，不用旧缓存放行。
+# 输入：先超时、后返回实际挂接快照；输出：请求重试、调度及无冗余同步查询断言。
+def test_payload_readback_recovers_transport_timeout_without_blocking_control(monkeypatch):
+    base = executor_module()
+    client = event_client(base, monkeypatch)
+    calls = []
+
+    async def refresh(current, timeout_seconds):
+        calls.append(timeout_seconds)
+        await asyncio.sleep(0)
+        if len(calls) < 3:
+            raise TimeoutError("service discovery")
+        current.update(detached=False, error=None, observed_at_unix_ms=int(base.time.time()*1000),
+                       source="gazebo-ecm-joint-query")
+        return {"detached": False}
+
+    monkeypatch.setattr(client, "_refresh_payload_snapshot", refresh)
+
+    async def scenario():
+        try:
+            observer = client._ensure_payload_observer("/payload/state")
+            observer.update(state_service="/world/w/model/p/attachment_state", detached=True)
+            monkeypatch.setattr(observer["node"], "topic_info", lambda topic:
+                pytest.fail("fresh physics readback must not block on event publisher discovery"))
+            state = await client.sample_payload_state("/payload/state", 1)
+            assert len(calls) == 3
+            assert state["detached"] is False
+            assert state["observation_kind"] == "request-bound-physics-snapshot"
+        finally:
+            await client.close()
+    asyncio.run(scenario())
+
+
+# 功能：连续超时不得使用之前的挂接状态；输入：旧状态与超时查询；输出：无成功回执。
+def test_payload_readback_timeout_does_not_accept_cached_state(monkeypatch):
+    base = executor_module()
+    client = event_client(base, monkeypatch)
+
+    async def refresh(current, timeout_seconds):
+        raise TimeoutError("service discovery")
+    monkeypatch.setattr(client, "_refresh_payload_snapshot", refresh)
+
+    async def scenario():
+        try:
+            observer = client._ensure_payload_observer("/payload/state")
+            observer.update(state_service="/world/w/model/p/attachment_state", detached=False)
+            with pytest.raises(TimeoutError):
+                await client.sample_payload_state("/payload/state", 0.01)
+        finally:
+            await client.close()
+    asyncio.run(scenario())
+
+
 # 功能：
 #   检查已有任务异常不会阻断其他任务取消及服务退出。
 # 输入：

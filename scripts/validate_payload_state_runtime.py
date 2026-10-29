@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--library", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--executor", type=Path)
+    parser.add_argument("--readback-count", type=int, default=1)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, GZ_PARTITION="parcel-state-probe-" + uuid.uuid4().hex)
@@ -66,7 +67,7 @@ def main():
                     initial = query_attachment_state("gz", service=service, env=env)
                     if initial["detached"] is False:
                         break
-                except (RuntimeError, subprocess.TimeoutExpired):
+                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired):
                     pass
                 if time.monotonic() > deadline:
                     raise RuntimeError("initial actual attachment not observed")
@@ -150,6 +151,11 @@ def main():
                     break
                 if time.monotonic() > deadline:
                     raise RuntimeError("reattachment not confirmed")
+            readbacks = []
+            for _ in range(args.readback_count):
+                sample = query_attachment_state("gz", service=service, env=env)
+                assert sample["detached"] is False
+                readbacks.append(sample)
             result = dict(
                 initial=initial,
                 detached=detached,
@@ -158,6 +164,7 @@ def main():
                 flight_started=False,
                 preflight_subscribed_to_state_events=False,
                 executor_client=client_receipt,
+                repeated_readbacks=readbacks,
             )
             (args.output / "receipt.json").write_text(
                 json.dumps(result, indent=2), encoding="utf-8"

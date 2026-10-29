@@ -37,7 +37,15 @@ def query_attachment_state(gz_binary: str, *, service: str, env: dict, timeout: 
     ], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError("PAYLOAD_STATE_QUERY_TRANSPORT_FAILED: " + result.stderr[-300:])
-    snapshot = parse_attachment_snapshot(result.stdout, token)
+    # Gazebo CLI 即使服务发现超时也返回零；这是暂时没有回读，不是畸形关节数据。
+    if result.stdout.strip() == "Service call timed out":
+        raise TimeoutError("PAYLOAD_STATE_QUERY_TRANSPORT_TIMEOUT")
+    try:
+        snapshot = parse_attachment_snapshot(result.stdout, token)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{exc}: stdout={result.stdout[-300:]!r}; stderr={result.stderr[-300:]!r}"
+        ) from exc
     snapshot.update(service=service, observed_at_unix_ms=int(time.time() * 1000),
                     source="gazebo-ecm-joint-query")
     return snapshot

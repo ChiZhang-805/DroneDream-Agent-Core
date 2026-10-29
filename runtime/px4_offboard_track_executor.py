@@ -2808,10 +2808,12 @@ class MavsdkOffboardClient:
 
     # 功能：异步查询当前原生关节，补偿事件丢失；不让同步 Gazebo 绑定阻塞控制循环。
     # 输入：observer：由本次起飞回执绑定的订阅；输出：新的实际快照，未知即抛错。
-    async def _refresh_payload_snapshot(self, observer: dict[str, Any]) -> dict[str, Any]:
+    async def _refresh_payload_snapshot(
+        self, observer: dict[str, Any], timeout_seconds: float = 2.5
+    ) -> dict[str, Any]:
         from dronedream_agent_core.payload_state_query import query_attachment_state
         snapshot = await asyncio.to_thread(query_attachment_state, "gz",
-            service=observer["state_service"], env=dict(os.environ), timeout=2.5)
+            service=observer["state_service"], env=dict(os.environ), timeout=timeout_seconds)
         if not observer["alive"]:
             raise RuntimeError("Gazebo payload observer closed during query")
         observer.update(
@@ -2970,7 +2972,7 @@ class MavsdkOffboardClient:
                     try:
                         await asyncio.wait_for(self._refresh_payload_snapshot(observer),
                             timeout=max(0.001, state_deadline - loop.time()))
-                    except (RuntimeError, subprocess.TimeoutExpired):
+                    except (RuntimeError, TimeoutError, subprocess.TimeoutExpired):
                         # 状态未知不复用旧事件，也不在发布挂载后再次搬动物品。
                         observer["detached"] = None
                         continue
@@ -3138,14 +3140,27 @@ class MavsdkOffboardClient:
         observer = self._ensure_payload_observer(output_topic)
         snapshot = None
         if observer.get("state_service"):
-            snapshot = await asyncio.wait_for(self._refresh_payload_snapshot(observer),
-                                             timeout=timeout_seconds)
+            # 大型场景的服务发现会短暂超时；保持飞控运行，预算内重新请求实际物理状态。
+            # 不复用之前的挂接缓存，也不重发 attach/detach 或移动已经挂接的物品。
+            while snapshot is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Gazebo payload state readback timed out")
+                try:
+                    snapshot = await self._refresh_payload_snapshot(
+                        observer, min(2.5, remaining)
+                    )
+                except (TimeoutError, subprocess.TimeoutExpired):
+                    if time.monotonic() >= deadline:
+                        raise
+                    await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
         while observer["detached"] is None:
             if observer["error"] is not None or time.monotonic() >= deadline:
                 raise RuntimeError("Gazebo payload state is unknown or invalid")
             await asyncio.sleep(min(0.02, max(0, deadline - time.monotonic())))
         topic_info = getattr(observer["node"], "topic_info", None)
-        if callable(topic_info) and not topic_info(output_topic)[0]:
+        # 请求绑定的下一物理时步快照已证明服务在线，无需再次同步查询事件发布者。
+        if snapshot is None and callable(topic_info) and not topic_info(output_topic)[0]:
             observer["detached"] = None
             raise RuntimeError("Gazebo payload state publisher disappeared")
         age = int(time.time() * 1000) - observer["observed_at_unix_ms"]
