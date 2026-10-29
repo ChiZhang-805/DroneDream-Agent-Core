@@ -40,11 +40,26 @@
           "name": "urn:ogc:def:crs:EPSG::3879"
         }
       }
+    },
+    {
+      "url": "https://kartta.hel.fi/ws/geoserver/avoindata/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=avoindata%3ARakennukset_alue_rekisteritiedot&outputFormat=application%2Fjson&srsName=EPSG%3A4326&bbox=25497638.75%2C6676630%2C25498201.25%2C6677192.5%2CEPSG%3A3879",
+      "sha256": "1af43974f196c63238c40c2984e777557dd9cc6d6dfc49222f585d5367dd2e47",
+      "retrieved_at_utc": "2026-10-28T19:31:00.812Z",
+      "layer": "avoindata:Rakennukset_alue_rekisteritiedot",
+      "filename": "buildings.geojson",
+      "feature_count": 86,
+      "totalFeatures": 86,
+      "crs": {
+        "type": "name",
+        "properties": {
+          "name": "urn:ogc:def:crs:EPSG::4326"
+        }
+      }
     }
   ],
   "license": "CC-BY-4.0",
   "attribution": "City of Helsinki and HSY; Helsinki region land-cover 2024",
-  "height_policy": "Existing model height retained. Otherwise registered floors x 3.4 m, min 4 m/max 35 m; unknown floors use explicitly unmeasured 6.8 m exterior proxy. Not measured building heights.",
+  "height_policy": "Existing model height retained. Otherwise registered floors x 3.4 m, min 4 m; unknown floors use explicitly unmeasured 6.8 m exterior proxy. Not measured building heights.",
   "features": [
     {
       "source_id": "pks_rakennukset_paivittyva.866",
@@ -9547,6 +9562,108 @@
       "floors": null,
       "register_id": null,
       "address": ""
+    },
+    {
+      "source_id": "Rakennukset_alue_rekisteritiedot.82882",
+      "part": 0,
+      "source_index": 2,
+      "polygon_xy_m": [
+        [
+          -281.79182147979736,
+          189.38867621030658
+        ],
+        [
+          -288.40410251542926,
+          183.11689474899322
+        ],
+        [
+          -287.9607872851193,
+          182.64977571368217
+        ],
+        [
+          -288.9368012882769,
+          181.70671514142305
+        ],
+        [
+          -285.84189284965396,
+          178.462513579987
+        ],
+        [
+          -284.8725373633206,
+          179.3988943239674
+        ],
+        [
+          -282.4930345527828,
+          176.89495881460607
+        ],
+        [
+          -279.42575488239527,
+          179.80984688922763
+        ],
+        [
+          -278.49478743970394,
+          178.8321303203702
+        ],
+        [
+          -276.02299112826586,
+          181.0064897267148
+        ],
+        [
+          -277.00876450538635,
+          182.12685319874436
+        ],
+        [
+          -275.9279183000326,
+          183.11775828897953
+        ],
+        [
+          -276.4216577298939,
+          183.6450728625059
+        ],
+        [
+          -275.2481153421104,
+          184.77853074017912
+        ],
+        [
+          -277.828208129853,
+          187.50987901724875
+        ],
+        [
+          -278.985104765743,
+          186.39200945105404
+        ]
+      ],
+      "holes_xy_m": [],
+      "floors": 2,
+      "building_type": "Asuinrakennus",
+      "vtj_prt": "1033095238"
+    },
+    {
+      "source_id": "Rakennukset_alue_rekisteritiedot.9101",
+      "part": 0,
+      "source_index": 2,
+      "polygon_xy_m": [
+        [
+          -200.8532977513969,
+          226.96804999094456
+        ],
+        [
+          -200.28612147271633,
+          228.59993848297745
+        ],
+        [
+          -202.2375911846757,
+          229.27744852378964
+        ],
+        [
+          -202.80476822704077,
+          227.64556033536792
+        ]
+      ],
+      "holes_xy_m": [],
+      "floors": null,
+      "building_type": "Vaja",
+      "vtj_prt": null
     }
   ]
 }

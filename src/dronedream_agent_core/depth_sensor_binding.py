@@ -1,5 +1,6 @@
 """Bind a validated simulation stream to its actual projection, never a default size."""
 
+from .contracts import CalibratedRangeSensorMount
 from .depth_projection import (
     DepthProjectionCalibration,
     ProjectedDepthFrame,
@@ -20,11 +21,13 @@ class DepthSensorBinding:
     #   vehicle_id：归属机体标识。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, registry: RuntimeSensorRegistry, *, vehicle_id: str):
+    def __init__(self, registry: RuntimeSensorRegistry, *, vehicle_id: str,
+                 mount: CalibratedRangeSensorMount | None = None):
         if (not isinstance(registry, RuntimeSensorRegistry) or type(vehicle_id) is not str
                 or not 1 <= len(vehicle_id) <= 160):
             raise ValueError("DEPTH_BINDING_CONFIGURATION_INVALID")
         self._registry, self._vehicle_id = registry, vehicle_id
+        self._mount = mount.model_copy(deep=True) if mount is not None else None
         self._layout: tuple[int, ...] | None = None
         self._calibration: DepthProjectionCalibration | None = None
 
@@ -58,7 +61,7 @@ class DepthSensorBinding:
         )
         if self._calibration is None:
             self._registry.register_contract(oakd_lite_depth_runtime_contract(
-                vehicle_id=self._vehicle_id, calibration=calibration,
+                vehicle_id=self._vehicle_id, calibration=calibration, mount=self._mount,
             ))
             self._calibration, self._layout = calibration, layout
         return result

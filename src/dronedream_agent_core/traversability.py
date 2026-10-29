@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
+import numpy as np
+
 XY = tuple[float, float]
 Point = tuple[float, float, float]
 _ALLOWED_KINDS = {"road", "path", "lawn", "parking", "open-space"}
@@ -27,7 +29,7 @@ def _number(value: Any, name: str) -> float:
 
 
 def _points(value: Any, *, polygon: bool) -> tuple[XY, ...]:
-    if not isinstance(value, list) or not (3 if polygon else 2) <= len(value) <= 4096:
+    if not isinstance(value, list) or not (3 if polygon else 2) <= len(value) <= 16384:
         raise ValueError("traversability shape has invalid vertex count")
     points = []
     for item in value:
@@ -68,6 +70,42 @@ def _polygon_inside_distance(point: XY, polygon: tuple[XY, ...]) -> float:
     return distance if inside else -distance
 
 
+class _RingDistance:
+    """Evaluate detailed survey rings without a Python loop over every edge.
+
+    All original vertices remain present. This is the same segment distance and
+    ray parity calculation as the scalar implementation, not a raster or a
+    simplified boundary. Small building footprints use the cheaper scalar path.
+    """
+
+    def __init__(self, points: tuple[XY, ...]) -> None:
+        self.points = points
+        if len(points) >= 64:
+            starts = np.asarray(points, dtype=np.float64)
+            ends = np.roll(starts, -1, axis=0)
+            self.x, self.y = starts.T
+            self.dx, self.dy = (ends - starts).T
+            self.end_y = ends[:, 1]
+            self.squared = self.dx * self.dx + self.dy * self.dy
+            self.nonzero = self.squared != 0.
+            self.nonhorizontal = self.dy != 0.
+
+    def __call__(self, point: XY) -> float:
+        if len(self.points) < 64:
+            return _polygon_inside_distance(point, self.points)
+        x, y = point
+        px, py = x - self.x, y - self.y
+        projection = np.divide(px * self.dx + py * self.dy, self.squared,
+                               out=np.zeros_like(self.squared), where=self.nonzero)
+        projection = np.clip(projection, 0., 1.)
+        distance = float(np.min(np.hypot(px - projection * self.dx,
+                                         py - projection * self.dy)))
+        crossing = self.x + np.divide((y - self.y) * self.dx, self.dy,
+                                      out=np.zeros_like(self.dy), where=self.nonhorizontal)
+        inside = np.count_nonzero(((self.y > y) != (self.end_y > y)) & (x < crossing)) % 2
+        return distance if inside else -distance
+
+
 @dataclass(frozen=True)
 class _Feature:
     identifier: str
@@ -75,13 +113,22 @@ class _Feature:
     corridor_radius: float | None = None
     lower_z: float = 0.
     upper_z: float = 0.
+    holes: tuple[tuple[XY, ...], ...] = ()
 
     def inside_distance(self, point: XY) -> float:
         if self.corridor_radius is None:
-            return _polygon_inside_distance(point, self.points)
+            exterior, holes = self.ring_distances
+            distance = exterior(point)
+            for hole in holes:
+                distance = min(distance, -hole(point))
+            return distance
         return self.corridor_radius - min(
             _segment_distance(point, a, b)
             for a, b in zip(self.points, self.points[1:], strict=False))
+
+    @cached_property
+    def ring_distances(self) -> tuple[_RingDistance, tuple[_RingDistance, ...]]:
+        return _RingDistance(self.points), tuple(_RingDistance(hole) for hole in self.holes)
 
     @cached_property
     def bounding_box(self) -> tuple[XY, XY]:
@@ -163,15 +210,19 @@ class TraversableAirspace:
                 corridor = field == "corridors"
                 points = _points(item.get("centerline_xy_m" if corridor else "polygon_xy_m"),
                                  polygon=not corridor)
-                vertex_count += len(points)
-                if vertex_count > 100000:
+                holes = tuple(_points(ring, polygon=True) for ring in item.get("holes_xy_m", []))
+                vertex_count += len(points) + sum(len(ring) for ring in holes)
+                # The complete Uutela forest source contains about 193k canopy
+                # vertices. Keep that geometry instead of dropping forest
+                # patches merely to fit the older campus-sized import budget.
+                if vertex_count > 400000:
                     raise ValueError("traversability vertex budget exceeded")
                 width = _number(item.get("width_m"), "corridor width") if corridor else None
                 if width is not None and not 0 < width <= 1000:
                     raise ValueError("traversability corridor width invalid")
                 ground = 0. if excluded else _number(item.get("ground_z_m"), "ground elevation")
                 feature = _Feature(identifier, points, width / 2 if width else None,
-                                   ground + lower, ground + upper)
+                                   ground + lower, ground + upper, holes)
                 (exclusions if excluded else areas).append(feature)
         if not areas:
             raise ValueError("traversability layer has no permitted operating areas")

@@ -798,12 +798,14 @@ class VehicleAsset(StrictModel):
             raise ValueError("vehicle dry mass exceeds maximum takeoff mass")
         # 挂载机构额定载荷和起飞总重是独立限制；实际任务取二者较小值，不能改写资产额定值。
         offset = self.collision_center_offset_model_m
-        if offset is None:
-            return self
-        if abs(offset.x) > self.body_radius_m or abs(offset.y) > self.body_radius_m:
+        if offset is not None and (
+            abs(offset.x) > self.body_radius_m or abs(offset.y) > self.body_radius_m
+        ):
             raise ValueError("vehicle collision center exceeds the horizontal body envelope")
-        if not (0.0 < offset.z <= self.body_height_m):
-            raise ValueError("vehicle collision center exceeds the vertical body envelope")
+        # Model origins need not lie inside their vertical collision geometry. A VTOL
+        # wing may be above its SDF origin; a COM-centred model may use z=0.
+        # Vector3 validates finite coordinates, while the simulator binds this
+        # translation to the actual SDF frames before granting flight authority.
         return self
 
 

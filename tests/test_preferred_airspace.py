@@ -96,17 +96,18 @@ def test_runtime_collision_envelope_also_removes_preferred_space():
     assert space.band_at((0, 0, 6)) is None
 
 
-def test_large_outdoor_domain_uses_bounded_adaptive_preference_resolution():
+@pytest.mark.parametrize("size, expected_resolution", [(300., 1.), (1000., 4.), (6000., 16.)])
+def test_large_outdoor_domain_uses_bounded_adaptive_preference_resolution(size, expected_resolution):
     space = PreferredAirspace(
         {
             "coordinate_frame": "ENU",
-            "collision_primitives": [box(sx=300.0, sy=300.0)],
+            "collision_primitives": [box(sx=size, sy=size)],
         },
         {"map": "large-campus"},
         .2,
         .4,
     )
-    assert space.preferences.resolution_m == 1.0
+    assert space.preferences.resolution_m == expected_resolution
     assert space.band_at((0.0, 0.0, 6.0)) is not None
 
 

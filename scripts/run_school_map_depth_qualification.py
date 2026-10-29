@@ -16,6 +16,7 @@ import json
 import math
 import os
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -360,9 +361,16 @@ def _load_vehicle(path: Path, *, vehicle_sdf: Path) -> VehicleAsset:
     """
 
     vehicle = VehicleAsset.model_validate_json(path.read_text(encoding="utf-8"))
-    sdf = vehicle_sdf.read_text(encoding="utf-8")
-    if "oakd-lite-depth" not in vehicle.sensors or "model://x500_depth" not in sdf:
-        raise ValueError("qualification requires the current x500 depth vehicle")
+    sdf = ET.parse(vehicle_sdf).getroot()
+    includes = {node.text for node in sdf.findall(".//include/uri")}
+    has_depth = bool(includes & {"model://x500_depth", "model://OakD-Lite"}) or any(
+        sensor.get("type") in {"depth_camera", "rgbd_camera"}
+        for sensor in sdf.findall(".//sensor")
+    )
+    if "oakd-lite-depth" not in vehicle.sensors or not has_depth:
+        raise ValueError("qualification requires an installed depth camera")
+    # The adapter resolves the actual sensor pose, optics and source files before
+    # starting Gazebo; the aircraft name itself is not a sensor qualification.
     return vehicle
 
 
@@ -542,6 +550,8 @@ def main() -> int:
         ),
     )
     parser.add_argument("--px4-root", type=Path, default=Path("/opt/PX4-Autopilot"))
+    parser.add_argument("--px4-sitl-model", default="x500",
+                        help="PX4 airframe matching the selected physical SDF")
     parser.add_argument(
         "--ros-workspace",
         type=Path,
@@ -575,6 +585,13 @@ def main() -> int:
                         help=('Explicit bounded delay bridge; '
                               'independent controller attribution retained'))
     args = parser.parse_args()
+    # PX4 and sensor workers change working directories. Bind CLI paths to the
+    # caller's directory once so relative inputs keep the same meaning there.
+    for name, value in vars(args).items():
+        if isinstance(value, Path):
+            setattr(args, name, value.resolve())
+        elif isinstance(value, list) and value and all(isinstance(item, Path) for item in value):
+            setattr(args, name, [item.resolve() for item in value])
     if args.independent_route_control and (
         args.training_data_collection
         or args.experimental_map_fusion
@@ -966,6 +983,7 @@ def main() -> int:
         controller_params_path=args.controller_params,
         px4_root=args.px4_root,
         executor_path=checkpoint_executor,
+        px4_sitl_model=args.px4_sitl_model,
         ros_workspace=args.ros_workspace,
         checkpoint_contract_path=checkpoint_path,
         runtime_action_contract_path=action_path,

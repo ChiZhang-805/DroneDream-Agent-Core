@@ -60,7 +60,8 @@ def test_actual_source_preserves_old_footprints_and_covers_every_official_polygo
     base = module._base_buildings(gazebo / "meshes/kumpula-buildings.obj", semantic)
     report = module.install_extent_buildings(gazebo, semantic, SOURCE, BOUNDS)
     new = module._base_buildings(gazebo / "meshes/kumpula-buildings.obj", semantic)
-    assert len(base) == 42
+    assert len(base) == 85
+    assert semantic["building_count"] == 86
     assert base.keys() <= new.keys()
     for name, old in base.items():
         assert old["polygon"].difference(new[name]["polygon"].buffer(1e-8)).area < 1e-6
@@ -99,6 +100,23 @@ def test_concave_building_roof_does_not_cover_open_courtyard(tmp_path):
     ])
     assert top.symmetric_difference(polygon).area < 1e-10
     _normals(raw)
+
+
+def test_enclosed_courtyard_survives_mesh_export_and_reimport(tmp_path):
+    polygon = Polygon([(0, 0), (20, 0), (20, 20), (0, 20)],
+                      [[(5, 5), (5, 15), (15, 15), (15, 5)]])
+    mesh = tmp_path / "meshes" / "courtyard.obj"
+    mesh.parent.mkdir()
+    module._write_mesh(mesh, {"courtyard": {
+        "polygon": polygon, "primitive": module._primitive("courtyard", polygon, 48),
+        "material": "context",
+    }})
+    triangles, closed = _obj_triangles(mesh.read_bytes(), np.ones(3))
+    assert closed
+    result = module._base_buildings(mesh, {})["courtyard"]
+    assert result["polygon"].symmetric_difference(polygon).area < 1e-10
+    assert result["primitive"]["size_z"] == 48
+    _normals(mesh.read_bytes())
 
 
 def test_building_snapshot_cannot_silently_cover_a_different_map_extent(tmp_path):

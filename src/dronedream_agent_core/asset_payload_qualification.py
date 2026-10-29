@@ -129,16 +129,25 @@ def separate_release_from_landing(route: GraphRoute, graph: MapAsset, vehicle: V
     route, graph = route.model_copy(deep=True), graph.model_copy(deep=True)
     if route.start_node != route.goal_node or route.positions_m[0] != route.positions_m[-1]:
         raise ValueError("ASSET_PAYLOAD_REQUIRES_RETURN_TO_LAUNCH")
-    distance = max(2.0, 4 * vehicle.body_radius_m)
-    remaining = distance
+    distance = max(2.0, 4 * vehicle.body_radius_m + 0.1)
+    landing = route.positions_m[-1]
     turn = len(route.positions_m) // 2
     for index in range(len(route.positions_m) - 2, turn - 1, -1):
         first, last = route.positions_m[index : index + 2]
         length = math.dist((first.x, first.y, first.z), (last.x, last.y, last.z))
-        if length < remaining:
-            remaining -= length
+        if math.hypot(first.x - landing.x, first.y - landing.y) < distance:
             continue
-        fraction = 1 - remaining / length
+        # Separation is a horizontal footprint, not accumulated 3D path length.
+        # Intersect the original return segment with that footprint's boundary;
+        # slopes and bends must not place the parcel back inside the landing area.
+        dx, dy = first.x - last.x, first.y - last.y
+        lx, ly = last.x - landing.x, last.y - landing.y
+        a = dx * dx + dy * dy
+        b = 2 * (lx * dx + ly * dy)
+        c = lx * lx + ly * ly - distance * distance
+        from_last = (-b + math.sqrt(max(0.0, b * b - 4 * a * c))) / (2 * a)
+        fraction = 1 - from_last
+        remaining = from_last * length
         if fraction <= 1e-8:
             release_id = route.node_ids[index]
             graph.named_entities["qualification-release"] = release_id

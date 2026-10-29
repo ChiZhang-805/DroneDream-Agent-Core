@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-_PX4_GAZEBO_COMMIT = "5577035667afb4b63fe1f966fb1a58bbb05d905b"
+_PX4_GAZEBO_COMMIT = "e05f4312d3f28aa621157610584a4870406cb6d3"
 _PX4_GAZEBO_REPOSITORY = "https://github.com/PX4/PX4-gazebo-models.git"
 _PX4_GAZEBO_LICENSE = {
     "spdx_id": "BSD-3-Clause",
@@ -119,8 +119,8 @@ _RESOURCES = (
         excluded_from=["long_range_fixed_wing"],
         dependency_models=["x500", "x500_base", "OakD-Lite"],
         sensors=["air_pressure", "camera", "depth_camera", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
-        joint_count=6,
+        plugin_count=4,
+        joint_count=5,
         source_files=8,
         source_bytes=165987,
         source_sha256="38ae8ffc3926ffbec18317ecbc36c3bb36409c3819a28f6887e4087e2dc95f07",
@@ -146,11 +146,11 @@ _RESOURCES = (
             "magnetometer",
             "navsat",
         ],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=7,
         source_files=2,
-        source_bytes=2529,
-        source_sha256="3af00ba3c5ff3add7031ded1d1fc840b1169e4bba619efd226bf2d8d6bc91071",
+        source_bytes=2477,
+        source_sha256="25db0c679c09e1b2438ac5089d22a021c326c868b003915b07b73dd3ea208345",
     ),
     _px4_resource(
         "x500_lidar_down",
@@ -165,11 +165,11 @@ _RESOURCES = (
         excluded_from=["forward_obstacle_avoidance_without_additional_sensor"],
         dependency_models=["x500", "x500_base", "LW20"],
         sensors=["air_pressure", "gpu_lidar", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=6,
         source_files=2,
-        source_bytes=2192,
-        source_sha256="732a4412e415b5a3aaf326929fd9c56a958fd8aa97d94d3c4b6fe417d6c71602",
+        source_bytes=2226,
+        source_sha256="c92caf10919bba42cb3fafc478fe8a28d9f2bf3d18be3bcb164c5f733060eb85",
     ),
     _px4_resource(
         "x500_lidar_front",
@@ -184,11 +184,11 @@ _RESOURCES = (
         excluded_from=["full_surround_avoidance_without_additional_sensor"],
         dependency_models=["x500", "x500_base", "LW20"],
         sensors=["air_pressure", "gpu_lidar", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=6,
         source_files=2,
-        source_bytes=2209,
-        source_sha256="296902046675f8b3dd4f7fa383d9150ec72087e8ad36485be9df35fde4d45dd3",
+        source_bytes=2239,
+        source_sha256="f3c76f716840db46715b20671ac5aad97194f2d9311d75b1aed6c2b2271c5834",
     ),
     _px4_resource(
         "x500_mono_cam",
@@ -203,7 +203,7 @@ _RESOURCES = (
         excluded_from=["metric_depth_without_additional_sensor"],
         dependency_models=["x500", "x500_base", "mono_cam"],
         sensors=["air_pressure", "camera", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=5,
         source_files=2,
         source_bytes=789,
@@ -222,7 +222,7 @@ _RESOURCES = (
         excluded_from=["forward_obstacle_avoidance_without_additional_sensor"],
         dependency_models=["x500", "x500_base", "mono_cam"],
         sensors=["air_pressure", "camera", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=5,
         source_files=2,
         source_bytes=847,
@@ -241,8 +241,8 @@ _RESOURCES = (
         excluded_from=["depth_only_vertical_clearance", "long_range_fixed_wing"],
         dependency_models=["x500", "x500_base", "lidar_2d_v2"],
         sensors=["air_pressure", "gpu_lidar", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
-        joint_count=6,
+        plugin_count=4,
+        joint_count=5,
         source_files=2,
         source_bytes=833,
         source_sha256="70b8e20e07db9dea58005e08a62dcf98d9cffba5d9f90a644db3a3eeca6758c1",
@@ -260,11 +260,11 @@ _RESOURCES = (
         excluded_from=["camera_perception_without_camera_dependency", "long_range_fixed_wing"],
         dependency_models=["x500", "x500_base"],
         sensors=["air_pressure", "imu", "magnetometer", "navsat", "odometry_publisher"],
-        plugin_count=6,
+        plugin_count=5,
         joint_count=4,
         source_files=2,
-        source_bytes=629,
-        source_sha256="b36b0c5c9eacafd6cf3a35671ce14e17a3fbe059467caee93b59030bb805b4fd",
+        source_bytes=639,
+        source_sha256="c6ae7f6def9dd34862564ce72e75c10a3795514fafde8c4ee12c260347227474",
     ),
     _px4_resource(
         "x500_gimbal",
@@ -277,7 +277,7 @@ _RESOURCES = (
         excluded_from=["depth_avoidance_without_additional_sensor", "long_range_fixed_wing"],
         dependency_models=["x500", "x500_base", "gimbal"],
         sensors=["air_pressure", "camera", "camera_imu", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=7,
         joint_count=8,
         source_files=2,
         source_bytes=727,
@@ -296,11 +296,11 @@ _RESOURCES = (
         excluded_from=["indoor_autonomy_without_perception", "long_range_fixed_wing"],
         dependency_models=["x500_base"],
         sensors=["air_pressure", "imu", "magnetometer", "navsat"],
-        plugin_count=5,
+        plugin_count=4,
         joint_count=4,
         source_files=8,
-        source_bytes=169732,
-        source_sha256="48b39c6957343b671ea768f459f0f24e14326daaaee85439d6c5bf9fc504c0fd",
+        source_bytes=169601,
+        source_sha256="9bf533928ccb48bc981dfc2fdbd3abb4001b84ecbb5a2d7f968e9137428de7fd",
     ),
     _px4_resource(
         "standard_vtol",
@@ -316,8 +316,8 @@ _RESOURCES = (
         plugin_count=11,
         joint_count=8,
         source_files=7,
-        source_bytes=2600460,
-        source_sha256="ffbed1169184b0ed94e83171f9597f4d9d079415e496b1b466b8dce18ded1d6a",
+        source_bytes=2600237,
+        source_sha256="c8758d29612c3ca1ae646649c966342c9cf91fbea11ef27849c14546cd579c40",
     ),
     _px4_resource(
         "tiltrotor",
@@ -333,8 +333,8 @@ _RESOURCES = (
         plugin_count=13,
         joint_count=11,
         source_files=2,
-        source_bytes=30056,
-        source_sha256="d693a26386b438bc80ecb075af1a83c54eb78b3bb9bc1636b747708cc67294d1",
+        source_bytes=29799,
+        source_sha256="bb062e1711a3555ae9187ce8e69f55ef9ae1ce18d6bada3c7131a6a16a4c0b0b",
     ),
     _px4_resource(
         "quadtailsitter",
@@ -352,8 +352,8 @@ _RESOURCES = (
         plugin_count=5,
         joint_count=5,
         source_files=5,
-        source_bytes=1349448,
-        source_sha256="0a72342d9c4701e5d9fb8a3be9cb4d3dd6391978aa1bed049ef2de34f30832a9",
+        source_bytes=1349233,
+        source_sha256="581e51d6e447d0336413fea55678f6a82f8794d9c3930ba9de6799c732c9fdd4",
     ),
 )
 
@@ -362,7 +362,7 @@ def vehicle_resource_catalog() -> dict[str, object]:
     """Return detached catalog data so request handlers cannot mutate policy."""
     return {
         "schema_version": "dronedream.vehicle-resource-catalog.v1",
-        "catalog_revision": "2026-10-11.1",
+        "catalog_revision": "px4-runtime-e05f4312",
         "resources": deepcopy(list(_RESOURCES)),
     }
 

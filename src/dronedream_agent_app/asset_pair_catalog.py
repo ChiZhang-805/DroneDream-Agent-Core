@@ -149,13 +149,14 @@ def _pair_record(
         status = "compatible_requires_qualification"
         if vehicle_class == "vtol":
             reasons = [
-                "The map provides an outdoor operating area suitable for VTOL "
-                "launch, transition, and recovery planning.",
+                "Outdoor map candidate only: launch, transition, turning, and recovery "
+                "clearance must be established for this exact VTOL and map. "
+                "A multicopter route does not establish VTOL suitability.",
             ]
         else:
             reasons = [
-                "The multicopter geometry can operate in this environment when "
-                "its sensor limitations are respected.",
+                "Multicopter candidate only: the exact vehicle envelope, sensing "
+                "coverage, and route clearance still require qualification on this map.",
             ]
         required_gates = [
             "gazebo_dependency_resolution",

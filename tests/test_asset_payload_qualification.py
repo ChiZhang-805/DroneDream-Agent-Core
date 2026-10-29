@@ -558,3 +558,20 @@ def test_qualification_main_initializes_native_run_before_publishing_inputs(
     else:
         assert qualification_runner.main() == 0
         assert observed == ["native-return", "verify"]
+
+def test_large_vehicle_release_uses_horizontal_separation_on_a_sloped_return(course):
+    import math
+    _, _, vehicle, sdf, semantic_sha = course
+    vehicle = vehicle.model_copy(update={'body_radius_m': 1.2})
+    source = GraphRoute(
+        start_node='launch', goal_node='pickup', node_ids=['launch', 'pickup'],
+        edge_ids=['outbound'], positions_m=[Vector3(x=-480., y=-518., z=2.),
+                                         Vector3(x=-460., y=-498., z=18.)],
+        route_length_m=math.sqrt(1056), all_edges_flight_verified=False,
+    )
+    route, graph = _qualification_route(source, point_count=None, speed_limit_mps=6.)
+    route, graph = separate_release_from_landing(route, graph, vehicle)
+    point, landing = route.positions_m[-2:]
+    assert math.hypot(point.x - landing.x, point.y - landing.y) == pytest.approx(4.9)
+    assert route.route_length_m == pytest.approx(2 * math.sqrt(1056))
+    assert build_asset_payload_course(route, graph, vehicle, sdf, semantic_sha)

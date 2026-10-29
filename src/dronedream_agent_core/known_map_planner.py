@@ -114,6 +114,7 @@ class KnownMapMetricPlanner:
     """A* planner whose occupancy source is qualified metric collision geometry."""
 
     _SPATIAL_BIN_M = 2.0
+    _MAX_INDEX_CELLS = 2_000_000
 
     # 功能：
     #   1. 从同一有界文件快照解析静态几何并计算摘要，可与独立净空报告绑定。
@@ -174,17 +175,26 @@ class KnownMapMetricPlanner:
         # 圆形障碍检查采用机体外包球，索引必须使用同样的外包半径，不能只取最大半轴。
         expansion = math.hypot(self.vehicle_radius_m, self.vehicle_half_height_m)
         expansion += self._clearance_cap_m
-        indexed_cells = 0
+        bounds = []
         for index, primitive in enumerate(primitives):
             low, high = _primitive_bounds(primitive, expansion)
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[axis] > high[axis] for axis in range(3)
             ):
                 raise ValueError("metric planner primitive bounds invalid")
+            bounds.append((low, high))
+        # Detailed city footprints contain many thin, tall boxes. Coarsen only
+        # the lookup grid to fit them, not their geometry or clearance margin.
+        # Exact primitive distances still decide every candidate's clearance.
+        self._spatial_bin_m = self._SPATIAL_BIN_M
+        while True:
+            counts = [math.prod(self._bin_key(high)[axis] - self._bin_key(low)[axis] + 1
+                                for axis in range(3)) for low, high in bounds]
+            if sum(counts) <= self._MAX_INDEX_CELLS and max(counts, default=0) <= 1_000_000:
+                break
+            self._spatial_bin_m *= 2
+        for index, (low, high) in enumerate(bounds):
             bins = self._bin_range(low, high)
-            indexed_cells += len(bins)
-            if indexed_cells > 2_000_000:
-                raise ValueError("metric planner spatial index budget exceeded")
             for key in bins:
                 self._spatial[key].append(index)
 
@@ -196,7 +206,7 @@ class KnownMapMetricPlanner:
     # 输出：
     #   key：空间索引的整数键。
     def _bin_key(self, point: Point) -> GridKey:
-        return tuple(math.floor(value / self._SPATIAL_BIN_M) for value in point)  # type: ignore[return-value]
+        return tuple(math.floor(value / self._spatial_bin_m) for value in point)  # type: ignore[return-value]
 
     # 功能：
     #   枚举包围盒覆盖的空间桶，在分配列表前检查单图元索引预算。

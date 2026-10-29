@@ -230,5 +230,9 @@ def test_depth_qualification_loads_the_flown_vehicle_contract(tmp_path: Path) ->
     assert _load_vehicle(metadata, vehicle_sdf=sdf).asset_id == "vehicle-current"
 
     sdf.write_text("<sdf><include><uri>model://x500</uri></include></sdf>", encoding="utf-8")
-    with pytest.raises(ValueError, match="current x500 depth vehicle"):
+    with pytest.raises(ValueError, match="installed depth camera"):
         _load_vehicle(metadata, vehicle_sdf=sdf)
+
+    sdf.write_text("<sdf><model><include><uri>model://standard_vtol</uri></include>"
+                   "<include><uri>model://OakD-Lite</uri></include></model></sdf>", encoding="utf-8")
+    assert _load_vehicle(metadata, vehicle_sdf=sdf).asset_id == "vehicle-current"

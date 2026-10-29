@@ -27,7 +27,7 @@ def test_reviewed_vehicle_catalog_is_pinned_preparsed_and_unqualified() -> None:
             "https://github.com/PX4/PX4-gazebo-models.git"
         )
         assert resource["source"]["git_ref"] == (
-            "5577035667afb4b63fe1f966fb1a58bbb05d905b"
+            "e05f4312d3f28aa621157610584a4870406cb6d3"
         )
         assert resource["source"]["subpath"].startswith("models/")
         assert resource["source"]["expected_kind"] == "vehicle"

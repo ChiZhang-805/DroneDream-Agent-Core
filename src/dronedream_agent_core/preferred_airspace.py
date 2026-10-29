@@ -41,7 +41,7 @@ class AirspacePreferences:
     def __post_init__(self) -> None:
         if any(type(v) not in (int, float) or not math.isfinite(v) for v in asdict(self).values()):
             raise ValueError("AIRSPACE_PREFERENCES_NONFINITE")
-        if not (0.25 <= self.resolution_m <= 2 and 0 <= self.margin_m <= 3
+        if not (0.25 <= self.resolution_m and 0 <= self.margin_m <= 3
                 and 0 <= self.indoor_lower_fraction < self.indoor_upper_fraction <= 1
                 and 0 < self.outdoor_lower_agl_m < self.outdoor_upper_agl_m <= 50):
             raise ValueError("AIRSPACE_PREFERENCES_INVALID")
@@ -115,13 +115,10 @@ class PreferredAirspace:
             # field is advisory, so select the finest bounded resolution that
             # fits the existing column budget; collision and live-sensor
             # checks retain their independent full precision.
-            while (
-                _column_count(self.domain, selected_preferences.resolution_m) > 200_000
-                and selected_preferences.resolution_m < 2.0
-            ):
+            while _column_count(self.domain, selected_preferences.resolution_m) > 200_000:
                 selected_preferences = replace(
                     selected_preferences,
-                    resolution_m=min(2.0, selected_preferences.resolution_m * 2.0),
+                    resolution_m=selected_preferences.resolution_m * 2.0,
                 )
         self.preferences = selected_preferences
         self.binding = {"sources": binding, "semantic_sha256": sha256_json(semantic),

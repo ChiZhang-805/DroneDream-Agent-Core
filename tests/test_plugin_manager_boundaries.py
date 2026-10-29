@@ -146,6 +146,44 @@ def test_nested_manifest_is_a_real_payload_and_reimport_checks_installed_bytes(m
     assert (root / "nested/plugin.json").read_bytes() == b"changed"
 
 
+def test_official_seed_restores_missing_version_without_resetting_active_plugin(manager, tmp_path):
+    archive = panel_bundle(tmp_path / "bundle.zip")
+    imported = manager.import_bundle(archive)
+    manager.store.set_plugin_lifecycle("example.boundary", enabled=True, status="healthy", health="healthy")
+    with manager.store.transaction() as connection:
+        connection.execute("DELETE FROM plugin_versions WHERE plugin_id = ?", ("example.boundary",))
+    official = tmp_path / "official"
+    official.mkdir()
+    (official / "bundle.zip").write_bytes(archive.read_bytes())
+    (official / "index.json").write_text(json.dumps({
+        "schema_version": "dronedream.official-plugin-index.v1",
+        "plugins": [{"plugin_id": "example.boundary", "version": "1.0.0",
+                     "file": "bundle.zip", "sha256": imported["package_sha256"]}],
+    }))
+    manager.seed_official_plugins(official)
+    restored = manager.store.get_plugin_version("example.boundary", "1.0.0")
+    assert restored["package_sha256"] == imported["package_sha256"]
+    assert manager.store.get_plugin("example.boundary")["enabled"] is True
+    manager.seed_official_plugins(official)
+    assert len(manager.store.list_plugin_versions("example.boundary")) == 1
+
+
+def test_official_recovery_does_not_adopt_changed_or_unapproved_directory(manager, tmp_path):
+    archive = panel_bundle(tmp_path / "bundle.zip")
+    imported = manager.import_bundle(archive)
+    with manager.store.transaction() as connection:
+        connection.execute("DELETE FROM plugin_versions WHERE plugin_id = ?", ("example.boundary",))
+    with pytest.raises(PluginManagerError, match="DIRECTORY_UNTRACKED"):
+        manager.import_bundle(archive)
+    root = Path(imported["bundle_root"])
+    (root / "ui/panel.json").write_bytes(b"changed")
+    with pytest.raises(PluginManagerError, match="HASH_MISMATCH"):
+        manager.import_bundle(archive, expected_identity=("example.boundary", "1.0.0"))
+    assert (root / "ui/panel.json").read_bytes() == b"changed"
+    with pytest.raises(KeyError):
+        manager.store.get_plugin_version("example.boundary", "1.0.0")
+
+
 # 功能：
 #   验证安装回执保存失败时撤回数据库和本次创建目录，保留用户提供的归档。
 # 输入：

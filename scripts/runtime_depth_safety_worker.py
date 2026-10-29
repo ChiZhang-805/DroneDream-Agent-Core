@@ -145,7 +145,6 @@ from dronedream_agent_core.runtime_sensor_contracts import (
     RuntimeSensorRegistry,
     forward_camera_motion_alignment,
     forward_rgb_can_inform_control,
-    oakd_lite_depth_sensor_contract,
 )
 from dronedream_agent_core.sensor_bridge import MetricRangeSensorBridge
 from dronedream_agent_core.sensor_frame_clock import (
@@ -2728,7 +2727,10 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
                              if flight_dynamics_envelope is not None else 0.),
         "max_acceleration_mps2": min(args.max_acceleration, vehicle.max_acceleration_mps2)},
         strict=True)
-    from dronedream_agent_core.simulation_sensor_frames import load_simulation_frame_contract
+    from dronedream_agent_core.simulation_sensor_frames import (
+        load_simulation_frame_contract,
+        simulation_depth_mount,
+    )
 
     observer_frames = load_simulation_frame_contract(
         args.command.with_name("simulation-sensor-frames.json"), vehicle_name=args.vehicle,
@@ -2926,9 +2928,9 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     # of thousands of static voxels. Later sensor objects remain collectible;
     # ExitStack stops their owners before releasing this baseline on every exit.
     cleanup.enter_context(retained_interpreter_baseline())
-    mount = oakd_lite_depth_sensor_contract()
+    mount = simulation_depth_mount(observer_frames)
     sensor_registry = RuntimeSensorRegistry()
-    depth_binding = DepthSensorBinding(sensor_registry, vehicle_id=vehicle.asset_id)
+    depth_binding = DepthSensorBinding(sensor_registry, vehicle_id=vehicle.asset_id, mount=mount)
     fusion = RuntimePerceptionFusion(
         world=world,
         accepted_sensor_ids={"oakd-lite-depth"},
@@ -3298,7 +3300,7 @@ def _run_worker(cleanup: contextlib.ExitStack) -> int:
     latest_semantic_label: tuple[Any, float] | None = None
     rgb_history: deque[tuple[Any, float]] = deque(maxlen=12)
     semantic_label_history: deque[tuple[Any, float]] = deque(maxlen=12)
-    rgb_binding = ForwardRgbBinding(sensor_registry, vehicle_id=vehicle.asset_id)
+    rgb_binding = ForwardRgbBinding(sensor_registry, vehicle_id=vehicle.asset_id, mount=mount)
     last_dataset_rgb_received_at = -1.0
     camera_profile_recorded = False
 

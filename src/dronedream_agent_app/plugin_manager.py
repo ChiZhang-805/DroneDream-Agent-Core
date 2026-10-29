@@ -1683,7 +1683,18 @@ class PluginManager:
                 raise PluginManagerError("PLUGIN_VERSION_IMMUTABLE")
             if destination.exists():
                 if existing_version is None:
-                    raise PluginManagerError("PLUGIN_VERSION_DIRECTORY_UNTRACKED")
+                    # A completed official extraction can survive an interrupted
+                    # version registration. Adopt only the exact verified bundle;
+                    # the normal transaction below restores its missing record.
+                    if expected_identity is None:
+                        raise PluginManagerError("PLUGIN_VERSION_DIRECTORY_UNTRACKED")
+                    if read_plugin_file(
+                        destination / "plugin.json", limit=2 * 1024 * 1024
+                    ) != read_plugin_file(manifest_path, limit=2 * 1024 * 1024):
+                        raise PluginManagerError("OFFICIAL_PLUGIN_MANIFEST_MISMATCH")
+                    if current is not None and current["version"] == manifest.version:
+                        if current["package_sha256"] != package_sha256:
+                            raise PluginManagerError("OFFICIAL_PLUGIN_VERSION_DRIFT")
                 self._verify_integrity(destination, manifest)
                 shutil.rmtree(staging)
             else:

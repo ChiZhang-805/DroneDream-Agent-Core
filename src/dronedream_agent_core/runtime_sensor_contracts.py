@@ -536,12 +536,13 @@ def oakd_lite_depth_runtime_contract(
     *,
     vehicle_id: str,
     calibration: DepthProjectionCalibration,
+    mount: CalibratedRangeSensorMount | None = None,
     required_for_motion: bool = True,
     maximum_sample_age_seconds: float = LOCAL_RANGE_OBSERVATION_MAXIMUM_AGE_SECONDS,
 ) -> RuntimeSensorContract:
     if type(required_for_motion) is not bool:
         raise ValueError("required for motion must be boolean")
-    mount = oakd_lite_depth_sensor_contract()
+    mount = mount or oakd_lite_depth_sensor_contract()
     if not isinstance(calibration, DepthProjectionCalibration):
         raise ValueError("DEPTH_PROJECTION_CALIBRATION_REQUIRED")
     if (calibration.minimum_depth_m != mount.minimum_range_m
@@ -588,6 +589,7 @@ def oakd_lite_forward_rgb_runtime_contract(
     vehicle_id: str,
     width: int,
     height: int,
+    mount: CalibratedRangeSensorMount | None = None,
     horizontal_fov_rad: float = 1.204,
     required_for_motion: bool = True,
     maximum_sample_age_seconds: float = 0.5,
@@ -600,7 +602,7 @@ def oakd_lite_forward_rgb_runtime_contract(
         raise ValueError("forward RGB field of view is invalid")
     if type(required_for_motion) is not bool:
         raise ValueError("required for motion must be boolean")
-    mount = oakd_lite_depth_sensor_contract()
+    mount = mount or oakd_lite_depth_sensor_contract()
     intrinsics = {
         "sensor_model": "IMX214",
         "width": width,

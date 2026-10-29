@@ -13,8 +13,45 @@ from dronedream_agent_core.simulation_sensor_frames import (
     inspect_simulation_sensor_frames,
     load_simulation_frame_contract,
     select_canonical_poses,
+    simulation_depth_mount,
     simulation_pose_time_ns,
 )
+
+
+def test_simulated_mount_uses_selected_airframe_geometry():
+    # A body turned 90 degrees and a camera another 90 degrees from it.
+    q = math.sqrt(.5)
+    value = {
+        "depth_mount_verified": True,
+        "canonical_at_rest": {"position_m": [0., 0., 0.],
+                              "orientation_wxyz": [q, 0., 0., q]},
+        "optical_at_rest": {"position_m": [1., 2.6, .4],
+                            "orientation_wxyz": [0., 0., 0., 1.]},
+        "collision_center_model_m": [1., 2., .3],
+        "depth_optics": {"near_m": .2, "far_m": 19.1},
+    }
+    mount = simulation_depth_mount(value)
+    assert list(mount.translation_body_m.model_dump().values()) == pytest.approx([.6, 0., .1])
+    assert list(mount.orientation_body_from_sensor.model_dump().values()) == pytest.approx(
+        [q, 0., 0., q])
+
+
+def test_simulated_x500_mount_retains_existing_calibration():
+    from dronedream_agent_core.runtime_sensor_contracts import oakd_lite_depth_sensor_contract
+    value = {
+        "depth_mount_verified": True,
+        "canonical_at_rest": {"position_m": [0., 0., .242],
+                              "orientation_wxyz": [1., 0., 0., 0.]},
+        "optical_at_rest": {"position_m": [.13233, 0., .26078],
+                            "orientation_wxyz": [1., 0., 0., 0.]},
+        "collision_center_model_m": [0., 0., .228],
+        "depth_optics": {"near_m": .2, "far_m": 19.1},
+    }
+    mount = simulation_depth_mount(value)
+    old = oakd_lite_depth_sensor_contract()
+    assert mount.translation_body_m.x == pytest.approx(old.translation_body_m.x)
+    assert mount.translation_body_m.z == pytest.approx(old.translation_body_m.z)
+    assert mount.orientation_body_from_sensor == old.orientation_body_from_sensor
 
 
 # 功能：
@@ -257,6 +294,30 @@ def test_runtime_parser_requires_camera_when_declared_required(tmp_path):
                     encoding="utf-8")
     with pytest.raises(ValueError, match="DEPTH_SENSOR_MISSING"):
         inspect_simulation_sensor_frames(path, [tmp_path], collision_center_model_m=[0, 0, 0])
+
+
+def test_runtime_parser_calibrates_camera_from_rotated_body_and_sensor_poses(tmp_path):
+    runtime_sdformat()
+    path = tmp_path / "model.sdf"
+    path.write_text('''<sdf version="1.9"><model name="test" canonical_link="body">
+      <link name="body"><pose>1 2 0.3 0 0 1.5707963267948966</pose></link>
+      <link name="camera_link">
+        <pose relative_to="body">0.6 0 0.1 0 0 1.5707963267948966</pose>
+        <sensor name="StereoOV7251" type="depth_camera">
+          <camera><horizontal_fov>1.274</horizontal_fov>
+            <image><width>640</width><height>480</height><format>R_FLOAT32</format></image>
+            <clip><near>0.2</near><far>19.1</far></clip>
+          </camera>
+        </sensor>
+      </link>
+      <joint name="mount" type="fixed"><parent>body</parent><child>camera_link</child></joint>
+    </model></sdf>''', encoding="utf-8")
+    frames = inspect_simulation_sensor_frames(
+        path, [tmp_path], collision_center_model_m=[1., 2., .3])
+    mount = simulation_depth_mount(frames)
+    assert list(mount.translation_body_m.model_dump().values()) == pytest.approx([.6, 0., .1])
+    assert list(mount.orientation_body_from_sensor.model_dump().values()) == pytest.approx(
+        [math.sqrt(.5), 0., 0., math.sqrt(.5)])
 
 
 # 功能：

@@ -9,6 +9,21 @@ from dronedream_agent_core.runtime_sensor_contracts import RuntimeSensorRegistry
 from dronedream_agent_core.sensor_frame_clock import SensorFrameTime
 
 
+def test_rgb_registry_uses_selected_mount_not_x500_default():
+    from dronedream_agent_core.hashing import sha256_json
+    from dronedream_agent_core.runtime_sensor_contracts import oakd_lite_depth_sensor_contract
+    mount = oakd_lite_depth_sensor_contract()
+    mount.translation_body_m.x = .6
+    expected = sha256_json({"translation_body_m": mount.translation_body_m,
+                           "orientation_body_from_sensor": mount.orientation_body_from_sensor})
+    registry = RuntimeSensorRegistry()
+    binding = ForwardRgbBinding(registry, vehicle_id="vtol", mount=mount)
+    mount.translation_body_m.x = .1
+    pixels, clock = sample()
+    assert binding.register(pixels, **clock)
+    assert registry.contract("oakd-lite-forward-rgb").extrinsics_sha256 == expected
+
+
 # 功能：
 #   建立来源与接收时间相同的直连 RGB 样本，默认像素包含足够的空间对比。
 # 输入：

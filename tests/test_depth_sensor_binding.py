@@ -7,6 +7,20 @@ from dronedream_agent_core.depth_sensor_binding import DepthSensorBinding
 from dronedream_agent_core.runtime_sensor_contracts import RuntimeSensorRegistry
 
 
+def test_selected_mount_is_bound_and_frozen_in_registry():
+    from dronedream_agent_core.hashing import sha256_json
+    from dronedream_agent_core.runtime_sensor_contracts import oakd_lite_depth_sensor_contract
+    mount = oakd_lite_depth_sensor_contract()
+    mount.translation_body_m.x = .6
+    expected = sha256_json({"translation_body_m": mount.translation_body_m,
+                           "orientation_body_from_sensor": mount.orientation_body_from_sensor})
+    registry = RuntimeSensorRegistry()
+    binding = DepthSensorBinding(registry, vehicle_id="vtol", mount=mount)
+    mount.translation_body_m.x = .1
+    binding.project(frame())
+    assert registry.contract("oakd-lite-depth").extrinsics_sha256 == expected
+
+
 # 功能：
 #   生成明确尺寸、行跨度和轴向浮点编码的合成深度消息。
 # 输入：

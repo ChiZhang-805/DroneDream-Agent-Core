@@ -15,8 +15,37 @@ import numpy as np
 
 from dronedream_plugin_sdk.protocol import decode_json
 
+from .contracts import CalibratedRangeSensorMount, QuaternionWxyz, Vector3
 from .hashing import sha256_json
 from .plugin_files import read_plugin_file
+
+
+def simulation_depth_mount(frames: dict) -> CalibratedRangeSensorMount:
+    """Derive the simulated camera calibration from the resolved SDF poses.
+
+    The caller supplies the startup contract bound to the selected vehicle.
+    A different airframe must not inherit X500's camera position.
+    """
+    if frames.get("depth_mount_verified") is not True:
+        raise ValueError("SIMULATION_FRAME_DEPTH_SENSOR_MISSING")
+    _, body_rotation = _pose_components(frames["canonical_at_rest"])
+    optical_position, _ = _pose_components(frames["optical_at_rest"])
+    center = _vector(frames["collision_center_model_m"], 3)
+    offset = body_rotation.T @ (optical_position - center)
+    # conjugate(body) * optical, both expressed in the same model frame.
+    a = _vector(frames["canonical_at_rest"]["orientation_wxyz"], 4)
+    b = _vector(frames["optical_at_rest"]["orientation_wxyz"], 4)
+    a = a * np.array([1., -1., -1., -1.])
+    scalar = a[0] * b[0] - np.dot(a[1:], b[1:])
+    vector = a[0] * b[1:] + b[0] * a[1:] + np.cross(a[1:], b[1:])
+    optics = frames["depth_optics"]
+    return CalibratedRangeSensorMount(
+        sensor_id="oakd-lite-depth",
+        translation_body_m=Vector3(**dict(zip("xyz", offset.tolist(), strict=True))),
+        orientation_body_from_sensor=QuaternionWxyz(
+            w=float(scalar), **dict(zip("xyz", vector.tolist(), strict=True))),
+        minimum_range_m=optics["near_m"], maximum_range_m=optics["far_m"],
+    )
 
 
 # 功能：
@@ -321,17 +350,6 @@ def inspect_simulation_sensor_frames(
         optical_pose = serialize(sensor.semantic_pose().resolve("__model__"))
         rotation = _rotation(body_pose["orientation_wxyz"])
         sensor_offset = rotation.T @ (_vector(optical_pose["position_m"], 3) - center)
-        sensor_rotation = rotation.T @ _rotation(optical_pose["orientation_wxyz"])
-        from .runtime_sensor_contracts import oakd_lite_depth_sensor_contract
-
-        mount = oakd_lite_depth_sensor_contract()
-        expected_offset = np.array([mount.translation_body_m.x, mount.translation_body_m.y,
-                                    mount.translation_body_m.z])
-        q = mount.orientation_body_from_sensor
-        if (not np.allclose(sensor_offset, expected_offset, rtol=0., atol=1e-7)
-                or not np.allclose(sensor_rotation, _rotation([q.w, q.x, q.y, q.z]),
-                                   rtol=0., atol=1e-7)):
-            raise ValueError("SIMULATION_FRAME_DEPTH_MOUNT_REQUIRES_CALIBRATION")
         depth_fields = {"optical_at_rest": optical_pose,
             "depth_optics": dict(zip(("horizontal_fov_rad", "near_m", "far_m"),
                                      intrinsic_values, strict=True)),

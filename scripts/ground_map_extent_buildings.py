@@ -21,25 +21,39 @@ from shapely.ops import unary_union
 
 
 def _base_buildings(path, semantic):
-    groups, current = {}, None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("g "):
-            current = line[2:]
-            groups[current] = {"vertices": [], "material": "context"}
-        elif line.startswith("usemtl ") and current is not None:
-            groups[current]["material"] = line[7:]
-        elif line.startswith("v ") and current is not None:
-            groups[current]["vertices"].append(tuple(map(float, line.split()[1:4])))
+    gazebo = path.parent.parent
+    world = gazebo / "world.sdf"
+    resources = [path]
+    if world.is_file():
+        uris = ET.parse(world).findall(".//link[@name='building-visuals']//uri")
+        if uris:
+            resources = [gazebo / node.text for node in uris]
+    groups = {}
+    for resource in resources:
+        vertices, current = [], None
+        for line in resource.read_text(encoding="utf-8").splitlines():
+            if line.startswith("g "):
+                current = line[2:]
+                groups[current] = {"caps": [], "z": [], "material": "context"}
+            elif line.startswith("usemtl ") and current is not None:
+                groups[current]["material"] = line[7:]
+            elif line.startswith("v "):
+                vertices.append(tuple(map(float, line.split()[1:4])))
+            elif line.startswith("f ") and current is not None:
+                points = [vertices[int(token.split('/')[0])-1] for token in line.split()[1:]]
+                groups[current]["z"].extend(p[2] for p in points)
+                if max(p[2] for p in points)-min(p[2] for p in points) < 1e-8:
+                    groups[current]["caps"].append(Polygon([(p[0], p[1]) for p in points]))
     buildings = {}
-    for primitive in semantic["collision_primitives"]:
-        if primitive.get("semantic") != "building":
-            continue
-        name = primitive["name"].removesuffix("-collision")
-        group = groups[name]
-        floor = min(v[2] for v in group["vertices"])
-        ring = [(v[0], v[1]) for v in group["vertices"] if abs(v[2] - floor) < 1e-8]
+    for name, group in groups.items():
+        polygon = unary_union(group["caps"])
+        if not isinstance(polygon, Polygon) or not polygon.is_valid:
+            raise ValueError(f"Building visual has disconnected or invalid footprint: {name}")
+        floor, roof = min(group["z"]), max(group["z"])
+        primitive = _primitive(name, polygon, roof-floor)
+        primitive["center_z"] = (roof+floor)/2
         buildings[name] = {
-            "polygon": Polygon(ring), "primitive": dict(primitive),
+            "polygon": polygon, "primitive": primitive,
             "material": group["material"], "source_ids": [], "original": True,
             "height_source": "preserved-base-model-height",
         }
@@ -69,17 +83,18 @@ def _write_mesh(path, buildings):
     normal_index = 1
     for name, item in buildings.items():
         polygon = orient(item["polygon"], sign=1.0)
-        if polygon.interiors or not polygon.is_valid:
-            raise ValueError(f"Building needs an explicit courtyard decomposition: {name}")
-        points = list(polygon.exterior.coords)[:-1]
+        if not polygon.is_valid:
+            raise ValueError(f"Invalid building footprint: {name}")
+        rings = [list(r.coords)[:-1] for r in [polygon.exterior, *polygon.interiors]]
+        points = [point for ring in rings for point in ring]
         count = len(points)
         p = item["primitive"]
         floor, roof = p["center_z"] - p["size_z"] / 2, p["center_z"] + p["size_z"] / 2
         lines.extend(["g " + name, "usemtl " + item["material"]])
         for z in (floor, roof):
-            lines.extend(f"v {x:.10f} {y:.10f} {z:.10f}" for x, y in points)
+            lines.extend(f"v {x:.17g} {y:.17g} {z:.17g}" for x, y in points)
         vertices = [
-            tuple(float(f"{value:.10f}") for value in (x, y, z))
+            (x, y, z)
             for z in (floor, roof) for x, y in points
         ]
         faces = []
@@ -88,16 +103,19 @@ def _write_mesh(path, buildings):
             corners = list(orient(triangle, sign=1.0).exterior.coords)[:3]
             ids = [vertex_ids[point] for point in corners]
             faces.extend([[i + count for i in ids], list(reversed(ids))])
-        for offset in range(count):
-            nxt = (offset + 1) % count
-            faces.append([index + offset, index + nxt, index + count + nxt, index + count + offset])
+        start = 0
+        for ring in rings:
+            for offset in range(start, start+len(ring)):
+                nxt = start + (offset-start+1) % len(ring)
+                faces.append([index + offset, index + nxt, index + count + nxt, index + count + offset])
+            start += len(ring)
         for face in faces:
             a, b, c = [vertices[i - index] for i in face[:3]]
             u, v = [b[i] - a[i] for i in range(3)], [c[i] - a[i] for i in range(3)]
             normal = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
                       u[0] * v[1] - u[1] * v[0])
             length = math.sqrt(sum(n * n for n in normal))
-            if length <= 1e-14:
+            if length <= 0:
                 raise ValueError(f"Degenerate building face: {name}")
             lines.append("vn " + " ".join(f"{n / length:.10f}" for n in normal))
             lines.append("f " + " ".join(f"{i}//{normal_index}" for i in face))
@@ -109,7 +127,9 @@ def _write_mesh(path, buildings):
 def _install_visual_chunks(gazebo, buildings):
     chunks, current, count = [], {}, 0
     for name, item in buildings.items():
-        faces = 4 * (len(item["polygon"].exterior.coords) - 1) - 4
+        polygon = item["polygon"]
+        vertices = sum(len(r.coords)-1 for r in [polygon.exterior, *polygon.interiors])
+        faces = 4 * vertices + 4 * len(polygon.interiors) - 4
         if faces > 8192:
             raise ValueError(f"Building exceeds per-mesh face budget: {name}")
         if current and count + faces > 4096:
@@ -164,7 +184,7 @@ def install_extent_buildings(gazebo, semantic, source_path, bounds_xy_m):
     accepted = []
     for feature in source["features"]:
         polygon = Polygon(feature["polygon_xy_m"], feature.get("holes_xy_m", []))
-        if not polygon.is_valid or polygon.area <= 0 or polygon.interiors:
+        if not polygon.is_valid or polygon.area <= 0:
             raise ValueError(f"Invalid building exterior: {feature['source_id']}")
         if not polygon.intersects(extent):
             continue
@@ -179,15 +199,20 @@ def install_extent_buildings(gazebo, semantic, source_path, bounds_xy_m):
         ]
         score, name = max(matches, default=(0.0, ""))
         if score > 0.5:
+            # Re-preparing an existing package must not create microscopic
+            # sliver faces by unioning its rounded OBJ with the same source.
+            if polygon.difference(buildings[name]["polygon"].buffer(1e-8)).area <= 1e-6:
+                buildings[name]["source_ids"].append(source_id)
+                continue
             combined = buildings[name]["polygon"].union(polygon)
-            if combined.geom_type == "Polygon" and not combined.interiors:
+            if combined.geom_type == "Polygon":
                 buildings[name]["polygon"] = combined
                 buildings[name]["source_ids"].append(source_id)
                 continue
         name = "hsy-" + re.sub(r"[^a-zA-Z0-9_-]", "-", source_id)
         floors = feature.get("floors")
         known_floors = isinstance(floors, (int, float)) and 0 < floors < 100
-        height = max(4.0, min(35.0, floors * 3.4)) if known_floors else 6.8
+        height = max(4.0, floors * 3.4) if known_floors else 6.8
         buildings[name] = {
             "polygon": polygon, "primitive": _primitive(name, polygon, height),
             "material": "context", "source_ids": [source_id], "original": False,

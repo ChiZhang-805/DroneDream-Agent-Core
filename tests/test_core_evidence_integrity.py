@@ -45,6 +45,17 @@ def test_vehicle_offset_is_detached_and_revalidated():
         resolve_vehicle_collision_center_offset(vehicle)
 
 
+@pytest.mark.parametrize("center_z", [0.0, 0.2755, -0.1])
+def test_collision_center_translation_does_not_assume_model_origin_inside_body(center_z):
+    from dronedream_agent_core.contracts import VehicleAsset
+
+    data = _vehicle().model_dump(mode="json")
+    data["body_height_m"] = 0.249
+    data["collision_center_offset_model_m"] = {"x": 0.0, "y": 0.0, "z": center_z}
+    vehicle = VehicleAsset.model_validate(data)
+    assert resolve_vehicle_collision_center_offset(vehicle).z == center_z
+
+
 # 功能：
 #   确认直接构造的非法时效记录不能因 Python 布尔数值兼容而获得控制时效。
 # 输入：

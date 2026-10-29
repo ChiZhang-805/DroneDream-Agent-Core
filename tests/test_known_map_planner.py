@@ -9,6 +9,25 @@ from dronedream_agent_core.contracts import MapAsset, MapEdge, MapNode, RouteQue
 from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
 
 
+def test_large_city_index_coarsens_without_omitting_obstacles(tmp_path, monkeypatch):
+    from dronedream_agent_core.collision import _clearance
+    primitives = [{"name": f"tower-{i}", "center_x": i * 3., "center_y": 0.,
+                   "center_z": 50., "size_x": 1., "size_y": 1., "size_z": 100.}
+                  for i in range(12)]
+    path = tmp_path / "city.json"
+    path.write_text(json.dumps({"collision_primitives": primitives}))
+    monkeypatch.setattr(KnownMapMetricPlanner, "_MAX_INDEX_CELLS", 500)
+    planner = KnownMapMetricPlanner(graph=None, semantic_path=path,
+        vehicle_diameter_m=.76, vehicle_height_m=.6)
+    assert planner._spatial_bin_m > 2
+    for x in [-4., -.1, 1.1, 3., 11.2, 33., 36.]:
+        for z in [-2., 0., 3., 50., 100., 104.]:
+            point = (x, .4, z)
+            expected = min(planner._clearance_cap_m, *[
+                _clearance(point, p, radius_m=.38, half_height_m=.3) for p in primitives])
+            assert planner.clearance(point) == pytest.approx(expected)
+
+
 # 功能：
 #   构造只有直连拓扑但需由碰撞规划另行绕障的最小命名图。
 # 输入：

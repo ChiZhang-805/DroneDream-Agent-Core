@@ -51,7 +51,7 @@ def _source_archive(checkout: Path, subpath: str) -> tuple[str, int, int, dict[s
     return hashlib.sha256(archive.getvalue()).hexdigest(), total_size, len(names), payloads
 
 
-def verify_catalog(checkout: Path) -> dict[str, object]:
+def verify_catalog(checkout: Path, resolved: Path | None = None) -> dict[str, object]:
     catalog = vehicle_resource_catalog()
     expected_commit = str(catalog["resources"][0]["source"]["git_ref"])
     actual_commit = str(_git(checkout, "rev-parse", "HEAD", text=True)).strip()
@@ -89,6 +89,19 @@ def verify_catalog(checkout: Path) -> dict[str, object]:
                 f"catalog dependencies missing for {resource['resource_id']}: "
                 + ", ".join(missing_dependencies)
             )
+        if resolved is not None:
+            parsed = json.loads((resolved / f"{source['px4_sitl_model']}.json").read_text(encoding="utf-8"))
+            if parsed["revision"] != expected_commit:
+                raise ValueError(f"resolved model revision mismatch for {resource['resource_id']}")
+            if len(parsed["joints"]) != analysis["joint_count"]:
+                raise ValueError(f"resolved joint count mismatch for {resource['resource_id']}")
+            if len(parsed["plugins"]) != analysis["runtime_plugin_count"]:
+                raise ValueError(f"resolved plugin count mismatch for {resource['resource_id']}")
+            links = {link["name"] for link in parsed["links"]}
+            if any(not link["inertia_valid"] or link["mass_kg"] <= 0 for link in parsed["links"]):
+                raise ValueError(f"invalid source inertia for {resource['resource_id']}")
+            if any(joint["parent"] not in links or joint["child"] not in links for joint in parsed["joints"]):
+                raise ValueError(f"unresolved joint attachment for {resource['resource_id']}")
         results.append(
             {
                 "resource_id": resource["resource_id"],
@@ -113,8 +126,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--resolved", type=Path, help="Gazebo-resolved model data from build-aircraft-previews.py")
     arguments = parser.parse_args()
-    report = verify_catalog(arguments.checkout.resolve())
+    report = verify_catalog(arguments.checkout.resolve(), arguments.resolved)
     payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if arguments.report is not None:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)

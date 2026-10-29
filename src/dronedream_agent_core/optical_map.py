@@ -18,6 +18,9 @@ from .local_map_alignment import MapSurfaceIndex
 from .map_surface_geometry import MAX_INDEX_MESH_TRIANGLES, MAX_MESH_TRIANGLES
 from .plugin_files import portable_plugin_path, read_plugin_file
 
+MAX_MAP_RESOURCES = 2048
+MAX_MAP_RESOURCE_BYTES = 256 * 1024 * 1024
+
 
 # 功能：严格读取有限米制几何向量，拒绝缺项、无穷大及超大坐标。
 # 输入：text：SDF 数值文本；count：精确分量数。
@@ -99,7 +102,8 @@ def _obj_triangles(raw, scale):
         points = scaled_vertices[np.asarray(polygon)]
         # Newell's method yields a stable authoring normal for any convex planar
         # polygon, including the quads emitted by Gazebo's map asset pipeline.
-        normal = np.sum(np.cross(points, np.roll(points, -1, axis=0)), axis=0)
+        local_points = points - points[0]
+        normal = np.sum(np.cross(local_points, np.roll(local_points, -1, axis=0)), axis=0)
         normal_length = float(np.linalg.norm(normal))
         span = max(float(np.ptp(points, axis=0).max()), 1.0)
         tolerance = 1e-10 * span
@@ -112,7 +116,7 @@ def _obj_triangles(raw, scale):
         # Real building roofs often have a concave footprint, so a fan from the
         # first vertex would create triangles outside the authored surface.
         drop_axis = int(np.argmax(np.abs(unit_normal)))
-        projected = np.delete(points, drop_axis, axis=1)
+        projected = np.delete(local_points, drop_axis, axis=1)
         signed_area = float(
             np.sum(
                 projected[:, 0] * np.roll(projected[:, 1], -1)
@@ -249,7 +253,7 @@ def _resource(root, relative, dependencies):
     if previous is not None and previous != record:
         raise ValueError("OPTICAL_MAP_RESOURCE_CHANGED")
     dependencies[relative] = record
-    if len(dependencies) > 128 or sum(d["bytes"] for d in dependencies.values()) > 64 * 1024 * 1024:
+    if len(dependencies) > MAX_MAP_RESOURCES or sum(d["bytes"] for d in dependencies.values()) > MAX_MAP_RESOURCE_BYTES:
         raise ValueError("OPTICAL_MAP_RESOURCE_BUDGET_EXCEEDED")
     return data
 

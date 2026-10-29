@@ -13,7 +13,9 @@ import numpy as np
 
 BOX, CYLINDER, SPHERE, MESH = 0, 1, 2, 3
 MAX_MESH_TRIANGLES = 8192
-MAX_INDEX_MESH_TRIANGLES = 262_144
+# Forest maps retain their measured canopy boundaries across bounded mesh
+# chunks. The BVH and per-query work budgets keep queries local to those chunks.
+MAX_INDEX_MESH_TRIANGLES = 1_048_576
 _MESH_LEAF_TRIANGLES = 64
 _MESH_RAY_BATCH = 128
 

@@ -3634,7 +3634,7 @@ def run_px4_gazebo_track(
         and
         local_safety_supported
         and depth_worker_script.is_file()
-        and "model://x500_depth" in vehicle_sdf.read_text(encoding="utf-8")
+        and "oakd-lite-depth" in selected_vehicle.sensors
     )
     if record_learning_observations and not depth_safety_supported:
         raise ValueError("learning observations require the native depth safety worker")

@@ -22,6 +22,52 @@ def _load(name):
     return module
 
 
+def test_official_entrance_keeps_planar_coordinates_without_becoming_a_flight_target():
+    prep = _load("prepare-ground-map")
+    semantic = {"entities": [], "roads": {"facility_anchors": {}}}
+    source = {"planar_landmarks": [{"entity_id": "tpr-entrance-1",
+        "name": "Library entrance", "kind": "entrance", "semantic": "facility-anchor",
+        "position_m": [12.25, -4.75]}], "service_entrances_source": {"sha256": "source"}}
+    prep.append_planar_landmarks(semantic, [(Path("observations.json"), source)])
+    first = deepcopy(semantic)
+    prep.append_planar_landmarks(semantic, [(Path("observations.json"), source)])
+    assert semantic == first
+    assert semantic["entities"][0]["position_m"] == [12.25, -4.75]
+    assert semantic["entities"][0]["source_pointer"] == "/roads/facility_anchors/tpr-entrance-1"
+    assert semantic["roads"]["facility_anchors"]["tpr-entrance-1"] == [12.25, -4.75]
+    assert semantic["sources"]["service_entrances"] == {"sha256": "source"}
+
+
+def test_surface_detour_preserves_narrow_bends_and_does_not_cross_courtyard():
+    prep = _load("prepare-ground-map")
+    surface = box(0, 0, 20, 20).difference(box(4, 2, 16, 18))
+    path = prep.surface_detour(surface, (2., 10.), (18., 10.))
+    assert path[0] == (2., 10.) and path[-1] == (18., 10.)
+    assert surface.covers(LineString(path))
+    disconnected = unary_union([box(0, 0, 3, 20), box(17, 0, 20, 20)])
+    assert prep.surface_detour(disconnected, (2., 10.), (18., 10.)) is None
+
+
+def test_ground_union_removes_internal_seam_without_creating_ground_or_joining_decks():
+    from dronedream_agent_core.traversability import TraversableAirspace
+    prep = _load("prepare-ground-map")
+    layer = {"schema_version": "dronedream.traversability.v1", "required": True,
+             "minimum_agl_m": 0., "maximum_agl_m": 5., "corridors": [], "exclusions": [],
+             "areas": [{"id": str(i), "kind": "open-space", "ground_z_m": z,
+                        "polygon_xy_m": list(shape.exterior.coords)[:-1]}
+                       for i, (shape, z) in enumerate([(box(-5, -5, 0, 5), 0),
+                                                        (box(0, -5, 5, 5), 0),
+                                                        (box(8, -5, 12, 5), 10)])]}
+    prep.consolidate_ground_areas(layer)
+    assert len(layer["areas"]) == 2
+    base = next(a for a in layer["areas"] if a["ground_z_m"] == 0)
+    assert Polygon(base["polygon_xy_m"]).equals(box(-5, -5, 5, 5))
+    airspace = TraversableAirspace({"traversability": layer}, [], radius_m=.38,
+                                  half_height_m=.3, clearance_cap_m=1.3)
+    assert airspace.clearance((0., 0., 2.5))[0] == pytest.approx(1.3)
+    assert airspace.clearance((10., 0., 2.5))[0] < 0
+
+
 def test_english_function_catalog_binds_existing_handoffs_without_geometry_changes():
     prep = _load("prepare-ground-map")
     graph = {
@@ -239,9 +285,6 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
 
     ring = [rotate(x, y) for x, y in ring]
     (tmp_path / "meshes").mkdir()
-    (tmp_path / "meshes/kumpula-buildings.obj").write_text(
-        "g courtyard\n" + "\n".join(f"v {x} {y} {z}" for z in (0, 8) for x, y in ring)
-    )
     original = {
         "name": "courtyard-collision",
         "semantic": "building",
@@ -253,6 +296,10 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
         "size_z": 8,
         "yaw_rad": yaw,
     }
+    from ground_map_extent_buildings import _write_mesh
+    _write_mesh(tmp_path / "meshes/kumpula-buildings.obj", {
+        "courtyard": {"polygon": Polygon(ring), "primitive": original, "material": "context"}
+    })
     semantic = {"collision_primitives": [original], "fidelity": {}}
     (tmp_path / "collision-primitives.json").write_text(json.dumps({"primitives": [original]}))
     for name in ("model.sdf", "world.sdf", "world.physics.sdf", "world.perception.sdf"):
@@ -269,7 +316,7 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
     covered = unary_union([Polygon(prep.footprint(p)) for p in semantic["collision_primitives"]])
     assert Polygon(ring).difference(covered).area < 1e-8
     assert covered.distance(Point(*rotate(5, 7))) >= 1.5
-    assert exact[0]["polygon_xy_m"] == ring
+    assert Polygon(exact[0]["polygon_xy_m"]).equals(Polygon(ring))
     assert len(semantic["collision_primitives"]) > 1
     assert prep.read(tmp_path / "collision-primitives.json")["primitives"] == (
         semantic["collision_primitives"]
@@ -279,7 +326,10 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
         collisions = root.findall(".//collision")
         assert len(collisions) == 1
         collision = collisions[0]
-        assert list(map(float, collision.find("pose").text.split())) == [0, 0, 4, 0, 0, yaw]
+        pose = list(map(float, collision.find("pose").text.split()))
+        assert pose[:5] == [0, 0, 4, 0, 0]
+        def mesh_rotate(x, y):
+            return x * math.cos(pose[5]) - y * math.sin(pose[5]), x * math.sin(pose[5]) + y * math.cos(pose[5])
         raw = (tmp_path / collision.find("geometry/mesh/uri").text).read_text()
         vertices, caps = [], []
         for line in raw.splitlines():
@@ -288,7 +338,7 @@ def test_concave_building_keeps_courtyard_open_without_erasing_any_wall(
             elif line.startswith("f "):
                 points = [vertices[int(t.split("//")[0]) - 1] for t in line.split()[1:]]
                 if all(p[2] == 4 for p in points):
-                    caps.append(Polygon([rotate(x, y) for x, y, _ in points]))
+                    caps.append(Polygon([mesh_rotate(x, y) for x, y, _ in points]))
         assert unary_union(caps).symmetric_difference(covered).area < 1e-10
         visual = root.find(".//visual")
         # Pretty-printing changes whitespace, never the original visual contents.
@@ -445,3 +495,85 @@ def test_release_builder_rejects_roof_shortcut_without_rewriting_graph(tmp_path)
     before = json.dumps(graph, sort_keys=True)
     builder._validate_ground_route_graph(graph=graph, semantic_path=path)
     assert json.dumps(graph, sort_keys=True) == before
+
+
+def test_route_surface_preserves_claimed_body_clearance_at_obstacle_corner():
+    prep = _load("prepare-ground-map")
+    permitted, obstacle = box(-10, -10, 10, 10), box(-1, -1, 1, 1)
+    surface = prep.route_surface(permitted, obstacle)
+    assert surface.distance(obstacle) >= 1.25 - 1e-9
+    assert surface.boundary.distance(permitted.boundary) >= 1.25 - 1e-9
+    assert not surface.covers(LineString([(-5, 2), (5, 2)]))
+    assert surface.covers(LineString([(-5, 3), (5, 3)]))
+
+
+def test_preparing_again_retains_task_locations_without_old_junctions():
+    prep = _load("prepare-ground-map")
+    graph = {"nodes": [
+        {"node_id": "launch", "semantic": "launch"},
+        {"node_id": "pickup", "semantic": "pickup"},
+        {"node_id": "ground-junction-0000", "semantic": "corridor"},
+        {"node_id": "verified-001", "semantic": "pickup"},
+    ], "named_entities": {"office": "launch"}}
+    assert [n["node_id"] for n in prep.operational_nodes(graph)] == ["launch", "pickup"]
+
+
+def test_missing_connector_is_recovered_by_a_ground_detour(tmp_path):
+    prep = _load("prepare-ground-map")
+    graph = {"asset_id": "detour", "name": "Detour", "named_entities": {"launch": "a", "delivery": "b"},
+             "nodes": [{"node_id": name, "label": name, "semantic": kind,
+                        "position_m": {"x": x, "y": y, "z": 3.}}
+                       for name, kind, x, y in [("a", "launch", 0., 0.), ("b", "delivery", 10., 0.),
+                                                ("c", "corridor", 0., 6.)]],
+             "edges": [{"edge_id": "road", "from_node": "a", "to_node": "c", "distance_m": 6.,
+                        "minimum_clearance_m": .8, "speed_limit_mps": 2., "bidirectional": True}]}
+    semantic = {"collision_primitives": [{"name": "ground", "semantic": "terrain",
+        "center_x": 5., "center_y": 3., "center_z": -.1,
+        "size_x": 30., "size_y": 30., "size_z": .2}], "traversability": {
+        "schema_version": "dronedream.traversability.v1", "required": True,
+        "minimum_agl_m": 0., "maximum_agl_m": 12., "areas": [],
+        "corridors": [{"id": "bent-road", "kind": "road", "ground_z_m": 0., "width_m": 4.,
+                       "centerline_xy_m": [[0., 0.], [0., 6.], [10., 6.], [10., 0.]]}],
+        "exclusions": [{"id": "building", "kind": "building",
+                        "polygon_xy_m": [[3., -2.], [7., -2.], [7., 3.], [3., 3.]]}]}}
+    path = tmp_path / "semantic.json"
+    prep.write(path, semantic)
+    assert prep.connect_task_locations(graph, path, "a" * 64) == []
+    assert len(graph["edges"]) >= 3
+    by_id = {n["node_id"]: n["position_m"] for n in graph["nodes"]}
+    for edge in graph["edges"]:
+        points = [by_id[edge[k]] for k in ("from_node", "to_node")]
+        assert not LineString([(p["x"], p["y"]) for p in points]).intersects(box(3, -2, 7, 3))
+    assert by_id["b"] == {"x": 10., "y": 0., "z": 3.}
+
+
+def test_disconnected_ground_is_reported_without_exhausting_a_three_dimensional_search(tmp_path, monkeypatch):
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner
+    prep = _load("prepare-ground-map")
+    graph = {"asset_id": "separated", "name": "Separated", "named_entities": {"launch": "a", "delivery": "b"},
+             "nodes": [{"node_id": key, "label": key, "semantic": kind,
+                        "position_m": {"x": x, "y": 0., "z": 3.}}
+                       for key, kind, x in [("a", "launch", 0.), ("b", "delivery", 20.),
+                                           ("c", "corridor", 1.)]],
+             "edges": [{"edge_id": "source-road", "from_node": "a", "to_node": "c",
+                        "distance_m": 1., "minimum_clearance_m": .8,
+                        "speed_limit_mps": 2., "bidirectional": True}]}
+    semantic = {"collision_primitives": [{"name": "ground", "semantic": "terrain",
+        "center_x": 10., "center_y": 0., "center_z": -.1,
+        "size_x": 40., "size_y": 20., "size_z": .2}], "traversability": {
+        "schema_version": "dronedream.traversability.v1", "required": True,
+        "minimum_agl_m": 0., "maximum_agl_m": 12., "corridors": [], "exclusions": [],
+        "areas": [{"id": str(i), "kind": "open-space", "ground_z_m": 0.,
+                   "polygon_xy_m": list(box(x-4, -4, x+4, 4).exterior.coords)[:-1]}
+                  for i, x in enumerate((0., 20.))]}}
+    path = tmp_path / "semantic.json"
+    prep.write(path, semantic)
+
+    def must_not_search(*args, **kwargs):
+        pytest.fail("No altitude can connect these separated operating volumes")
+
+    monkeypatch.setattr(KnownMapMetricPlanner, "plan", must_not_search)
+    unresolved = prep.connect_task_locations(graph, path, "a" * 64)
+    assert [item["node_id"] for item in unresolved] == ["b"]
+    assert unresolved[0]["reason"] == "observed-ground-disconnected-at-vehicle-envelope-and-clearance"
+    assert len(graph["edges"]) == 1

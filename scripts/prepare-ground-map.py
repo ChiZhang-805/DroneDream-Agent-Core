@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import heapq
 import json
 import math
 import unicodedata
@@ -17,7 +18,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from PIL import Image
-from shapely import affinity
+from shapely import affinity, constrained_delaunay_triangles
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import substring, unary_union
 
@@ -37,6 +38,236 @@ def write(path, value):
 
 def xy(value):
     return [float(value["x"]), float(value["y"])]
+
+
+def route_surface(permitted, forbidden, vehicle_radius_m=0.38, clearance_m=0.8):
+    """Leave the aircraft envelope, continuous proof margin and rounding room."""
+    inset = vehicle_radius_m + clearance_m + 0.05 + 0.02
+    return permitted.buffer(-inset).difference(forbidden.buffer(inset, join_style="mitre"))
+
+
+def operational_nodes(graph):
+    """Retain named task locations, never junctions from a previous generation."""
+    named = set(graph.get("named_entities", {}).values())
+    retired = {"verified-001", "verified-002", "verified-003"}
+    return [node for node in graph["nodes"]
+            if node["node_id"] not in retired and
+            (node["node_id"] in named or node.get("semantic") not in {"corridor", "junction"})]
+
+
+def append_planar_landmarks(semantic, observation_sources):
+    """Preserve sourced XY landmarks without manufacturing flight altitudes."""
+    entities = {entity["entity_id"]: entity for entity in semantic["entities"]}
+    anchors = semantic.setdefault("roads", {}).setdefault("facility_anchors", {})
+    for _path, source in observation_sources:
+        for entity in source.get("planar_landmarks", []):
+            identifier = entity["entity_id"]
+            position = entity["position_m"]
+            if (entity.get("semantic") != "facility-anchor" or not isinstance(position, list)
+                    or len(position) != 2 or any(type(x) not in (int, float) or not math.isfinite(x) for x in position)):
+                raise ValueError("Planar landmark must retain its two measured coordinates")
+            entities[identifier] = {**entity, "source_pointer": f"/roads/facility_anchors/{identifier}"}
+            anchors[identifier] = position
+        if source.get("service_entrances_source"):
+            semantic.setdefault("sources", {})["service_entrances"] = source["service_entrances_source"]
+    semantic["entities"] = list(entities.values())
+
+
+def consolidate_ground_areas(layer):
+    """Represent the union of touching surveyed surfaces at each elevation.
+
+    Per-feature inset makes an artificial barrier at a road/apron boundary.
+    Union before inset preserves the actual permitted footprint, including holes.
+    Different elevations remain separate; their 2-D overlap is not a junction.
+    """
+    groups = {}
+    for area in layer.get("areas", []):
+        groups.setdefault(area["ground_z_m"], []).append(
+            Polygon(area["polygon_xy_m"], area.get("holes_xy_m", [])))
+    for corridor in layer.get("corridors", []):
+        groups.setdefault(corridor["ground_z_m"], []).append(
+            LineString(corridor["centerline_xy_m"]).buffer(corridor["width_m"]/2))
+    areas = []
+    for elevation, shapes in sorted(groups.items()):
+        union = unary_union(shapes)
+        polygons = [union] if isinstance(union, Polygon) else union.geoms
+        for polygon in polygons:
+            areas.append({"id": f"observed-ground-{len(areas):04d}", "kind": "open-space",
+                          "ground_z_m": elevation,
+                          "polygon_xy_m": list(polygon.exterior.coords)[:-1],
+                          "holes_xy_m": [list(ring.coords)[:-1] for ring in polygon.interiors],
+                          "evidence": {"source_registry": "traversability.provenance",
+                                       "derivation": "union-of-same-elevation-observed-ground"}})
+    layer["areas"], layer["corridors"] = areas, []
+
+
+def surface_detour(surface, start, goal):
+    """Find a continuous path inside observed free ground, including narrow bends.
+
+    A fixed sampling grid can miss a real connected corridor. Triangles share
+    exact edges, so their interior connections preserve the source topology.
+    The caller must still prove the resulting 3-D route with the runtime planner.
+    """
+    parts = [surface] if isinstance(surface, Polygon) else surface.geoms
+    polygon = next((p for p in parts if isinstance(p, Polygon)
+                    and p.covers(Point(start)) and p.covers(Point(goal))), None)
+    if polygon is None:
+        return None
+    if polygon.covers(LineString([start, goal])):
+        return [start, goal]
+    triangles = list(constrained_delaunay_triangles(polygon).geoms)
+    shared, adjacency = {}, {}
+    def link(a, b):
+        cost = math.dist(a, b)
+        adjacency.setdefault(a, []).append((b, cost))
+        adjacency.setdefault(b, []).append((a, cost))
+    for triangle in triangles:
+        center = tuple(triangle.centroid.coords[0])
+        for endpoint in (start, goal):
+            if triangle.covers(Point(endpoint)):
+                link(endpoint, center)
+        ring = list(triangle.exterior.coords)
+        for a, b in zip(ring, ring[1:]):
+            edge = tuple(sorted((a, b)))
+            if edge in shared:
+                midpoint = ((a[0]+b[0])/2, (a[1]+b[1])/2)
+                link(center, midpoint)
+                link(shared[edge], midpoint)
+            else:
+                shared[edge] = center
+    costs, previous, queue = {start: 0.}, {}, [(0., start)]
+    while queue:
+        cost, node = heapq.heappop(queue)
+        if cost != costs[node]:
+            continue
+        if node == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            path.reverse()
+            reduced, index = [start], 0
+            while index < len(path)-1:
+                end = len(path)-1
+                while end > index+1 and not polygon.covers(LineString([path[index], path[end]])):
+                    end -= 1
+                reduced.append(path[end])
+                index = end
+            return reduced
+        for neighbor, distance in adjacency.get(node, []):
+            new_cost = cost + distance
+            if new_cost < costs.get(neighbor, float("inf")):
+                costs[neighbor], previous[neighbor] = new_cost, node
+                heapq.heappush(queue, (new_cost, neighbor))
+    return None
+
+
+def connect_task_locations(graph, semantic_path, evidence_sha256, *, targets=None):
+    """Recover missing topology using the actual ground-constrained planner.
+
+    A rejected straight connector need not make a place unreachable. Search
+    observed corridors for a detour, preserving the surveyed handoff position.
+    Unresolved locations retain their identity and a concrete source issue.
+    """
+    from dronedream_agent_core.contracts import MapAsset, RouteQuery, Vector3
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
+
+    locations = operational_nodes(graph)
+    launches = [n for n in locations if n.get("semantic") == "launch"]
+    if not launches:
+        raise ValueError("Map has no surveyed launch location")
+    launch = launches[0]["node_id"]
+    planner = KnownMapMetricPlanner(graph=MapAsset.model_validate(graph),
+        semantic_path=semantic_path, vehicle_diameter_m=.76, vehicle_height_m=.6,
+        policy=MetricPlannerPolicy(required_clearance_m=.8))
+    semantic = read(semantic_path)
+    layer = semantic["traversability"]
+    permitted = unary_union([
+        *[Polygon(a["polygon_xy_m"], a.get("holes_xy_m", [])) for a in layer["areas"]],
+        *[LineString(c["centerline_xy_m"]).buffer(c["width_m"]/2) for c in layer["corridors"]],
+    ])
+    forbidden = unary_union([Polygon(e["polygon_xy_m"], e.get("holes_xy_m", []))
+                             for e in layer["exclusions"]])
+    # Use the planner's actual proof margin; extra arbitrary inflation can sever
+    # valid narrow passages. Millimetre rounding room is checked again in 3-D.
+    inset = planner.vehicle_radius_m + planner._required_clearance_m + .002
+    surface = permitted.buffer(-inset).difference(forbidden.buffer(inset))
+    # A disconnected horizontal operating volume cannot be joined by changing
+    # altitude: these exclusions apply at every height. Use a slightly enlarged
+    # free domain here so buffer approximation cannot reject a marginal passage;
+    # actual route acceptance still uses the unchanged 3-D clearance proof.
+    optimistic_inset = max(0., planner.vehicle_radius_m + planner._required_clearance_m - .001)
+    optimistic = permitted.buffer(-optimistic_inset, quad_segs=64).difference(
+        forbidden.buffer(optimistic_inset, quad_segs=64))
+    optimistic_parts = [optimistic] if isinstance(optimistic, Polygon) else optimistic.geoms
+    start_xy = Point(xy(launches[0]["position_m"]))
+    launch_parts = [part for part in optimistic_parts if part.covers(start_xy)]
+    by_point = {tuple(n["position_m"][axis] for axis in ("x", "y", "z")): n["node_id"]
+                for n in graph["nodes"]}
+    adjacency = {}
+    pairs = set()
+    def remember(edge):
+        a, b = edge["from_node"], edge["to_node"]
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+        pairs.add(frozenset((a, b)))
+    for edge in graph["edges"]:
+        remember(edge)
+    unresolved = []
+    for location in locations:
+        if targets is not None and location["node_id"] not in targets:
+            continue
+        seen, pending = set(), [launch]
+        while pending:
+            node = pending.pop()
+            if node not in seen:
+                seen.add(node)
+                pending.extend(adjacency.get(node, set()) - seen)
+        target = location["node_id"]
+        if target in seen:
+            continue
+        print(f"Checking ground connection: {target}", flush=True)
+        begin, finish = launches[0]["position_m"], location["position_m"]
+        if not any(part.covers(Point(xy(finish))) for part in launch_parts):
+            unresolved.append({"node_id": target, "position_m": finish,
+                "reason": "observed-ground-disconnected-at-vehicle-envelope-and-clearance"})
+            continue
+        planar = surface_detour(surface, (begin["x"], begin["y"]), (finish["x"], finish["y"]))
+        positions = []
+        if planar:
+            height = max(3., begin["z"], finish["z"])
+            positions = [Vector3(**begin), *[Vector3(x=x, y=y, z=height) for x, y in planar], Vector3(**finish)]
+            points = [tuple(getattr(p, axis) for axis in ("x", "y", "z")) for p in positions]
+            if not all(planner._segment_is_free(a, b) for a, b in zip(points, points[1:])):
+                positions = []
+        if not positions:
+            try:
+                positions = planner.plan(RouteQuery(start_node=launch, goal_node=target)).positions_m
+            except ValueError as error:
+                unresolved.append({"node_id": target, "position_m": location["position_m"],
+                                   "reason": str(error)})
+                continue
+        ids = [launch]
+        for position in positions[1:-1]:
+            point = (position.x, position.y, position.z)
+            if point not in by_point:
+                identifier = f"ground-detour-{len(graph['nodes']):04d}"
+                by_point[point] = identifier
+                graph["nodes"].append({"node_id": identifier, "label": "Observed ground detour",
+                    "position_m": position.model_dump(), "semantic": "corridor"})
+            ids.append(by_point[point])
+        ids.append(target)
+        for index, (a, b) in enumerate(zip(ids, ids[1:])):
+            if a == b or frozenset((a, b)) in pairs:
+                continue
+            distance = math.dist(tuple(getattr(positions[index], axis) for axis in ("x", "y", "z")),
+                                 tuple(getattr(positions[index+1], axis) for axis in ("x", "y", "z")))
+            edge = {"edge_id": f"ground-detour-edge-{len(graph['edges']):04d}",
+                    "from_node": a, "to_node": b, "distance_m": distance,
+                    "minimum_clearance_m": .8, "speed_limit_mps": 6., "bidirectional": True,
+                    "qualification": "geometry-derived", "evidence_sha256": evidence_sha256}
+            graph["edges"].append(edge)
+            remember(edge)
+    return unresolved
 
 
 def node_observed_corridor_joins(lines, usable, maximum_join_m=2.0):
@@ -300,27 +531,13 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
     closed union per building to avoid thousands of independent collision shapes.
     """
     from ground_map_collision_mesh import building_collision_mesh
+    from ground_map_extent_buildings import _base_buildings
 
-    groups, current = {}, None
-    for line in (gazebo / "meshes/kumpula-buildings.obj").read_text("utf-8").splitlines():
-        if line.startswith("g "):
-            current = line[2:]
-            groups[current] = []
-        elif line.startswith("v ") and current is not None:
-            groups[current].append(tuple(map(float, line.split()[1:4])))
-    original = {
-        p["name"].removesuffix("-collision"): p
-        for p in semantic["collision_primitives"]
-        if p.get("semantic") == "building"
-    }
+    original = _base_buildings(gazebo / "meshes/kumpula-buildings.obj", semantic)
     refined, exact, meshes = [], [], []
-    for name, primitive in original.items():
-        vertices = groups[name]
-        floor = min(v[2] for v in vertices)
-        ring = [(v[0], v[1]) for v in vertices if abs(v[2] - floor) < 1e-6]
-        polygon = Polygon(ring)
-        if not polygon.is_valid or polygon.area <= 0:
-            raise ValueError(f"Invalid city footprint: {name}")
+    for name, building in original.items():
+        polygon, primitive = building["polygon"], building["primitive"]
+        ring = list(polygon.exterior.coords)[:-1]
         angle = primitive.get("yaw_rad", 0.0)
         rotated = affinity.rotate(polygon, -angle, origin=(0, 0), use_radians=True)
         pending, cells = [rotated.bounds], []
@@ -385,7 +602,8 @@ def refine_building_collisions(gazebo, semantic, maximum_cell_m=0.5):
                     "size_y": y1 - y0,
                 }
             )
-        exact.append({"id": name, "kind": "building", "polygon_xy_m": ring})
+        exact.append({"id": name, "kind": "building", "polygon_xy_m": ring,
+                      "holes_xy_m": [list(r.coords)[:-1] for r in polygon.interiors]})
     semantic["collision_primitives"] = [
         p for p in semantic["collision_primitives"] if p.get("semantic") != "building"
     ] + refined
@@ -474,14 +692,14 @@ def prepare(
             raise ValueError(f"Observation image mismatch: {path}")
     with Image.open(image_path) as image:
         width, height = image.size
-    semantic["live_map"] = {
+    semantic.setdefault("live_map", {
         "schema_version": "dronedream.live-map-georeference.v1",
         "image_path": "normalized/map/gazebo/materials/textures/kumpula-orthophoto.jpg",
         "width_px": width,
         "height_px": height,
         "coordinate_frame": "ENU",
         "world_to_image": [width / 500, 0, width / 2, 0, -height / 500, height / 2],
-    }
+    })
     if extent_source is not None:
         from ground_map_extent import expand_registered_ground
 
@@ -558,6 +776,7 @@ def prepare(
         "provenance": provenance,
     }
     semantic["traversability"] = layer
+    consolidate_ground_areas(layer)
     install_canopy_obstacles(output / "gazebo", semantic)
     include_physical_ground_support(output / "gazebo", semantic)
     semantic["fidelity"]["qualified_routes"] = 0
@@ -565,9 +784,21 @@ def prepare(
     # Correct staging locations only with explicit visual observations. Preserve
     # identity/aliases; the evidence states this is not an inferred doorway.
     by_id = {node["node_id"]: node for node in graph["nodes"]}
+    latest_corrections = {item["node_id"]: item for item in observations["handoff_corrections"]}
+    current_corrections = {
+        node_id for node_id, item in latest_corrections.items()
+        if all(abs(by_id[node_id]["position_m"][axis] - item["new_position_m"][axis]) <= 0.001
+               for axis in ("x", "y", "z"))
+    }
     for correction in observations["handoff_corrections"]:
         node = by_id[correction["node_id"]]
-        if any(
+        if node["node_id"] in current_corrections:
+            continue
+        already_applied = all(
+            abs(node["position_m"][axis] - correction["new_position_m"][axis]) <= 0.001
+            for axis in ("x", "y", "z")
+        )
+        if not already_applied and any(
             abs(node["position_m"][axis] - correction["old_position_m"][axis]) > 0.001
             for axis in ("x", "y", "z")
         ):
@@ -580,6 +811,7 @@ def prepare(
     # Synchronize those too, not only corrections supplied in this invocation.
     synchronize_semantic_node_positions(semantic, graph)
     complete_english_place_catalog(semantic, graph)
+    append_planar_landmarks(semantic, observation_sources)
     semantic["traversability"]["handoff_corrections"] = observations["handoff_corrections"]
     semantic["traversability"]["unresolved_observations"] = observations["unresolved_observations"]
     write(semantic_path, semantic)
@@ -589,17 +821,13 @@ def prepare(
     lines = [LineString(item["centerline_xy_m"]) for item in corridors]
     permitted = unary_union(
         [line.buffer(item["width_m"] / 2) for line, item in zip(lines, corridors, strict=True)]
-        + [Polygon(item["polygon_xy_m"]) for item in areas]
+        + [Polygon(item["polygon_xy_m"], item.get("holes_xy_m", [])) for item in areas]
     )
-    forbidden = unary_union([Polygon(item["polygon_xy_m"]) for item in exclusions])
-    # Apply the X500 planning envelope+margin once, not twice at obstacles.
-    usable = permitted.difference(forbidden).buffer(-0.85)
+    forbidden = unary_union([Polygon(item["polygon_xy_m"], item.get("holes_xy_m", []))
+                             for item in exclusions])
+    usable = route_surface(permitted, forbidden)
     noded = node_observed_corridor_joins(lines, usable)
-    old_nodes = [
-        node
-        for node in graph["nodes"]
-        if node["node_id"] not in {"verified-001", "verified-002", "verified-003"}
-    ]
+    old_nodes = operational_nodes(graph)
     nodes, edges, node_by_point = list(old_nodes), [], {}
 
     def add_node(point):
@@ -687,13 +915,14 @@ def prepare(
     # The same body/corridor proof used in production is authoritative. A
     # polygon-union prefilter alone can overestimate clearance at a junction.
     from dronedream_agent_core.contracts import MapAsset
-    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner
+    from dronedream_agent_core.known_map_planner import KnownMapMetricPlanner, MetricPlannerPolicy
 
     planner = KnownMapMetricPlanner(
         graph=MapAsset.model_validate(graph),
         semantic_path=semantic_path,
         vehicle_diameter_m=0.76,
         vehicle_height_m=0.6,
+        policy=MetricPlannerPolicy(required_clearance_m=0.8),
     )
     positions = {
         n["node_id"]: tuple(n["position_m"][axis] for axis in ("x", "y", "z")) for n in nodes
@@ -706,17 +935,12 @@ def prepare(
         else:
             rejected_edges.append(edge)
     graph["edges"] = safe_edges
-    attached_ids = {e[key] for e in safe_edges for key in ("from_node", "to_node")}
-    unattached = [
-        {"node_id": n["node_id"], "position_m": n["position_m"]}
-        for n in old_nodes
-        if n["node_id"] not in attached_ids
-    ]
+    unattached = connect_task_locations(graph, semantic_path, provenance["observations_sha256"])
     write(output / "navigation-graph.json", graph)
     report = {
         "status": "candidate-requires-qualification",
-        "corridors": len(corridors),
-        "areas": len(areas),
+        "corridors": len(layer["corridors"]),
+        "areas": len(layer["areas"]),
         "exclusions": len(exclusions),
         "nodes": len(nodes),
         "edges": len(safe_edges),

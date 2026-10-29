@@ -6,7 +6,28 @@
     {
       "id": "sports-south-paved-canopy-detour",
       "kind": "path",
-      "centerline_xy_m": [[-21.453, 112.815], [-21.8, 110], [-20.5, 106], [-16.5, 102], [-10, 100]],
+      "centerline_xy_m": [
+        [
+          -21.453,
+          112.815
+        ],
+        [
+          -21.8,
+          110
+        ],
+        [
+          -20.5,
+          106
+        ],
+        [
+          -16.5,
+          102
+        ],
+        [
+          -10,
+          100
+        ]
+      ],
       "width_m": 3,
       "ground_z_m": 0,
       "evidence": {
@@ -17,7 +38,20 @@
     {
       "id": "physicum-north-road-connection",
       "kind": "path",
-      "centerline_xy_m": [[22.218, 68.372], [23.6, 71.3], [26.652, 74.885]],
+      "centerline_xy_m": [
+        [
+          22.218,
+          68.372
+        ],
+        [
+          23.6,
+          71.3
+        ],
+        [
+          26.652,
+          74.885
+        ]
+      ],
       "width_m": 3,
       "ground_z_m": 0,
       "evidence": {
@@ -28,7 +62,28 @@
     {
       "id": "hoas-southeast-paved-access",
       "kind": "path",
-      "centerline_xy_m": [[166, 73], [171, 73.5], [176, 74.5], [181, 74], [181, 73]],
+      "centerline_xy_m": [
+        [
+          166,
+          73
+        ],
+        [
+          171,
+          73.5
+        ],
+        [
+          176,
+          74.5
+        ],
+        [
+          181,
+          74
+        ],
+        [
+          181,
+          73
+        ]
+      ],
       "width_m": 2.5,
       "ground_z_m": 0,
       "evidence": {
@@ -37,14 +92,25 @@
       }
     }
   ],
-  "remove_corridor_ids": ["hoas-paved-entry", "sports-paved-entry"],
+  "remove_corridor_ids": [
+    "hoas-paved-entry",
+    "sports-paved-entry"
+  ],
   "areas": [],
   "exclusions": [],
   "handoff_corrections": [
     {
       "node_id": "osm-facility-509799015-handoff",
-      "old_position_m": {"x": 148.725, "y": 74.247, "z": 2},
-      "new_position_m": {"x": 166, "y": 73, "z": 2},
+      "old_position_m": {
+        "x": 148.725,
+        "y": 74.247,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": 166,
+        "y": 73,
+        "z": 2
+      },
       "evidence": {
         "source": "orthophoto-visual-review",
         "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
@@ -53,13 +119,187 @@
     },
     {
       "node_id": "osm-facility-16790294-handoff",
-      "old_position_m": {"x": -53.871, "y": 40.972, "z": 2},
-      "new_position_m": {"x": -66, "y": 46, "z": 2},
+      "old_position_m": {
+        "x": -53.871,
+        "y": 40.972,
+        "z": 2
+      },
+      "new_position_m": {
+        "x": -66,
+        "y": 46,
+        "z": 2
+      },
       "evidence": {
         "source": "orthophoto-visual-review",
         "location_kind": "candidate-ground-handoff-staging-not-door-recognition",
         "note": "Use the clear road-side frontage opposite the library rather than the old marker under the planted/shadowed building edge. Reviewed at east -85..-35, north 20..65 metres."
       }
     }
-  ]
+  ],
+  "planar_landmarks": [
+    {
+      "entity_id": "tpr-entrance-33624",
+      "name": "Helsinki Upper Secondary School of Natural Sciences — Main entrance",
+      "aliases": [
+        "Helsinki Upper Secondary School of Natural Sciences entrance",
+        "Helsingin luonnontiedelukio entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        9.0,
+        -85.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-33624",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/33624",
+      "service_unit_id": 30854,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-34370",
+      "name": "Helsinki Upper Secondary School of Natural Sciences — Entrance",
+      "aliases": [
+        "Helsinki Upper Secondary School of Natural Sciences entrance",
+        "Helsingin luonnontiedelukio entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        10.0,
+        -113.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-34370",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/34370",
+      "service_unit_id": 30854,
+      "is_main_entrance": false,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-32658",
+      "name": "Kumpula Campus Library — Main entrance",
+      "aliases": [
+        "Kumpula Campus Library entrance",
+        "Kumpulan kampuskirjasto entrance",
+        "Campusbiblioteket i Gumtäkt entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        4.0,
+        56.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-32658",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/32658",
+      "service_unit_id": 59340,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-30704",
+      "name": "Daycare Kumpupilvi — Main entrance",
+      "aliases": [
+        "Daycare Kumpupilvi entrance",
+        "Päiväkoti Kumpupilvi entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        -116.0,
+        235.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-30704",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/30704",
+      "service_unit_id": 68773,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-32620",
+      "name": "Chemicum — Main entrance",
+      "aliases": [
+        "Chemicum entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        50.0,
+        111.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-32620",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/32620",
+      "service_unit_id": 76156,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-32623",
+      "name": "Exactum — Main entrance",
+      "aliases": [
+        "Exactum entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        -23.0,
+        -1.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-32623",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/32623",
+      "service_unit_id": 76157,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-32621",
+      "name": "Physicum — Main entrance",
+      "aliases": [
+        "Physicum entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        14.0,
+        45.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-32621",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/32621",
+      "service_unit_id": 76158,
+      "is_main_entrance": true,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    },
+    {
+      "entity_id": "tpr-entrance-32622",
+      "name": "Physicum — Entrance",
+      "aliases": [
+        "Physicum entrance"
+      ],
+      "kind": "entrance",
+      "semantic": "facility-anchor",
+      "position_m": [
+        0.0,
+        23.0
+      ],
+      "source_pointer": "/roads/facility_anchors/tpr-entrance-32622",
+      "source": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/32622",
+      "service_unit_id": 76158,
+      "is_main_entrance": false,
+      "location_claim": "official-service-entrance-planar-record; no-flight-altitude-or-handoff-qualification"
+    }
+  ],
+  "service_entrances_source": {
+    "url": "https://tpr.hel.fi/palvelukarttaws/rest/v4/entrance/",
+    "license": "CC-BY-4.0",
+    "attribution": "City of Helsinki Service Map — https://servicemap.hel.fi",
+    "license_source": "https://hri.fi/data/en/dataset/paakaupunkiseudun-palvelukartan-rest-rajapinta",
+    "sha256": "b68a41d4d891367d9f51f11e82b6fdcc3a8ab03ed0734dfc9c1faac6badeb350",
+    "unit_sha256": {
+      "30854": "5bc37115b346d8f62705ff0b974aa7bd9c56388836166bffa2889fc2d3ad37db",
+      "59340": "c774365d7e737b72f5fcdb6f95c43520a4db343c941d361963572768528114af",
+      "68773": "bb38838127f7eec257bde8e363a4e16f34124326f4a50ac669565d50891de9b5",
+      "76156": "2461ec821b1e9c19162d0bc95b80f21ea49258f3a2942687acf79284f33a1fce",
+      "76157": "65a5fcd4068dd982e1b1267bc575c7f64419769256f3f1a933efa3ea981caacc",
+      "76158": "16595287d192bd73194b42a578e08cb35f4cd9d0fb1be9cf9cd61b3ca48d9d55"
+    }
+  }
 }

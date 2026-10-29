@@ -2,6 +2,7 @@
 
 import hashlib
 
+from .contracts import CalibratedRangeSensorMount
 from .rgb_input_quality import (
     PreparedRgbMeasurement,
     decode_gazebo_rgb,
@@ -27,8 +28,10 @@ class ForwardRgbBinding:
     #   vehicle_id：当前飞行器身份。
     # 输出：
     #   None：不返回业务数据。
-    def __init__(self, registry: RuntimeSensorRegistry, *, vehicle_id: str):
+    def __init__(self, registry: RuntimeSensorRegistry, *, vehicle_id: str,
+                 mount: CalibratedRangeSensorMount | None = None):
         self._registry, self._vehicle_id = registry, vehicle_id
+        self._mount = mount.model_copy(deep=True) if mount is not None else None
         self._contract = self._dimensions = self._last_clock = self._last_digest = None
         self._sequence = 0
         self.last_quality = None
@@ -77,6 +80,7 @@ class ForwardRgbBinding:
                 return registered
         contract = self._contract or oakd_lite_forward_rgb_runtime_contract(
             vehicle_id=self._vehicle_id, width=dimensions[0], height=dimensions[1],
+            mount=self._mount,
             # 白墙可以缺少视觉纹理；独立几何覆盖、状态和安全约束仍决定各运动轴是否可用。
             required_for_motion=False,
         )

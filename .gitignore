@@ -22,6 +22,7 @@ ros_ws/build/
 ros_ws/install/
 ros_ws/log/
 *.egg-info/
+src/_dronedream_metric_scan*.so
 runs/
 artifacts/
 artifacts/generated/
