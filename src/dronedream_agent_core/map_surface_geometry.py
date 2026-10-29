@@ -80,25 +80,55 @@ class MeshRayIndex:
 
         build(np.arange(len(triangles)))
         self.nodes = tuple(self.nodes)
+        self.node_lower = np.asarray([node[0] for node in self.nodes])
+        self.node_upper = np.asarray([node[1] for node in self.nodes])
+        self.node_lower.setflags(write=False)
+        self.node_upper.setflags(write=False)
         for array in (self.edge1, self.edge2, self.normals):
             array.setflags(write=False)
 
     # 功能：只枚举射线实际能触及的叶节点；不能按观测终点丢弃前后遮挡或背面。
     # 输入：最多 128 条射线、共享预算、可选首交邻域；输出：真实候选射线和原始面 ID。
     def leaves(self, origins, directions, budget, depths=None, margin=0.0, maximum_ranges=None):
+        # A camera batch visits many small BVH nodes. Compute their slabs in
+        # one bounded array instead of repeatedly dispatching tiny reductions.
+        # Charge all computed pairs, including nodes not reached by traversal.
+        slabs = None
+        pairs = len(origins) * len(self.nodes)
+        if (len(origins) >= 32 and len(self.nodes) >= 15
+                and pairs <= budget.maximum_bound_pairs - budget.bound_pairs):
+            budget.charge(pairs, bounds=True)
+            enter = np.full((len(origins), len(self.nodes)), -np.inf)
+            leave = np.full_like(enter, np.inf)
+            outside_parallel = np.zeros(enter.shape, dtype=bool)
+            for axis in range(3):
+                origin = origins[:, axis, None]
+                direction = directions[:, axis, None]
+                parallel = direction == 0.0
+                divisor = np.where(parallel, 1.0, direction)
+                lo, hi = self.node_lower[None, :, axis], self.node_upper[None, :, axis]
+                first, second = (lo - origin) / divisor, (hi - origin) / divisor
+                np.maximum(enter, np.where(parallel, -np.inf, np.minimum(first, second)), out=enter)
+                np.minimum(leave, np.where(parallel, np.inf, np.maximum(first, second)), out=leave)
+                outside_parallel |= parallel & ((origin < lo) | (origin > hi))
+            slabs = enter, leave, outside_parallel
         pending = [(0, np.arange(len(origins)))]
         while pending:
             node_id, rays = pending.pop()
-            budget.charge(len(rays), bounds=True)
             lo, hi, left, right, faces = self.nodes[node_id]
-            origin, direction = origins[rays], directions[rays]
-            parallel = direction == 0.0
-            divisor = np.where(parallel, 1.0, direction)
-            first, second = (lo - origin) / divisor, (hi - origin) / divisor
-            enter = np.max(np.where(parallel, -np.inf, np.minimum(first, second)), axis=1)
-            leave = np.min(np.where(parallel, np.inf, np.maximum(first, second)), axis=1)
+            if slabs is None:
+                budget.charge(len(rays), bounds=True)
+                origin, direction = origins[rays], directions[rays]
+                parallel = direction == 0.0
+                divisor = np.where(parallel, 1.0, direction)
+                first, second = (lo - origin) / divisor, (hi - origin) / divisor
+                enter = np.max(np.where(parallel, -np.inf, np.minimum(first, second)), axis=1)
+                leave = np.min(np.where(parallel, np.inf, np.maximum(first, second)), axis=1)
+                outside = np.any(parallel & ((origin < lo) | (origin > hi)), axis=1)
+            else:
+                enter, leave, outside = (values[rays, node_id] for values in slabs)
             hit = (leave >= np.maximum(enter, 0.0)) & (leave > 1e-9)
-            hit &= ~np.any(parallel & ((origin < lo) | (origin > hi)), axis=1)
+            hit &= ~outside
             if maximum_ranges is not None:
                 # Prefix only: every possible occluder before the observed endpoint
                 # remains eligible. This is not an endpoint-neighborhood window.

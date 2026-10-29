@@ -22,6 +22,23 @@ def _boxes(centers):
     return np.concatenate([(vertices + [x, 0., 0.])[faces] for x in centers])
 
 
+def test_batched_slabs_keep_all_surface_and_inside_results(monkeypatch):
+    triangles = _boxes(range(3, 403, 4))
+    index = MeshRayIndex(triangles)
+    rng = np.random.default_rng(614)
+    origins = rng.uniform([-2., -2., -2.], [5., 2., 2.], size=(128, 3))
+    directions = rng.normal(size=(128, 3))
+    directions[:, 0] = np.abs(directions[:, 0])
+    directions[::5] = [1., 0., 0.]
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    results = []
+    for batch in (1, 128):
+        monkeypatch.setattr(surface_geometry, "_MESH_RAY_BATCH", batch)
+        results.append(mesh_surface_hits(origins, directions, triangles, .02, acceleration=index))
+    for scalar, batched in zip(*results, strict=True):
+        np.testing.assert_array_equal(scalar, batched)
+
+
 # 功能：首交与所有遮挡完全不变，同时避免遍历观测端点之后的大量真实面。
 def test_prefix_keeps_nearest_occluder_and_reduces_real_triangle_work():
     triangles = _boxes(range(3, 403, 4))
