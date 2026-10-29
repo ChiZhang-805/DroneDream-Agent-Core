@@ -75,7 +75,7 @@ class PayloadPoseService:
                 self._process = await asyncio.create_subprocess_exec(
                     sys.executable, "-u", str(Path(__file__).resolve()), "--worker",
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL, limit=_LIMIT,
+                    stderr=None, limit=_LIMIT,
                 )
                 async with asyncio.timeout(5.0):
                     ready = await self._process.stdout.readline()
@@ -135,6 +135,11 @@ class PayloadPoseService:
 # 输出：
 #   exit_code：输入结束为零，协议或原生服务错误为一。
 def worker_main() -> int:
+    # Runtime 的 Gazebo 绑定由系统包提供，隔离进程不会继承父解释器的 sys.path。
+    # 追加系统目录，保持 Runtime 虚拟环境内依赖的优先级。
+    system_packages = "/usr/lib/python3/dist-packages"
+    if system_packages not in sys.path:
+        sys.path.append(system_packages)
     from gz.msgs10.boolean_pb2 import Boolean
     from gz.msgs10.pose_pb2 import Pose
     from gz.transport13 import Node
