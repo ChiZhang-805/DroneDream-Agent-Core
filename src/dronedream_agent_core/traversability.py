@@ -115,12 +115,38 @@ class _Feature:
     upper_z: float = 0.
     holes: tuple[tuple[XY, ...], ...] = ()
 
+    @cached_property
+    def horizontal_distances(self) -> OrderedDict:
+        # Static XY geometry is independent of altitude and aircraft envelope.
+        # Keep only exact queries; reuse during vertical and shared path checks.
+        return OrderedDict()
+
     def inside_distance(self, point: XY) -> float:
+        key = tuple(point)
+        cache = self.horizontal_distances
+        if key in cache:
+            return cache[key]
+        distance = self._inside_distance(key)
+        if len(cache) >= 256:
+            cache.popitem(last=False)
+        cache[key] = distance
+        return distance
+
+    def _inside_distance(self, point: XY) -> float:
         if self.corridor_radius is None:
             exterior, holes = self.ring_distances
             distance = exterior(point)
-            for hole in holes:
-                distance = min(distance, -hole(point))
+            if holes:
+                low, high = self.hole_bounds
+                query = np.asarray(point)
+                outside = np.maximum(np.maximum(low - query, query - high), 0.)
+                lower = np.hypot(outside[:, 0], outside[:, 1])
+                # Outside a hole's containing rectangle, its boundary cannot
+                # be closer than the rectangle. Keep touching/inside boxes
+                # and a roundoff allowance; evaluate their original rings.
+                indices = np.flatnonzero((lower == 0.) | (lower <= distance + 1e-9))
+                for index in indices:
+                    distance = min(distance, -holes[index](point))
             return distance
         return self.corridor_radius - min(
             _segment_distance(point, a, b)
@@ -129,6 +155,13 @@ class _Feature:
     @cached_property
     def ring_distances(self) -> tuple[_RingDistance, tuple[_RingDistance, ...]]:
         return _RingDistance(self.points), tuple(_RingDistance(hole) for hole in self.holes)
+
+    @cached_property
+    def hole_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        return (np.asarray([(min(p[0] for p in ring), min(p[1] for p in ring))
+                            for ring in self.holes]),
+                np.asarray([(max(p[0] for p in ring), max(p[1] for p in ring))
+                            for ring in self.holes]))
 
     @cached_property
     def bounding_box(self) -> tuple[XY, XY]:

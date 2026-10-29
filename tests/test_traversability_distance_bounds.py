@@ -178,3 +178,41 @@ def test_detailed_ring_distance_matches_scalar_at_concavities_holes_and_boundari
         assert feature.inside_distance(point) == pytest.approx(expected, abs=1e-12)
     restored = pickle.loads(pickle.dumps(feature))
     assert restored.inside_distance((12., 3.)) == feature.inside_distance((12., 3.))
+
+
+def test_many_holes_keep_exact_signed_distance_without_scanning_distant_rings(monkeypatch):
+    from dronedream_agent_core.traversability import _RingDistance
+
+    outer = ((-100., -100.), (100., -100.), (100., 100.), (-100., 100.))
+    holes = tuple(((x, y), (x + 2., y), (x + 2., y + 2.), (x, y + 2.))
+                  for x in range(-80, 81, 16) for y in range(-80, 81, 16))
+    feature = _Feature("harbour-ground", outer, holes=holes)
+    rng = random.Random(613)
+    queries = [(rng.uniform(-110, 110), rng.uniform(-110, 110)) for _ in range(300)]
+    queries += [point for ring in holes for point in ring]
+    queries += [(.000001, 1.), (-.000001, 1.), (1., 1.), (101., 0.)]
+    for point in queries:
+        expected = min(_polygon_inside_distance(point, outer),
+                       *(-_polygon_inside_distance(point, ring) for ring in holes))
+        assert feature.inside_distance(point) == pytest.approx(expected, abs=1e-12)
+    original = _RingDistance.__call__
+    evaluated = []
+
+    def tracked(ring, point):
+        evaluated.append(ring.points)
+        return original(ring, point)
+
+    monkeypatch.setattr(_RingDistance, "__call__", tracked)
+    assert feature.inside_distance((99., 0.)) == 1.
+    assert evaluated == [outer]
+
+
+def test_horizontal_reuse_preserves_near_boundary_values_and_evicts():
+    feature = _Feature("square", ((0., 0.), (4., 0.), (4., 4.), (0., 4.)))
+    for index in range(300):
+        point = (index / 1000., 2.)
+        assert feature.inside_distance(point) == _polygon_inside_distance(point, feature.points)
+    assert len(feature.horizontal_distances) == 256
+    assert feature.inside_distance((-.000001, 2.)) < 0.
+    assert feature.inside_distance((.000001, 2.)) > 0.
+    assert feature.inside_distance((0., 2.)) == 0.
