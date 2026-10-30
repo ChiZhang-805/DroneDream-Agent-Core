@@ -5,6 +5,10 @@
     [Parameter(Mandatory = $false)]
     [string]$RuntimeBuildPython = "/home/dronedream/.local/share/dronedream-autonomy/v0.1.0/venv/bin/python",
 
+    # GitHub builds the Linux wheel in its Ubuntu job from the same pinned Core commit.
+    # Local builds continue to use the installed Runtime interpreter when omitted.
+    [string]$RuntimeCoreWheel,
+
     [Parameter(Mandatory = $false)]
     [string]$LocalPolicyPackage,
 
@@ -222,6 +226,13 @@ try {
         }
         return '/mnt/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\', '/')
     }
+    if ($RuntimeCoreWheel) {
+        $wheel = Get-Item -LiteralPath $RuntimeCoreWheel
+        if ($wheel.Name -notmatch '^dronedream_flight_agent_core-.*-cp312-cp312-linux_x86_64\.whl$') {
+            throw 'RuntimeCoreWheel must be the Python 3.12 Linux x86_64 Core wheel built by the Linux job.'
+        }
+        Copy-Item -LiteralPath $wheel.FullName -Destination $runtimeWheels
+    } else {
     Assert-PlainBuildPath -RepositoryRoot $repoRoot -Path $linuxWheelBuildTemp
     [System.IO.Directory]::CreateDirectory($linuxWheelBuildTemp) | Out-Null
     & wsl.exe -d DroneDreamRuntime --exec env SOURCE_DATE_EPOCH=946684800 `
@@ -231,6 +242,7 @@ try {
         --wheel-dir (Convert-ToRuntimeBuildPath $runtimeWheels) `
         (Convert-ToRuntimeBuildPath $repoRoot)
     if ($LASTEXITCODE -ne 0) { throw "Autonomy Linux core wheel build failed" }
+    }
 } finally {
     if (Test-Path -LiteralPath $linuxWheelBuildTemp) {
         Assert-PlainBuildTree -RepositoryRoot $repoRoot -Path $linuxWheelBuildTemp
