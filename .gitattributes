@@ -11,3 +11,9 @@
 *.cfg text eol=lf
 *.msg text eol=lf
 *.action text eol=lf
+*.cpp text eol=lf
+*.cc text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
