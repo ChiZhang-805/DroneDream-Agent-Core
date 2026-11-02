@@ -378,32 +378,47 @@ def _current_world_position(ack: RuntimeHoldAcknowledgement, prior_track: Px4Tra
 
 
 # 功能：
-#   优先调用度量规划；失败时记录回执并取拓扑候选，候选仍须通过连续净空和跟踪预算。
+#   按模型选择顺序调用真实规划工具；失败时保留回执并尝试模型同时选择的下一算法。
 # 输入：
 #   registry：绑定工具的注册器。
 #   query：路线两端与规划约束。
-#   prefer_metric：是否先尝试度量规划。
+#   planner_tool_ids：模型从当前实际目录选择的规划工具顺序。
 # 输出：
 #   result：路线候选、调用回执列表及是否使用度量规划的三元组。
 def _call_runtime_route(
-    registry: ToolRegistry, query: RouteQuery, *, prefer_metric: bool = True,
+    registry: ToolRegistry,
+    query: RouteQuery,
+    *,
+    planner_tool_ids: list[str],
 ) -> tuple[GraphRoute, list[ToolReceipt], bool]:
-
-    metric_tool_id = "planning.candidate-metric-geometry.candidate"
-    available = {str(item["tool_id"]) for item in registry.catalog()}
+    catalog = {str(item["tool_id"]): item for item in registry.catalog()}
+    if not planner_tool_ids or len(planner_tool_ids) != len(set(planner_tool_ids)):
+        raise RuntimeReplanError("RUNTIME_ROUTE_PLANNER_SELECTION_INVALID")
+    for tool_id in planner_tool_ids:
+        item = catalog.get(tool_id)
+        if item is None or item.get("slot_id") not in {
+            "planning.route-strategy",
+            "planning.route-candidates",
+        }:
+            raise RuntimeReplanError(f"RUNTIME_ROUTE_PLANNER_UNAVAILABLE:{tool_id}")
     receipts: list[ToolReceipt] = []
-    if prefer_metric and metric_tool_id in available:
+    for tool_id in planner_tool_ids:
         try:
-            value, receipt = registry.call(metric_tool_id, query)
+            value, receipt = registry.call(tool_id, query)
         except ToolExecutionError as error:
             receipts.append(error.receipt)
-        else:
-            result = GraphRoute.model_validate(value), [receipt], True
-            return result
-    value, receipt = registry.call_slot("planning.route-strategy", query)
-    receipts.append(receipt)
-    result = GraphRoute.model_validate(value), receipts, False
-    return result
+            continue
+        receipts.append(receipt)
+        metadata = catalog[tool_id].get("routing_metadata")
+        algorithm = metadata.get("algorithm") if isinstance(metadata, dict) else None
+        used_metric = algorithm in {"3d-a-star", "3d-theta-star"}
+        result = GraphRoute.model_validate(value), receipts, used_metric
+        return result
+    issues = ",".join(
+        receipt.issue_codes[0] if receipt.issue_codes else receipt.outcome
+        for receipt in receipts
+    )
+    raise RuntimeReplanError(f"RUNTIME_ROUTE_PLANNERS_FAILED:{issues}")
 
 
 # 功能：
@@ -629,9 +644,12 @@ def _replacement_route(
     anchor: str,
     target_node: str,
     return_node: str,
+    planner_tool_ids: list[str],
 ) -> tuple[GraphRoute, list[ToolReceipt]]:
-    outbound, outbound_receipts, outbound_metric = _call_runtime_route(
-        registry, RouteQuery(start_node=anchor, goal_node=target_node)
+    outbound, outbound_receipts, _outbound_metric = _call_runtime_route(
+        registry,
+        RouteQuery(start_node=anchor, goal_node=target_node),
+        planner_tool_ids=planner_tool_ids,
     )
     anchor_position = next(node.position_m for node in graph.nodes if node.node_id == anchor)
     join_distance = math.dist(
@@ -648,9 +666,7 @@ def _replacement_route(
         inbound, inbound_receipts, _inbound_metric = _call_runtime_route(
             registry,
             RouteQuery(start_node=target_node, goal_node=return_node),
-            # If the outbound metric search could not traverse this corridor,
-            # do not spend the same deadline again on its reverse leg.
-            prefer_metric=outbound_metric,
+            planner_tool_ids=planner_tool_ids,
         )
         receipts.extend(inbound_receipts)
         node_ids = ["runtime-current", *outbound.node_ids, *inbound.node_ids[1:]]
@@ -794,6 +810,7 @@ def build_runtime_replacement(
             anchor=anchor,
             target_node=target_node,
             return_node=active_return_node,
+            planner_tool_ids=decision.classification.route_planner_tool_ids,
         )
         clearance_value, clearance_receipt = registry.call_slot(
             "safety.route-clearance", route
@@ -883,6 +900,7 @@ def build_runtime_replacement(
                 ),
             }
         ),
+        route_planner_tool_ids=list(decision.classification.route_planner_tool_ids),
         target_node=target_node,
         return_node=return_node,
         route=route,
@@ -932,6 +950,7 @@ def build_runtime_replacement(
 #   expected_vehicle_asset_id：预期车辆标识。
 #   active_target_node：当前任务目标。
 #   active_return_node：当前返回点。
+#   active_route_planner_tool_ids：当前路线实际采用的模型选择，纯限速修订保持不变。
 #   active_task_graph：活动任务图。
 #   active_runtime_actions：活动动作合同。
 #   completed_runtime_action_step_ids：已完成动作标识。
@@ -954,6 +973,7 @@ def build_runtime_speed_replacement(
     expected_vehicle_asset_id: str,
     active_target_node: str | None = None,
     active_return_node: str | None = None,
+    active_route_planner_tool_ids: list[str] | None = None,
     active_task_graph: TaskGraph | None = None,
     active_runtime_actions: RuntimeActionExecutionContract | None = None,
     completed_runtime_action_step_ids: set[str] | None = None,
@@ -1085,6 +1105,7 @@ def build_runtime_speed_replacement(
         prior_track_sha256=prior_track_sha256,
         amendment_action="set_speed",
         amendment_parameters={"maximum_speed_mps": speed_limit},
+        route_planner_tool_ids=list(active_route_planner_tool_ids or []),
         target_node=active_target_node or node_ids[-1],
         return_node=active_return_node or node_ids[-1],
         route=route,
@@ -1252,13 +1273,15 @@ def build_runtime_coverage_replacement(
     pattern = CoveragePattern.model_validate(pattern_value)
     if not all_required_gates_passed(pattern.deterministic_gates):
         raise RuntimeReplanError("RUNTIME_COVERAGE_PATTERN_GATE_FAILED")
-    outbound, outbound_receipts, outbound_metric = _call_runtime_route(
-        registry, RouteQuery(start_node=anchor, goal_node=target_node)
+    outbound, outbound_receipts, _outbound_metric = _call_runtime_route(
+        registry,
+        RouteQuery(start_node=anchor, goal_node=target_node),
+        planner_tool_ids=decision.classification.route_planner_tool_ids,
     )
     inbound, inbound_receipts, _inbound_metric = _call_runtime_route(
         registry,
         RouteQuery(start_node=target_node, goal_node=return_node),
-        prefer_metric=outbound_metric,
+        planner_tool_ids=decision.classification.route_planner_tool_ids,
     )
     coverage_nodes = [f"runtime-coverage-{index:04d}" for index in range(len(pattern.points_enu_m))]
     positions = [
@@ -1349,6 +1372,7 @@ def build_runtime_coverage_replacement(
             "lane_count": pattern.lane_count,
             "estimated_area_m2": pattern.estimated_area_m2,
         },
+        route_planner_tool_ids=list(decision.classification.route_planner_tool_ids),
         target_node=target_node,
         return_node=return_node,
         route=route,

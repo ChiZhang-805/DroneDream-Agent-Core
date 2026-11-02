@@ -296,6 +296,34 @@
     "Px4TrackPoint": {
       "additionalProperties": false,
       "properties": {
+        "approach_distance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 50.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approach Distance M"
+        },
+        "approach_speed_limit_mps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 20.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approach Speed Limit Mps"
+        },
         "phase": {
           "enum": [
             "launch",
@@ -547,6 +575,7 @@
             "mavsdk-camera",
             "gazebo-payload",
             "payload-transition",
+            "local-safety",
             "ros2-service"
           ],
           "title": "Driver",
@@ -1027,6 +1056,14 @@
     },
     "route": {
       "$ref": "#/$defs/GraphRoute"
+    },
+    "route_planner_tool_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Route Planner Tool Ids",
+      "type": "array"
     },
     "runtime_actions": {
       "anyOf": [

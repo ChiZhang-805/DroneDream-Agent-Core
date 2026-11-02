@@ -92,6 +92,34 @@
       "title": "Interrupted Phase",
       "type": "string"
     },
+    "localization_observed_at_unix_ms": {
+      "anyOf": [
+        {
+          "exclusiveMaximum": 9223372036854775808,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Localization Observed At Unix Ms"
+    },
+    "localization_variance_m2": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 10000,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Localization Variance M2"
+    },
     "message_id": {
       "pattern": "^runtime-msg-[0-9a-f]{32}$",
       "title": "Message Id",

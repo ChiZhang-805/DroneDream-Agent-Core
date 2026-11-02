@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -1219,6 +1220,9 @@ class SemanticPlan(StrictModel):
         "energy-conserving",
         "few-transitions",
     ] = "balanced"
+    # 历史制品缺少该字段时仍可读取；新的任务准备由确定性校验要求模型至少选择一个
+    # 当前注册的规划工具，不能由宿主静默替模型决定算法。
+    route_planner_tool_ids: list[str] = Field(default_factory=list, max_length=4)
     speed_preferences: list[SemanticSpeedPreference] = Field(min_length=1, max_length=64)
     rationale_summary: str = Field(min_length=1, max_length=600)
 
@@ -1226,6 +1230,13 @@ class SemanticPlan(StrictModel):
     def speed_preferences_follow_target_order(self) -> SemanticPlan:
         if [item.target_node for item in self.speed_preferences] != self.ordered_targets:
             raise ValueError("speed preferences must exactly follow ordered targets")
+        if len(self.route_planner_tool_ids) != len(set(self.route_planner_tool_ids)):
+            raise ValueError("route planner tool identifiers must be unique")
+        if any(
+            re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,159}", tool_id) is None
+            for tool_id in self.route_planner_tool_ids
+        ):
+            raise ValueError("invalid route planner tool identifier")
         return self
 
     # 功能：
@@ -1947,8 +1958,33 @@ class RuntimeMessageClassification(StrictModel):
     ]
     target_entity: str | None = Field(default=None, max_length=160)
     requires_plan_revision: bool
+    route_planner_tool_ids: list[str] = Field(default_factory=list, max_length=4)
     summary: str = Field(min_length=1, max_length=400)
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_runtime_planner_selection(self) -> RuntimeMessageClassification:
+        if len(self.route_planner_tool_ids) != len(set(self.route_planner_tool_ids)):
+            raise ValueError("runtime route planner tool identifiers must be unique")
+        if any(
+            re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,159}", tool_id) is None
+            for tool_id in self.route_planner_tool_ids
+        ):
+            raise ValueError("invalid runtime route planner tool identifier")
+        route_changes = {
+            "replan",
+            "redirect",
+            "return_home",
+            "set_return_point",
+            "set_coverage",
+            "follow_target",
+        }
+        if self.requested_action in route_changes and self.requires_plan_revision:
+            if not self.route_planner_tool_ids:
+                raise ValueError("runtime route change requires model-selected planner tools")
+        elif self.route_planner_tool_ids:
+            raise ValueError("non-route runtime message cannot select route planner tools")
+        return self
 
 
 class RuntimeAmendmentDirective(StrictModel):
@@ -2143,6 +2179,7 @@ class RuntimeReplacementTrack(StrictModel):
         "follow_target",
     ] = "replan"
     amendment_parameters: dict[str, Any] = Field(default_factory=dict)
+    route_planner_tool_ids: list[str] = Field(default_factory=list, max_length=4)
     target_node: str
     return_node: str
     route: GraphRoute

@@ -127,6 +127,7 @@ from .tools import ToolExecutionError, ToolRegistry
 from .verification import MissionVerificationPlanError, build_mission_verification_plan
 
 MOVEMENT_ACTIONS = frozenset({"traverse", "navigate", "return"})
+ROUTE_PLANNER_SLOTS = frozenset({"planning.route-strategy", "planning.route-candidates"})
 CORE_PLANNING_SLOTS = frozenset(
     {
         "planning.route-strategy",
@@ -137,6 +138,31 @@ CORE_PLANNING_SLOTS = frozenset(
         "runtime.track-export",
     }
 )
+
+
+# 功能：
+#   向模型导出本任务实际注册的路线规划工具及其算法适用条件，不把未装载插件写进选择集。
+# 输入：
+#   registry：已经绑定当前地图、机型和插件快照的工具注册表。
+# 输出：
+#   catalog：只含规划器身份与路由元数据的稳定目录。
+def _route_planner_catalog(registry: ToolRegistry) -> list[dict[str, object]]:
+    catalog = [
+        {
+            "tool_id": str(item["tool_id"]),
+            "algorithm": item["routing_metadata"].get("algorithm", "unspecified"),
+            "objective_profile": item["routing_metadata"].get(
+                "objective_profile", "unspecified"
+            ),
+            "best_for": list(item["routing_metadata"].get("best_for", [])),
+            "tradeoffs": list(item["routing_metadata"].get("tradeoffs", [])),
+        }
+        for item in registry.catalog()
+        if item.get("slot_id") in ROUTE_PLANNER_SLOTS
+        and item.get("authority") == "plan"
+        and isinstance(item.get("routing_metadata"), dict)
+    ]
+    return catalog
 IMMUTABLE_SAFETY_RULES = [
     "Model output never has direct actuator authority.",
     "Unknown or unavailable critical telemetry causes a bounded hold and recovery attempt.",
@@ -1783,7 +1809,11 @@ def _validate_task_graph(
 # 输出：
 #   None。
 def _validate_semantic_plan(
-    plan: SemanticPlan, contract: MissionContract, graph: MapAsset, vehicle: VehicleAsset
+    plan: SemanticPlan,
+    contract: MissionContract,
+    graph: MapAsset,
+    vehicle: VehicleAsset,
+    available_route_planner_ids: set[str] | None = None,
 ) -> None:
     known = {node.node_id for node in graph.nodes}
     if any(target not in known for target in plan.ordered_targets):
@@ -1806,6 +1836,13 @@ def _validate_semantic_plan(
         raise MissionPreparationBlocked("SEMANTIC_PLAN_CONSECUTIVE_DUPLICATE")
     if [item.target_node for item in plan.speed_preferences] != plan.ordered_targets:
         raise MissionPreparationBlocked("SEMANTIC_PLAN_SPEED_ORDER_MISMATCH")
+    if not plan.route_planner_tool_ids:
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_ROUTE_PLANNER_SELECTION_REQUIRED")
+    if available_route_planner_ids is not None and any(
+        tool_id not in available_route_planner_ids
+        for tool_id in plan.route_planner_tool_ids
+    ):
+        raise MissionPreparationBlocked("SEMANTIC_PLAN_ROUTE_PLANNER_UNAVAILABLE")
     if any(
         item.cruise_speed_mps > vehicle.operational_max_speed_mps
         or item.cruise_speed_mps < min(5.0, vehicle.operational_max_speed_mps)
@@ -3956,6 +3993,12 @@ class MissionOrchestrator:
         evidence.append("harness.stage", contract_stage.model_dump(mode="json"))
 
         registry = self.tool_registry
+        route_planner_catalog = _route_planner_catalog(registry)
+        available_route_planner_ids = {
+            str(item["tool_id"]) for item in route_planner_catalog
+        }
+        if not available_route_planner_ids:
+            raise MissionPreparationBlocked("ROUTE_PLANNER_CATALOG_EMPTY")
         plugin_advice: list[dict[str, object]] = []
         optional_catalog = (
             [
@@ -4225,6 +4268,7 @@ class MissionOrchestrator:
                     "task_graph": task_graph.model_dump(mode="json"),
                     "available_node_ids": [node.node_id for node in self.map_graph.nodes],
                     "structured_map_context": semantic_planning_map_context,
+                    "available_route_planners": route_planner_catalog,
                     "tool_advice": plugin_advice,
                     "navigation_readiness": navigation_readiness.model_dump(mode="json"),
                     "vehicle_speed_envelope": {
@@ -4268,7 +4312,13 @@ class MissionOrchestrator:
             )
             semantic_plan = _artifact_snapshot(semantic_plan, SemanticPlan)
             try:
-                _validate_semantic_plan(semantic_plan, contract, self.map_graph, self.vehicle)
+                _validate_semantic_plan(
+                    semantic_plan,
+                    contract,
+                    self.map_graph,
+                    self.vehicle,
+                    available_route_planner_ids,
+                )
             except MissionPreparationBlocked as exc:
                 plan_feedback = {
                     "accepted": False,
@@ -4282,15 +4332,7 @@ class MissionOrchestrator:
                 continue
 
             attempt_receipts: list[ToolReceipt] = []
-            primary_strategy = registry.tool_for_slot("planning.route-strategy")
-            strategy_tools = list(
-                dict.fromkeys(
-                    [
-                        primary_strategy,
-                        *registry.tool_ids_for_slot("planning.route-candidates"),
-                    ]
-                )
-            )
+            strategy_tools = list(semantic_plan.route_planner_tool_ids)
             route_alternatives: list[RouteAlternativeCandidate] = []
             alternative_segments: dict[str, list[GraphRoute]] = {}
             alternative_receipts: dict[str, list[ToolReceipt]] = {}

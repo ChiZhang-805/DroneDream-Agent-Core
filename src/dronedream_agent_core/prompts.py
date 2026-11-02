@@ -219,6 +219,18 @@ candidate-route evidence. For indoor, stair, doorway, moving-obstacle, or uncert
 localization tasks prefer clearance-first unless a stronger contract constraint requires
 another policy. The policy changes deterministic multi-objective weights; it does not
 authorize coordinates or make an unsafe route feasible.
+Select route_planner_tool_ids only from available_route_planners. You own this algorithm
+selection: use the map structure, vehicle envelope, task objective, uncertainty, and current
+planning conditions rather than accepting a host-chosen default. Select one to four tools.
+Choose genuinely different algorithms when uncertainty justifies alternatives; do not treat
+different objective profiles that share Dijkstra as different search algorithms. Prefer a
+qualified 3-D geometry planner when collision geometry is available and the topology may be
+incomplete. Prefer A* for large spatial graphs, bidirectional Dijkstra for a fixed endpoint
+pair on a large static graph, ordinary Dijkstra for a small or weakly heuristic graph, and
+Weighted A* only when bounded planning latency is important. Theta* is useful when open 3-D
+space and fewer heading changes matter. The deterministic core will execute only the tools
+you select, reject failed or unsafe candidates, and rank the remaining feasible routes.
+Planner selection grants no collision, actuator, or flight authority.
 Keep rationale_summary concise and at most 400 characters; it is explanatory only and
 cannot replace any typed target, policy, tool result, hash binding, or safety gate.
 Never claim collision clearance or unknown-space observability from rationale alone;
@@ -397,6 +409,13 @@ effects, and established a stable hover before this call. Preserve the user's me
 distinguish an emergency stop, a destination/task amendment, a speed or motion adjustment,
 and a purely informational message. A destination, task, payload, route, or motion change
 requires a new plan revision. Set target_entity only when the user explicitly names one.
+For a route-changing action, select one to four route_planner_tool_ids only from
+available_route_planners. Re-evaluate the choice from the stable hold state, changed goal,
+map structure, vehicle, localization evidence, algorithm best_for fields, and tradeoffs;
+do not blindly copy current_route_planner_tool_ids. You may select multiple genuinely
+different algorithms so deterministic validation can compare feasible candidates. Do not
+select planner tools for a non-route message. Planner selection is advisory planning
+authority only and never grants collision, actuator, resume, or flight authority.
 Never invent coordinates, actuator commands, or permission to resume. Your output is only
 a structured classification; deterministic code owns hold, replan, resume, and landing.
 """.strip()

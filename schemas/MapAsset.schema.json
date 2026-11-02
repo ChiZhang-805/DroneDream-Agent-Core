@@ -98,7 +98,8 @@
             "door",
             "corridor",
             "outdoor",
-            "pickup"
+            "pickup",
+            "delivery"
           ],
           "title": "Semantic",
           "type": "string"

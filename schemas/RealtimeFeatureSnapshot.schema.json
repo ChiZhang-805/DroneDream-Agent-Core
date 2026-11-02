@@ -46,6 +46,13 @@
           "title": "Features",
           "type": "array"
         },
+        "history_slot_revision": {
+          "default": 0,
+          "maximum": 2147483647,
+          "minimum": 0,
+          "title": "History Slot Revision",
+          "type": "integer"
+        },
         "inference_latency_ms": {
           "maximum": 30000.0,
           "minimum": 0.0,

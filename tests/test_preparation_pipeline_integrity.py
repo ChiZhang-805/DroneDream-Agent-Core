@@ -116,6 +116,9 @@ class _PlanningPort:
             value = {
                 "ordered_targets": ["b", "a"],
                 "route_policy": "balanced",
+                "route_planner_tool_ids": [
+                    kwargs["input_artifact"]["available_route_planners"][0]["tool_id"]
+                ],
                 "speed_preferences": [
                     {
                         "target_node": "b",
@@ -308,6 +311,17 @@ def test_full_preparation_uses_real_plugins_and_geometry(tmp_path, change_asset,
                     assert any(item["accepted"] and item["output"] == {"node": "b"}
                                for item in advice)
             assert prepared.execution_route.node_ids == ["a", "b", "a"]
+            selected_planners = set(prepared.semantic_plan.route_planner_tool_ids)
+            available_planners = {
+                item["tool_id"]
+                for item in port.planning_inputs[-1]["available_route_planners"]
+            }
+            executed_planners = {
+                receipt.tool_id
+                for receipt in prepared.tool_receipts
+                if receipt.tool_id in available_planners
+            }
+            assert executed_planners == selected_planners
             assert prepared.route_clearance.accepted
             assert len(prepared.plan.segments) == 2
             assert prepared.contract.map_semantic_sha256 == prepared.route_clearance.semantic_sha256

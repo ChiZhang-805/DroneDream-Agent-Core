@@ -924,6 +924,7 @@ def _semantic_plan_vehicle() -> VehicleAsset:
 def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
     plan = SemanticPlan(
         ordered_targets=["stale-gate", "pickup", "office"],
+        route_planner_tool_ids=["planning.candidate-a-star.candidate"],
         speed_preferences=[
             {
                 "target_node": "stale-gate",
@@ -953,6 +954,7 @@ def test_semantic_plan_rejects_stale_or_model_selected_detour() -> None:
 def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
     plan = SemanticPlan(
         ordered_targets=["pickup", "office"],
+        route_planner_tool_ids=["planning.candidate-a-star.candidate"],
         speed_preferences=[
             {
                 "target_node": "pickup",
@@ -969,7 +971,54 @@ def test_semantic_plan_accepts_contract_target_and_return_only() -> None:
         ],
         rationale_summary="Current target and contract return.",
     )
-    _validate_semantic_plan(plan, _contract(), _map(), _semantic_plan_vehicle())
+    _validate_semantic_plan(
+        plan,
+        _contract(),
+        _map(),
+        _semantic_plan_vehicle(),
+        {"planning.candidate-a-star.candidate"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("selected", "issue_code"),
+    [
+        ([], "SEMANTIC_PLAN_ROUTE_PLANNER_SELECTION_REQUIRED"),
+        (["planning.candidate-theoretical.candidate"], "SEMANTIC_PLAN_ROUTE_PLANNER_UNAVAILABLE"),
+    ],
+)
+def test_semantic_plan_requires_an_available_model_selected_planner(
+    selected: list[str],
+    issue_code: str,
+) -> None:
+    plan = SemanticPlan(
+        ordered_targets=["pickup", "office"],
+        route_planner_tool_ids=selected,
+        speed_preferences=[
+            {
+                "target_node": "pickup",
+                "cruise_speed_mps": 5.4,
+                "approach_speed_mps": 0.8,
+                "rationale": "Pickup approach.",
+            },
+            {
+                "target_node": "office",
+                "cruise_speed_mps": 5.0,
+                "approach_speed_mps": 0.7,
+                "rationale": "Return approach.",
+            },
+        ],
+        rationale_summary="Current target and contract return.",
+    )
+
+    with pytest.raises(MissionPreparationBlocked, match=issue_code):
+        _validate_semantic_plan(
+            plan,
+            _contract(),
+            _map(),
+            _semantic_plan_vehicle(),
+            {"planning.candidate-a-star.candidate"},
+        )
 
 
 def test_model_speed_preferences_bind_distinct_limits_to_each_route_leg() -> None:

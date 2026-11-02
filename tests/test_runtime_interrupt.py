@@ -12,11 +12,34 @@ from dronedream_agent_core.hashing import sha256_json
 from dronedream_agent_core.runtime_interrupt import (
     RuntimeMessageRejected,
     _runtime_model_attempt_policy,
+    _validate_runtime_route_planner_selection,
     authorize_runtime_action,
     close_runtime_control_session,
     create_runtime_control_session,
     submit_runtime_message,
 )
+
+
+# 功能：
+#   验证运行中模型不能虚构算法标识并触发宿主默认回退。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_runtime_route_change_rejects_unavailable_model_selected_planner() -> None:
+    classification = RuntimeMessageClassification(
+        message_kind="mission_amendment",
+        requested_action="redirect",
+        requires_plan_revision=True,
+        route_planner_tool_ids=["planning.candidate-missing.candidate"],
+        summary="Redirect with an unavailable planner.",
+    )
+
+    with pytest.raises(RuntimeMessageRejected, match="RUNTIME_ROUTE_PLANNER_UNAVAILABLE"):
+        _validate_runtime_route_planner_selection(
+            classification,
+            [{"tool_id": "planning.candidate-a-star.candidate"}],
+        )
 
 
 # 功能：
@@ -132,6 +155,7 @@ def test_future_landing_after_destination_change_does_not_force_emergency_land()
             requested_action="redirect",
             target_entity="教学楼入口",
             requires_plan_revision=True,
+            route_planner_tool_ids=["planning.candidate-a-star.candidate"],
             summary="Redirect, then return and land at the end of the mission.",
         ),
     )
@@ -250,6 +274,19 @@ def test_every_runtime_amendment_first_enters_a_code_authorized_safe_state(
             target_entity="guard-house",
             requires_plan_revision=requested_action
             not in {"pause", "resume", "safe_land", "operator_release"},
+            route_planner_tool_ids=(
+                ["planning.candidate-a-star.candidate"]
+                if requested_action
+                in {
+                    "replan",
+                    "redirect",
+                    "return_home",
+                    "set_return_point",
+                    "set_coverage",
+                    "follow_target",
+                }
+                else []
+            ),
             summary="A typed runtime amendment.",
             parameters={"maximum_speed_mps": 0.3} if requested_action == "set_speed" else {},
         ),

@@ -7,7 +7,12 @@ from dronedream_agent_core.contracts import (
     RouteQuery,
     Vector3,
 )
-from dronedream_agent_core.navigation import shortest_route
+from dronedream_agent_core.navigation import (
+    a_star_route,
+    bidirectional_dijkstra_route,
+    shortest_route,
+    weighted_a_star_route,
+)
 
 
 def _graph() -> MapAsset:
@@ -55,6 +60,30 @@ def test_verified_only_policy_fails_closed():
         shortest_route(
             _graph(),
             RouteQuery(start_node="a", goal_node="c", require_flight_verified_edges=True),
+        )
+
+
+@pytest.mark.parametrize(
+    "planner",
+    [a_star_route, weighted_a_star_route, bidirectional_dijkstra_route],
+)
+def test_search_algorithm_candidates_preserve_route_contract(planner):
+    route = planner(_graph(), RouteQuery(start_node="a", goal_node="c"))
+
+    assert route.node_ids == ["a", "b", "c"]
+    assert route.edge_ids == ["ab", "bc"]
+    assert route.route_length_m == pytest.approx(2.0)
+    assert route.all_edges_flight_verified is False
+
+
+def test_bidirectional_dijkstra_respects_one_way_edges():
+    graph = _graph()
+    graph.edges = [edge.model_copy(update={"bidirectional": False}) for edge in graph.edges]
+
+    with pytest.raises(ValueError, match="qualification"):
+        bidirectional_dijkstra_route(
+            graph,
+            RouteQuery(start_node="c", goal_node="a"),
         )
 
 

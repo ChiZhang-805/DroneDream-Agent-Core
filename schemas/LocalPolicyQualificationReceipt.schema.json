@@ -1,5 +1,145 @@
 {
   "$defs": {
+    "ActionRiskAdmissionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "model_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Model Sha256",
+          "type": "string"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/ActionRiskRegionEvidence"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Regions",
+          "type": "array"
+        },
+        "teacher_config_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Teacher Config Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_sha256",
+        "teacher_config_sha256",
+        "regions"
+      ],
+      "title": "ActionRiskAdmissionEvidence",
+      "type": "object"
+    },
+    "ActionRiskRegionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "action_contrast_observation_count": {
+          "minimum": 0,
+          "title": "Action Contrast Observation Count",
+          "type": "integer"
+        },
+        "action_discrimination_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Action Discrimination Fraction",
+          "type": "number"
+        },
+        "dataset_receipt_sha256": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Dataset Receipt Sha256",
+          "type": "array"
+        },
+        "independent_observation_count": {
+          "minimum": 1,
+          "title": "Independent Observation Count",
+          "type": "integer"
+        },
+        "p99_input_and_inference_ms": {
+          "maximum": 60000.0,
+          "minimum": 0.0,
+          "title": "P99 Input And Inference Ms",
+          "type": "number"
+        },
+        "risk_hold_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Hold Recall",
+          "type": "number"
+        },
+        "risk_mean_absolute_error": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Mean Absolute Error",
+          "type": "number"
+        },
+        "risky_sample_count": {
+          "minimum": 0,
+          "title": "Risky Sample Count",
+          "type": "integer"
+        },
+        "safe_motion_recall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Safe Motion Recall",
+          "type": "number"
+        },
+        "safe_observation_count": {
+          "minimum": 0,
+          "title": "Safe Observation Count",
+          "type": "integer"
+        },
+        "safe_sample_count": {
+          "minimum": 0,
+          "title": "Safe Sample Count",
+          "type": "integer"
+        },
+        "sample_count": {
+          "maximum": 250000,
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "test_groups": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Test Groups",
+          "type": "array"
+        },
+        "unsafe_observation_count": {
+          "minimum": 0,
+          "title": "Unsafe Observation Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dataset_receipt_sha256",
+        "test_groups",
+        "sample_count",
+        "risky_sample_count",
+        "safe_sample_count",
+        "independent_observation_count",
+        "safe_observation_count",
+        "unsafe_observation_count",
+        "action_contrast_observation_count",
+        "risk_hold_recall",
+        "safe_motion_recall",
+        "risk_mean_absolute_error",
+        "action_discrimination_fraction",
+        "p99_input_and_inference_ms"
+      ],
+      "title": "ActionRiskRegionEvidence",
+      "type": "object"
+    },
     "LocalPolicyTrainingMetrics": {
       "additionalProperties": false,
       "properties": {
@@ -8,6 +148,17 @@
           "minimum": 0.0,
           "title": "Action Accuracy",
           "type": "number"
+        },
+        "action_risk_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionRiskAdmissionEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "authorized_motion_recall": {
           "default": 0.0,

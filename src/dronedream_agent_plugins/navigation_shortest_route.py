@@ -22,6 +22,14 @@ def _tools(environment: ToolEnvironment) -> list[ToolPlugin]:
             input_type=RouteQuery,
             output_type=GraphRoute,
             handler=lambda query: shortest_route(environment.map_graph, query),
+            routing_metadata={
+                "algorithm": "dijkstra",
+                "objective_profile": "shortest-distance",
+                "best_for": ["small or weakly heuristic graphs", "distance-optimal baseline"],
+                "tradeoffs": ["may expand many nodes", "topology-bound"],
+                "selection_authority": "model",
+                "requires_deterministic_validation": True,
+            },
         )
     ]
 
@@ -48,6 +56,11 @@ def plugin_definition() -> PluginDefinition:
                     authority="plan",
                     input_schema=RouteQuery.model_json_schema(),
                     output_schema=GraphRoute.model_json_schema(),
+                    metadata={
+                        "algorithm": "dijkstra",
+                        "objective_profile": "shortest-distance",
+                        "selection_authority": "model",
+                    },
                 )
             ],
             permissions=["asset.read", "mission.read"],

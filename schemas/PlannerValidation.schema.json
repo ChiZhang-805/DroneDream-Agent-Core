@@ -27,6 +27,14 @@
       "title": "Planner Id",
       "type": "string"
     },
+    "repair_instructions": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Repair Instructions",
+      "type": "array"
+    },
     "schema_version": {
       "const": "dronedream.planner-validation.v1",
       "default": "dronedream.planner-validation.v1",

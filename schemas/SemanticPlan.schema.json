@@ -1,4 +1,44 @@
 {
+  "$defs": {
+    "SemanticSpeedPreference": {
+      "additionalProperties": false,
+      "description": "Model-selected desired speed for one semantic route leg.",
+      "properties": {
+        "approach_speed_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Approach Speed Mps",
+          "type": "number"
+        },
+        "cruise_speed_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Cruise Speed Mps",
+          "type": "number"
+        },
+        "rationale": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "target_node": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Target Node",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_node",
+        "cruise_speed_mps",
+        "approach_speed_mps",
+        "rationale"
+      ],
+      "title": "SemanticSpeedPreference",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "properties": {
     "ordered_targets": {
@@ -15,6 +55,14 @@
       "minLength": 1,
       "title": "Rationale Summary",
       "type": "string"
+    },
+    "route_planner_tool_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Route Planner Tool Ids",
+      "type": "array"
     },
     "route_policy": {
       "default": "balanced",
@@ -33,10 +81,20 @@
       "default": "dronedream.semantic-plan.v1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "speed_preferences": {
+      "items": {
+        "$ref": "#/$defs/SemanticSpeedPreference"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Speed Preferences",
+      "type": "array"
     }
   },
   "required": [
     "ordered_targets",
+    "speed_preferences",
     "rationale_summary"
   ],
   "title": "SemanticPlan",

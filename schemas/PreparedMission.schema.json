@@ -126,6 +126,83 @@
       "title": "ActionDefinition",
       "type": "object"
     },
+    "ClarificationOption": {
+      "additionalProperties": false,
+      "description": "One bounded, directly selectable answer to a planning clarification.",
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "option_id": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Option Id",
+          "type": "string"
+        },
+        "response": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label",
+        "response"
+      ],
+      "title": "ClarificationOption",
+      "type": "object"
+    },
+    "ClarificationQuestion": {
+      "additionalProperties": false,
+      "description": "A user-facing question whose likely answers are ordered by relevance.",
+      "properties": {
+        "allow_other": {
+          "default": true,
+          "title": "Allow Other",
+          "type": "boolean"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ClarificationOption"
+          },
+          "maxItems": 3,
+          "title": "Options",
+          "type": "array"
+        },
+        "other_label": {
+          "default": "\u5176\u4ed6",
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Other Label",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 240,
+          "minLength": 3,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "question_id": {
+          "pattern": "^[a-z][a-z0-9._-]{1,63}$",
+          "title": "Question Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "prompt"
+      ],
+      "title": "ClarificationQuestion",
+      "type": "object"
+    },
     "DomainActionCatalog": {
       "additionalProperties": false,
       "properties": {
@@ -552,6 +629,14 @@
           "title": "Assumptions",
           "type": "array"
         },
+        "clarification_questions": {
+          "items": {
+            "$ref": "#/$defs/ClarificationQuestion"
+          },
+          "maxItems": 4,
+          "title": "Clarification Questions",
+          "type": "array"
+        },
         "constraints": {
           "items": {
             "type": "string"
@@ -716,6 +801,14 @@
           "title": "Controller Step Scale",
           "type": "number"
         },
+        "decision_reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Decision Reason Codes",
+          "type": "array"
+        },
         "expert_latency_ms": {
           "additionalProperties": {
             "maximum": 60000.0,
@@ -778,7 +871,7 @@
             "minimum": 0.0,
             "type": "number"
           },
-          "maxProperties": 8,
+          "maxProperties": 9,
           "title": "Pipeline Latency Ms",
           "type": "object"
         },
@@ -805,6 +898,18 @@
           ],
           "title": "Selected Navigation Role",
           "type": "string"
+        },
+        "temporal_history_ready": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporal History Ready"
         }
       },
       "required": [
@@ -2555,6 +2660,34 @@
     "Px4TrackPoint": {
       "additionalProperties": false,
       "properties": {
+        "approach_distance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 50.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approach Distance M"
+        },
+        "approach_speed_limit_mps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 20.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approach Speed Limit Mps"
+        },
         "phase": {
           "enum": [
             "launch",
@@ -2824,6 +2957,7 @@
             "mavsdk-camera",
             "gazebo-payload",
             "payload-transition",
+            "local-safety",
             "ros2-service"
           ],
           "title": "Driver",
@@ -3002,6 +3136,14 @@
           "title": "Rationale Summary",
           "type": "string"
         },
+        "route_planner_tool_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Route Planner Tool Ids",
+          "type": "array"
+        },
         "route_policy": {
           "default": "balanced",
           "enum": [
@@ -3019,13 +3161,61 @@
           "default": "dronedream.semantic-plan.v1",
           "title": "Schema Version",
           "type": "string"
+        },
+        "speed_preferences": {
+          "items": {
+            "$ref": "#/$defs/SemanticSpeedPreference"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Speed Preferences",
+          "type": "array"
         }
       },
       "required": [
         "ordered_targets",
+        "speed_preferences",
         "rationale_summary"
       ],
       "title": "SemanticPlan",
+      "type": "object"
+    },
+    "SemanticSpeedPreference": {
+      "additionalProperties": false,
+      "description": "Model-selected desired speed for one semantic route leg.",
+      "properties": {
+        "approach_speed_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Approach Speed Mps",
+          "type": "number"
+        },
+        "cruise_speed_mps": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "title": "Cruise Speed Mps",
+          "type": "number"
+        },
+        "rationale": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "target_node": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Target Node",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_node",
+        "cruise_speed_mps",
+        "approach_speed_mps",
+        "rationale"
+      ],
+      "title": "SemanticSpeedPreference",
       "type": "object"
     },
     "SimulationTrainingTrace": {

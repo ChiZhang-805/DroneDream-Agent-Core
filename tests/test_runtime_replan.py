@@ -71,6 +71,8 @@ def test_runtime_route_falls_back_to_topology_with_failed_metric_receipt() -> No
             handler=lambda _query: (_ for _ in ()).throw(
                 ValueError("no metric route satisfies operational clearance")
             ),
+            slot_id="planning.route-candidates",
+            routing_metadata={"algorithm": "3d-a-star"},
         )
     )
     registry.register(
@@ -82,12 +84,17 @@ def test_runtime_route_falls_back_to_topology_with_failed_metric_receipt() -> No
             output_type=GraphRoute,
             handler=lambda _query: route,
             slot_id="planning.route-strategy",
+            routing_metadata={"algorithm": "dijkstra"},
         )
     )
 
     selected, receipts, used_metric = _call_runtime_route(
         registry,
         RouteQuery(start_node="office", goal_node="pickup"),
+        planner_tool_ids=[
+            "planning.candidate-metric-geometry.candidate",
+            "planning.topology.route",
+        ],
     )
 
     assert selected == route
@@ -399,6 +406,7 @@ def _replan_inputs(tmp_path: Path) -> dict[str, Any]:
         requested_action="replan",
         target_entity="校园门口的保安亭",
         requires_plan_revision=True,
+        route_planner_tool_ids=["planning.candidate-metric-geometry.candidate"],
         summary="Change pickup destination to the guard house.",
     )
     decision = RuntimeInterruptionDecision(
@@ -594,9 +602,11 @@ def test_runtime_destination_change_builds_bound_clear_replacement(tmp_path: Pat
         expected_map_sha256=sha256_json(graph),
         expected_semantic_sha256=semantic_sha256,
         expected_vehicle_asset_id=vehicle.asset_id,
+        active_route_planner_tool_ids=replacement.route_planner_tool_ids,
     )
 
     assert speed_replacement.amendment_action == "set_speed"
+    assert speed_replacement.route_planner_tool_ids == replacement.route_planner_tool_ids
     assert speed_replacement.amendment_parameters == {"maximum_speed_mps": 0.3}
     assert all(point.speed_limit_mps <= 0.3 for point in speed_replacement.track.points)
     assert speed_replacement.track.points[0].x == speed_ack.observed_position_ned_m.x
@@ -620,6 +630,7 @@ def test_runtime_destination_change_builds_bound_clear_replacement(tmp_path: Pat
         requested_action="set_coverage",
         target_entity="guard-house",
         requires_plan_revision=True,
+        route_planner_tool_ids=["planning.candidate-metric-geometry.candidate"],
         summary="Cover the guard-house area.",
         parameters={
             "width_m": 2.0,
@@ -652,6 +663,7 @@ def test_runtime_destination_change_builds_bound_clear_replacement(tmp_path: Pat
         expected_vehicle_asset_id=vehicle.asset_id,
         return_node="office",
     )
+    assert coverage.route_planner_tool_ids == coverage_classification.route_planner_tool_ids
 
     assert coverage.amendment_action == "set_coverage"
     assert coverage.amendment_parameters["pattern"] == "lawnmower"

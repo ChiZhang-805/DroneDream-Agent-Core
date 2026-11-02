@@ -123,6 +123,46 @@
       "title": "BodyFrameControlIntent",
       "type": "object"
     },
+    "MeasuredHoldAnchor": {
+      "additionalProperties": false,
+      "description": "Executor-selected PX4 estimator-frame anchor, not a world-map position.",
+      "properties": {
+        "down_m": {
+          "title": "Down M",
+          "type": "number"
+        },
+        "east_m": {
+          "title": "East M",
+          "type": "number"
+        },
+        "north_m": {
+          "title": "North M",
+          "type": "number"
+        },
+        "selected_at_unix_ms": {
+          "minimum": 0,
+          "title": "Selected At Unix Ms",
+          "type": "integer"
+        },
+        "source": {
+          "enum": [
+            "px4-measured-braking-position",
+            "px4-measured-latched-position"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "selected_at_unix_ms",
+        "north_m",
+        "east_m",
+        "down_m"
+      ],
+      "title": "MeasuredHoldAnchor",
+      "type": "object"
+    },
     "YawRateApplication": {
       "additionalProperties": false,
       "description": "Rate-to-heading conversion actually supplied to the FC transport.\n\nThis is a command, not measured yaw response. An absolute-heading sender\ncannot invent a zero rate by omitting this evidence.",
@@ -191,6 +231,17 @@
           "type": "null"
         }
       ]
+    },
+    "measured_hold_anchor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MeasuredHoldAnchor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "model_authorized": {
       "title": "Model Authorized",

@@ -22,6 +22,14 @@ def _tools(environment: ToolEnvironment) -> list[ToolPlugin]:
             input_type=RouteQuery,
             output_type=GraphRoute,
             handler=lambda query: clearance_first_route(environment.map_graph, query),
+            routing_metadata={
+                "algorithm": "dijkstra",
+                "objective_profile": "clearance-first",
+                "best_for": ["narrow corridors", "qualification-sensitive routing"],
+                "tradeoffs": ["longer route possible", "topology metadata dependent"],
+                "selection_authority": "model",
+                "requires_deterministic_validation": True,
+            },
         )
     ]
 
@@ -48,6 +56,11 @@ def plugin_definition() -> PluginDefinition:
                     authority="plan",
                     input_schema=RouteQuery.model_json_schema(),
                     output_schema=GraphRoute.model_json_schema(),
+                    metadata={
+                        "algorithm": "dijkstra",
+                        "objective_profile": "clearance-first",
+                        "selection_authority": "model",
+                    },
                 )
             ],
             permissions=["asset.read", "mission.read"],

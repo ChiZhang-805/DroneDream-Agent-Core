@@ -3,7 +3,7 @@
     {
       "contract": "ControlApplicationRecord",
       "file": "ControlApplicationRecord.schema.json",
-      "sha256": "23cd59b0eeaf0eda18dcb58145206b70727cf2264496f43e7d70cbfb0b15f9b8"
+      "sha256": "fe515d82713bdb923c643db891e78a8d5afb0f40fc0060d28e86ea7e6a26ff83"
     },
     {
       "contract": "BodyFrameControlIntent",
@@ -18,27 +18,27 @@
     {
       "contract": "RuntimeLocalSafetyCommand",
       "file": "RuntimeLocalSafetyCommand.schema.json",
-      "sha256": "edcb61d434373c4596e597cb9c0863dab8937d97b60975a51efdda7da8218682"
+      "sha256": "3de85993283bc4e7599ca872659fb0b5e08141078a18c58625a28266820113ca"
     },
     {
       "contract": "RuntimeLocalSafetyObservation",
       "file": "RuntimeLocalSafetyObservation.schema.json",
-      "sha256": "acb4d108bac9611b525d9e2e1ec4f4e24a4e93ec63f1f1a3700fd55808a98d40"
+      "sha256": "42be6ba3246d9af9909a1844e11bd7304e95cb2794f0e1639187e1a1faa26de9"
     },
     {
       "contract": "RealtimeFeatureSnapshot",
       "file": "RealtimeFeatureSnapshot.schema.json",
-      "sha256": "a40eba744d0d4bd14ebe3d5af79cfaf73784baccf0727af9dc9fbdd70385579d"
+      "sha256": "50655023a2c3cd82309b390df8c7c2f1fba391fc1009a69af60196a0bdc9d3c1"
     },
     {
       "contract": "LocalPolicyQualificationReceipt",
       "file": "LocalPolicyQualificationReceipt.schema.json",
-      "sha256": "150ced7a2f5ab7976d792c4fdad0b87d8dac20959fc245764e525a77d9d1c8f9"
+      "sha256": "fb61a1accab5c32877ab2e0a69597993b68b64574e04f003a1514f6fc5c87824"
     },
     {
       "contract": "LocalPolicySimulationAdmissionReceipt",
       "file": "LocalPolicySimulationAdmissionReceipt.schema.json",
-      "sha256": "c362e9644be8023c69b7f6601cecacc1db65b8ffb00b8b2597fb800df2bb0e7e"
+      "sha256": "19c48e472e54b25955729be998f353f6cbb569ef3398eceed0c04ed68e1b8b95"
     },
     {
       "contract": "AssetIR",
@@ -88,7 +88,7 @@
     {
       "contract": "MapAsset",
       "file": "MapAsset.schema.json",
-      "sha256": "8df52594a452dc72d20e8610167c0ecab8f69cc909a12ebe1d7478bb2d2d955c"
+      "sha256": "62e5e58f027b212c8f43c18270135a2d2bb4df9b1de811930032cb6d26b6045f"
     },
     {
       "contract": "MapRuntimeBindings",
@@ -98,7 +98,7 @@
     {
       "contract": "VehicleAsset",
       "file": "VehicleAsset.schema.json",
-      "sha256": "a0ba635708cf804f7bb8410adad7bca3e661e77866778fffb509e8b68fa62855"
+      "sha256": "c144af7b195bb3e29d4f4faaed8e32e4bd35cd2da8df1a437001808266e8ab85"
     },
     {
       "contract": "MissionRequest",
@@ -113,7 +113,7 @@
     {
       "contract": "IntentArtifact",
       "file": "IntentArtifact.schema.json",
-      "sha256": "e864b6b2a5346809672414b3b20c029790c213663729d21f2b9da667f4f678b8"
+      "sha256": "e66d27beb0e5991cc277b563af2166906ef969f57dd8e2cd1ae408dc9d0b4fbe"
     },
     {
       "contract": "MissionContract",
@@ -128,7 +128,7 @@
     {
       "contract": "SemanticPlan",
       "file": "SemanticPlan.schema.json",
-      "sha256": "3ba5aecd426fc6ec0f8c8719a7ad7a900f68c1d6c0566dd8a3d4120aa8e78c65"
+      "sha256": "309cb4ca2bb3aa0199c928d15f01714d15a8a610c6705a519715326e70ec3ab2"
     },
     {
       "contract": "PlannerContribution",
@@ -138,7 +138,7 @@
     {
       "contract": "PlannerValidation",
       "file": "PlannerValidation.schema.json",
-      "sha256": "d45999d0eda5d09ddbcbdaa78d88484beaacfda0952c4c57b93bd1c36d01abfb"
+      "sha256": "4d6604fddcebb1e4f5d8e5c4a75cd06e2b5a2bf69e6eaac3e7be1cc17b2fcd68"
     },
     {
       "contract": "FlightPlan",
@@ -193,7 +193,7 @@
     {
       "contract": "Px4Track",
       "file": "Px4Track.schema.json",
-      "sha256": "1aeadac0d95e62c293f48c341aaa9599e8546859d5d24b66e24498e507e5049a"
+      "sha256": "5a89ceb26bc7cacda1fca25c20580df87ad76c33108fdfdec55cbaecef4dba30"
     },
     {
       "contract": "RuntimeCheckpointRequest",
@@ -203,7 +203,7 @@
     {
       "contract": "RuntimeCheckpointDecision",
       "file": "RuntimeCheckpointDecision.schema.json",
-      "sha256": "042f945713f49cef8ab188185e818736aac1d566bff2767bf2fa418f6e6f5b8d"
+      "sha256": "f06030fc24347523e574e403101af827ae3e40f13fa04f4b0eb0cd681422b7f8"
     },
     {
       "contract": "TaskThread",
@@ -268,12 +268,12 @@
     {
       "contract": "RuntimeHoldAcknowledgement",
       "file": "RuntimeHoldAcknowledgement.schema.json",
-      "sha256": "b772e7cd71df3dd88a2b85e58499f62637c07a1346029f96ba8f606022293c8b"
+      "sha256": "46a9d2d8fbd0ec355cfef811fed938103a7c4dd1d0ef3cffabe730c342db5577"
     },
     {
       "contract": "RuntimeMessageClassification",
       "file": "RuntimeMessageClassification.schema.json",
-      "sha256": "98f7adc1f34a5f29dfb9c2d07cc5701443c35f1cd9d08e0116b2eecdd1e3c064"
+      "sha256": "cf7c9d50510a2660c5cef135c7261035621d4ae46a7429d689beecd7c635360b"
     },
     {
       "contract": "RuntimeAmendmentDirective",
@@ -283,7 +283,7 @@
     {
       "contract": "RuntimeInterruptionDecision",
       "file": "RuntimeInterruptionDecision.schema.json",
-      "sha256": "5280dd97e4e999bc66681675bbd3ea6edf4cbdc8ea84b763342b7c69d242a9d5"
+      "sha256": "23e7f56eacfb86a416274c4cc14b42ca5ffa465176219bfd2a037c770d2ad031"
     },
     {
       "contract": "RuntimeAuthorizedCommand",
@@ -298,7 +298,7 @@
     {
       "contract": "RuntimeOperatorTakeoverGrant",
       "file": "RuntimeOperatorTakeoverGrant.schema.json",
-      "sha256": "abf25b137710ff4c32c6be90bb47585899ca1aa333aa03efbc4c6c584e89eb56"
+      "sha256": "21fee5556f5a10c77ded27870195ceb1c6a7671d9a66ccc315a687a7f3ee19c8"
     },
     {
       "contract": "RuntimeOperatorControlCommand",
@@ -313,12 +313,12 @@
     {
       "contract": "RuntimeReplacementTrack",
       "file": "RuntimeReplacementTrack.schema.json",
-      "sha256": "a23f86377d97c6d13bd70625d4205c8d6d0ed51f4c003011268ebab4e0dfe0ac"
+      "sha256": "06b2b08c114a18dc08afd1856306ecf9cdfcdbb53857669cbb8ecb9266b0637b"
     },
     {
       "contract": "ModelCallRecord",
       "file": "ModelCallRecord.schema.json",
-      "sha256": "c4932c4298782272cbffec692364e1346f2784c53a9a552cd2d2cff9a513c776"
+      "sha256": "dd9503af902fd189d361178b3916c444444597cfea8997cda5271c495dcbdddd"
     },
     {
       "contract": "ToolReceipt",
@@ -328,17 +328,17 @@
     {
       "contract": "PreparedMission",
       "file": "PreparedMission.schema.json",
-      "sha256": "0beb871edac07b6dce1a0cdebef5c7b093d93c5f7410d96b6433abb09e7e0167"
+      "sha256": "84bf54220a483b6aed7decd274e077ef7d4bd66fb129c5512f3e81c868dc00db"
     },
     {
       "contract": "Px4GazeboRunEvidence",
       "file": "Px4GazeboRunEvidence.schema.json",
-      "sha256": "36dc73c96dc1f4551994997db6c1b6a3691996df517f67719d6d34f39c501076"
+      "sha256": "bdb72156342e2d22d45d753be8332a6dfe949956e344fa46c982894f57844a83"
     },
     {
       "contract": "SimulationWorkflowResult",
       "file": "SimulationWorkflowResult.schema.json",
-      "sha256": "45e268e1da4b95b92b884e5c898933429de4306dc55a5846032cfb21f29f4477"
+      "sha256": "fbfee643eb5e674d0245760dd8b73b21538833fd9fd3cbcddfdd248313c1727a"
     }
   ],
   "schema_version": "dronedream.schema-index.v1"

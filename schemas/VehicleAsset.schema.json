@@ -95,6 +95,20 @@
       "title": "Name",
       "type": "string"
     },
+    "qualified_cruise_max_mps": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "maximum": 20.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Qualified Cruise Max Mps"
+    },
     "qualified_range_m": {
       "exclusiveMinimum": 0.0,
       "maximum": 1000000.0,

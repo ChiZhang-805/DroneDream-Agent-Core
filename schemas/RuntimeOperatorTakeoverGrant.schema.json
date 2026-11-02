@@ -43,13 +43,13 @@
     },
     "maximum_horizontal_speed_mps": {
       "exclusiveMinimum": 0.0,
-      "maximum": 3.0,
+      "maximum": 6.0,
       "title": "Maximum Horizontal Speed Mps",
       "type": "number"
     },
     "maximum_vertical_speed_mps": {
       "exclusiveMinimum": 0.0,
-      "maximum": 2.0,
+      "maximum": 3.0,
       "title": "Maximum Vertical Speed Mps",
       "type": "number"
     },

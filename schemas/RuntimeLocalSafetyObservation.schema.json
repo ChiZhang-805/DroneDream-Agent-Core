@@ -149,6 +149,19 @@
       "title": "Localization Covariance M2",
       "type": "number"
     },
+    "motion_context_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Motion Context Sha256"
+    },
     "observed_at_unix_ms": {
       "minimum": 0,
       "title": "Observed At Unix Ms",
@@ -173,6 +186,19 @@
       ],
       "title": "Source",
       "type": "string"
+    },
+    "state_observed_at_unix_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "State Observed At Unix Ms"
     },
     "stream_age_seconds": {
       "minimum": 0.0,

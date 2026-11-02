@@ -90,12 +90,48 @@
           "default": "unavailable",
           "enum": [
             "live",
+            "relocalized",
             "cached",
             "unavailable",
             "validated-before-terminal-phase"
           ],
           "title": "Correction Source",
           "type": "string"
+        },
+        "estimator_reset_counter": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimator Reset Counter"
+        },
+        "estimator_reset_observed": {
+          "default": false,
+          "title": "Estimator Reset Observed",
+          "type": "boolean"
+        },
+        "estimator_reset_settling_active": {
+          "default": false,
+          "title": "Estimator Reset Settling Active",
+          "type": "boolean"
+        },
+        "estimator_to_world_position_offset_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vector3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "gazebo_collision_center_world_enu_m": {
           "$ref": "#/$defs/Vector3"
@@ -326,6 +362,44 @@
           ],
           "default": null,
           "title": "Error Type"
+        },
+        "estimator_reset_counter": {
+          "anyOf": [
+            {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimator Reset Counter"
+        },
+        "estimator_reset_observed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimator Reset Observed"
+        },
+        "estimator_reset_settling_active": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimator Reset Settling Active"
         },
         "goal_departure_observed": {
           "anyOf": [
@@ -1048,6 +1122,11 @@
           "title": "Live Depth Safety History Present",
           "type": "boolean"
         },
+        "local_policy_candidate_trial_recorded": {
+          "default": false,
+          "title": "Local Policy Candidate Trial Recorded",
+          "type": "boolean"
+        },
         "local_policy_qualified_selection_recorded": {
           "default": false,
           "title": "Local Policy Qualified Selection Recorded",
@@ -1744,6 +1823,12 @@
           "title": "Control Application Counts",
           "type": "object"
         },
+        "executor_brake_applied_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Executor Brake Applied Count",
+          "type": "integer"
+        },
         "progress_schedule_hold_count": {
           "default": 0,
           "minimum": 0,
@@ -2281,11 +2366,30 @@
     "artifacts": {
       "$ref": "#/$defs/Px4GazeboArtifactBindings"
     },
+    "candidate_simulation_trial": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Candidate Simulation Trial"
+    },
     "gates": {
       "$ref": "#/$defs/Px4GazeboGates"
     },
     "measurements": {
       "$ref": "#/$defs/Px4GazeboMeasurements"
+    },
+    "model_qualification_granted": {
+      "const": false,
+      "default": false,
+      "title": "Model Qualification Granted",
+      "type": "boolean"
     },
     "schema_version": {
       "const": "dronedream.generic-px4-gazebo-run.v1",

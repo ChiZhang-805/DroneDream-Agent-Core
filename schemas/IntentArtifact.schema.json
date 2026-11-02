@@ -1,4 +1,83 @@
 {
+  "$defs": {
+    "ClarificationOption": {
+      "additionalProperties": false,
+      "description": "One bounded, directly selectable answer to a planning clarification.",
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "option_id": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "title": "Option Id",
+          "type": "string"
+        },
+        "response": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label",
+        "response"
+      ],
+      "title": "ClarificationOption",
+      "type": "object"
+    },
+    "ClarificationQuestion": {
+      "additionalProperties": false,
+      "description": "A user-facing question whose likely answers are ordered by relevance.",
+      "properties": {
+        "allow_other": {
+          "default": true,
+          "title": "Allow Other",
+          "type": "boolean"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ClarificationOption"
+          },
+          "maxItems": 3,
+          "title": "Options",
+          "type": "array"
+        },
+        "other_label": {
+          "default": "\u5176\u4ed6",
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Other Label",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 240,
+          "minLength": 3,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "question_id": {
+          "pattern": "^[a-z][a-z0-9._-]{1,63}$",
+          "title": "Question Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "prompt"
+      ],
+      "title": "ClarificationQuestion",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "properties": {
     "assumptions": {
@@ -7,6 +86,14 @@
       },
       "maxItems": 16,
       "title": "Assumptions",
+      "type": "array"
+    },
+    "clarification_questions": {
+      "items": {
+        "$ref": "#/$defs/ClarificationQuestion"
+      },
+      "maxItems": 4,
+      "title": "Clarification Questions",
       "type": "array"
     },
     "constraints": {

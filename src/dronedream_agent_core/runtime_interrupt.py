@@ -31,6 +31,7 @@ from .contracts import (
 from .extensions import ExtensionExecutionError
 from .hashing import sha256_json
 from .model_harness.model_port import ProviderName, StructuredModelPort
+from .plugin_api import ToolEnvironment, build_snapshot_tool_registry
 from .prompts import RUNTIME_MESSAGE_CLASSIFIER
 from .runtime_commands import RuntimeCommandError, build_runtime_command
 from .runtime_control_io import (
@@ -57,6 +58,69 @@ from .runtime_revision import load_active_replacement, replacement_adoption_gate
 
 class RuntimeMessageRejected(RuntimeError):
     """Runtime ingress rejected an unbound or no-longer-actionable message."""
+
+
+# 功能：
+#   为运行中模型列出当前地图、机型、定位证据和冻结插件快照实际装配成功的规划器。
+# 输入：
+#   coordinator：持有当前任务资产和冻结插件快照的协调器；acknowledgement：当前悬停证据。
+# 输出：
+#   catalog：可由模型为本次改令选择的真实工具目录。
+def _runtime_route_planner_catalog(
+    coordinator: RuntimeInterruptionCoordinator,
+    acknowledgement: RuntimeHoldAcknowledgement,
+) -> list[dict[str, object]]:
+    registry = build_snapshot_tool_registry(
+        ToolEnvironment(
+            map_graph=coordinator.map_graph,
+            semantic_path=coordinator.semantic_path,
+            vehicle_diameter_m=coordinator.vehicle.body_radius_m * 2.0,
+            vehicle_height_m=coordinator.vehicle.body_height_m,
+            waypoint_hold_seconds=coordinator.prepared.px4_track.waypoint_hold_seconds,
+            vehicle=coordinator.vehicle,
+            planning_phase="runtime",
+            planning_localization_variance_m2=acknowledgement.localization_variance_m2,
+        ),
+        coordinator.prepared.plugin_snapshot,
+    )
+    catalog = [
+        {
+            "tool_id": str(item["tool_id"]),
+            "algorithm": item["routing_metadata"].get("algorithm", "unspecified"),
+            "objective_profile": item["routing_metadata"].get(
+                "objective_profile", "unspecified"
+            ),
+            "best_for": list(item["routing_metadata"].get("best_for", [])),
+            "tradeoffs": list(item["routing_metadata"].get("tradeoffs", [])),
+        }
+        for item in registry.catalog()
+        if item.get("slot_id") in {"planning.route-strategy", "planning.route-candidates"}
+        and item.get("authority") == "plan"
+        and isinstance(item.get("routing_metadata"), dict)
+    ]
+    return catalog
+
+
+# 功能：
+#   拒绝模型或扩展层选择当前运行环境未实际装配的规划工具，避免宿主事后换成默认算法。
+# 输入：
+#   classification：模型及扩展层共同形成的改令分类；catalog：本次真实规划器目录。
+# 输出：
+#   None：所有选择都能原样交给后续规划器，否则明确拒绝本次改令。
+def _validate_runtime_route_planner_selection(
+    classification: RuntimeMessageClassification,
+    catalog: list[dict[str, object]],
+) -> None:
+    available = {str(item["tool_id"]) for item in catalog}
+    unavailable = [
+        tool_id
+        for tool_id in classification.route_planner_tool_ids
+        if tool_id not in available
+    ]
+    if unavailable:
+        raise RuntimeMessageRejected(
+            f"RUNTIME_ROUTE_PLANNER_UNAVAILABLE:{','.join(unavailable)}"
+        )
 
 
 # 功能：
@@ -715,6 +779,16 @@ class RuntimeInterruptionCoordinator:
                         append_hook_receipts(self.receipt_path, [error.receipt])
                         raise
                     append_hook_receipts(self.receipt_path, prompt_receipts)
+                    route_planner_catalog = _runtime_route_planner_catalog(
+                        self,
+                        acknowledgement,
+                    )
+                    current_route_planner_tool_ids = (
+                        list(active_replacement.route_planner_tool_ids)
+                        if active_replacement is not None
+                        and active_replacement.route_planner_tool_ids
+                        else list(self.prepared.semantic_plan.route_planner_tool_ids)
+                    )
                     model_input = {
                             "runtime_user_message": message.model_dump(mode="json"),
                             "stable_hold_acknowledgement": acknowledgement.model_dump(mode="json"),
@@ -726,6 +800,8 @@ class RuntimeInterruptionCoordinator:
                                 if active_replacement is not None else 0
                             ),
                             "current_execution_track_sha256": sha256_json(current_track),
+                            "available_route_planners": route_planner_catalog,
+                            "current_route_planner_tool_ids": current_route_planner_tool_ids,
                             "current_target_node": (
                                 active_replacement.target_node if active_replacement is not None
                                 else self.prepared.contract.target_node
@@ -835,6 +911,10 @@ class RuntimeInterruptionCoordinator:
                         classification = RuntimeMessageClassification.model_validate(
                             classified_value
                         )
+                        _validate_runtime_route_planner_selection(
+                            classification,
+                            route_planner_catalog,
+                        )
                         directive_value, directive_receipts = self.extensions.invoke_single(
                             "runtime.amendment-policy",
                             "apply_amendment",
@@ -937,6 +1017,9 @@ class RuntimeInterruptionCoordinator:
                         active_return_node = self.prepared.contract.return_node
                         active_task_graph = self.prepared.task_graph
                         active_runtime_actions = self.prepared.runtime_actions
+                        active_route_planner_tool_ids = list(
+                            self.prepared.semantic_plan.route_planner_tool_ids
+                        )
                         prior_track_sha256 = sha256_json(prior_track)
                         replacement_sequence = 1
                         previous = load_active_replacement(
@@ -952,6 +1035,10 @@ class RuntimeInterruptionCoordinator:
                                 active_task_graph = previous.revised_task_graph
                             if previous.runtime_actions is not None:
                                 active_runtime_actions = previous.runtime_actions
+                            if previous.route_planner_tool_ids:
+                                active_route_planner_tool_ids = list(
+                                    previous.route_planner_tool_ids
+                                )
                         try:
                             if decision.classification.requested_action == "set_speed":
                                 builder = build_runtime_speed_replacement
@@ -992,6 +1079,9 @@ class RuntimeInterruptionCoordinator:
                                 )
                             if builder is build_runtime_speed_replacement:
                                 common["active_return_node"] = active_return_node
+                                common["active_route_planner_tool_ids"] = (
+                                    active_route_planner_tool_ids
+                                )
                             replacement = builder(**common)
                             if not self._publish_if_active(
                                 self.control_dir / "replacements" / f"{message_id}.json",

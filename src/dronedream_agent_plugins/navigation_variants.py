@@ -21,6 +21,9 @@ def _definition(
     description: str,
     order: int,
     route: Callable,
+    objective_profile: str,
+    best_for: list[str],
+    tradeoffs: list[str],
 ) -> PluginDefinition:
     """Build one graph-cost variant without changing input/output or safety contracts."""
 
@@ -34,6 +37,14 @@ def _definition(
                 input_type=RouteQuery,
                 output_type=GraphRoute,
                 handler=lambda query: route(environment.map_graph, query),
+                routing_metadata={
+                    "algorithm": "dijkstra",
+                    "objective_profile": objective_profile,
+                    "best_for": list(best_for),
+                    "tradeoffs": list(tradeoffs),
+                    "selection_authority": "model",
+                    "requires_deterministic_validation": True,
+                },
             )
         ]
 
@@ -56,6 +67,11 @@ def _definition(
                     authority="plan",
                     input_schema=RouteQuery.model_json_schema(),
                     output_schema=GraphRoute.model_json_schema(),
+                    metadata={
+                        "algorithm": "dijkstra",
+                        "objective_profile": objective_profile,
+                        "selection_authority": "model",
+                    },
                 )
             ],
             permissions=["asset.read", "mission.read"],
@@ -87,6 +103,9 @@ def plugin_definitions() -> list[PluginDefinition]:
             description="联合距离、爬升和速度变化代理选择相对低能耗路线。",
             order=30,
             route=energy_efficient_route,
+            objective_profile="energy-proxy",
+            best_for=["long routes", "climb-sensitive missions"],
+            tradeoffs=["proxy is not measured battery use", "topology-bound"],
         ),
         _definition(
             plugin_id="navigation.stability-first-route",
@@ -94,5 +113,8 @@ def plugin_definitions() -> list[PluginDefinition]:
             description="优先飞行验证边、较少航段和温和速度包络。",
             order=40,
             route=stability_first_route,
+            objective_profile="stability-first",
+            best_for=["payload-sensitive flight", "few transitions"],
+            tradeoffs=["longer route possible", "topology-bound"],
         ),
     ]

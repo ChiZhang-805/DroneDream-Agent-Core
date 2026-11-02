@@ -44,6 +44,7 @@ class _SearchBudget:
 
 @dataclass(frozen=True)
 class MetricPlannerPolicy:
+    search_algorithm: str = "3d-a-star"
     resolution_m: float = 0.45
     required_clearance_m: float = 0.36
     search_padding_m: float = 3.0
@@ -64,6 +65,8 @@ class MetricPlannerPolicy:
     # 输出：
     #   None：不返回业务数据。
     def __post_init__(self) -> None:
+        if self.search_algorithm not in {"3d-a-star", "3d-theta-star"}:
+            raise ValueError("metric planner search algorithm is unsupported")
         for name in ("resolution_m", "required_clearance_m", "search_padding_m",
                      "vertical_cost_multiplier", "clearance_cost_weight", "corridor_penalty_weight",
                      "maximum_search_seconds", "preferred_airspace_weight"):
@@ -176,7 +179,7 @@ class KnownMapMetricPlanner:
         expansion = math.hypot(self.vehicle_radius_m, self.vehicle_half_height_m)
         expansion += self._clearance_cap_m
         bounds = []
-        for index, primitive in enumerate(primitives):
+        for primitive in primitives:
             low, high = _primitive_bounds(primitive, expansion)
             if any(not math.isfinite(value) for value in (*low, *high)) or any(
                 low[axis] > high[axis] for axis in range(3)
@@ -893,6 +896,36 @@ class KnownMapMetricPlanner:
             estimate = math.hypot(dx, dy) + abs(dz) * self.policy.vertical_cost_multiplier
             return estimate
 
+        # 功能：
+        #   计算两个已知可通行节点之间的运动与偏好代价；连续线段可行性由调用方独立证明。
+        # 输入：
+        #   first、last：世界三维端点；clearance：目标节点净空；last_key：目标网格键。
+        # 输出：
+        #   value：非负有限转移代价。
+        def transition_cost(
+            first: Point,
+            last: Point,
+            clearance: float,
+            last_key: GridKey,
+        ) -> float:
+            horizontal = math.hypot(last[0] - first[0], last[1] - first[1])
+            vertical = abs(last[2] - first[2]) * self.policy.vertical_cost_multiplier
+            value = horizontal + vertical
+            if self.preferred_airspace.domain is not None:
+                value += (
+                    math.hypot(horizontal, vertical)
+                    * self.policy.preferred_airspace_weight
+                    * self.preferred_airspace.cost(last)
+                )
+            if math.isfinite(clearance):
+                value += self.policy.clearance_cost_weight / max(
+                    clearance - self._required_clearance_m + 0.05,
+                    0.05,
+                )
+            if last_key in penalized:
+                value += self.policy.corridor_penalty_weight
+            return value
+
         queue: list[tuple[float, float, GridKey]] = [(heuristic(start_key), 0.0, start_key)]
         costs = {start_key: 0.0}
         previous: dict[GridKey, GridKey] = {}
@@ -922,29 +955,39 @@ class KnownMapMetricPlanner:
                 if clearance < self._required_clearance_m:
                     continue
                 neighbor_point = point(neighbor)
-                horizontal = math.hypot(neighbor_point[0] - current_point[0],
-                                        neighbor_point[1] - current_point[1])
-                vertical = (abs(neighbor_point[2] - current_point[2])
-                            * self.policy.vertical_cost_multiplier)
-                step_cost = horizontal + vertical
-                if self.preferred_airspace.domain is not None:
-                    step_cost += (math.hypot(horizontal, vertical)
-                                  * self.policy.preferred_airspace_weight
-                                  * self.preferred_airspace.cost(neighbor_point))
-                if math.isfinite(clearance):
-                    step_cost += self.policy.clearance_cost_weight / max(
-                        clearance - self._required_clearance_m + 0.05,
-                        0.05,
+                predecessor = current
+                candidate = cost + transition_cost(
+                    current_point,
+                    neighbor_point,
+                    clearance,
+                    neighbor,
+                )
+                segment_proven = False
+                if self.policy.search_algorithm == "3d-theta-star" and current in previous:
+                    anchor = previous[current]
+                    anchor_point = point(anchor)
+                    anchor_candidate = costs[anchor] + transition_cost(
+                        anchor_point,
+                        neighbor_point,
+                        clearance,
+                        neighbor,
                     )
-                if neighbor in penalized:
-                    step_cost += self.policy.corridor_penalty_weight
-                candidate = cost + step_cost
+                    if (
+                        anchor_candidate <= candidate + 1e-12
+                        and self._segment_is_free(anchor_point, neighbor_point)
+                    ):
+                        predecessor = anchor
+                        candidate = anchor_candidate
+                        segment_proven = True
                 if candidate < costs.get(neighbor, math.inf):
                     # 没有更低代价的边不会进入路线，先剪枝再做昂贵的连续碰撞证明。
-                    if not self._segment_is_free(current_point, neighbor_point):
+                    if not segment_proven and not self._segment_is_free(
+                        current_point,
+                        neighbor_point,
+                    ):
                         continue
                     costs[neighbor] = candidate
-                    previous[neighbor] = current
+                    previous[neighbor] = predecessor
                     heapq.heappush(queue, (candidate + heuristic(neighbor), candidate, neighbor))
         if goal_key not in costs:
             raise ValueError("no metric route satisfies operational clearance")

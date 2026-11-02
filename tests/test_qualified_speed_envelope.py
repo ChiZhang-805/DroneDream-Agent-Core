@@ -113,14 +113,16 @@ def test_model_uses_five_to_six_cruise_band_and_cannot_exceed_qualified_limit():
     def plan(speed):
         return SemanticPlan(
             ordered_targets=["pickup", "office"],
+            route_planner_tool_ids=["planning.candidate-a-star.candidate"],
             speed_preferences=[dict(target_node=target, cruise_speed_mps=speed,
                 approach_speed_mps=1.0, rationale="Qualified campus cruise speed.")
                 for target in ("pickup", "office")],
             rationale_summary="Follow qualified roads and return.",
         )
-    _validate_semantic_plan(plan(5.0), _contract(), _map(), _qualified_vehicle())
+    available = {"planning.candidate-a-star.candidate"}
+    _validate_semantic_plan(plan(5.0), _contract(), _map(), _qualified_vehicle(), available)
     with pytest.raises(MissionPreparationBlocked, match="SPEED_OUTSIDE_ENVELOPE"):
-        _validate_semantic_plan(plan(4.9), _contract(), _map(), _qualified_vehicle())
+        _validate_semantic_plan(plan(4.9), _contract(), _map(), _qualified_vehicle(), available)
 
 
 @pytest.mark.parametrize("edge_id", ["launch-to-dock", "metric-edge-1"])

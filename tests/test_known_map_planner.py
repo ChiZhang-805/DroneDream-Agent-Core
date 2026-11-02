@@ -464,6 +464,50 @@ def test_policy_rejects_invalid_real_values(field, value):
         MetricPlannerPolicy(**{field: value})
 
 
+def test_policy_rejects_unknown_metric_search_algorithm():
+    with pytest.raises(ValueError, match="algorithm"):
+        MetricPlannerPolicy(search_algorithm="rrt-by-name-only")
+
+
+# 功能：
+#   证明 3D Theta* 真正使用跨父节点的视线松弛，而不是只给普通 A* 换一个显示名称。
+# 输入：
+#   tmp_path、monkeypatch：开阔几何目录及关闭最终通用简化的替换工具。
+# 输出：
+#   None：Theta* 原始链必须比相同网格上的 A* 原始链更短，且端点完全一致。
+def test_theta_star_uses_any_angle_parent_relaxation(tmp_path, monkeypatch):
+    path = tmp_path / "open-space.json"
+    path.write_text(json.dumps({"collision_primitives": [{
+        "center_x": 100., "center_y": 100., "center_z": 100., "radius_m": 1.,
+    }]}))
+    graph = _graph()
+    planners = {
+        name: KnownMapMetricPlanner(
+            graph=graph,
+            semantic_path=path,
+            vehicle_diameter_m=.4,
+            vehicle_height_m=.3,
+            policy=MetricPlannerPolicy(
+                search_algorithm=name,
+                resolution_m=1.,
+                required_clearance_m=0.,
+                clearance_cost_weight=0.,
+            ),
+        )
+        for name in ("3d-a-star", "3d-theta-star")
+    }
+    for planner in planners.values():
+        monkeypatch.setattr(planner, "_simplify", lambda points: points)
+
+    query = RouteQuery(start_node="start", goal_node="goal")
+    astar = planners["3d-a-star"].plan(query)
+    theta = planners["3d-theta-star"].plan(query)
+
+    assert theta.positions_m[0] == astar.positions_m[0]
+    assert theta.positions_m[-1] == astar.positions_m[-1]
+    assert len(theta.positions_m) < len(astar.positions_m)
+
+
 # 功能：
 #   验证有历史走廊惩罚时重新求解，不直接返回无惩罚的路线缓存。
 # 输入：

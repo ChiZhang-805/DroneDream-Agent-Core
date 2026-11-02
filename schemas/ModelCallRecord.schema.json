@@ -54,6 +54,14 @@
           "title": "Controller Step Scale",
           "type": "number"
         },
+        "decision_reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Decision Reason Codes",
+          "type": "array"
+        },
         "expert_latency_ms": {
           "additionalProperties": {
             "maximum": 60000.0,
@@ -116,7 +124,7 @@
             "minimum": 0.0,
             "type": "number"
           },
-          "maxProperties": 8,
+          "maxProperties": 9,
           "title": "Pipeline Latency Ms",
           "type": "object"
         },
@@ -143,6 +151,18 @@
           ],
           "title": "Selected Navigation Role",
           "type": "string"
+        },
+        "temporal_history_ready": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporal History Ready"
         }
       },
       "required": [

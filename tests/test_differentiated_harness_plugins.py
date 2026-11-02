@@ -238,6 +238,32 @@ def test_distance_candidate_is_a_distinct_shortest_path_baseline(tmp_path: Path)
 
 
 # 功能：
+#   验证规划工具库公开多种真实搜索算法，并明确由模型选择、确定性门控验收。
+# 输入：
+#   无。
+# 输出：
+#   None：不返回业务数据。
+def test_route_library_exposes_distinct_model_selectable_algorithms() -> None:
+    definitions = {value.manifest.plugin_id: value for value in route_plugins()}
+    expected = {
+        "planning.candidate-distance": "dijkstra",
+        "planning.candidate-a-star": "a-star",
+        "planning.candidate-weighted-a-star": "weighted-a-star",
+        "planning.candidate-bidirectional-dijkstra": "bidirectional-dijkstra",
+        "planning.candidate-metric-geometry": "3d-a-star",
+        "planning.candidate-metric-theta-star": "3d-theta-star",
+    }
+
+    assert expected.keys() <= definitions.keys()
+    for plugin_id, algorithm in expected.items():
+        capability = definitions[plugin_id].manifest.capabilities[0]
+        assert capability.metadata["algorithm"] == algorithm
+        assert capability.metadata["selection_authority"] == "model"
+        assert capability.metadata["best_for"]
+        assert capability.metadata["tradeoffs"]
+
+
+# 功能：
 #   验证风险策略覆盖转弯和狭窄内部位置，同时仍保留任务终点检查。
 # 输入：
 #   无。

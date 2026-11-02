@@ -42,6 +42,9 @@ def _ready_interruption(tmp_path, monkeypatch, *, replan=False):
     coordinator.prepared = SimpleNamespace(
         contract=values[0], plan=values[4], task_graph=values[2], px4_track=values[7],
         runtime_actions=values[9], plugin_snapshot=None,
+        semantic_plan=SimpleNamespace(
+            route_planner_tool_ids=["planning.candidate-a-star.candidate"]
+        ),
     )
     coordinator.map_graph = coordinator.map_catalog = coordinator.vehicle = None
     coordinator.semantic_path = tmp_path / "semantic.json"
@@ -64,6 +67,17 @@ def _ready_interruption(tmp_path, monkeypatch, *, replan=False):
     })
     response = SimpleNamespace(artifact=classification, record=record)
     coordinator.port = SimpleNamespace(call=lambda **kwargs: response)
+    monkeypatch.setattr(
+        runtime_interrupt,
+        "_runtime_route_planner_catalog",
+        lambda *_args: [{
+            "tool_id": "planning.candidate-a-star.candidate",
+            "algorithm": "a-star",
+            "objective_profile": "shortest-distance",
+            "best_for": ["large spatial graphs"],
+            "tradeoffs": ["topology-bound"],
+        }],
+    )
     coordinator.extensions = SimpleNamespace(
         invoke_pipeline=lambda *args, **kwargs: (args[2], []),
         invoke_single=lambda *args, **kwargs: (directive.model_dump(mode="json"), []),
@@ -219,6 +233,7 @@ def test_interruption_model_input_uses_current_adopted_revision(tmp_path, monkey
     active.runtime_actions.task_graph_sha256 = sha256_json(active.revised_task_graph)
     active.target_node = "new-destination"
     active.replacement_sequence = 3
+    active.route_planner_tool_ids = ["planning.candidate-metric-theta-star.candidate"]
     monkeypatch.setattr(runtime_interrupt, "load_active_replacement", lambda *args, **kw: active)
     calls = []
 
@@ -241,6 +256,7 @@ def test_interruption_model_input_uses_current_adopted_revision(tmp_path, monkey
     assert calls[0]["current_target_node"] == "new-destination"
     assert calls[0]["current_replacement_sequence"] == 3
     assert calls[0]["current_execution_track_sha256"] == sha256_json(active.track)
+    assert calls[0]["current_route_planner_tool_ids"] == active.route_planner_tool_ids
     assert coordinator.decisions == []
 
 

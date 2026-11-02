@@ -21,10 +21,13 @@ from dronedream_agent_core.known_map_planner import (
     MetricPlannerPolicy,
 )
 from dronedream_agent_core.navigation import (
+    a_star_route,
+    bidirectional_dijkstra_route,
     clearance_first_route,
     energy_efficient_route,
     shortest_route,
     stability_first_route,
+    weighted_a_star_route,
 )
 from dronedream_agent_core.plugin_api import PluginDefinition, ToolEnvironment
 from dronedream_agent_core.plugin_contracts import (
@@ -70,6 +73,10 @@ def _candidate_definition(
     description: str,
     order: int,
     planner: Callable,
+    algorithm: str,
+    objective_profile: str,
+    best_for: list[str],
+    tradeoffs: list[str],
 ) -> PluginDefinition:
     # 功能：
     #   将规划函数接到本次任务选择的地图，不使用固定示例地图或启动飞行执行器。
@@ -86,6 +93,14 @@ def _candidate_definition(
                 input_type=RouteQuery,
                 output_type=GraphRoute,
                 handler=lambda query: planner(environment.map_graph, query),
+                routing_metadata={
+                    "algorithm": algorithm,
+                    "objective_profile": objective_profile,
+                    "best_for": list(best_for),
+                    "tradeoffs": list(tradeoffs),
+                    "selection_authority": "model",
+                    "requires_deterministic_validation": True,
+                },
             )
         ]
         return plugins
@@ -109,7 +124,14 @@ def _candidate_definition(
                     authority="plan",
                     input_schema=RouteQuery.model_json_schema(),
                     output_schema=GraphRoute.model_json_schema(),
-                    metadata={"produces_alternative": True},
+                    metadata={
+                        "produces_alternative": True,
+                        "algorithm": algorithm,
+                        "objective_profile": objective_profile,
+                        "best_for": list(best_for),
+                        "tradeoffs": list(tradeoffs),
+                        "selection_authority": "model",
+                    },
                 )
             ],
             permissions=["asset.read", "mission.read"],
@@ -139,7 +161,16 @@ def _candidate_definition(
 #   无。
 # 输出：
 #   definition：绑定度量规划工具工厂的候选插件定义。
-def _metric_candidate_definition() -> PluginDefinition:
+def _metric_candidate_definition(
+    *,
+    plugin_id: str,
+    name: str,
+    algorithm: str,
+    description: str,
+    order: int,
+    best_for: list[str],
+    tradeoffs: list[str],
+) -> PluginDefinition:
     # 功能：
     #   1. 使用保守机体包络及运行净空创建有界搜索器。
     #   2. 几何不可用时仅停用此可选策略，不伪造路线或阻止其他合法地图工具装配。
@@ -171,6 +202,7 @@ def _metric_candidate_definition() -> PluginDefinition:
                     environment.vehicle_height_m * CONSERVATIVE_VEHICLE_ENVELOPE_SCALE
                 ),
                 policy=MetricPlannerPolicy(
+                    search_algorithm=algorithm,
                     resolution_m=0.9 if planning_phase == "initial" else 0.45,
                     required_clearance_m=planning_clearance_m,
                     vertical_cost_multiplier=2.4,
@@ -193,24 +225,29 @@ def _metric_candidate_definition() -> PluginDefinition:
             return plugins
         plugins = [
             ToolPlugin(
-                tool_id="planning.candidate-metric-geometry.candidate",
+                tool_id=f"{plugin_id}.candidate",
                 version="1.0.0",
                 authority="plan",
                 input_type=RouteQuery,
                 output_type=GraphRoute,
                 handler=planner.plan,
+                routing_metadata={
+                    "algorithm": algorithm,
+                    "objective_profile": "metric-free-space",
+                    "best_for": list(best_for),
+                    "tradeoffs": list(tradeoffs),
+                    "selection_authority": "model",
+                    "requires_deterministic_validation": True,
+                    "occupancy_source": "qualified-collision-semantics",
+                },
             )
         ]
         return plugins
 
-    description = (
-        "直接在合格碰撞几何中执行三维度量搜索，把机体包络和运行净空作为硬约束，"
-        "不把预录制导航链路当作飞行路线。"
-    )
     definition = PluginDefinition(
         manifest=PluginManifest(
-            plugin_id="planning.candidate-metric-geometry",
-            name="三维度量自由空间路线",
+            plugin_id=plugin_id,
+            name=name,
             version="1.0.0",
             description=description,
             publisher="DroneDream",
@@ -219,15 +256,20 @@ def _metric_candidate_definition() -> PluginDefinition:
             ),
             capabilities=[
                 PluginCapability(
-                    capability_id="planning.candidate-metric-geometry.candidate",
+                    capability_id=f"{plugin_id}.candidate",
                     kind="plan-optimizer",
-                    name="三维度量自由空间路线",
+                    name=name,
                     description=description,
                     authority="plan",
                     input_schema=RouteQuery.model_json_schema(),
                     output_schema=GraphRoute.model_json_schema(),
                     metadata={
                         "produces_alternative": True,
+                        "algorithm": algorithm,
+                        "objective_profile": "metric-free-space",
+                        "best_for": list(best_for),
+                        "tradeoffs": list(tradeoffs),
+                        "selection_authority": "model",
                         "occupancy_source": "qualified-collision-semantics",
                         "vehicle_scaled_operational_clearance": True,
                     },
@@ -246,7 +288,7 @@ def _metric_candidate_definition() -> PluginDefinition:
                 failure_mode="isolate",
                 category_order=40,
                 slot_order=14,
-                plugin_order=8,
+                plugin_order=order,
             ),
         ),
         tool_factory=tools,
@@ -472,7 +514,28 @@ def _ranker_definition() -> PluginDefinition:
 #   definitions：候选生成与排序插件定义列表。
 def plugin_definitions() -> list[PluginDefinition]:
     definitions = [
-        _metric_candidate_definition(),
+        _metric_candidate_definition(
+            plugin_id="planning.candidate-metric-geometry",
+            name="三维 A* 自由空间路线",
+            algorithm="3d-a-star",
+            description=(
+                "在合格三维碰撞几何中执行有界 A*，将机体包络和运行净空作为硬约束。"
+            ),
+            order=8,
+            best_for=["dense 3d occupancy", "geometry-bounded detours", "unknown topology gaps"],
+            tradeoffs=["higher search cost", "requires qualified collision geometry"],
+        ),
+        _metric_candidate_definition(
+            plugin_id="planning.candidate-metric-theta-star",
+            name="三维 Theta* 任意角路线",
+            algorithm="3d-theta-star",
+            description=(
+                "在合格三维碰撞几何中执行任意角 Theta*，通过连续视线证明减少网格折线。"
+            ),
+            order=9,
+            best_for=["open 3d space", "fewer heading changes", "any-angle detours"],
+            tradeoffs=["more line-of-sight checks", "requires qualified collision geometry"],
+        ),
         _candidate_definition(
             plugin_id="planning.candidate-distance",
             name="最短距离候选路线",
@@ -481,13 +544,54 @@ def plugin_definitions() -> list[PluginDefinition]:
             ),
             order=5,
             planner=shortest_route,
+            algorithm="dijkstra",
+            objective_profile="shortest-distance",
+            best_for=["small or weakly heuristic graphs", "distance-optimal baseline"],
+            tradeoffs=["may expand many nodes", "topology-bound"],
+        ),
+        _candidate_definition(
+            plugin_id="planning.candidate-a-star",
+            name="A* 候选路线",
+            description="用三维节点距离启发式生成距离最优的拓扑候选路线。",
+            order=6,
+            planner=a_star_route,
+            algorithm="a-star",
+            objective_profile="shortest-distance",
+            best_for=["large spatial graphs", "goal-directed search"],
+            tradeoffs=["depends on spatial heuristic quality", "topology-bound"],
+        ),
+        _candidate_definition(
+            plugin_id="planning.candidate-bidirectional-dijkstra",
+            name="双向 Dijkstra 候选路线",
+            description="从明确起终点同时搜索，生成距离最优的静态拓扑候选路线。",
+            order=7,
+            planner=bidirectional_dijkstra_route,
+            algorithm="bidirectional-dijkstra",
+            objective_profile="shortest-distance",
+            best_for=["large static graphs", "single known endpoint pair"],
+            tradeoffs=["topology-bound", "less useful for changing goals"],
+        ),
+        _candidate_definition(
+            plugin_id="planning.candidate-weighted-a-star",
+            name="Weighted A* 候选路线",
+            description="放大三维启发式以减少扩展，生成需独立验证的低延迟候选路线。",
+            order=10,
+            planner=weighted_a_star_route,
+            algorithm="weighted-a-star",
+            objective_profile="latency-prioritized-distance",
+            best_for=["time-limited replanning", "large spatial graphs"],
+            tradeoffs=["distance optimality not guaranteed", "topology-bound"],
         ),
         _candidate_definition(
             plugin_id="planning.candidate-clearance",
             name="净空候选路线",
             description="生成偏好宽裕净空与飞行验证边的候选路线。",
-            order=10,
+            order=11,
             planner=clearance_first_route,
+            algorithm="dijkstra",
+            objective_profile="clearance-first",
+            best_for=["narrow corridors", "qualification-sensitive routing"],
+            tradeoffs=["longer route possible", "topology metadata dependent"],
         ),
         _candidate_definition(
             plugin_id="planning.candidate-energy",
@@ -495,6 +599,10 @@ def plugin_definitions() -> list[PluginDefinition]:
             description="生成降低距离、爬升与加速度代理的候选路线。",
             order=20,
             planner=energy_efficient_route,
+            algorithm="dijkstra",
+            objective_profile="energy-proxy",
+            best_for=["long routes", "climb-sensitive missions"],
+            tradeoffs=["proxy is not measured battery use", "topology-bound"],
         ),
         _candidate_definition(
             plugin_id="planning.candidate-stability",
@@ -502,6 +610,10 @@ def plugin_definitions() -> list[PluginDefinition]:
             description="生成偏好验证边、较少过渡与温和速度的候选路线。",
             order=30,
             planner=stability_first_route,
+            algorithm="dijkstra",
+            objective_profile="stability-first",
+            best_for=["payload-sensitive flight", "few transitions"],
+            tradeoffs=["longer route possible", "topology-bound"],
         ),
         _ranker_definition(),
     ]

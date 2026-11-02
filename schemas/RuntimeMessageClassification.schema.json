@@ -43,6 +43,14 @@
       "title": "Requires Plan Revision",
       "type": "boolean"
     },
+    "route_planner_tool_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Route Planner Tool Ids",
+      "type": "array"
+    },
     "schema_version": {
       "const": "dronedream.runtime-message-classification.v1",
       "default": "dronedream.runtime-message-classification.v1",
