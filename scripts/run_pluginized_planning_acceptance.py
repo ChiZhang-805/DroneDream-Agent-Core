@@ -39,30 +39,54 @@ from dronedream_agent_core.plugin_api import ToolEnvironment
 
 
 def _current_bundled_pair(
-    store: AppStore, default_assets_root: Path
+    store: AppStore,
+    default_assets_root: Path,
+    *,
+    map_resource_id: str | None = None,
+    vehicle_resource_id: str | None = None,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """Resolve the exact pair named current by the bundled release index."""
+    """Resolve the selected exact pair from the bundled release index."""
 
     try:
         index = json.loads((default_assets_root / "index.json").read_text(encoding="utf-8"))
-        pair = index["qualified_pair"]
-        packages = pair["packages"]
+        current_pair = index["qualified_pair"]
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
         raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID") from error
     schema_version = index.get("schema_version")
     if schema_version not in {
         "dronedream.bundled-assets.v2",
         "dronedream.bundled-assets.v3",
-    } or not isinstance(packages, list):
+    }:
         raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID")
     if schema_version == "dronedream.bundled-assets.v3":
         qualified_pairs = index.get("qualified_pairs")
         if (
             not isinstance(qualified_pairs, list)
-            or pair not in qualified_pairs
-            or index.get("default_qualification_id") != pair.get("qualification_id")
+            or current_pair not in qualified_pairs
+            or index.get("default_qualification_id") != current_pair.get("qualification_id")
         ):
             raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID")
+        if (map_resource_id is None) != (vehicle_resource_id is None):
+            raise ValueError("BUNDLED_ASSET_PAIR_SELECTION_INCOMPLETE")
+        pair = current_pair if map_resource_id is None else next(
+            (
+                item
+                for item in qualified_pairs
+                if item.get("resource_id") == map_resource_id
+                and item.get("vehicle_resource_id", "px4-x500-depth")
+                == vehicle_resource_id
+            ),
+            None,
+        )
+        if not isinstance(pair, dict):
+            raise ValueError("SELECTED_BUNDLED_ASSET_PAIR_NOT_QUALIFIED")
+    else:
+        if map_resource_id is not None or vehicle_resource_id is not None:
+            raise ValueError("SELECTED_BUNDLED_ASSET_PAIR_NOT_QUALIFIED")
+        pair = current_pair
+    packages = pair.get("packages")
+    if not isinstance(packages, list):
+        raise ValueError("CURRENT_BUNDLED_ASSET_INDEX_INVALID")
     by_kind = {str(entry.get("kind")): entry for entry in packages if isinstance(entry, dict)}
     if set(by_kind) != {"map", "vehicle"}:
         raise ValueError("CURRENT_BUNDLED_ASSET_PAIR_INCOMPLETE")
@@ -101,6 +125,8 @@ def run(
     expected_target_entity: str | None = None,
     plugin_isolator: Path | None = None,
     development_input: Path | None = None,
+    map_resource_id: str | None = None,
+    vehicle_resource_id: str | None = None,
 ) -> dict[str, object]:
     if work_root.exists() and any(work_root.iterdir()):
         raise FileExistsError(f"acceptance directory is not empty: {work_root}")
@@ -125,7 +151,12 @@ def run(
     try:
         default_assets_root = resource_root / "default-assets"
         AssetImportService(store).seed_bundled_sources(default_assets_root)
-        map_record, vehicle_record, pair_binding = _current_bundled_pair(store, default_assets_root)
+        map_record, vehicle_record, pair_binding = _current_bundled_pair(
+            store,
+            default_assets_root,
+            map_resource_id=map_resource_id,
+            vehicle_resource_id=vehicle_resource_id,
+        )
         map_selection = resolve_versioned_map(map_record)
         vehicle_selection = resolve_versioned_vehicle(vehicle_record)
         plugin_manager = PluginManager(
@@ -371,6 +402,8 @@ def run(
                 vehicle_metadata_path.read_bytes()
             ).hexdigest(),
             "expected_target_entity": effective_expected_target,
+            "map_resource_id": map_resource_id or "dronedream-school-map",
+            "vehicle_resource_id": vehicle_resource_id or "px4-x500-depth",
             "development_input_binding": asset_input_binding,
         }
         (work_root / "acceptance-summary.json").write_text(
@@ -412,6 +445,8 @@ def main() -> int:
     )
     parser.add_argument("--start-entity", default="office-launch-pad")
     parser.add_argument("--expected-target-entity")
+    parser.add_argument("--map-resource-id")
+    parser.add_argument("--vehicle-resource-id")
     parser.add_argument("--plugin-isolator", type=Path)
     parser.add_argument(
         "--development-input",
@@ -443,6 +478,8 @@ def main() -> int:
             expected_target_entity=args.expected_target_entity,
             plugin_isolator=args.plugin_isolator,
             development_input=args.development_input,
+            map_resource_id=args.map_resource_id,
+            vehicle_resource_id=args.vehicle_resource_id,
         )
     except Exception as exc:
         failure = {

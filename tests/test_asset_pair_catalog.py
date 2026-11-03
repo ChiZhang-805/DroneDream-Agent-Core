@@ -24,8 +24,8 @@ def test_catalog_covers_every_builtin_map_aircraft_combination_once() -> None:
     assert catalog["pair_count"] == 78
     assert len({item["pair_id"] for item in pairs}) == 78
     assert catalog["counts"] == {
-        "qualified_builtin": 7,
-        "compatible_requires_qualification": 71,
+        "qualified_builtin": 24,
+        "compatible_requires_qualification": 54,
         "incompatible": 0,
     }
 
@@ -38,8 +38,16 @@ def test_vtol_is_admitted_to_the_outdoor_campus_pending_qualification() -> None:
     assert len(compatible) == 18
     assert len({item["map_resource_id"] for item in compatible}) == 6
     qualified = [item for item in vtol_pairs if item["status"] == "qualified_builtin"]
-    assert [(item["map_resource_id"], item["vehicle_resource_id"]) for item in qualified] == [
-        ("dronedream-vuosaari-harbour-map", "px4-standard-vtol")]
+    assert len(qualified) == 6
+    assert {item["vehicle_resource_id"] for item in qualified} == {"px4-standard-vtol"}
+    assert {item["map_resource_id"] for item in qualified} == {
+        "dronedream-school-map",
+        "dronedream-meilahti-hospital-map",
+        "dronedream-kalasatama-waterfront-map",
+        "dronedream-vuosaari-harbour-map",
+        "dronedream-suomenlinna-map",
+        "dronedream-uutela-coastal-forest-map",
+    }
     assert all(item["status"] == "compatible_requires_qualification"
                for item in vtol_pairs if item not in qualified)
 
@@ -96,10 +104,15 @@ def test_catalog_follows_selected_release_without_source_constants(tmp_path: Pat
     index = _release_index()
     index_path = tmp_path / "default-assets" / "index.json"
     index_path.parent.mkdir()
+    bundled_default = next(
+        pair for pair in index["qualified_pairs"]
+        if pair["resource_id"] == "dronedream-school-map"
+        and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
+    )
     for qualification_id in ("asset-qualification-" + "1" * 24, "asset-qualification-" + "2" * 24):
         index["default_qualification_id"] = qualification_id
         index["qualified_pair"]["qualification_id"] = qualification_id
-        index["qualified_pairs"][0]["qualification_id"] = qualification_id
+        bundled_default["qualification_id"] = qualification_id
         index_path.write_text(json.dumps(index), encoding="utf-8")
         pair = get_asset_pair("dronedream-school-map", "px4-x500-depth", resource_root=tmp_path)
         assert pair["qualification_id"] == qualification_id
@@ -108,21 +121,27 @@ def test_catalog_follows_selected_release_without_source_constants(tmp_path: Pat
 
 def test_one_map_can_have_independent_aircraft_qualifications(tmp_path: Path) -> None:
     index = _release_index()
-    vtol = deepcopy(index["qualified_pairs"][0])
-    vtol["vehicle_resource_id"] = "px4-standard-vtol"
+    source = next(
+        pair for pair in index["qualified_pairs"]
+        if pair["resource_id"] == "dronedream-school-map"
+        and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
+    )
+    vtol = deepcopy(source)
+    vtol["vehicle_resource_id"] = "px4-quadtailsitter"
     vtol["qualification_id"] = "asset-qualification-" + "7" * 24
-    next(p for p in vtol["packages"] if p["kind"] == "vehicle")["asset_id"] = "standard-vtol"
+    next(p for p in vtol["packages"] if p["kind"] == "vehicle")["asset_id"] = "quadtailsitter"
     index["qualified_pairs"].append(vtol)
     path = tmp_path / "default-assets" / "index.json"
     path.parent.mkdir()
     path.write_text(json.dumps(index), encoding="utf-8")
     original = get_asset_pair(vtol["resource_id"], "px4-x500-depth", resource_root=tmp_path)
-    added = get_asset_pair(vtol["resource_id"], "px4-standard-vtol", resource_root=tmp_path)
-    assert original["qualification_id"] == index["qualified_pairs"][0]["qualification_id"]
+    added = get_asset_pair(vtol["resource_id"], "px4-quadtailsitter", resource_root=tmp_path)
+    assert original["qualification_id"] == source["qualification_id"]
     assert added["qualification_id"] == vtol["qualification_id"]
-    assert added["qualified_vehicle_asset_id"] == "standard-vtol"
+    assert added["qualified_vehicle_asset_id"] == "quadtailsitter"
     assert added["status"] == "qualified_builtin"
-    assert get_asset_pair(vtol["resource_id"], "px4-tiltrotor", resource_root=tmp_path)["qualification_id"] is None
+    tiltrotor = get_asset_pair(vtol["resource_id"], "px4-tiltrotor", resource_root=tmp_path)
+    assert tiltrotor["qualification_id"] is None
 
 
 @pytest.mark.parametrize("damage", ["missing", "json", "default", "duplicate", "vehicle", "hash"])

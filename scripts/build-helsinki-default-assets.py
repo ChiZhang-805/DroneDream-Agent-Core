@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import shutil
-import tempfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dronedream_agent_app.vehicle_resource_catalog import vehicle_resource_catalog
 from dronedream_agent_core.asset_packages import inspect_ddpkg
 from dronedream_agent_core.asset_pair_qualification import (
     bind_qualification_receipt,
@@ -23,32 +24,76 @@ ENVIRONMENT_VERSIONS = {
     "gazebo_sim": "8.15.0",
     "px4_commit": "6ea3539157ca358c70a515878b77077af7d4611d",
     "ros_distribution": "jazzy",
-    "runtime_manifest_sha256": ("11d99efcff2b096d252765e7c9fd83ec4ee8ed79fb8c5c90c2bb71f24aa7e36c"),
+    "runtime_manifest_sha256": "11d99efcff2b096d252765e7c9fd83ec4ee8ed79fb8c5c90c2bb71f24aa7e36c",
+}
+MAPS = {
+    "kumpula-campus": "dronedream-school-map",
+    "meilahti-hospital-campus": "dronedream-meilahti-hospital-map",
+    "kalasatama-waterfront": "dronedream-kalasatama-waterfront-map",
+    "vuosaari-harbour": "dronedream-vuosaari-harbour-map",
+    "suomenlinna-sea-fortress": "dronedream-suomenlinna-map",
+    "uutela-coastal-forest": "dronedream-uutela-coastal-forest-map",
+}
+VEHICLES = {
+    "x500-depth": {
+        "resource_id": "px4-x500-depth",
+        "asset_id": "dronedream.my-drone.v1",
+        "source_file": "my-drone.ddpkg",
+    },
+    "x500-lidar-front": {
+        "resource_id": "px4-x500-lidar-front",
+        "asset_id": "x500-lidar-front",
+        "profile": "x500_lidar_front",
+        "name": "X500 Forward-Lidar Quadcopter",
+        "dry_mass_kg": 2.085307692,
+        "body_radius_m": 0.38,
+        "body_height_m": 0.288,
+        "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.157},
+    },
+    "x500-gimbal": {
+        "resource_id": "px4-x500-gimbal",
+        "asset_id": "x500-gimbal",
+        "profile": "x500_gimbal",
+        "name": "X500 Gimbal Quadcopter",
+        "dry_mass_kg": 2.464307692,
+        "body_radius_m": 0.38,
+        "body_height_m": 0.288,
+        "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.157},
+    },
+    "standard-vtol": {
+        "resource_id": "px4-standard-vtol",
+        "asset_id": "standard-vtol",
+        "profile": "standard_vtol",
+        "name": "Standard VTOL",
+        "dry_mass_kg": 5.08600003,
+        "body_radius_m": 1.2,
+        "body_height_m": 0.298,
+        "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.3},
+        "max_pickup_payload_kg": 0.04,
+        "extra_sensors": ["camera", "depth_camera"],
+    },
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Bind verified Helsinki PX4/Gazebo runs into the bundled map catalog."
+        description="Promote accepted real PX4/Gazebo aircraft-map runs into bundled pairs."
     )
-    parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--default-assets", required=True, type=Path)
-    parser.add_argument("--backend-assets", required=True, type=Path)
-    parser.add_argument("--qualification-runs", required=True, type=Path)
-    parser.add_argument("--catalog", required=True, type=Path)
+    parser.add_argument(
+        "--qualification-runs",
+        required=True,
+        type=Path,
+        action="append",
+        help="Qualification evidence root. Repeat to overlay newer exact runs.",
+    )
     parser.add_argument("--staging", required=True, type=Path)
     return parser.parse_args()
 
 
 def json_bytes(value: object) -> bytes:
     return (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            separators=(",", ": "),
-        )
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": "))
         + "\n"
     ).encode()
 
@@ -69,231 +114,368 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def source_package_writer() -> Any:
+    path = Path(__file__).with_name("build-default-assets.py")
+    spec = importlib.util.spec_from_file_location("dronedream_build_default_assets", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("default asset builder could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._write_current_source_package
+
+
 def vehicle_contract(package: Path) -> VehicleAsset:
     with zipfile.ZipFile(package) as bundle:
         return VehicleAsset.model_validate_json(bundle.read("normalized/vehicle/vehicle.json"))
 
 
+def accepted_runs(root: Path) -> dict[tuple[str, str], Path]:
+    runs: dict[tuple[str, str], Path] = {}
+    for vehicle_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        for map_dir in sorted(path for path in vehicle_dir.iterdir() if path.is_dir()):
+            evidence_path = map_dir / "mission_evidence.json"
+            if not evidence_path.is_file():
+                continue
+            evidence = read_json(evidence_path)
+            if (
+                evidence.get("schema_version")
+                == "dronedream.helsinki-map-px4-mission-evidence.v1"
+                and evidence.get("accepted") is True
+                and evidence.get("executor_exit_code") == 0
+                and evidence.get("returned_to_launch") is True
+                and evidence.get("landed") is True
+                and evidence.get("unsafe_collision_count") == 0
+            ):
+                runs[(vehicle_dir.name, map_dir.name)] = map_dir
+    return runs
+
+
+def build_vehicle_source(
+    *, vehicle_key: str, vehicle_runs: list[Path], staging: Path, writer: Any
+) -> Path:
+    profile = VEHICLES[vehicle_key]
+    source_run = vehicle_runs[0]
+    source_root = staging / f"source-{vehicle_key}"
+    gazebo = source_root / "gazebo"
+    gazebo.mkdir(parents=True)
+    for source in (source_run / "my-drone").iterdir():
+        if source.is_file():
+            shutil.copyfile(source, gazebo / source.name)
+    shutil.copyfile(source_run / "controller_params.json", source_root / "controller_params.json")
+    maximum_distance = max(
+        float(read_json(run / "mission_evidence.json")["route_distance_m"])
+        for run in vehicle_runs
+    )
+    catalog = next(
+        item
+        for item in vehicle_resource_catalog()["resources"]
+        if item["resource_id"] == profile["resource_id"]
+    )
+    sensors = list(
+        dict.fromkeys(
+            [
+                *catalog["analysis"]["resolved_sensor_types"],
+                *profile.get("extra_sensors", []),
+                "odometry",
+            ]
+        )
+    )
+    summary = (
+        read_json(gazebo / "summary.json")
+        if (gazebo / "summary.json").is_file()
+        else {}
+    )
+    summary.update(
+        {
+            "schema_version": "dronedream.vehicle-gazebo-artifact.v1",
+            "model_name": "my_drone",
+            "source_model": f"model://{profile['profile']}",
+            "px4_sitl_model": profile["profile"],
+            "control_interface": "mavsdk",
+            "dry_mass_kg": profile["dry_mass_kg"],
+            "collision_envelope": {
+                "body_radius_m": profile["body_radius_m"],
+                "body_height_m": profile["body_height_m"],
+                "collision_center_offset_model_m": profile["collision_center_offset_model_m"],
+            },
+        }
+    )
+    write_json(
+        gazebo / "summary.json",
+        summary,
+    )
+    controller = read_json(source_root / "controller_params.json")
+    write_json(
+        source_root / "vehicle.json",
+        {
+            "schema_version": "dronedream.vehicle.v1",
+            "asset_id": profile["asset_id"],
+            "name": profile["name"],
+            "coordinate_frame": "base_link_frd",
+            "dry_mass_kg": profile["dry_mass_kg"],
+            "max_takeoff_mass_kg": profile["dry_mass_kg"]
+            + float(profile.get("max_pickup_payload_kg", 0.0)),
+            "body_radius_m": profile["body_radius_m"],
+            "body_height_m": profile["body_height_m"],
+            "collision_center_offset_model_m": profile["collision_center_offset_model_m"],
+            "max_speed_mps": float(controller["vel_limit"]),
+            "qualified_cruise_max_mps": float(controller["vel_limit"]),
+            "max_acceleration_mps2": float(controller["accel_limit"]),
+            "qualified_range_m": maximum_distance,
+            "reserve_battery_percent": 30.0,
+            "max_pickup_payload_kg": float(profile.get("max_pickup_payload_kg", 0.0)),
+            "sensors": sensors,
+        },
+    )
+    evidence_path = source_run / "mission_evidence.json"
+    return writer(
+        source_root=source_root,
+        destination=staging / f"source-{vehicle_key}.ddpkg",
+        kind="vehicle",
+        asset_id=profile["asset_id"],
+        name=profile["name"],
+        created_at=datetime.fromtimestamp(evidence_path.stat().st_mtime, tz=UTC),
+    )
+
+
 def build_pair(
     *,
-    item: dict[str, Any],
+    vehicle_key: str,
+    map_key: str,
     map_source: Path,
     vehicle_source: Path,
-    semantic: Path,
     run_dir: Path,
     staging: Path,
 ) -> dict[str, Any]:
     evidence_path = run_dir / "mission_evidence.json"
     evidence = read_json(evidence_path)
-    if (
-        evidence.get("schema_version") != "dronedream.helsinki-map-px4-mission-evidence.v1"
-        or evidence.get("asset_id") != item["asset_id"]
-        or evidence.get("accepted") is not True
-        or evidence.get("executor_exit_code") != 0
-        or evidence.get("returned_to_launch") is not True
-        or evidence.get("landed") is not True
-        or evidence.get("unsafe_collision_count") != 0
-    ):
-        raise ValueError(f"{item['key']}: real PX4/Gazebo qualification did not pass")
-
+    inputs_path = run_dir / "qualification-inputs.json"
+    inputs = read_json(inputs_path)
+    if inputs.get("natural_language_acceptance") is not False:
+        raise ValueError(f"{vehicle_key}/{map_key}: physical evidence was misclassified")
     route_path = run_dir / "mission-route.json"
     track_path = run_dir / "reference_track.json"
+    clearance_path = run_dir / "clearance.json"
     route = GraphRoute.model_validate_json(route_path.read_bytes())
     Px4Track.model_validate_json(track_path.read_bytes())
     vehicle = vehicle_contract(vehicle_source)
+    recorded_clearance = read_json(clearance_path)
+    qualification_root = staging / "qualification" / vehicle_key / map_key
+    plan = prepare_asset_pair_qualification(
+        map_archive=map_source,
+        vehicle_archive=vehicle_source,
+        work_root=qualification_root,
+        recorded_route_path=route_path,
+        recorded_track_path=track_path,
+        recorded_clearance_path=clearance_path,
+        maximum_translation_m=1_000.0,
+    )
     clearance = validate_route_clearance(
         route,
-        semantic,
+        qualification_root / plan.inputs.semantic,
         vehicle_diameter_m=vehicle.body_radius_m * 2,
         vehicle_height_m=vehicle.body_height_m,
-        sample_interval_m=0.25,
+        sample_interval_m=0.05,
     )
-    if not clearance.accepted or clearance.collision_count != 0:
-        raise ValueError(f"{item['key']}: flown route failed package clearance validation")
-    clearance_path = run_dir / "clearance.json"
-    write_json(clearance_path, clearance.model_dump(mode="json"))
-
-    with tempfile.TemporaryDirectory(prefix=f"{item['key']}-", dir=staging) as temporary_name:
-        temporary = Path(temporary_name)
-        qualification_root = temporary / "qualification"
-        plan = prepare_asset_pair_qualification(
-            map_archive=map_source,
-            vehicle_archive=vehicle_source,
-            work_root=qualification_root,
-            recorded_route_path=route_path,
-            recorded_track_path=track_path,
-            recorded_clearance_path=clearance_path,
-            maximum_translation_m=1_000.0,
-        )
-        artifacts = {
-            "world_sha256": sha256(qualification_root / plan.inputs.world_sdf),
-            "semantic_sha256": sha256(qualification_root / plan.inputs.semantic),
-            "vehicle_sha256": sha256(qualification_root / plan.inputs.vehicle_sdf),
-            "controller_params_sha256": sha256(qualification_root / plan.inputs.controller_params),
-            "route_sha256": plan.route_sha256,
-            "track_sha256": plan.track_sha256,
-            "clearance_sha256": plan.clearance_sha256,
-            "mission_evidence_sha256": sha256(evidence_path),
-            "natural_language_mission_sha256": sha256(run_dir / "natural_language_mission.json"),
-            "gazebo_pose_samples_sha256": sha256(run_dir / "gazebo_pose_samples.csv"),
-            "px4_log_sha256": sha256(run_dir / "px4.log"),
-            "gazebo_log_sha256": sha256(run_dir / "gazebo.log"),
-        }
-        runtime_evidence = {
-            "schema_version": "dronedream.helsinki-map-pair-runtime-evidence.v1",
-            "status": "verified",
-            "source": "real-gazebo-harmonic-px4-sitl",
-            "gates": {gate: True for gate in plan.required_runtime_gates},
-            "measurements": {
-                "pose_sample_count": evidence["pose_sample_count"],
-                "maximum_model_root_z_m": evidence["maximum_model_root_z_m"],
-                "route_distance_m": evidence["route_distance_m"],
-                "route_waypoint_count": evidence["route_waypoint_count"],
-                "unsafe_collision_count": evidence["unsafe_collision_count"],
-                "returned_to_launch": evidence["returned_to_launch"],
-                "landed": evidence["landed"],
+    if (
+        not clearance.accepted
+        or clearance.collision_count != 0
+        or recorded_clearance.get("accepted") is not True
+        or recorded_clearance.get("collision_count") != 0
+    ):
+        raise ValueError(f"{vehicle_key}/{map_key}: flown route failed clearance validation")
+    artifacts = {
+        "world_sha256": sha256(qualification_root / plan.inputs.world_sdf),
+        "semantic_sha256": sha256(qualification_root / plan.inputs.semantic),
+        "vehicle_sha256": sha256(qualification_root / plan.inputs.vehicle_sdf),
+        "controller_params_sha256": sha256(qualification_root / plan.inputs.controller_params),
+        "route_sha256": plan.route_sha256,
+        "track_sha256": plan.track_sha256,
+        "clearance_sha256": plan.clearance_sha256,
+        "mission_evidence_sha256": sha256(evidence_path),
+        "qualification_inputs_sha256": sha256(inputs_path),
+        "gazebo_pose_samples_sha256": sha256(run_dir / "gazebo_pose_samples.csv"),
+        "px4_log_sha256": sha256(run_dir / "px4.log"),
+        "gazebo_log_sha256": sha256(run_dir / "gazebo.log"),
+    }
+    runtime_evidence = {
+        "schema_version": "dronedream.aircraft-map-physical-evidence.v1",
+        "status": "verified",
+        "source": "real-gazebo-harmonic-px4-sitl",
+        "natural_language_acceptance": False,
+        "gates": {gate: True for gate in plan.required_runtime_gates},
+        "measurements": {
+            key: evidence[key]
+            for key in (
+                "pose_sample_count",
+                "maximum_model_root_z_m",
+                "route_distance_m",
+                "route_waypoint_count",
+                "unsafe_collision_count",
+                "returned_to_launch",
+                "landed",
+            )
+        },
+        "artifacts": artifacts,
+    }
+    qualified_at = datetime.fromtimestamp(evidence_path.stat().st_mtime, tz=UTC)
+    receipt = build_pair_qualification_receipt(
+        plan=plan,
+        work_root=qualification_root,
+        runtime_evidence=runtime_evidence,
+        environment_versions=ENVIRONMENT_VERSIONS,
+        qualified_at=qualified_at,
+    )
+    default_pair = vehicle_key == "x500-depth" and map_key == "kumpula-campus"
+    map_name = "school-map.ddpkg" if default_pair else f"{map_key}-{vehicle_key}.ddpkg"
+    vehicle_name = "my-drone.ddpkg" if default_pair else f"{vehicle_key}-{map_key}.ddpkg"
+    map_target = staging / "packages" / map_name
+    vehicle_target = staging / "packages" / vehicle_name
+    map_target.parent.mkdir(parents=True, exist_ok=True)
+    bind_qualification_receipt(
+        source_archive=map_source, destination_archive=map_target, receipt=receipt
+    )
+    bind_qualification_receipt(
+        source_archive=vehicle_source, destination_archive=vehicle_target, receipt=receipt
+    )
+    map_source_inspected = inspect_ddpkg(map_source)
+    vehicle_source_inspected = inspect_ddpkg(vehicle_source)
+    map_qualified = inspect_ddpkg(map_target)
+    vehicle_qualified = inspect_ddpkg(vehicle_target)
+    return {
+        "schema_version": "dronedream.bundled-qualified-pair.v1",
+        "resource_id": MAPS[map_key],
+        "vehicle_resource_id": VEHICLES[vehicle_key]["resource_id"],
+        "qualification_id": receipt.qualification_id,
+        "receipt_sha256": hashlib.sha256(json_bytes(receipt.model_dump(mode="json"))).hexdigest(),
+        "packages": [
+            {
+                "kind": "map",
+                "asset_id": map_qualified.manifest.asset_id,
+                "file": map_name,
+                "sha256": sha256(map_target),
+                "source_content_sha256": map_source_inspected.manifest.content_sha256,
+                "content_sha256": map_qualified.manifest.content_sha256,
             },
-            "artifacts": artifacts,
-        }
-        qualified_at = datetime.fromtimestamp(evidence_path.stat().st_mtime, tz=UTC)
-        receipt = build_pair_qualification_receipt(
-            plan=plan,
-            work_root=qualification_root,
-            runtime_evidence=runtime_evidence,
-            environment_versions=ENVIRONMENT_VERSIONS,
-            qualified_at=qualified_at,
-        )
-        map_name = f"{item['key']}.ddpkg"
-        vehicle_name = f"my-drone-{item['key']}.ddpkg"
-        map_target = staging / map_name
-        vehicle_target = staging / vehicle_name
-        bind_qualification_receipt(
-            source_archive=map_source,
-            destination_archive=map_target,
-            receipt=receipt,
-        )
-        bind_qualification_receipt(
-            source_archive=vehicle_source,
-            destination_archive=vehicle_target,
-            receipt=receipt,
-        )
-        map_source_inspected = inspect_ddpkg(map_source)
-        vehicle_source_inspected = inspect_ddpkg(vehicle_source)
-        map_qualified = inspect_ddpkg(map_target)
-        vehicle_qualified = inspect_ddpkg(vehicle_target)
-        receipt_sha256 = hashlib.sha256(json_bytes(receipt.model_dump(mode="json"))).hexdigest()
-        pair = {
-            "schema_version": "dronedream.bundled-qualified-pair.v1",
-            "resource_id": item["resource_id"],
-            "qualification_id": receipt.qualification_id,
-            "receipt_sha256": receipt_sha256,
-            "packages": [
-                {
-                    "kind": "map",
-                    "asset_id": item["asset_id"],
-                    "file": map_name,
-                    "sha256": sha256(map_target),
-                    "source_content_sha256": map_source_inspected.manifest.content_sha256,
-                    "content_sha256": map_qualified.manifest.content_sha256,
-                },
-                {
-                    "kind": "vehicle",
-                    "asset_id": vehicle_qualified.manifest.asset_id,
-                    "file": vehicle_name,
-                    "sha256": sha256(vehicle_target),
-                    "source_content_sha256": vehicle_source_inspected.manifest.content_sha256,
-                    "content_sha256": vehicle_qualified.manifest.content_sha256,
-                },
-            ],
-        }
-        # TemporaryDirectory owns its children, so copy completed packages into
-        # stable staging paths before it is released.
-        stable_map = staging / f"ready-{map_name}"
-        stable_vehicle = staging / f"ready-{vehicle_name}"
-        shutil.copyfile(map_target, stable_map)
-        shutil.copyfile(vehicle_target, stable_vehicle)
-        return {
-            "pair": pair,
-            "map_staged": stable_map,
-            "vehicle_staged": stable_vehicle,
-        }
+            {
+                "kind": "vehicle",
+                "asset_id": vehicle_qualified.manifest.asset_id,
+                "file": vehicle_name,
+                "sha256": sha256(vehicle_target),
+                "source_content_sha256": vehicle_source_inspected.manifest.content_sha256,
+                "content_sha256": vehicle_qualified.manifest.content_sha256,
+            },
+        ],
+    }
+
+
+def retired_pair_record(pair: dict[str, Any]) -> dict[str, str]:
+    packages = {item["kind"]: item for item in pair["packages"]}
+    return {
+        "qualification_id": pair["qualification_id"],
+        "map_content_sha256": packages["map"]["content_sha256"],
+        "map_source_content_sha256": packages["map"]["source_content_sha256"],
+        "vehicle_content_sha256": packages["vehicle"]["content_sha256"],
+        "vehicle_source_content_sha256": packages["vehicle"]["source_content_sha256"],
+    }
 
 
 def main() -> None:
     args = parse_args()
-    config = read_json(args.config.resolve())
-    maps = config.get("maps")
-    if not isinstance(maps, list) or len(maps) != 5:
-        raise ValueError("the first-party Helsinki set must contain exactly five maps")
     default_assets = args.default_assets.resolve()
+    qualification_runs = [root.resolve() for root in args.qualification_runs]
     staging = args.staging.resolve()
-    if staging.exists():
-        if not staging.is_dir() or any(staging.iterdir()):
-            raise FileExistsError(f"staging directory is not empty: {staging}")
-    else:
-        staging.mkdir(parents=True)
+    if staging.exists() and (not staging.is_dir() or any(staging.iterdir())):
+        raise FileExistsError(f"staging directory is not empty: {staging}")
+    staging.mkdir(parents=True, exist_ok=True)
     old_index = read_json(default_assets / "index.json")
-    current_pair = old_index["qualified_pair"]
-    vehicle_source = default_assets / "my-drone.ddpkg"
-    results: list[dict[str, Any]] = []
-    for item in maps:
-        key = item["key"]
-        results.append(
-            build_pair(
-                item=item,
-                map_source=default_assets / f"{key}.ddpkg",
-                vehicle_source=vehicle_source,
-                semantic=args.backend_assets.resolve() / key / "gazebo" / "semantic.json",
-                run_dir=args.qualification_runs.resolve() / key,
+    runs: dict[tuple[str, str], Path] = {}
+    for root in qualification_runs:
+        runs.update(accepted_runs(root))
+    expected = {
+        *(
+            (vehicle, map_key)
+            for vehicle in ("x500-lidar-front", "x500-gimbal")
+            for map_key in MAPS
+        ),
+        *(("standard-vtol", map_key) for map_key in MAPS if map_key != "vuosaari-harbour"),
+    }
+    missing = sorted(expected - runs.keys())
+    if missing:
+        raise ValueError(f"accepted qualification runs are missing: {missing}")
+    writer = source_package_writer()
+    map_sources = {
+        map_key: default_assets
+        / ("school-map.ddpkg" if map_key == "kumpula-campus" else f"{map_key}.ddpkg")
+        for map_key in MAPS
+    }
+    vehicle_sources: dict[str, Path] = {}
+    for vehicle_key in sorted({pair[0] for pair in expected}):
+        profile = VEHICLES[vehicle_key]
+        if "source_file" in profile:
+            vehicle_sources[vehicle_key] = default_assets / profile["source_file"]
+        else:
+            vehicle_sources[vehicle_key] = build_vehicle_source(
+                vehicle_key=vehicle_key,
+                vehicle_runs=[runs[pair] for pair in sorted(expected) if pair[0] == vehicle_key],
                 staging=staging,
+                writer=writer,
             )
-        )
-
-    for result in results:
-        pair = result["pair"]
-        for package in pair["packages"]:
-            source = result["map_staged"] if package["kind"] == "map" else result["vehicle_staged"]
-            destination = default_assets / package["file"]
-            shutil.copyfile(source, destination)
-
-    qualified_pairs = [current_pair, *[result["pair"] for result in results]]
+    built = []
+    for vehicle_key, map_key in sorted(expected):
+        try:
+            built.append(
+                build_pair(
+                    vehicle_key=vehicle_key,
+                    map_key=map_key,
+                    map_source=map_sources[map_key],
+                    vehicle_source=vehicle_sources[vehicle_key],
+                    run_dir=runs[(vehicle_key, map_key)],
+                    staging=staging,
+                )
+            )
+        except Exception as error:
+            raise RuntimeError(f"pair promotion failed: {vehicle_key}/{map_key}") from error
+    replaced = {
+        (pair["resource_id"], pair.get("vehicle_resource_id", "px4-x500-depth"))
+        for pair in built
+    }
+    retained = [
+        pair
+        for pair in old_index["qualified_pairs"]
+        if (pair["resource_id"], pair.get("vehicle_resource_id", "px4-x500-depth"))
+        not in replaced
+    ]
+    pairs = [*retained, *built]
+    default_pair = next(
+        pair
+        for pair in pairs
+        if pair["resource_id"] == "dronedream-school-map"
+        and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
+    )
+    superseded = [*old_index.get("superseded_qualified_pairs", [])]
+    old_default = old_index["qualified_pair"]
+    if old_default["qualification_id"] != default_pair["qualification_id"]:
+        superseded.append(retired_pair_record(old_default))
     write_json(
-        default_assets / "index.json",
+        staging / "index.json",
         {
             "schema_version": "dronedream.bundled-assets.v3",
-            "default_qualification_id": current_pair["qualification_id"],
-            "qualified_pair": current_pair,
-            "qualified_pairs": qualified_pairs,
-            "superseded_qualified_pairs": old_index.get("superseded_qualified_pairs", []),
+            "default_qualification_id": default_pair["qualification_id"],
+            "qualified_pair": default_pair,
+            "qualified_pairs": pairs,
+            "superseded_qualified_pairs": superseded,
         },
     )
-
-    catalog = read_json(args.catalog.resolve())
-    pair_by_resource = {result["pair"]["resource_id"]: result["pair"] for result in results}
-    for resource in catalog["resources"]:
-        pair = pair_by_resource[resource["resource_id"]]
-        map_entry = next(package for package in pair["packages"] if package["kind"] == "map")
-        resource["source"]["expected_sha256"] = map_entry["sha256"]
-        resource["analysis"]["status"] = "qualified"
-        resource["readiness"] = {
-            "catalog": "ready",
-            "planning": "ready",
-            "simulation": "ready",
-            "flight": "qualified",
-            "qualification_id": pair["qualification_id"],
-            "required_inputs": [],
-        }
-    write_json(args.catalog.resolve(), catalog)
+    for package in (staging / "packages").iterdir():
+        shutil.copyfile(package, default_assets / package.name)
+    shutil.copyfile(staging / "index.json", default_assets / "index.json")
     print(
         json.dumps(
             {
-                "qualified_maps": [
-                    {
-                        "resource_id": result["pair"]["resource_id"],
-                        "qualification_id": result["pair"]["qualification_id"],
-                    }
-                    for result in results
-                ]
+                "qualified_pair_count": len(pairs),
+                "new_pair_count": len(built),
+                "default_qualification_id": default_pair["qualification_id"],
             },
             ensure_ascii=False,
         )

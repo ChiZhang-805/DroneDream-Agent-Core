@@ -379,6 +379,36 @@ def test_planning_acceptance_selects_exact_current_qualified_pair(tmp_path: Path
     assert binding["map_qualified_content_sha256"] == expected["map"]["content_sha256"]
 
 
+def test_planning_acceptance_selects_requested_qualified_pair(tmp_path: Path) -> None:
+    module = _load_planning_acceptance_module()
+    resources = (
+        Path(__file__).parents[1] / "app" / "desktop" / "src-tauri" / "resources" / "default-assets"
+    )
+    index = json.loads((resources / "index.json").read_text(encoding="utf-8"))
+    selected = next(
+        pair
+        for pair in index["qualified_pairs"]
+        if pair["resource_id"] == "dronedream-school-map"
+        and pair.get("vehicle_resource_id") == "px4-x500-lidar-front"
+    )
+    expected = {entry["kind"]: entry for entry in selected["packages"]}
+    store = AppStore(tmp_path / "store")
+    try:
+        AssetImportService(store).seed_bundled_sources(resources)
+        map_record, vehicle_record, binding = module._current_bundled_pair(
+            store,
+            resources,
+            map_resource_id="dronedream-school-map",
+            vehicle_resource_id="px4-x500-lidar-front",
+        )
+    finally:
+        store.close()
+
+    assert map_record["content_sha256"] == expected["map"]["content_sha256"]
+    assert vehicle_record["content_sha256"] == expected["vehicle"]["content_sha256"]
+    assert binding["qualification_id"] == selected["qualification_id"]
+
+
 def test_retired_development_asset_flags_are_removed() -> None:
     repo = Path(__file__).parents[1]
     sources = (

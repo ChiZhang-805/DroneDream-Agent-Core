@@ -1,24 +1,47 @@
 # Default map and aircraft pairing matrix
 
-The product evaluates every combination of its eight built-in maps and thirteen
-reviewed aircraft. The authoritative machine-readable view is returned by
-`GET /v1/asset-pair-catalog` and can be exported with
-`scripts/export_default_asset_pair_catalog.py`.
+The desktop product shows six built-in maps and six built-in aircraft. The
+authoritative release index is
+`app/desktop/src-tauri/resources/default-assets/index.json`; the runtime catalog
+is returned by `GET /v1/asset-pair-catalog`.
 
-The 104 combinations have three states:
+## Current release result
 
-- `qualified_builtin` (8): the exact normalized built-in My Drone / PX4
-  `x500_depth` package has completed the PX4/Gazebo qualification gates on that
-  map. Every record includes its immutable qualification ID.
-- `compatible_requires_qualification` (78): the geometry and operating class
-  are compatible, but the exact map package, aircraft package, PX4 airframe,
-  sensor setup, route, and runtime still need a closed-loop qualification run.
-- `incompatible` (18): the three VTOL aircraft are excluded from the six maps
-  dominated by rooms, doors, stairs, multilevel interiors, or tight corridors.
-  They remain compatible with Campus Site and Open Test Arena.
+| Aircraft | Qualified maps | Product status |
+| --- | ---: | --- |
+| X500 Depth | 6/6 | available |
+| X500 Front LiDAR | 6/6 | available |
+| X500 Gimbal | 6/6 | available |
+| Standard VTOL | 6/6 | available |
+| Tiltrotor | 0/6 | unavailable |
+| Quadtailsitter | 0/6 | unavailable |
 
-Compatibility never grants execution authority. A compatible combination is
-kept available for packaging and qualification instead of being hidden, while
-mission execution still requires an exact current receipt. This prevents an
-unverified model alias or a catalog review from being mistaken for flight
-evidence.
+The 24 available combinations use exact, immutable map and vehicle packages.
+Each pair has a PX4 SITL and Gazebo Harmonic round trip, landing, zero unsafe
+collisions, route and reference-track evidence, qualification-input hashes, and
+an immutable qualification ID.
+
+Physical testing produced one additional successful Quadtailsitter round trip
+on a simplified, nonrelease Kumpula candidate. It does not qualify the current
+release map and is deliberately not promoted. In addition, that vehicle package
+does not provide the perception source required by the present autonomous
+mission contract. A flight result alone cannot invent a camera, depth sensor, or
+LiDAR capability.
+
+Tiltrotor was armed and entered offboard control on the Vuosaari baseline but
+did not lift. The remaining five maps were not promoted or presented as tested
+successes after that vehicle-level blocker was established.
+
+## Meaning of a qualified pair
+
+Qualification is exact, not inherited from a model family or compatibility
+guess. It binds the current map package, aircraft package, PX4 airframe, sensor
+setup, route, reference track, Runtime inputs, and physical evidence. Geometry
+compatibility keeps an unqualified pair eligible for future work but grants no
+execution authority.
+
+The current physical runs used deterministic route inputs and therefore record
+`natural_language_acceptance: false`. Real DeepSeek planning acceptance was
+attempted with a normal, deliberately imprecise user request, but the dedicated
+`DEEPSEEK_API_KEY_DroneDream` account returned HTTP 402. That failed attempt is
+retained as evidence and is not counted as natural-language acceptance.

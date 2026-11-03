@@ -360,9 +360,14 @@ def _write_current_source_package(
                             "x500_depth" if profile == "x500" else profile)), None)
         if catalog is None:
             raise ValueError("DEFAULT_VEHICLE_PX4_PROFILE_INVALID")
-        # Counts from the pinned PX4 airframes: Standard VTOL has four lift
-        # motors, one pusher, and three controlled aerodynamic surfaces.
-        rotor_count, actuator_count = {"x500": (4, 4), "standard_vtol": (5, 8)}[profile]
+        # Counts from the pinned PX4 airframes. Sensor and camera variants retain
+        # the X500 four-motor control surface.
+        rotor_count, actuator_count = {
+            "x500": (4, 4),
+            "x500_lidar_front": (4, 4),
+            "x500_gimbal": (4, 4),
+            "standard_vtol": (5, 8),
+        }[profile]
         vehicle = VehicleSummary(
             vehicle_class=("multirotor" if catalog["vehicle_class"] == "multicopter"
                            else str(catalog["vehicle_class"])),
@@ -396,8 +401,14 @@ def _write_current_source_package(
             "gazebo",
             "content-addressed",
             f"px4.sitl-model={profile}",
-            "perception.forward-depth",
         ]
+        sensor_kinds = {str(sensor) for sensor in vehicle_metadata.get("sensors", [])}
+        if "depth_camera" in sensor_kinds:
+            capabilities.append("perception.forward-depth")
+        if "gpu_lidar" in sensor_kinds:
+            capabilities.append("perception.lidar")
+        if "camera" in sensor_kinds:
+            capabilities.append("perception.camera")
 
     asset_ir = AssetIR(
         asset_id=asset_id,

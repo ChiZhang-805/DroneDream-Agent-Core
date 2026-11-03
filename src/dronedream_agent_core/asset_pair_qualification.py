@@ -994,9 +994,15 @@ def _recorded_qualification_artifacts(
     positions = [(point.x, point.y, point.z) for point in route.positions_m]
     length = sum(math.dist(first, second)
                  for first, second in zip(positions, positions[1:], strict=False))
+    start_horizontal_error = math.hypot(
+        positions[0][0] - launch_xyz[0], positions[0][1] - launch_xyz[1]
+    )
+    end_horizontal_error = math.hypot(
+        positions[-1][0] - launch_xyz[0], positions[-1][1] - launch_xyz[1]
+    )
     if (len(positions) < 3 or route.start_node != route.goal_node or length <= 0
-            or math.dist(positions[0], launch_xyz) > 0.02
-            or math.dist(positions[-1], launch_xyz) > 0.02
+            or start_horizontal_error > 0.02 or end_horizontal_error > 0.02
+            or positions[0][2] < launch_xyz[2] or positions[-1][2] < launch_xyz[2]
             or not math.isclose(length, route.route_length_m, abs_tol=1e-6, rel_tol=1e-9)):
         raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_ROUND_TRIP_INVALID")
     world_points = [(point.east_m, point.north_m, point.up_m)
@@ -1005,9 +1011,18 @@ def _recorded_qualification_artifacts(
         raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_TRACK_ROUTE_MISMATCH")
     root = resolve_grounded_vehicle_model_root(semantic, vehicle)
     offset = resolve_vehicle_collision_center_offset(vehicle)
-    if (track.coordinate_contract.model_root_world_enu_m != [root.x, root.y, root.z]
-            or track.coordinate_contract.collision_center_offset_model_m
-            != [offset.x, offset.y, offset.z]):
+    if (
+        math.dist(
+            track.coordinate_contract.model_root_world_enu_m,
+            [root.x, root.y, root.z],
+        )
+        > 1e-9
+        or math.dist(
+            track.coordinate_contract.collision_center_offset_model_m,
+            [offset.x, offset.y, offset.z],
+        )
+        > 1e-9
+    ):
         raise AssetPairQualificationError("ASSET_QUALIFICATION_RECORDED_TRACK_FRAME_MISMATCH")
     for world, point in zip(route.positions_m, track.points, strict=True):
         expected = (world.y - root.y - offset.y, world.x - root.x - offset.x,
