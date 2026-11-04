@@ -57,6 +57,92 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _STATE_JSON_LIMIT = 64 * 1024 * 1024
 _STATE_JSON_NODES = 2_000_000
+_DATABASE_NAME = "autonomy.sqlite3"
+_DATABASE_FILES = (_DATABASE_NAME, f"{_DATABASE_NAME}-wal", f"{_DATABASE_NAME}-shm")
+
+
+# 功能：
+#   判断 SQLite 异常是否明确表示数据库介质损坏；锁冲突和权限错误不得触发数据迁移。
+# 输入：
+#   error：SQLite 打开或完整性检查抛出的异常。
+# 输出：
+#   is_corrupt：仅对 SQLite 明确报告的物理损坏返回 True。
+def _is_database_corruption(error: sqlite3.DatabaseError) -> bool:
+    message = str(error).lower()
+    return "malformed" in message or "file is not a database" in message
+
+
+# 功能：
+#   将确认损坏的 SQLite 主文件及 WAL/SHM 原样移入应用管理的恢复目录，并记录摘要。
+# 输入：
+#   root：应用数据根目录。
+#   reason：不含路径和内部堆栈的恢复原因代码。
+# 输出：
+#   recovery_root：保存本次原始文件和恢复回执的目录。
+def _preserve_corrupt_database(
+    root: Path, reason: str, *, snapshots: dict[str, bytes] | None = None
+) -> Path:
+    recovery_root = root / "database-recovery" / f"recovery-{uuid4().hex}"
+    recovery_root.mkdir(parents=True)
+    original = snapshots or {}
+    files: list[dict[str, object]] = []
+    for name in _DATABASE_FILES:
+        source = root / name
+        if not source.exists() and name not in original:
+            continue
+        payload = original.get(name)
+        target = recovery_root / name
+        if source.exists():
+            source.replace(target)
+        if payload is not None:
+            target.write_bytes(payload)
+        else:
+            payload = target.read_bytes()
+        size = len(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        files.append({"name": name, "bytes": size, "sha256": digest})
+    receipt = {
+        "schema_version": "dronedream.database-recovery.v1",
+        "recovered_at": utc_now(),
+        "reason": reason,
+        "files": files,
+    }
+    (recovery_root / "recovery.json").write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return recovery_root
+
+
+# 功能：
+#   打开本地数据库并执行快速完整性检查；确认物理损坏时保留原文件后创建新库。
+# 输入：
+#   root：应用数据根目录。
+# 输出：
+#   connection：通过完整性检查的 SQLite 连接。
+def _open_database(root: Path) -> sqlite3.Connection:
+    database_path = root / _DATABASE_NAME
+    if not database_path.exists():
+        return sqlite3.connect(database_path, check_same_thread=False)
+    shm_path = root / f"{_DATABASE_NAME}-shm"
+    snapshots = {shm_path.name: shm_path.read_bytes()} if shm_path.exists() else {}
+    inspection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+    try:
+        result = inspection.execute("PRAGMA quick_check").fetchall()
+    except sqlite3.DatabaseError as error:
+        inspection.close()
+        if not _is_database_corruption(error):
+            raise
+        _preserve_corrupt_database(
+            root, "SQLITE_DATABASE_CORRUPT", snapshots=snapshots
+        )
+        return sqlite3.connect(database_path, check_same_thread=False)
+    inspection.close()
+    if result == [("ok",)]:
+        return sqlite3.connect(database_path, check_same_thread=False)
+    _preserve_corrupt_database(
+        root, "SQLITE_INTEGRITY_CHECK_FAILED", snapshots=snapshots
+    )
+    return sqlite3.connect(database_path, check_same_thread=False)
 
 
 # 功能：
@@ -148,7 +234,7 @@ class AppStore:
         self.plugins_root.mkdir(exist_ok=True)
         self._lock = threading.RLock()
         self._plugin_batch_active = False
-        self._connection = sqlite3.connect(self.root / "autonomy.sqlite3", check_same_thread=False)
+        self._connection = _open_database(self.root)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")

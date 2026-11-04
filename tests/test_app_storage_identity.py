@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,39 @@ def store(tmp_path):
         yield store
     finally:
         store.close()
+
+
+# 功能：
+#   验证确认损坏的本地数据库不会阻塞启动，并且原始数据库与旁路文件仍可恢复。
+# 输入：
+#   tmp_path：pytest 分配的独立数据目录。
+# 输出：
+#   None：断言新库可用且恢复回执绑定原始字节。
+def test_corrupt_database_is_preserved_before_reinitialization(tmp_path: Path):
+    sidecars = {
+        "autonomy.sqlite3": b"not-a-sqlite-database",
+        "autonomy.sqlite3-wal": b"fixture-wal",
+        "autonomy.sqlite3-shm": b"fixture-shm",
+    }
+    for name, payload in sidecars.items():
+        (tmp_path / name).write_bytes(payload)
+
+    recovered_store = AppStore(tmp_path)
+    try:
+        assert recovered_store.list_threads() == []
+    finally:
+        recovered_store.close()
+
+    recoveries = list((tmp_path / "database-recovery").iterdir())
+    assert len(recoveries) == 1
+    recovery_root = recoveries[0]
+    receipt = json.loads((recovery_root / "recovery.json").read_text(encoding="utf-8"))
+    assert receipt["reason"] == "SQLITE_DATABASE_CORRUPT"
+    assert {item["name"] for item in receipt["files"]} == set(sidecars)
+    for name, payload in sidecars.items():
+        assert (recovery_root / name).read_bytes() == payload
+        record = next(item for item in receipt["files"] if item["name"] == name)
+        assert record["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
 # 功能：
