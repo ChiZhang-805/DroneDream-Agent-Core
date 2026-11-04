@@ -122,6 +122,11 @@ def _preserve_corrupt_database(
 def _open_database(root: Path) -> sqlite3.Connection:
     database_path = root / _DATABASE_NAME
     if not database_path.exists():
+        orphaned_sidecars = [
+            root / name for name in _DATABASE_FILES[1:] if (root / name).exists()
+        ]
+        if orphaned_sidecars:
+            _preserve_corrupt_database(root, "SQLITE_ORPHANED_SIDECARS")
         return sqlite3.connect(database_path, check_same_thread=False)
     shm_path = root / f"{_DATABASE_NAME}-shm"
     snapshots = {shm_path.name: shm_path.read_bytes()} if shm_path.exists() else {}
