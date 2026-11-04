@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import dronedream_agent_app.server as server_module
 from dronedream_agent_app.identity import VerifiedIdentity
 from dronedream_agent_app.server import create_app
 from dronedream_agent_app.storage import AppStore
@@ -75,6 +76,26 @@ def test_loopback_api_requires_random_session_token(tmp_path):
     response = client.get("/v1/bootstrap", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     assert len(response.json()["models"]) == 7
+
+
+def test_shutdown_returns_before_runtime_cleanup(tmp_path, monkeypatch):
+    token = "b" * 64
+    scheduled = []
+    monkeypatch.setattr(
+        server_module,
+        "_schedule_shutdown",
+        lambda runtime_manager: scheduled.append(runtime_manager),
+    )
+    client = TestClient(create_app(store=AppStore(tmp_path), token=token))
+
+    response = client.post(
+        "/shutdown",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True}
+    assert len(scheduled) == 1
 
 
 def test_missing_execution_evidence_returns_a_stable_public_error(tmp_path):

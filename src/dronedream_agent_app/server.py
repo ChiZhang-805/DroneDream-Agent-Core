@@ -145,6 +145,22 @@ def _projection_credentials(
         return None, f"MEMORY_PROJECTION_CONFIGURATION_INVALID:{error}"[:240]
 
 
+def _shutdown_runtime_and_exit(runtime_manager: RuntimeManager) -> None:
+    try:
+        runtime_manager.shutdown()
+    finally:
+        time.sleep(0.15)
+        os._exit(0)
+
+
+def _schedule_shutdown(runtime_manager: RuntimeManager) -> None:
+    threading.Thread(
+        target=_shutdown_runtime_and_exit,
+        args=(runtime_manager,),
+        daemon=True,
+    ).start()
+
+
 def create_app(
     *,
     store: AppStore,
@@ -425,13 +441,7 @@ def create_app(
 
     @app.post("/shutdown", dependencies=[local], status_code=202)
     def shutdown() -> dict[str, object]:
-        runtime_manager.shutdown()
-
-        def exit_after_response() -> None:
-            time.sleep(0.15)
-            os._exit(0)
-
-        threading.Thread(target=exit_after_response, daemon=True).start()
+        _schedule_shutdown(runtime_manager)
         return {"accepted": True}
 
     # 功能：
