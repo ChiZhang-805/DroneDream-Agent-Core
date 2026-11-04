@@ -1,220 +1,127 @@
 {
-  "default_qualification_id": "asset-qualification-e6b4e5d8d596851ee549d46a",
+  "default_qualification_id": "asset-qualification-f0a2e2ba42e63ff5a5a0b324",
   "qualified_pair": {
     "packages": [
       {
         "asset_id": "dronedream.school-map.v1",
-        "content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b",
+        "content_sha256": "52a3b3b2cab12a94934f913efd6a5b8e7ae2fc983f4c0d66d600fe1e845bb0c5",
         "file": "school-map.ddpkg",
         "kind": "map",
-        "sha256": "9cfa9aec0745160625a76e11bd4b14d73c23400fc5911a5692f35e7dd2ff63e4",
-        "source_content_sha256": "f794c14e1b7939cff4c66b11a3e3cc3ca11cd6c1cdd7b7408013c693eacc9aad"
+        "sha256": "0675bfe10e22b5c9a4f91c32f8348d40261a1c968e323148ba78690499cce59c",
+        "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
       },
       {
         "asset_id": "dronedream.my-drone.v1",
-        "content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385",
+        "content_sha256": "b6241ee2e52649e74f7d225ea9d77c4f89b7396c80e12fab263f6207c9f59c99",
         "file": "my-drone.ddpkg",
         "kind": "vehicle",
-        "sha256": "63bc3db6dd6bafe0022babed60271417b0c6b998aa5d89ce3f549c61787041df",
-        "source_content_sha256": "7100d3e9536e5d46946b6f097da9a3ab5f5bb645edd8a18be300994649bce26b"
+        "sha256": "246f36b2442c988299642bc497e443a4b23880d8032c2f035bcc81cdc09a279d",
+        "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
       }
     ],
-    "qualification_id": "asset-qualification-e6b4e5d8d596851ee549d46a",
-    "receipt_sha256": "729fb0946e74bbb18fdf13a58d26e13a751ccb13cace1619658d9f3c995e2869",
+    "qualification_id": "asset-qualification-f0a2e2ba42e63ff5a5a0b324",
+    "receipt_sha256": "a125da665a905dc2fc0f93d8c170de6b9acc0921209e696f77e012c1191390b5",
     "resource_id": "dronedream-school-map",
-    "schema_version": "dronedream.bundled-qualified-pair.v1"
+    "schema_version": "dronedream.bundled-qualified-pair.v1",
+    "vehicle_resource_id": "px4-x500-depth"
   },
   "qualified_pairs": [
     {
       "packages": [
         {
-          "asset_id": "dronedream.school-map.v1",
-          "content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b",
-          "file": "school-map.ddpkg",
-          "kind": "map",
-          "sha256": "9cfa9aec0745160625a76e11bd4b14d73c23400fc5911a5692f35e7dd2ff63e4",
-          "source_content_sha256": "f794c14e1b7939cff4c66b11a3e3cc3ca11cd6c1cdd7b7408013c693eacc9aad"
-        },
-        {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385",
-          "file": "my-drone.ddpkg",
-          "kind": "vehicle",
-          "sha256": "63bc3db6dd6bafe0022babed60271417b0c6b998aa5d89ce3f549c61787041df",
-          "source_content_sha256": "7100d3e9536e5d46946b6f097da9a3ab5f5bb645edd8a18be300994649bce26b"
-        }
-      ],
-      "qualification_id": "asset-qualification-e6b4e5d8d596851ee549d46a",
-      "receipt_sha256": "729fb0946e74bbb18fdf13a58d26e13a751ccb13cace1619658d9f3c995e2869",
-      "resource_id": "dronedream-school-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
-    },
-    {
-      "packages": [
-        {
-          "asset_id": "dronedream.meilahti-hospital-map.v1",
-          "content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f",
-          "file": "meilahti-hospital-campus.ddpkg",
-          "kind": "map",
-          "sha256": "17cc6d691d8a79fc8096f4749574c97f5e6befced03a6276175e51b134cb3740",
-          "source_content_sha256": "a9aea94c78eea55aec34cf46ae243f7f6d1339058a96eaea4acacc7c1b9ce95b"
-        },
-        {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "a8023316427596ed87bc58f9d12746f8da274bba447b54739fa534f5a36ee01b",
-          "file": "my-drone-meilahti-hospital-campus.ddpkg",
-          "kind": "vehicle",
-          "sha256": "cdaca07ae162eb50d309c45f4114d2f98f2c13ccf79470c826529cbadd7919dd",
-          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
-        }
-      ],
-      "qualification_id": "asset-qualification-6fb9cd6b77569fecb298c000",
-      "receipt_sha256": "1c76f5a3e81ff098c8d26969dca1124c7903ffc1e919ccb05f1d9e052f393fd0",
-      "resource_id": "dronedream-meilahti-hospital-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
-    },
-    {
-      "packages": [
-        {
           "asset_id": "dronedream.kalasatama-waterfront-map.v1",
-          "content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b",
-          "file": "kalasatama-waterfront.ddpkg",
+          "content_sha256": "7081f56de024664ce6e4f932032f2f2c082ff6cc4efc8c63ab9b076461790be3",
+          "file": "kalasatama-waterfront-quadtailsitter.ddpkg",
           "kind": "map",
-          "sha256": "fc812b6a884e2d2b9b494c249acb80d4d52f44c35f77275add65d40e84f5516a",
-          "source_content_sha256": "d4fb2017098a1231f2f8301ac82d780d4d521cd479f9aed717148ae01b8993e7"
+          "sha256": "9d5256b9dd728c73cffdd175141d6d507a8af95fed8d58f7d16f7db6921ddf8c",
+          "source_content_sha256": "cf6c4dc785dff66da019b2798b55b59cd6f5f0870bea41bb2f92b1aab6813500"
         },
         {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "59388a70b42e0d465a2eb747c26b0e2fcbb0a05a7603af4bd1364fc765ecae4e",
-          "file": "my-drone-kalasatama-waterfront.ddpkg",
+          "asset_id": "quadtailsitter",
+          "content_sha256": "c2d2371cb39382802d551e56ef64942c1e67206b05fff1f0209e13b3da7d9a40",
+          "file": "quadtailsitter-kalasatama-waterfront.ddpkg",
           "kind": "vehicle",
-          "sha256": "2f8930a794df30b968553d37ddade862acf4e6c5e2512093de88d9c900d81473",
-          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+          "sha256": "603003d050c660e64b0efb06ff3fc26d132aa3d17f7e198b31de280483346b4a",
+          "source_content_sha256": "f1fa847b8295b25adb326140fab042f35650e67f6349fd80163a12d84accffcf"
         }
       ],
-      "qualification_id": "asset-qualification-d2fb2947d03555333fc64ac4",
-      "receipt_sha256": "f8e0a073a89d69542587433e72328e5ef0570b059fd9d4ce16267d855941d8aa",
+      "qualification_id": "asset-qualification-98ed5be71e02d6e97f14f603",
+      "receipt_sha256": "04b534bf7fddc74f3631bfe00b66e184b087367ed3139794f7f3f737b861c1ea",
       "resource_id": "dronedream-kalasatama-waterfront-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-quadtailsitter"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.school-map.v1",
+          "content_sha256": "25603267a685d3077a3bc001c9e878a5d3b4b55555c641bda03cb81c35ec32e3",
+          "file": "kumpula-campus-quadtailsitter.ddpkg",
+          "kind": "map",
+          "sha256": "8ca553a6a721a107d8a2c39e9da69c4873344fa48f2f14a2d4e67097019243c0",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
+        },
+        {
+          "asset_id": "quadtailsitter",
+          "content_sha256": "59002c09fb388e1d0da2df2e545d7570ed95892786494ba542c237ee43e839fa",
+          "file": "quadtailsitter-kumpula-campus.ddpkg",
+          "kind": "vehicle",
+          "sha256": "58bbc560f08fd2805f34a5029a28865b282917d9f607ec9e54d10e4250799ed7",
+          "source_content_sha256": "f1fa847b8295b25adb326140fab042f35650e67f6349fd80163a12d84accffcf"
+        }
+      ],
+      "qualification_id": "asset-qualification-5bddd8bb9c4a5bffee44731d",
+      "receipt_sha256": "b3518259e6675a7dac1b504f8774bfbb51cad2a141d8d868822d3fa8ded2b5d5",
+      "resource_id": "dronedream-school-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-quadtailsitter"
     },
     {
       "packages": [
         {
           "asset_id": "dronedream.vuosaari-harbour-map.v1",
-          "content_sha256": "a01938f8687cf09c11bc9aa7d2dd2c4beb798026cb3f72b55dd9656acd29e9f0",
-          "file": "vuosaari-harbour.ddpkg",
+          "content_sha256": "45190876123ac3ac919e02a7aabaadc9c7bf3c1147418c323b4e571e9418e24b",
+          "file": "vuosaari-harbour-quadtailsitter.ddpkg",
           "kind": "map",
-          "sha256": "9e8e6eefe861b0ba348a7579ad02df248b35ff48e13c83fb604c1eb7bb09f7fc",
-          "source_content_sha256": "fd296b029774a3ffd4dc4f7c3b4325b0fd1f7e4195a10e024e81941e27672510"
+          "sha256": "b2c297dd43ab6fe412323a8d99ad60d79cb87c28f862ac9542304585470093cb",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
         },
         {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "f95e72fc6c761d5a67d199ba509e19fe0126a432ff5c97ad2015e1966ac0a437",
-          "file": "my-drone-vuosaari-harbour.ddpkg",
+          "asset_id": "quadtailsitter",
+          "content_sha256": "763d6207c8ca8f1b6b9a7cfac9f8f373f12c6d8b6e4b8b96f74c8205bca69648",
+          "file": "quadtailsitter-vuosaari-harbour.ddpkg",
           "kind": "vehicle",
-          "sha256": "168490112048ec36abb7b8a0a048ecbd2358e7e2e6bd73622e0ffe2ecfa449dd",
-          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+          "sha256": "921c8d8383e6a1820a67af062ad1d7b16fae43aa8e6ed659c3933b2fa1656984",
+          "source_content_sha256": "f1fa847b8295b25adb326140fab042f35650e67f6349fd80163a12d84accffcf"
         }
       ],
-      "qualification_id": "asset-qualification-94994abb257e999e2f0805f6",
-      "receipt_sha256": "612d9940827305a9d54ddad605ac490e3ae3b2d588a5acb40953dcf65db2ffe1",
-      "resource_id": "dronedream-vuosaari-harbour-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
-    },
-    {
-      "packages": [
-        {
-          "asset_id": "dronedream.suomenlinna-map.v1",
-          "content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5",
-          "file": "suomenlinna-sea-fortress.ddpkg",
-          "kind": "map",
-          "sha256": "e66160d5b6200c9c06a078833711054f3b79f17b5eee025806ee3b3ff3f85780",
-          "source_content_sha256": "db850c955bb77070ffdb1b8c916f1b0260cee90058d1ee77904455026fe262c4"
-        },
-        {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "11acb9b89bb39a5645a10832aff60673b2fffcd83685ab2dc0134b306cc54a1a",
-          "file": "my-drone-suomenlinna-sea-fortress.ddpkg",
-          "kind": "vehicle",
-          "sha256": "d4f78ba6a506d29dea37900061d58f19c2e86ca21535d104415e353c0bb7ad63",
-          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
-        }
-      ],
-      "qualification_id": "asset-qualification-49de1e9af06907248637e4be",
-      "receipt_sha256": "87b07fd62a73730565e5ff4030f9a4d2f5771698dc200ecd528e96b80a3236ed",
-      "resource_id": "dronedream-suomenlinna-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
-    },
-    {
-      "packages": [
-        {
-          "asset_id": "dronedream.uutela-coastal-forest-map.v1",
-          "content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd",
-          "file": "uutela-coastal-forest.ddpkg",
-          "kind": "map",
-          "sha256": "12495fa8517c4310fbd8543f30457c456e65d42f8cee81e97efc5f9eb191546f",
-          "source_content_sha256": "3e14e02d3f9851b1330b57ec1d9f948b60d7870e04aa17388c098082fe45e3c9"
-        },
-        {
-          "asset_id": "dronedream.my-drone.v1",
-          "content_sha256": "9b6c579bee35c3c895ad1c55935dc641f89b1119a01629cc80e0d51858a9312f",
-          "file": "my-drone-uutela-coastal-forest.ddpkg",
-          "kind": "vehicle",
-          "sha256": "de63ce0547b3e4e1bdb7cd77fdde00acc904f6076d7b890bb389c8914120b3ca",
-          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
-        }
-      ],
-      "qualification_id": "asset-qualification-23d9556be930ad2c8f3a4ce0",
-      "receipt_sha256": "f544c79d9245fcf97fba2529b0506af24e18d39fa01a0f4e19ae51302267ecaf",
-      "resource_id": "dronedream-uutela-coastal-forest-map",
-      "schema_version": "dronedream.bundled-qualified-pair.v1"
-    },
-    {
-      "packages": [
-        {
-          "asset_id": "dronedream.vuosaari-harbour-map.v1",
-          "content_sha256": "d9453d86d4a024534ea3d298c3bb0b5a7f16d9fb13daf0b092fd621e0588f98f",
-          "file": "vuosaari-harbour-standard-vtol.ddpkg",
-          "kind": "map",
-          "sha256": "8c4b36308f3d1114acab47c94e6d4111ca0ed36ed4383429724191acd7b4a0e6",
-          "source_content_sha256": "4c37c47253655be8c2c4a5c7ee155274bbc1d5f5c1c54aa374c028b6ca73dd36"
-        },
-        {
-          "asset_id": "standard-vtol",
-          "content_sha256": "52e6381d6447023c27fdd3ed59a06ce50653b972bf075043e11ae1d5648c2f2a",
-          "file": "standard-vtol-vuosaari-harbour.ddpkg",
-          "kind": "vehicle",
-          "sha256": "ca980945979b629129462915b1fc9bb1903e0b4300fe7aa6513aa437813ca5be",
-          "source_content_sha256": "81f090a2ffaa241a74ad32165bd9d9c0015a4da01bf500a56e3e16b4e2b6c12e"
-        }
-      ],
-      "qualification_id": "asset-qualification-fa690ccfacd75c5c9e137b97",
-      "receipt_sha256": "6d146613b92cd8a49dc4c8b632d920c071fbbc66bfdcdfff392d854b105d3f6f",
+      "qualification_id": "asset-qualification-0bb8af69a4bb5c5a12a265ff",
+      "receipt_sha256": "655fd8993cf41adbb3af9a26359c4c2ba3410aae98986dfd8bb23fb18087875a",
       "resource_id": "dronedream-vuosaari-harbour-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
-      "vehicle_resource_id": "px4-standard-vtol"
+      "vehicle_resource_id": "px4-quadtailsitter"
     },
     {
       "packages": [
         {
           "asset_id": "dronedream.kalasatama-waterfront-map.v1",
-          "content_sha256": "79283a8df4f99405b2584db5dd47045206c262eb2c4c93fe68b1f44c0f0cfc59",
+          "content_sha256": "d1d30e8dc14dac0be3fa73f3d6e2e2c761b41f751d3c9b8b1cc7300e543458ce",
           "file": "kalasatama-waterfront-standard-vtol.ddpkg",
           "kind": "map",
-          "sha256": "025e5d20a5f430616b4527945537a02039ca9c7084623570b7f0c69a5aebb2cc",
-          "source_content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b"
+          "sha256": "e9df69d85982268538a6418533c9499eaf0c88b3192376103028ff2d30000505",
+          "source_content_sha256": "cf6c4dc785dff66da019b2798b55b59cd6f5f0870bea41bb2f92b1aab6813500"
         },
         {
           "asset_id": "standard-vtol",
-          "content_sha256": "c68662b68442415c04909da4e93b4bc8df471a9be9deca48ea226c2658680a53",
+          "content_sha256": "baff806a68bd1f4361f974f4fb1af6d33736c9b7b3393cdaa53824117c51a383",
           "file": "standard-vtol-kalasatama-waterfront.ddpkg",
           "kind": "vehicle",
-          "sha256": "4e0921f6ef1044a1c57179acc4767588c5dcac97640f265760a1312b575a6ed4",
-          "source_content_sha256": "80cc18691e19ad080df8254487655ae0deee3f396448b06196f03370e6c5aaeb"
+          "sha256": "5109ac22b0a8a32b581ccad595bcc6bbd070d16da63cb2cd920d0341186b6bfd",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
         }
       ],
-      "qualification_id": "asset-qualification-edbae4fd691433e26df0d07f",
-      "receipt_sha256": "e6464ffc3a7405243e52df0978cc30e8817f1ba5031dfd648c451ccd691eef2d",
+      "qualification_id": "asset-qualification-330781d22029d32696f5397e",
+      "receipt_sha256": "61c65080a04c4580947a590be7f5fc8a8afc080f02e3d547376f18e3fd57ad10",
       "resource_id": "dronedream-kalasatama-waterfront-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-standard-vtol"
@@ -223,23 +130,23 @@
       "packages": [
         {
           "asset_id": "dronedream.school-map.v1",
-          "content_sha256": "1fd9ba0a029db2e7c85c99f34740dc5765aa30c4d97524eac33599266ea8eeae",
+          "content_sha256": "d271ccdec6541d19343366d02db89b553a728bbe2b7d29aa053b188290faf0b7",
           "file": "kumpula-campus-standard-vtol.ddpkg",
           "kind": "map",
-          "sha256": "695600c7c45ed66b34e9dfd9208b1e6520100b56e5af67d4b5e26f867af78c92",
-          "source_content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b"
+          "sha256": "21b17cf0327f16b301d70dfa6587d4f52a0904f65c87cbf418b08630de2ea636",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
         },
         {
           "asset_id": "standard-vtol",
-          "content_sha256": "d0a41f47acdf203bf5e794cb7efc06a3786fb9c010e9e5b4d497fe922d2043d1",
+          "content_sha256": "ec2a9282d826ef445fb3ea33799fba77dae9141bca83029d32e78285e4cc4662",
           "file": "standard-vtol-kumpula-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "d6d56b93d1357e2de0798971d9e3f868204d13123b0ff919548e896bbd49c904",
-          "source_content_sha256": "80cc18691e19ad080df8254487655ae0deee3f396448b06196f03370e6c5aaeb"
+          "sha256": "9711b35f8f81f720c42c8914cbeca505300ef2d078e46b093ffd426bdbc58cdb",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
         }
       ],
-      "qualification_id": "asset-qualification-c09f82f7c90406604c5c3c1a",
-      "receipt_sha256": "6ae515dbdec63beecdcf9307320b30056f940ad9bdf773e744c8473a8e5441de",
+      "qualification_id": "asset-qualification-7ee0efd0f4cd17753f996173",
+      "receipt_sha256": "d07a756eafebfd0f48ae53906bc447e5d8efbb349e6bb2d858f5b9914c977e25",
       "resource_id": "dronedream-school-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-standard-vtol"
@@ -248,23 +155,23 @@
       "packages": [
         {
           "asset_id": "dronedream.meilahti-hospital-map.v1",
-          "content_sha256": "11c797628b429ca1db9cc89fe27b1abf98961a2659b6847a28aeffd84b077a5b",
+          "content_sha256": "2caa52475a6f5d83210b93cad9d8669935f2a2f03ff4ac91c1e8c13c31f37a07",
           "file": "meilahti-hospital-campus-standard-vtol.ddpkg",
           "kind": "map",
-          "sha256": "909b4f158d728f11d116c94cc36c992a42648323e34f5b084b9f4335c9251e28",
-          "source_content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f"
+          "sha256": "a67d4f3b988a6d334d0d458c623023a7fe29c855a2105d923573634bf992fc42",
+          "source_content_sha256": "dc3611d410df2635bedbad00688719a613559d4cbce6af70f0c23dd843248b0c"
         },
         {
           "asset_id": "standard-vtol",
-          "content_sha256": "cdecffe1e2fc9086ec5130a3ee0eeadf973dca54885621e24bd294b57d273003",
+          "content_sha256": "816f59646aa6b02c26cbcc83ea666e9f263c351035569159e9defe145f184f88",
           "file": "standard-vtol-meilahti-hospital-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "37b0ccefb2d50cebb95281d05f429d256e39b9082b42c78a0bc05a186af3f751",
-          "source_content_sha256": "80cc18691e19ad080df8254487655ae0deee3f396448b06196f03370e6c5aaeb"
+          "sha256": "768df3683de18c5327feb19c64f36673305fe35cd6286d61824cfcac40171fb2",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
         }
       ],
-      "qualification_id": "asset-qualification-84a6964677a11dabb9e14ed5",
-      "receipt_sha256": "fe848b43b1626eaa8be2aac4aab0f537d8f85b6486d53adefa9ccc668453f192",
+      "qualification_id": "asset-qualification-71c29815ab673b6524ce6abd",
+      "receipt_sha256": "86a0490fce4a4efa4d317d8a6a9dd38b5875e53047a6343f37ee267faea8f3f9",
       "resource_id": "dronedream-meilahti-hospital-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-standard-vtol"
@@ -273,23 +180,23 @@
       "packages": [
         {
           "asset_id": "dronedream.suomenlinna-map.v1",
-          "content_sha256": "2aea13c66722fd304e1535a1c9a59852486bc5ea810de8e4798eb0689f06edc9",
+          "content_sha256": "63e21c63220b6beab446be66c8430ed45cf5f8888b51c81bee9153bfdba3c279",
           "file": "suomenlinna-sea-fortress-standard-vtol.ddpkg",
           "kind": "map",
-          "sha256": "3602e5d0d0bd292cb2c8b0d34fad482d8babc49f918681f7069b73a9a1234a41",
-          "source_content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5"
+          "sha256": "f2c5dadc462f97b8a3acd24f1c1955404c5bef2a51f55ebfb525df15660abadb",
+          "source_content_sha256": "fe9181a911e4d507e946a708c6e04113f2e6f9bc188fbb5f9dcd52199271bcbf"
         },
         {
           "asset_id": "standard-vtol",
-          "content_sha256": "9e63cc617f51c3344e4cab6ba7bc71a822ca8ea8a3ea4d75f294dad96756ee36",
+          "content_sha256": "dfdac0d06cd417fac38bd959c1fcf53ebe24771266e7466f00614b9b2aae4e64",
           "file": "standard-vtol-suomenlinna-sea-fortress.ddpkg",
           "kind": "vehicle",
-          "sha256": "dba470c90fa1e88377e21d7cacc5e072d258b7ab439db366d1f1bcb0cb5120bd",
-          "source_content_sha256": "80cc18691e19ad080df8254487655ae0deee3f396448b06196f03370e6c5aaeb"
+          "sha256": "cc348bcfcd1b07d057f8dc439b5d4f5a3b2c35d40243ad68fd8351e020dc1fc2",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
         }
       ],
-      "qualification_id": "asset-qualification-718cb82f0961ca4453ce4e74",
-      "receipt_sha256": "e007ed4901f177f9befe73680508f00eed7260495548390861315821811bac8a",
+      "qualification_id": "asset-qualification-45bc3ceb5bd062bc477cf185",
+      "receipt_sha256": "5b383f32478890349b248a2de636ba59e6cf188f1d7fb2d2bce2e769c0a2ff86",
       "resource_id": "dronedream-suomenlinna-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-standard-vtol"
@@ -298,23 +205,23 @@
       "packages": [
         {
           "asset_id": "dronedream.uutela-coastal-forest-map.v1",
-          "content_sha256": "ec7479b27f27d13829ffe39755f2c4840171ded0b462598e6d1a3e1319245064",
+          "content_sha256": "356fb7c72a8e2a77d82af45846d710f5d3b0e33c94daf4e3f2e225de8a7d2980",
           "file": "uutela-coastal-forest-standard-vtol.ddpkg",
           "kind": "map",
-          "sha256": "8be723ba4f374247c99061daa7bbe700f1e02831e30103d52d6c021d2aae37c1",
-          "source_content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd"
+          "sha256": "6e17c3384ab46b5ff129c905e86382a76c73a506639d72779bab383a817de737",
+          "source_content_sha256": "da9c1792b4ccd0cef219dafe0e9e25d669c1430e4dff0ad0a01347a6a1295f95"
         },
         {
           "asset_id": "standard-vtol",
-          "content_sha256": "e8d4a74ccc1e1e5381e0b9761aa0abf080d163e1219d13334ff3ec227daf3c02",
+          "content_sha256": "d32f2210702fabc6766cf16c93761ebd6ae563a2981f9078a72ca9db855e01ba",
           "file": "standard-vtol-uutela-coastal-forest.ddpkg",
           "kind": "vehicle",
-          "sha256": "f55845ad34cbf2e8e4fe7d31f87df57a0d712a2509921dfb39ed84926174bcc6",
-          "source_content_sha256": "80cc18691e19ad080df8254487655ae0deee3f396448b06196f03370e6c5aaeb"
+          "sha256": "101d8537f5a6e72d014a76891c0c7408080ef98290e3d57814138e77b4f7ff36",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
         }
       ],
-      "qualification_id": "asset-qualification-7b50940797d158aa35c67e8d",
-      "receipt_sha256": "e2b9956b77d26c3915e1154d25a9003a91f59554c2f6895f86e9ae0b7deb6683",
+      "qualification_id": "asset-qualification-2176af1bbd6960225386c348",
+      "receipt_sha256": "fda55729a77ec9e96e04945103c05f0eb02847f56794c5bbfc53eeb56741a390",
       "resource_id": "dronedream-uutela-coastal-forest-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-standard-vtol"
@@ -322,24 +229,249 @@
     {
       "packages": [
         {
+          "asset_id": "dronedream.vuosaari-harbour-map.v1",
+          "content_sha256": "fcae3ea477fe9b31f53becb7bb6769967f364a59d456574206ef16b43cae9e57",
+          "file": "vuosaari-harbour-standard-vtol.ddpkg",
+          "kind": "map",
+          "sha256": "7c80254fb30d4deb476f6933ffc3bbc1b219e359e74cf237c468fce0f92534b0",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
+        },
+        {
+          "asset_id": "standard-vtol",
+          "content_sha256": "f39ddcfb13bbdc06c2f552bbbd9bae7c16095b2cd71a8e44eee218a765ea8136",
+          "file": "standard-vtol-vuosaari-harbour.ddpkg",
+          "kind": "vehicle",
+          "sha256": "54041f59fe641c014e526992f205b0b07be70e032d17ab64e2caa04c073bffa1",
+          "source_content_sha256": "98de669fcb46b40bc7dc626ce5597868d2e9b78da60db33684fb36c5a4e24ed4"
+        }
+      ],
+      "qualification_id": "asset-qualification-297b654e2d730e41da13aaca",
+      "receipt_sha256": "734faa390d3fc9924531f81b956e3a524eab08f7eeea530a2c154b6582af5c11",
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-standard-vtol"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.school-map.v1",
+          "content_sha256": "316ca5646febf80a7593edfff284c2f93bf116c16ed7565c742be07460aebd78",
+          "file": "kumpula-campus-tiltrotor.ddpkg",
+          "kind": "map",
+          "sha256": "6a4ebb8d5d4479ddfd7ad2ceee568718d963912afae65afcb1925d8a425b4790",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
+        },
+        {
+          "asset_id": "tiltrotor",
+          "content_sha256": "29e0236906ddfc78ac38568d2e317096def2ff84fa4334aa7fc982ff7ee115e7",
+          "file": "tiltrotor-kumpula-campus.ddpkg",
+          "kind": "vehicle",
+          "sha256": "1321056ac5ff379db5482a9413212783e8a060b243b306f3cb5b5053e4ee64e8",
+          "source_content_sha256": "3db43b5322f91eb8fcf69f52760e0cbe7779cb84deb59365792281afd337d75c"
+        }
+      ],
+      "qualification_id": "asset-qualification-ef07b3a631c737ffeafa7300",
+      "receipt_sha256": "11acb7ae67d25c24fd5f650e5af98c055e82af94daf0011779d610641b54159a",
+      "resource_id": "dronedream-school-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-tiltrotor"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.vuosaari-harbour-map.v1",
+          "content_sha256": "9251077f53ee602c78ff1e2a4701cd9fd1ce58f829fcbefaef9ef6130b11431d",
+          "file": "vuosaari-harbour-tiltrotor.ddpkg",
+          "kind": "map",
+          "sha256": "48ca2628ea781dc4f09ed204be06c04a58fe08bf19b075ca3ad024fc2afd8e27",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
+        },
+        {
+          "asset_id": "tiltrotor",
+          "content_sha256": "5437fcce74e581af898cb0943f826798da67a2fda98b1616bb69b694899b90f0",
+          "file": "tiltrotor-vuosaari-harbour.ddpkg",
+          "kind": "vehicle",
+          "sha256": "fcac1213cca06d4ba9274f7f75341fe9015a1b733bf08d2fd6a25e6689136277",
+          "source_content_sha256": "3db43b5322f91eb8fcf69f52760e0cbe7779cb84deb59365792281afd337d75c"
+        }
+      ],
+      "qualification_id": "asset-qualification-1268a028812be6667a2ee5c8",
+      "receipt_sha256": "3861a114db99cc2dc2b747be5ece7ef5462cad442b35b08f036baed6f449739c",
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-tiltrotor"
+    },
+    {
+      "packages": [
+        {
           "asset_id": "dronedream.kalasatama-waterfront-map.v1",
-          "content_sha256": "8d7a1a2423d831354ade0498b41b71f1de1cf1d5474fc035f0520aeeff26bd3d",
+          "content_sha256": "b80914b3615bbf2f299ec1c5144bebcb9275bc50dcd575fa41f4e8425c868115",
+          "file": "kalasatama-waterfront-x500-depth.ddpkg",
+          "kind": "map",
+          "sha256": "33f7407df739cd874bf2479fcc54d991651fd7cc21089d9fd79e572dd7c60e8f",
+          "source_content_sha256": "cf6c4dc785dff66da019b2798b55b59cd6f5f0870bea41bb2f92b1aab6813500"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "2c87c946ad2cdbaf8f7c314610c45fd6913ce4f9df551d68c1c09e1b61d325d8",
+          "file": "x500-depth-kalasatama-waterfront.ddpkg",
+          "kind": "vehicle",
+          "sha256": "402a4305e3dab77dc3128a32c1aacbab20efd4d6456f1e659c4db719c46aa0de",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-f51d39a5c1249acd5a5548b8",
+      "receipt_sha256": "6774f844449ed806afe1fd0f5ccea0bbf8e19895df0b0d55b57f9e1c586055f2",
+      "resource_id": "dronedream-kalasatama-waterfront-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.school-map.v1",
+          "content_sha256": "52a3b3b2cab12a94934f913efd6a5b8e7ae2fc983f4c0d66d600fe1e845bb0c5",
+          "file": "school-map.ddpkg",
+          "kind": "map",
+          "sha256": "0675bfe10e22b5c9a4f91c32f8348d40261a1c968e323148ba78690499cce59c",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "b6241ee2e52649e74f7d225ea9d77c4f89b7396c80e12fab263f6207c9f59c99",
+          "file": "my-drone.ddpkg",
+          "kind": "vehicle",
+          "sha256": "246f36b2442c988299642bc497e443a4b23880d8032c2f035bcc81cdc09a279d",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-f0a2e2ba42e63ff5a5a0b324",
+      "receipt_sha256": "a125da665a905dc2fc0f93d8c170de6b9acc0921209e696f77e012c1191390b5",
+      "resource_id": "dronedream-school-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.meilahti-hospital-map.v1",
+          "content_sha256": "22c3b76b551ffabc653cd06c9a02b67bfde9c2d3a0e19fb0f1e0d7b35b4d3d59",
+          "file": "meilahti-hospital-campus-x500-depth.ddpkg",
+          "kind": "map",
+          "sha256": "cb9c003c116d3a8096a335ef8a18ae9805a1a74d7257ca356f483b143c88276e",
+          "source_content_sha256": "dc3611d410df2635bedbad00688719a613559d4cbce6af70f0c23dd843248b0c"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "2a9c79e7483fac26c004bf1223a9232b7ea9194b7cb1523a419860beda9bc420",
+          "file": "x500-depth-meilahti-hospital-campus.ddpkg",
+          "kind": "vehicle",
+          "sha256": "0ca8207bdaa43a60914e825835c6bfb4aa9980c71b6c2e3ba1eaf44c0e97d42c",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-82442ac276708c548addaf25",
+      "receipt_sha256": "07086bb8af9264a40c09cfec9f2541c22ed70011b5ac31dfe0fce1d128237add",
+      "resource_id": "dronedream-meilahti-hospital-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.suomenlinna-map.v1",
+          "content_sha256": "ff7c84dcd22572a3710f6dc5eecb2827bc6bc73483a3a77dd2ecbdde02ab5242",
+          "file": "suomenlinna-sea-fortress-x500-depth.ddpkg",
+          "kind": "map",
+          "sha256": "f087340ff8b127c692d2fca28401163bbf95472f14625d314f4e1de7996815cb",
+          "source_content_sha256": "fe9181a911e4d507e946a708c6e04113f2e6f9bc188fbb5f9dcd52199271bcbf"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "e47dd9e230739fe9de505aee6bfc37e78ff9e1ed9985cb17bc27a034d541e0c9",
+          "file": "x500-depth-suomenlinna-sea-fortress.ddpkg",
+          "kind": "vehicle",
+          "sha256": "b88a91f2a6b309c4317e432c8e2956d570e783e57d0fb17541c422532e2f8334",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-59903929c68b193a77fcd645",
+      "receipt_sha256": "05eecb97dddf10aef8f1a0515b39ef3554592b426094cde4f5c6081a9ddeedc2",
+      "resource_id": "dronedream-suomenlinna-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.uutela-coastal-forest-map.v1",
+          "content_sha256": "4ffb2f772f6d78b7f0e97429ca69335996d559ad8907b9f94dfc57cf2e358e75",
+          "file": "uutela-coastal-forest-x500-depth.ddpkg",
+          "kind": "map",
+          "sha256": "89e25249871b74782fbaeb3783addbb9a3a4946a35d2075ef4105919f0d43b4e",
+          "source_content_sha256": "da9c1792b4ccd0cef219dafe0e9e25d669c1430e4dff0ad0a01347a6a1295f95"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "df37b83360250d80b99517229c29c4b5acc187ed1c1ccf1a62b7fb6c3ee0237c",
+          "file": "x500-depth-uutela-coastal-forest.ddpkg",
+          "kind": "vehicle",
+          "sha256": "c9109a8144b1532a1f6cdf95cad5ef0e91d8ce9c02fc8bda4b4634e7fdbdf341",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-d341087edb7637d739a00d9f",
+      "receipt_sha256": "59a7a877e459e32398bb279899a9a47f02de2ab5128c42bdd5a18bf0bf78752e",
+      "resource_id": "dronedream-uutela-coastal-forest-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.vuosaari-harbour-map.v1",
+          "content_sha256": "ff7f5f82eb4af9331cad9cb35e1eb4883fb87f6f067f433d5b59937b3d9f5c29",
+          "file": "vuosaari-harbour-x500-depth.ddpkg",
+          "kind": "map",
+          "sha256": "9b350d551bee8e931921c9dbb65191661c9c320d0c2916bb25d067effbd0541d",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
+        },
+        {
+          "asset_id": "dronedream.my-drone.v1",
+          "content_sha256": "293233eb07a88ef670ab926e52d03380cfe80892b2de2de96432f39088c0f45e",
+          "file": "x500-depth-vuosaari-harbour.ddpkg",
+          "kind": "vehicle",
+          "sha256": "429b4b0c403594bfc9179fc49013b1aea7ab79ed7f0dbe08cf81fea293ece8e6",
+          "source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+        }
+      ],
+      "qualification_id": "asset-qualification-14bf21914809e1735aae16b7",
+      "receipt_sha256": "106c0bd29fae0f2d22ad1440bf5da46edff0a947ff1acc8c12ff5b4ea183b565",
+      "resource_id": "dronedream-vuosaari-harbour-map",
+      "schema_version": "dronedream.bundled-qualified-pair.v1",
+      "vehicle_resource_id": "px4-x500-depth"
+    },
+    {
+      "packages": [
+        {
+          "asset_id": "dronedream.kalasatama-waterfront-map.v1",
+          "content_sha256": "955a8f793d9f84fdb3e5e79c0ad54c3503b5e1c9a887cc6fc9c267417d17ddda",
           "file": "kalasatama-waterfront-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "a7d82b14436c3747d08bd28385b2b3cfe8dd619e34810ea9a123257e114b103e",
-          "source_content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b"
+          "sha256": "60cafc58303bc93977a6c3d788f1304afbb7f191e47fd468ef1e1e70394e09c3",
+          "source_content_sha256": "cf6c4dc785dff66da019b2798b55b59cd6f5f0870bea41bb2f92b1aab6813500"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "3e46332e0e913254e8421215fa3e7c0d3381c2be22baa1d3761e7c9096232643",
+          "content_sha256": "b658ce291a0177143ead6ec8b8700306952495786b33114a5fe417b6a121d983",
           "file": "x500-gimbal-kalasatama-waterfront.ddpkg",
           "kind": "vehicle",
-          "sha256": "021406ce378c84d1d63265564aa7fea1a490db9469f0701b25a3909e013d8b1c",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "4c1e8494be1389f3e6031dd349ebe62341aed788a59abe354aebb3eb669bc489",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-fa48d1fdbfef4fc69cece79d",
-      "receipt_sha256": "03a8d3f9b78818e4da7466796a58240d2f49a4fa8fb62dc73a3f44e48a8cadfc",
+      "qualification_id": "asset-qualification-ff287c20ae6e677a132774d1",
+      "receipt_sha256": "fa456cb2aa9ed5cca8449ab9e065618ebc58fbe9f28f6e4577d2cd1854c6bd47",
       "resource_id": "dronedream-kalasatama-waterfront-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -348,23 +480,23 @@
       "packages": [
         {
           "asset_id": "dronedream.school-map.v1",
-          "content_sha256": "a07e2a08b869fe191b916f3028bb9e4bff4666f87d3f050944bf2d745e6ff6ee",
+          "content_sha256": "e2e91f8b8d1e7202b1e50efa160d27b44080fa5cf9aecfd7c04daaa1c05bdd28",
           "file": "kumpula-campus-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "8da347b833bfd662a4305ad161ca0c2be59c5b940d3fd5d6c373f042df2d9bed",
-          "source_content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b"
+          "sha256": "e80aa049dfb0d3a977c77db89d327fe112f3cf80f97c8cc0ad318dccadc7e8a7",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "000cc584c7ffb80c967587f95b8824b2867329b3adea2fede51348bd578fe2ad",
+          "content_sha256": "12483449f01a1d8bd4b5529c9314c817ac2e499eb19e0e0c0c07f36fc89b9ed1",
           "file": "x500-gimbal-kumpula-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "64016dae99f84aa28566bf16a2c0e56b2e23c54d6888148e3db3e5f9c5655504",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "38b1a20fecbeb7454d95c6b9a61b9e1ec320d752ef36f3140cffe5715eb38583",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-08b97c5d290c35ef0270b265",
-      "receipt_sha256": "eb2fc89dea4730f179f068844928b7dded9e6fce88c2693003986f6165ffa317",
+      "qualification_id": "asset-qualification-c50779ea5da98f2ec24afc0d",
+      "receipt_sha256": "d2d955fe84b58e3ca66458c85273407666477d4b14141403c7ea4d9b6b43257b",
       "resource_id": "dronedream-school-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -373,23 +505,23 @@
       "packages": [
         {
           "asset_id": "dronedream.meilahti-hospital-map.v1",
-          "content_sha256": "9c99d3940768adc1fe114d27b3641e4838f88a586c67de4e96a5fcef74a44c97",
+          "content_sha256": "62297da6ae506e9be148c6da08ba82cd87ae27e10ffe195ad247f6c61f29f463",
           "file": "meilahti-hospital-campus-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "76024170e06fa86409c9aeadbd675b40967c90562734c7694f977cf0d85b3bdb",
-          "source_content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f"
+          "sha256": "10217e837e2a47135930797821e1f66704f66d7e4320e83847984ae306fffe90",
+          "source_content_sha256": "dc3611d410df2635bedbad00688719a613559d4cbce6af70f0c23dd843248b0c"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "0751edd48b418966976f1004db48345e29b63e280b86917ac6837e0850fa9a5e",
+          "content_sha256": "c1b00557b2e866f9614fc43c5b24e342089e4f3b95f32d61a1923dfe3748f5ae",
           "file": "x500-gimbal-meilahti-hospital-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "90eca183cb97be59f8cf49f2a61cb181b7ebc90362649161966c0d86b713e364",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "457a08d38a37c8c42193cd77b29dd93cbbd6de5d126537b0576784fca1bed137",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-d89a01b668316c6d42066826",
-      "receipt_sha256": "04cfbda074c7071eaa923522379e8dcad64e07efbd75644da959d5604a1ede82",
+      "qualification_id": "asset-qualification-ea693728b72d2f4a73b418e3",
+      "receipt_sha256": "9875a3bf3d81647f9b2252cbf68003ce0767171fad4a758a10ddff2a32f78637",
       "resource_id": "dronedream-meilahti-hospital-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -398,23 +530,23 @@
       "packages": [
         {
           "asset_id": "dronedream.suomenlinna-map.v1",
-          "content_sha256": "89a91b533887c39c84f84f922d9058125f270a8869dbc0dd8e3c2e6178df9d5e",
+          "content_sha256": "2c11b3808c3cc180ed8fc872c63a45ca4a539f8e231bd4a3736c410ad24f546f",
           "file": "suomenlinna-sea-fortress-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "9c8302eaf4f117120db2e06ee38c27c7e6730b32a7de71aaa808c2b72f762949",
-          "source_content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5"
+          "sha256": "3f730eae56d1fc6dd6cb0498d0a9ae66b73254ffb8fd327809f432f434b28652",
+          "source_content_sha256": "fe9181a911e4d507e946a708c6e04113f2e6f9bc188fbb5f9dcd52199271bcbf"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "b930bc23f4e376cef919615e5c595a494066e153c2c4288acf9626224fc534e0",
+          "content_sha256": "0a0d13b89195fae348afebcd3ecc431c6455533efa46cb8889b0943153110c2d",
           "file": "x500-gimbal-suomenlinna-sea-fortress.ddpkg",
           "kind": "vehicle",
-          "sha256": "5c80a9f8070e966ad34a22d391c46718a5c8b1e87959da1f5849afa0b8edec4a",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "517ca14ba741a1125eb895b67f7fee0b4517d35cb9acc99339275434e7297ed0",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-060b0c743878fb73d325d3bd",
-      "receipt_sha256": "5b6a6ffcc602a93628cb54ccf11f438204676cb4a4a5c48fb5c7bb7da7b50faa",
+      "qualification_id": "asset-qualification-cd4000f352f50be6e1b6487d",
+      "receipt_sha256": "857678305e738d505cc7bf993f412ccae11ad8a87cee7e84b13a9c1399d9271e",
       "resource_id": "dronedream-suomenlinna-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -423,23 +555,23 @@
       "packages": [
         {
           "asset_id": "dronedream.uutela-coastal-forest-map.v1",
-          "content_sha256": "55a8e90dae5091c79b28f82cb68aea872de71be030c3036b69778de47768aec5",
+          "content_sha256": "ad5b7f8e9263835057cbecb865a9855d5504e0cbcb1977864d896e77bfd8cd73",
           "file": "uutela-coastal-forest-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "8dc84768a02fb53b010a6438c5471d1f78099101fc428f2a2b78de930ddead39",
-          "source_content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd"
+          "sha256": "7047d59619e335bb530eb26d059c3754e597c5005bb5064301f554652137673d",
+          "source_content_sha256": "da9c1792b4ccd0cef219dafe0e9e25d669c1430e4dff0ad0a01347a6a1295f95"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "d8165a4c3d2d8e7750f0729862b76ad47197a43c1f5488a8b55d468ae8fcaf56",
+          "content_sha256": "dfeb7a5a8d3705936224230fe386f48058832eae4ed7344e22d103cd14cf57bc",
           "file": "x500-gimbal-uutela-coastal-forest.ddpkg",
           "kind": "vehicle",
-          "sha256": "e559f02c6f8996b4c080dacf7b214ae404cc69c008a38180091d2f56446ce29f",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "477e53786c4d87ba7e300106463b1b6be5629e043c6f5edf4c0d05344d13e1ad",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-511c3747fa568a8e0be2c769",
-      "receipt_sha256": "727c667503cb9a5ae1908bf8cb035aa30060deac8b1f38ca42a0ce25833bb7f8",
+      "qualification_id": "asset-qualification-754395aeffa720538b9bf643",
+      "receipt_sha256": "c1c4d811978045cf59d7634b8754ea512e29f9029da02b69e2c03425d09bd00f",
       "resource_id": "dronedream-uutela-coastal-forest-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -448,23 +580,23 @@
       "packages": [
         {
           "asset_id": "dronedream.vuosaari-harbour-map.v1",
-          "content_sha256": "c8a7d2e2d402b4c4fa3b28c658ed66845e78d2f0324503cf1f73f4e978825128",
+          "content_sha256": "2682ae94476cb92d8257801eac7db5dc5691c1eb34ef73eb1978fd643bc76f17",
           "file": "vuosaari-harbour-x500-gimbal.ddpkg",
           "kind": "map",
-          "sha256": "73166f4cbc96e9a7f84115405b8583c76281c2f92c1985d4fa01532043bccb9d",
-          "source_content_sha256": "a01938f8687cf09c11bc9aa7d2dd2c4beb798026cb3f72b55dd9656acd29e9f0"
+          "sha256": "c4010a15c975113b1071cefb61957b33df5cabab21bd5cc42f3c94a87a0ffcbb",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
         },
         {
           "asset_id": "x500-gimbal",
-          "content_sha256": "f35c5688e46e0e80975622e0d013a85a1a9533e8a6dcee3a306eccd17a3d43fc",
+          "content_sha256": "21a30cf0da82690f991688c24fbd0428193bab194750ae4e95707f393c048fa1",
           "file": "x500-gimbal-vuosaari-harbour.ddpkg",
           "kind": "vehicle",
-          "sha256": "e23d3b27da5a376b89e890cb6857fa287d992479a02f5d3786d495b5d1b84b47",
-          "source_content_sha256": "e1b14a17836214fc6563cfc485b93a04ff234c95edcb665e2cf4fb70647bc5c9"
+          "sha256": "7b0c33fdc81406bb2ef2c36a53a2b48d1771fb529a6a5d4b7395d769ae67cb35",
+          "source_content_sha256": "81423281c93e780c2ede5a4329845d38f00b4e18f04b8af0e5d02bce103f3a8f"
         }
       ],
-      "qualification_id": "asset-qualification-066e11a5c7985e2e29dc874d",
-      "receipt_sha256": "b45bd5541ab575bdebe019e66cd5e25bfe86e4de26727a0fb8c7512921b322c3",
+      "qualification_id": "asset-qualification-5b5cab6810a5926eaf831e85",
+      "receipt_sha256": "c6cda397f272d64942971c493532dc369099ef068972d94f3a1840cd6c0f8521",
       "resource_id": "dronedream-vuosaari-harbour-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-gimbal"
@@ -473,23 +605,23 @@
       "packages": [
         {
           "asset_id": "dronedream.kalasatama-waterfront-map.v1",
-          "content_sha256": "22d6b15d7d352a9b0edb231d6c56fc77b580f037920d3b00153043a924b5ed6a",
+          "content_sha256": "c5c7947f5e5723930d5e876e0aca4b4a695235160e6475a57b2717d9686d49bf",
           "file": "kalasatama-waterfront-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "323f84d75b73b5dcc85bc602ead446d5f880eb4cbe6a73c93064c1ed5e3ea9f9",
-          "source_content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b"
+          "sha256": "d9dda3e18af7d5fb7e80d4715bd2881344c2c4c933ebb34549bf14711f2f7420",
+          "source_content_sha256": "cf6c4dc785dff66da019b2798b55b59cd6f5f0870bea41bb2f92b1aab6813500"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "ffb09fd1309691ba8c9ce4fb2c23967fcc450cc5658f20f86f3f3cfc5e9beec7",
+          "content_sha256": "ecfc96780ce2b94d3e6c34a005f40288a01f702cfe15aa7b66d24fe042f5089b",
           "file": "x500-lidar-front-kalasatama-waterfront.ddpkg",
           "kind": "vehicle",
-          "sha256": "981da41ac8b8581efefe98e7bd9900966ec0a2c82fdbbe9159da968cee9b6d4d",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "4cc27f1ea99108a940915fef79a63e68e0980c23722608b35e4aad4883d2a6cc",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-307f02ae7975b8175c411293",
-      "receipt_sha256": "2da8e400aeecbd0e5adc1221bdd005b24d153acf98b529a3093cf43c92f4b465",
+      "qualification_id": "asset-qualification-9c028bdd4969ed7892f97772",
+      "receipt_sha256": "70e2dcd8527267cfec461f7680ae05e14bf668125b411dd0c753476209ccb7b1",
       "resource_id": "dronedream-kalasatama-waterfront-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -498,23 +630,23 @@
       "packages": [
         {
           "asset_id": "dronedream.school-map.v1",
-          "content_sha256": "94929c947a2fbeda25ad66249dc6c0988f858e8da0d767124aad51c65d70586d",
+          "content_sha256": "4a31b1c278c60fafdb55b41af1e7073fd0b8cb194eb8548cc0f6e9011a3c91e9",
           "file": "kumpula-campus-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "d170ffa9df9c6f8d133651d971abea152d17d7edef3474a054ec2fc52837763c",
-          "source_content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b"
+          "sha256": "d2d7ff0db6bbb303f03a48615fbd86bd53d43c477c709f431d34bfd34f7dc8b8",
+          "source_content_sha256": "09ec224cf55a44bfc2999c7a147378d78967997ba9c45de9b32e3fc9fdd6671b"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "70ce77d4d8572cf43a84337549a3774dff53bbf72cb51ebc35476a422f131af8",
+          "content_sha256": "aa0ff35ef7a84542356786fe001b3da638520010d343e82560bdd77b5a88420e",
           "file": "x500-lidar-front-kumpula-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "f56e605e5f540043386fecd9bde2987ee1f20c6812d644427cf130e4ed3cd09f",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "e58283baa7bade669f3076ae01388956a52444265cac921d40d280cd0dae56c9",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-c2530cfa922c9c29ee12f31f",
-      "receipt_sha256": "860683986ce82a299123a22845ad3d0e0dcb21ea40392d1449e255ba069142dc",
+      "qualification_id": "asset-qualification-2ee46e6ab03a0360290ac8f8",
+      "receipt_sha256": "03a9d50d658fec152d7fb3cf15ec5d82370d56ba51846fa2d48385248622eef1",
       "resource_id": "dronedream-school-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -523,23 +655,23 @@
       "packages": [
         {
           "asset_id": "dronedream.meilahti-hospital-map.v1",
-          "content_sha256": "cc6d377f3f24b496ce38ea12295c259a83dd6f7f6744370a78d73446a8188740",
+          "content_sha256": "3e9b2c8eca043140461040edbe621ec32b39ce070467b98c95d13a48e9723f78",
           "file": "meilahti-hospital-campus-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "e2fb487c253c1bf699a04aea75f1342a3ad29909bbcb2f02d7c37642a5af5e1f",
-          "source_content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f"
+          "sha256": "3eaf5387f575c5247446aeb536b6880ba0672c9434f77c01f9341317c38d45c0",
+          "source_content_sha256": "dc3611d410df2635bedbad00688719a613559d4cbce6af70f0c23dd843248b0c"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "f635a338b6ecfd735fd8215a2c702c43e53c9d4697e056e29f3559490b793638",
+          "content_sha256": "0cee03b1a1524874ce08326bafe414a4d79db89f8f94e90e2694d119656c13e2",
           "file": "x500-lidar-front-meilahti-hospital-campus.ddpkg",
           "kind": "vehicle",
-          "sha256": "e07e6b7f0f98c7b9d3f5fe757c5e7e73d7acfc37406146215f7c5edb2b18b72a",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "d3542aafd470372a5a9fdc515ebd6958f2916115db26e67458ad7cd85bc31768",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-91e412032bb1fc91ac94e3b0",
-      "receipt_sha256": "900ed21baf80265d3a1ab874464d2f1d6d97ea9a03b82f122a9b90fc17b5863b",
+      "qualification_id": "asset-qualification-942adf592fe5fb5d9ee00909",
+      "receipt_sha256": "ded9223da1faa4945360ce6d8671e223a410710ecbedfe6bdf57ca8770497002",
       "resource_id": "dronedream-meilahti-hospital-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -548,23 +680,23 @@
       "packages": [
         {
           "asset_id": "dronedream.suomenlinna-map.v1",
-          "content_sha256": "79930f4cc147e697d00fc273f30fdd41fa8285b9a7ee4ff1f702daac3f12aa7f",
+          "content_sha256": "7adf329a0191bef4da2a625ea7d9ff8c747e218d918afab6e34a6a9549a7d338",
           "file": "suomenlinna-sea-fortress-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "6c722aa160e2a482b0ca0984c42382b6c19e8810ea0bd72a384fd3b6c41fd732",
-          "source_content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5"
+          "sha256": "f829f467b6d5e14bef1ca7116105cddd1eea3c6d7c7f7c9f6b384317972681b8",
+          "source_content_sha256": "fe9181a911e4d507e946a708c6e04113f2e6f9bc188fbb5f9dcd52199271bcbf"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "f02595401402bc258cf4d5c2f054241a901976e7d29397d7ec9c6ce4f121a8ae",
+          "content_sha256": "c912c202016172b608dfd369f82c3c37dd987b396d970b2691d645abe70aa939",
           "file": "x500-lidar-front-suomenlinna-sea-fortress.ddpkg",
           "kind": "vehicle",
-          "sha256": "c531158b926f00a909816bbe13d633408a90742b43a4049fa64f137206fcde20",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "72cb86109febb9ab973373c9a381649d3e0c808a2c5a775bbe588d987aff72ee",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-9fbb3067f8633d37d41b6155",
-      "receipt_sha256": "d381a2f6d138da28d36c864b6b4e2a6c9bdd2840cb837995e2ec0217dcd89c62",
+      "qualification_id": "asset-qualification-cc0ffb87a0ea7ce6c825bc2e",
+      "receipt_sha256": "3ef0d588285597775cbf9c006312ce007b508eb57f82010f64d5732d5bc14db3",
       "resource_id": "dronedream-suomenlinna-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -573,23 +705,23 @@
       "packages": [
         {
           "asset_id": "dronedream.uutela-coastal-forest-map.v1",
-          "content_sha256": "68866d7ddf835df54041d03c75b74237fc62b3f8295f63c1339d4c9436d0d09c",
+          "content_sha256": "296243c181c7268af037d2c98870104fc8c0c6cf12da29874c00fe5644d66435",
           "file": "uutela-coastal-forest-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "cd59ef9d0d8ed136fb3591ada1e56abcdb61f684647d416daaa24c6957bfe9ba",
-          "source_content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd"
+          "sha256": "b2c1e8ecdc767b34f1d27f7c4be6cb9c54eb9486a2484ba5b8b7c75e9031243c",
+          "source_content_sha256": "da9c1792b4ccd0cef219dafe0e9e25d669c1430e4dff0ad0a01347a6a1295f95"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "13c2e442e02d72796d563ec631bdd461ca209cb2b5256ebd8a3359476fd6cb7b",
+          "content_sha256": "aefceac5fc24001cd29420cabcea68c6e8fb0da70110f88ac3af51e1581565e9",
           "file": "x500-lidar-front-uutela-coastal-forest.ddpkg",
           "kind": "vehicle",
-          "sha256": "c6f9684df7f66dee1fba62cb255ef0a40f74414b3a8dffc0d3d9b7805c6be45e",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "6b6add0dc2cd785571febb99d55169caea5688756c4b21a064e41d919b47bb79",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-5ea37e76cb3271883f370dbc",
-      "receipt_sha256": "9d75f038008548cbb0a6efa2674708b9ea23d238cfde6b7d7e977124e3ba9dce",
+      "qualification_id": "asset-qualification-cc4730c3ee330f8770a2a118",
+      "receipt_sha256": "940f89836f21d54791a26824b97c0070e790f2eda9acb4e655560b1f328b054e",
       "resource_id": "dronedream-uutela-coastal-forest-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -598,23 +730,23 @@
       "packages": [
         {
           "asset_id": "dronedream.vuosaari-harbour-map.v1",
-          "content_sha256": "e74cdbdc3fdca7209a54b96a5133087778984b20b0284e20f9b87b2b6bcd2e65",
+          "content_sha256": "4d391ba266e0ce7cb781c003c7fde787f843be9cdb644a219733fe7b7067be27",
           "file": "vuosaari-harbour-x500-lidar-front.ddpkg",
           "kind": "map",
-          "sha256": "6689022e423ded338dc2bbb460395fc6f62249561a4ac1227964e617cba09f59",
-          "source_content_sha256": "a01938f8687cf09c11bc9aa7d2dd2c4beb798026cb3f72b55dd9656acd29e9f0"
+          "sha256": "5f907685ef1a8bc527701feb9d942fded0224fd6fba0d5f8aaad17baf73d7479",
+          "source_content_sha256": "6a0cf7467f74e5848dafc20c3aa32cd498c398aa5197f326a3edffb90740180e"
         },
         {
           "asset_id": "x500-lidar-front",
-          "content_sha256": "22b13ff8c96dad8ccc3123ada08a32b239bc7b177528a8b1070e1caba9152bed",
+          "content_sha256": "a3544ea739491b3711368ab6ad04f665e0bcaba561ea52cfcd318e95ebabce81",
           "file": "x500-lidar-front-vuosaari-harbour.ddpkg",
           "kind": "vehicle",
-          "sha256": "1350bdc6865b1195260454214e083543af3f1e2ed98113969198737545b15d5d",
-          "source_content_sha256": "25dcff2e9cbf210bef478706fc78bc8e99bcf053b19ac09d441d433f29c60a33"
+          "sha256": "27a60693965189743e1493634b528bb4c2bb3bcd6fa665b65f14b5fb68c86f8c",
+          "source_content_sha256": "101863fc4f483fae794850a7d9b5de1d8695a8c75827fbcd45238c09f8967398"
         }
       ],
-      "qualification_id": "asset-qualification-08368b5765d1056403301398",
-      "receipt_sha256": "3b27ff9b05a2851ad01b48575f82e612e07dd7309ccdd3314c03cd5cb0ca6d6f",
+      "qualification_id": "asset-qualification-28bb3324a436381195a8c699",
+      "receipt_sha256": "561ee62f93b6b38ef599b43eb6a618682f1be7cc67317d528219424dc4070bdc",
       "resource_id": "dronedream-vuosaari-harbour-map",
       "schema_version": "dronedream.bundled-qualified-pair.v1",
       "vehicle_resource_id": "px4-x500-lidar-front"
@@ -740,6 +872,55 @@
       "qualification_id": "asset-qualification-5988204a3891a2d3b50f2d37",
       "vehicle_content_sha256": "ed1326804fb08a02940d3355806175eb2cffde46dcff30543a9d65386a878e2c",
       "vehicle_source_content_sha256": "834b72ec530129db9f4913fdfe792a35eb9a48a089c9cfab6b70b1307cfa8c49"
+    },
+    {
+      "map_content_sha256": "d0c78578c16391e7bb673b61822786a0eb53c7204b2a6422e13a36ff250ec14b",
+      "map_source_content_sha256": "f794c14e1b7939cff4c66b11a3e3cc3ca11cd6c1cdd7b7408013c693eacc9aad",
+      "qualification_id": "asset-qualification-e6b4e5d8d596851ee549d46a",
+      "vehicle_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385",
+      "vehicle_source_content_sha256": "7100d3e9536e5d46946b6f097da9a3ab5f5bb645edd8a18be300994649bce26b"
+    },
+    {
+      "map_content_sha256": "0d864badb0ea547b6e2770358a382e98021ee465f2eba66e01b044672266d40f",
+      "map_source_content_sha256": "a9aea94c78eea55aec34cf46ae243f7f6d1339058a96eaea4acacc7c1b9ce95b",
+      "qualification_id": "asset-qualification-6fb9cd6b77569fecb298c000",
+      "vehicle_content_sha256": "a8023316427596ed87bc58f9d12746f8da274bba447b54739fa534f5a36ee01b",
+      "vehicle_source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+    },
+    {
+      "map_content_sha256": "2a98fbc0afdd9629e79e77bb17faad62759f92baa9be9dbff3bb7f7d1a9c515b",
+      "map_source_content_sha256": "d4fb2017098a1231f2f8301ac82d780d4d521cd479f9aed717148ae01b8993e7",
+      "qualification_id": "asset-qualification-d2fb2947d03555333fc64ac4",
+      "vehicle_content_sha256": "59388a70b42e0d465a2eb747c26b0e2fcbb0a05a7603af4bd1364fc765ecae4e",
+      "vehicle_source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+    },
+    {
+      "map_content_sha256": "a01938f8687cf09c11bc9aa7d2dd2c4beb798026cb3f72b55dd9656acd29e9f0",
+      "map_source_content_sha256": "fd296b029774a3ffd4dc4f7c3b4325b0fd1f7e4195a10e024e81941e27672510",
+      "qualification_id": "asset-qualification-94994abb257e999e2f0805f6",
+      "vehicle_content_sha256": "f95e72fc6c761d5a67d199ba509e19fe0126a432ff5c97ad2015e1966ac0a437",
+      "vehicle_source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+    },
+    {
+      "map_content_sha256": "199722fd5936ba633490d15e802638e9f8b9c88ce983913b8b7a18febfaac1d5",
+      "map_source_content_sha256": "db850c955bb77070ffdb1b8c916f1b0260cee90058d1ee77904455026fe262c4",
+      "qualification_id": "asset-qualification-49de1e9af06907248637e4be",
+      "vehicle_content_sha256": "11acb9b89bb39a5645a10832aff60673b2fffcd83685ab2dc0134b306cc54a1a",
+      "vehicle_source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+    },
+    {
+      "map_content_sha256": "df7f7b4870334d4e64b42cadf7c29f52b0d91bc62a98d43b3bc6819bd61f7bbd",
+      "map_source_content_sha256": "3e14e02d3f9851b1330b57ec1d9f948b60d7870e04aa17388c098082fe45e3c9",
+      "qualification_id": "asset-qualification-23d9556be930ad2c8f3a4ce0",
+      "vehicle_content_sha256": "9b6c579bee35c3c895ad1c55935dc641f89b1119a01629cc80e0d51858a9312f",
+      "vehicle_source_content_sha256": "ec176de8d95f7302ef3b5659ee64121d7e31800e7734c297fc9136d97863a385"
+    },
+    {
+      "map_content_sha256": "d9453d86d4a024534ea3d298c3bb0b5a7f16d9fb13daf0b092fd621e0588f98f",
+      "map_source_content_sha256": "4c37c47253655be8c2c4a5c7ee155274bbc1d5f5c1c54aa374c028b6ca73dd36",
+      "qualification_id": "asset-qualification-fa690ccfacd75c5c9e137b97",
+      "vehicle_content_sha256": "52e6381d6447023c27fdd3ed59a06ce50653b972bf075043e11ae1d5648c2f2a",
+      "vehicle_source_content_sha256": "81f090a2ffaa241a74ad32165bd9d9c0015a4da01bf500a56e3e16b4e2b6c12e"
     }
   ]
 }

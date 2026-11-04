@@ -574,6 +574,7 @@ def test_controller_runtime_ignores_retired_gain_shaped_fields(tmp_path: Path) -
                 "ki_xy": "not-a-controller-value",
                 "kd_xy": None,
                 "disturbance_rejection": 999.0,
+                "px4_parameter_overrides": {"CA_ROTOR0_PX": 0.35},
             }
         ),
         encoding="utf-8",
@@ -582,7 +583,11 @@ def test_controller_runtime_ignores_retired_gain_shaped_fields(tmp_path: Path) -
     assert _load_controller_limits(controller_path) == pytest.approx((1.2, 0.8))
     executor = _load_px4_executor_module()
     params = executor.load_controller_params(controller_path)
-    assert params == executor.ControllerParams(vel_limit=1.2, accel_limit=0.8)
+    assert params == executor.ControllerParams(
+        vel_limit=1.2,
+        accel_limit=0.8,
+        px4_parameter_overrides={"CA_ROTOR0_PX": 0.35},
+    )
     assert not hasattr(params, "kp_xy")
     assert not hasattr(params, "disturbance_rejection")
 

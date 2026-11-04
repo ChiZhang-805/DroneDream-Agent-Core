@@ -72,6 +72,29 @@ VEHICLES = {
         "max_pickup_payload_kg": 0.04,
         "extra_sensors": ["camera", "depth_camera"],
     },
+    "tiltrotor": {
+        "resource_id": "px4-tiltrotor",
+        "asset_id": "tiltrotor",
+        "profile": "tiltrotor",
+        "px4_sitl_model": "standard_vtol",
+        "name": "Tiltrotor (Multicopter Map Mode)",
+        "dry_mass_kg": 5.13500004,
+        "body_radius_m": 1.2,
+        "body_height_m": 0.178,
+        "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.230},
+        "extra_sensors": ["camera", "depth_camera"],
+    },
+    "quadtailsitter": {
+        "resource_id": "px4-quadtailsitter",
+        "asset_id": "quadtailsitter",
+        "profile": "quadtailsitter",
+        "name": "Quad Tailsitter",
+        "dry_mass_kg": 1.635,
+        "body_radius_m": 0.42,
+        "body_height_m": 0.287,
+        "collision_center_offset_model_m": {"x": 0.0, "y": 0.0, "z": 0.343},
+        "extra_sensors": ["camera", "depth_camera"],
+    },
 }
 
 
@@ -80,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         description="Promote accepted real PX4/Gazebo aircraft-map runs into bundled pairs."
     )
     parser.add_argument("--default-assets", required=True, type=Path)
+    parser.add_argument(
+        "--map-source-root",
+        required=True,
+        type=Path,
+        help="Current product map source root containing one directory per map key.",
+    )
     parser.add_argument(
         "--qualification-runs",
         required=True,
@@ -131,22 +160,25 @@ def vehicle_contract(package: Path) -> VehicleAsset:
 
 def accepted_runs(root: Path) -> dict[tuple[str, str], Path]:
     runs: dict[tuple[str, str], Path] = {}
-    for vehicle_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-        for map_dir in sorted(path for path in vehicle_dir.iterdir() if path.is_dir()):
-            evidence_path = map_dir / "mission_evidence.json"
-            if not evidence_path.is_file():
-                continue
-            evidence = read_json(evidence_path)
-            if (
-                evidence.get("schema_version")
-                == "dronedream.helsinki-map-px4-mission-evidence.v1"
-                and evidence.get("accepted") is True
-                and evidence.get("executor_exit_code") == 0
-                and evidence.get("returned_to_launch") is True
-                and evidence.get("landed") is True
-                and evidence.get("unsafe_collision_count") == 0
-            ):
-                runs[(vehicle_dir.name, map_dir.name)] = map_dir
+    vehicle_aliases = {
+        "x500_depth / My Drone": "x500-depth",
+        "x500_depth": "x500-depth",
+    }
+    for evidence_path in sorted(root.rglob("mission_evidence.json")):
+        evidence = read_json(evidence_path)
+        vehicle_key = vehicle_aliases.get(str(evidence.get("vehicle")), evidence.get("vehicle"))
+        map_key = evidence.get("scene_id")
+        if (
+            evidence.get("schema_version") == "dronedream.helsinki-map-px4-mission-evidence.v1"
+            and evidence.get("accepted") is True
+            and evidence.get("executor_exit_code") == 0
+            and evidence.get("returned_to_launch") is True
+            and evidence.get("landed") is True
+            and evidence.get("unsafe_collision_count") == 0
+            and vehicle_key in VEHICLES
+            and map_key in MAPS
+        ):
+            runs[(str(vehicle_key), str(map_key))] = evidence_path.parent
     return runs
 
 
@@ -163,8 +195,7 @@ def build_vehicle_source(
             shutil.copyfile(source, gazebo / source.name)
     shutil.copyfile(source_run / "controller_params.json", source_root / "controller_params.json")
     maximum_distance = max(
-        float(read_json(run / "mission_evidence.json")["route_distance_m"])
-        for run in vehicle_runs
+        float(read_json(run / "mission_evidence.json")["route_distance_m"]) for run in vehicle_runs
     )
     catalog = next(
         item
@@ -180,17 +211,13 @@ def build_vehicle_source(
             ]
         )
     )
-    summary = (
-        read_json(gazebo / "summary.json")
-        if (gazebo / "summary.json").is_file()
-        else {}
-    )
+    summary = read_json(gazebo / "summary.json") if (gazebo / "summary.json").is_file() else {}
     summary.update(
         {
             "schema_version": "dronedream.vehicle-gazebo-artifact.v1",
             "model_name": "my_drone",
             "source_model": f"model://{profile['profile']}",
-            "px4_sitl_model": profile["profile"],
+            "px4_sitl_model": profile.get("px4_sitl_model", profile["profile"]),
             "control_interface": "mavsdk",
             "dry_mass_kg": profile["dry_mass_kg"],
             "collision_envelope": {
@@ -250,8 +277,10 @@ def build_pair(
     evidence_path = run_dir / "mission_evidence.json"
     evidence = read_json(evidence_path)
     inputs_path = run_dir / "qualification-inputs.json"
+    if not inputs_path.is_file():
+        inputs_path = run_dir / "natural_language_mission.json"
     inputs = read_json(inputs_path)
-    if inputs.get("natural_language_acceptance") is not False:
+    if inputs.get("natural_language_acceptance") is True:
         raise ValueError(f"{vehicle_key}/{map_key}: physical evidence was misclassified")
     route_path = run_dir / "mission-route.json"
     track_path = run_dir / "reference_track.json"
@@ -383,6 +412,7 @@ def retired_pair_record(pair: dict[str, Any]) -> dict[str, str]:
 def main() -> None:
     args = parse_args()
     default_assets = args.default_assets.resolve()
+    map_source_root = args.map_source_root.resolve()
     qualification_runs = [root.resolve() for root in args.qualification_runs]
     staging = args.staging.resolve()
     if staging.exists() and (not staging.is_dir() or any(staging.iterdir())):
@@ -398,17 +428,44 @@ def main() -> None:
             for vehicle in ("x500-lidar-front", "x500-gimbal")
             for map_key in MAPS
         ),
-        *(("standard-vtol", map_key) for map_key in MAPS if map_key != "vuosaari-harbour"),
+        *(("x500-depth", map_key) for map_key in MAPS),
+        *(("standard-vtol", map_key) for map_key in MAPS),
+        *(
+            ("quadtailsitter", map_key)
+            for map_key in (
+                "kumpula-campus",
+                "kalasatama-waterfront",
+                "vuosaari-harbour",
+            )
+        ),
+        *(
+            ("tiltrotor", map_key)
+            for map_key in (
+                "kumpula-campus",
+                "vuosaari-harbour",
+            )
+        ),
     }
     missing = sorted(expected - runs.keys())
     if missing:
         raise ValueError(f"accepted qualification runs are missing: {missing}")
     writer = source_package_writer()
-    map_sources = {
-        map_key: default_assets
-        / ("school-map.ddpkg" if map_key == "kumpula-campus" else f"{map_key}.ddpkg")
-        for map_key in MAPS
-    }
+    map_sources: dict[str, Path] = {}
+    for map_key in MAPS:
+        source_root = map_source_root / map_key
+        semantic_path = source_root / "gazebo" / "semantic.json"
+        semantic = read_json(semantic_path)
+        display_name = semantic.get("display_name")
+        if not isinstance(display_name, dict) or not isinstance(display_name.get("en-US"), str):
+            raise ValueError(f"map has no English display name: {map_key}")
+        map_sources[map_key] = writer(
+            source_root=source_root,
+            destination=staging / f"source-map-{map_key}.ddpkg",
+            kind="map",
+            asset_id=str(semantic["asset_id"]),
+            name=display_name["en-US"],
+            created_at=datetime.fromtimestamp(semantic_path.stat().st_mtime, tz=UTC),
+        )
     vehicle_sources: dict[str, Path] = {}
     for vehicle_key in sorted({pair[0] for pair in expected}):
         profile = VEHICLES[vehicle_key]
@@ -436,27 +493,23 @@ def main() -> None:
             )
         except Exception as error:
             raise RuntimeError(f"pair promotion failed: {vehicle_key}/{map_key}") from error
-    replaced = {
-        (pair["resource_id"], pair.get("vehicle_resource_id", "px4-x500-depth"))
-        for pair in built
-    }
-    retained = [
-        pair
-        for pair in old_index["qualified_pairs"]
-        if (pair["resource_id"], pair.get("vehicle_resource_id", "px4-x500-depth"))
-        not in replaced
-    ]
-    pairs = [*retained, *built]
+    pairs = built
     default_pair = next(
         pair
         for pair in pairs
         if pair["resource_id"] == "dronedream-school-map"
         and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
     )
-    superseded = [*old_index.get("superseded_qualified_pairs", [])]
-    old_default = old_index["qualified_pair"]
-    if old_default["qualification_id"] != default_pair["qualification_id"]:
-        superseded.append(retired_pair_record(old_default))
+    superseded_by_id = {
+        record["qualification_id"]: record
+        for record in old_index.get("superseded_qualified_pairs", [])
+    }
+    current_ids = {pair["qualification_id"] for pair in pairs}
+    for old_pair in old_index["qualified_pairs"]:
+        if old_pair["qualification_id"] not in current_ids:
+            record = retired_pair_record(old_pair)
+            superseded_by_id[record["qualification_id"]] = record
+    superseded = list(superseded_by_id.values())
     write_json(
         staging / "index.json",
         {

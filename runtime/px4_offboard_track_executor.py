@@ -545,6 +545,7 @@ class ReferenceTrackPlan:
 class ControllerParams:
     vel_limit: float
     accel_limit: float
+    px4_parameter_overrides: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -4972,9 +4973,18 @@ def load_controller_params(path: Path) -> ControllerParams:
         raise ValueError(
             "controller_params.json is missing active limits: " + ", ".join(sorted(missing))
         )
+    overrides = payload.get("px4_parameter_overrides")
+    if overrides is not None:
+        if not isinstance(overrides, dict):
+            raise ValueError("px4_parameter_overrides must be an object")
+        overrides = {
+            str(name): _finite_float(value, f"px4_parameter_overrides.{name}")
+            for name, value in overrides.items()
+        }
     params = ControllerParams(
         vel_limit=_finite_float(payload["vel_limit"], "vel_limit"),
         accel_limit=_finite_float(payload["accel_limit"], "accel_limit"),
+        px4_parameter_overrides=overrides,
     )
     if params.vel_limit <= 0 or params.accel_limit <= 0:
         raise ValueError("vel_limit and accel_limit must be greater than zero")
@@ -6504,6 +6514,7 @@ async def run_executor(
     heading_policy: str = "measured-hold",
     maximum_yaw_rate_deg_s: float = 20.0,
     gazebo_vehicle_model_name: str | None = None,
+    controller_params: ControllerParams | None = None,
 ) -> None:
     rate_hz = _native_number(rate_hz, "rate_hz")
     if rate_hz <= 0 or rate_hz > MAX_SETPOINT_RATE_HZ:
@@ -6650,6 +6661,15 @@ async def run_executor(
                 "PX4 returned non-armable or incomplete readiness; sensor degradation must never "
                 "bypass the preflight safety gate"
             )
+        if controller_params and controller_params.px4_parameter_overrides:
+            timing["px4_parameter_overrides"] = await _await_with_abort_polling(
+                _set_float_parameters_verified(
+                    client,
+                    controller_params.px4_parameter_overrides,
+                ),
+                abort_check=check_external_abort,
+            )
+            _log(log_path, "PX4 airframe parameter overrides applied and read back")
         timing["offboard_loss_failsafe"] = await _await_with_abort_polling(
             configure_offboard_loss_failsafe(client),
             abort_check=check_external_abort,
@@ -7451,6 +7471,7 @@ def main(argv: list[str] | None = None) -> int:
                 heading_policy=args.heading_policy,
                 maximum_yaw_rate_deg_s=args.maximum_yaw_rate_deg_s,
                 gazebo_vehicle_model_name=args.gazebo_vehicle_model_name,
+                controller_params=params,
             )
         )
         _log(args.log, "executor completed successfully")

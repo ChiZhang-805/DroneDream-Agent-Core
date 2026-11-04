@@ -24,8 +24,8 @@ def test_catalog_covers_every_builtin_map_aircraft_combination_once() -> None:
     assert catalog["pair_count"] == 78
     assert len({item["pair_id"] for item in pairs}) == 78
     assert catalog["counts"] == {
-        "qualified_builtin": 24,
-        "compatible_requires_qualification": 54,
+        "qualified_builtin": 29,
+        "compatible_requires_qualification": 49,
         "incompatible": 0,
     }
 
@@ -38,24 +38,29 @@ def test_vtol_is_admitted_to_the_outdoor_campus_pending_qualification() -> None:
     assert len(compatible) == 18
     assert len({item["map_resource_id"] for item in compatible}) == 6
     qualified = [item for item in vtol_pairs if item["status"] == "qualified_builtin"]
-    assert len(qualified) == 6
-    assert {item["vehicle_resource_id"] for item in qualified} == {"px4-standard-vtol"}
-    assert {item["map_resource_id"] for item in qualified} == {
-        "dronedream-school-map",
-        "dronedream-meilahti-hospital-map",
-        "dronedream-kalasatama-waterfront-map",
-        "dronedream-vuosaari-harbour-map",
-        "dronedream-suomenlinna-map",
-        "dronedream-uutela-coastal-forest-map",
+    assert len(qualified) == 11
+    assert {
+        vehicle: sum(item["vehicle_resource_id"] == vehicle for item in qualified)
+        for vehicle in {item["vehicle_resource_id"] for item in qualified}
+    } == {
+        "px4-standard-vtol": 6,
+        "px4-quadtailsitter": 3,
+        "px4-tiltrotor": 2,
     }
-    assert all(item["status"] == "compatible_requires_qualification"
-               for item in vtol_pairs if item not in qualified)
+    assert all(
+        item["status"] == "compatible_requires_qualification"
+        for item in vtol_pairs
+        if item not in qualified
+    )
 
 
 def test_only_exact_builtin_x500_depth_pairs_claim_existing_qualification() -> None:
     catalog = asset_pair_catalog()
-    qualified = [item for item in catalog["pairs"] if item["qualification_id"]
-                 and item["vehicle_resource_id"] == "px4-x500-depth"]
+    qualified = [
+        item
+        for item in catalog["pairs"]
+        if item["qualification_id"] and item["vehicle_resource_id"] == "px4-x500-depth"
+    ]
     assert len(qualified) == 6
     assert {item["map_resource_id"]: item["qualified_map_asset_id"] for item in qualified} == {
         "dronedream-school-map": "dronedream.school-map.v1",
@@ -84,8 +89,12 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
         / "index.json"
     )
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    expected = {(item["resource_id"], item.get("vehicle_resource_id", "px4-x500-depth")):
-                item["qualification_id"] for item in index["qualified_pairs"]}
+    expected = {
+        (item["resource_id"], item.get("vehicle_resource_id", "px4-x500-depth")): item[
+            "qualification_id"
+        ]
+        for item in index["qualified_pairs"]
+    }
     actual = {
         (item["map_resource_id"], item["vehicle_resource_id"]): item["qualification_id"]
         for item in asset_pair_catalog()["pairs"]
@@ -95,8 +104,15 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
 
 
 def _release_index() -> dict:
-    path = (Path(__file__).parents[1] / "app" / "desktop" / "src-tauri" / "resources"
-            / "default-assets" / "index.json")
+    path = (
+        Path(__file__).parents[1]
+        / "app"
+        / "desktop"
+        / "src-tauri"
+        / "resources"
+        / "default-assets"
+        / "index.json"
+    )
     return json.loads(path.read_bytes())
 
 
@@ -105,7 +121,8 @@ def test_catalog_follows_selected_release_without_source_constants(tmp_path: Pat
     index_path = tmp_path / "default-assets" / "index.json"
     index_path.parent.mkdir()
     bundled_default = next(
-        pair for pair in index["qualified_pairs"]
+        pair
+        for pair in index["qualified_pairs"]
         if pair["resource_id"] == "dronedream-school-map"
         and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
     )
@@ -122,8 +139,9 @@ def test_catalog_follows_selected_release_without_source_constants(tmp_path: Pat
 def test_one_map_can_have_independent_aircraft_qualifications(tmp_path: Path) -> None:
     index = _release_index()
     source = next(
-        pair for pair in index["qualified_pairs"]
-        if pair["resource_id"] == "dronedream-school-map"
+        pair
+        for pair in index["qualified_pairs"]
+        if pair["resource_id"] == "dronedream-meilahti-hospital-map"
         and pair.get("vehicle_resource_id", "px4-x500-depth") == "px4-x500-depth"
     )
     vtol = deepcopy(source)
@@ -146,7 +164,8 @@ def test_one_map_can_have_independent_aircraft_qualifications(tmp_path: Path) ->
 
 @pytest.mark.parametrize("damage", ["missing", "json", "default", "duplicate", "vehicle", "hash"])
 def test_catalog_does_not_claim_qualification_from_damaged_index(
-    tmp_path: Path, damage: str,
+    tmp_path: Path,
+    damage: str,
 ) -> None:
     index = _release_index()
     if damage == "default":
