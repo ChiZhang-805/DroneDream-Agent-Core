@@ -143,6 +143,61 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def navigation_evidence_sha256(map_package: Path) -> str:
+    """Return the single reviewed evidence identity carried by every graph edge."""
+    with zipfile.ZipFile(map_package) as bundle:
+        graph = json.loads(bundle.read("normalized/map/navigation-graph.json"))
+    edges = graph.get("edges")
+    if not isinstance(edges, list) or not edges:
+        raise ValueError("map navigation graph must contain reviewed edges")
+    identities = {
+        edge.get("evidence_sha256")
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+    if len(identities) != 1:
+        raise ValueError("map navigation edges must share one evidence identity")
+    identity = identities.pop()
+    if (
+        not isinstance(identity, str)
+        or len(identity) != 64
+        or any(character not in "0123456789abcdef" for character in identity)
+    ):
+        raise ValueError("map navigation evidence identity must be a SHA-256 digest")
+    return identity
+
+
+def prepare_map_source(source_root: Path, destination: Path) -> Path:
+    """Copy a product map and bind geometry-derived edges to its reviewed source bytes."""
+    shutil.copytree(source_root, destination)
+    graph_path = destination / "navigation-graph.json"
+    source_identity = sha256(graph_path)
+    graph = read_json(graph_path)
+    edges = graph.get("edges")
+    if not isinstance(edges, list) or not edges or any(
+        not isinstance(edge, dict) for edge in edges
+    ):
+        raise ValueError(f"map navigation graph has no usable edges: {source_root.name}")
+    identities = {
+        edge.get("evidence_sha256")
+        for edge in edges
+        if edge.get("evidence_sha256") is not None
+    }
+    if len(identities) > 1:
+        raise ValueError(f"map navigation graph mixes evidence identities: {source_root.name}")
+    evidence_identity = next(iter(identities), source_identity)
+    if (
+        not isinstance(evidence_identity, str)
+        or len(evidence_identity) != 64
+        or any(character not in "0123456789abcdef" for character in evidence_identity)
+    ):
+        raise ValueError(f"map navigation evidence is invalid: {source_root.name}")
+    for edge in edges:
+        edge["evidence_sha256"] = evidence_identity
+    write_json(graph_path, graph)
+    return destination
+
+
 def source_package_writer() -> Any:
     path = Path(__file__).with_name("build-default-assets.py")
     spec = importlib.util.spec_from_file_location("dronedream_build_default_assets", path)
@@ -326,6 +381,7 @@ def build_pair(
         "gazebo_pose_samples_sha256": sha256(run_dir / "gazebo_pose_samples.csv"),
         "px4_log_sha256": sha256(run_dir / "px4.log"),
         "gazebo_log_sha256": sha256(run_dir / "gazebo.log"),
+        "navigation_evidence_sha256": navigation_evidence_sha256(map_source),
     }
     runtime_evidence = {
         "schema_version": "dronedream.aircraft-map-physical-evidence.v1",
@@ -458,8 +514,12 @@ def main() -> None:
         display_name = semantic.get("display_name")
         if not isinstance(display_name, dict) or not isinstance(display_name.get("en-US"), str):
             raise ValueError(f"map has no English display name: {map_key}")
+        prepared_source = prepare_map_source(
+            source_root,
+            staging / "prepared-maps" / map_key,
+        )
         map_sources[map_key] = writer(
-            source_root=source_root,
+            source_root=prepared_source,
             destination=staging / f"source-map-{map_key}.ddpkg",
             kind="map",
             asset_id=str(semantic["asset_id"]),

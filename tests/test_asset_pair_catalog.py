@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 
@@ -101,6 +102,30 @@ def test_qualified_pair_ids_match_the_bundled_default_asset_index() -> None:
         if item["status"] == "qualified_builtin"
     }
     assert actual == expected
+
+
+def test_every_bundled_map_receipt_binds_its_navigation_edge_evidence() -> None:
+    asset_root = (
+        Path(__file__).parents[1]
+        / "app"
+        / "desktop"
+        / "src-tauri"
+        / "resources"
+        / "default-assets"
+    )
+    index = json.loads((asset_root / "index.json").read_bytes())
+    for pair in index["qualified_pairs"]:
+        package = next(item for item in pair["packages"] if item["kind"] == "map")
+        with zipfile.ZipFile(asset_root / package["file"]) as bundle:
+            manifest = json.loads(bundle.read("manifest.json"))
+            receipt = json.loads(
+                bundle.read(manifest["qualification"]["evidence_paths"][0])
+            )
+            graph = json.loads(bundle.read("normalized/map/navigation-graph.json"))
+        edge_evidence = {edge["evidence_sha256"] for edge in graph["edges"]}
+        assert edge_evidence == {
+            receipt["runtime_evidence"]["artifacts"]["navigation_evidence_sha256"]
+        }
 
 
 def _release_index() -> dict:
