@@ -1838,6 +1838,25 @@ class AppStore:
         return plugin
 
     # 功能：
+    #   读取升级时需要保留的插件启用状态，不解码可能由旧版本错误编码的清单文本。
+    # 输入：
+    #   self：当前存储实例。
+    #   plugin_id：插件标识。
+    # 输出：
+    #   enabled：严格校验后的启用状态；记录不存在时抛出 KeyError。
+    @_serialized
+    def get_plugin_enabled(self, plugin_id: str) -> bool:
+        row = self._connection.execute(
+            "SELECT enabled FROM plugins WHERE plugin_id = ?", (plugin_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(plugin_id)
+        enabled = row["enabled"]
+        if type(enabled) is not int or enabled not in (0, 1):
+            raise ValueError("APP_STATE_STORED_BOOLEAN_INVALID")
+        return bool(enabled)
+
+    # 功能：
     #   同一事务更新活动目录及版本索引；首次初始化选择来源，后续保留已有选择回执。
     # 输入：
     #   self：当前存储实例。

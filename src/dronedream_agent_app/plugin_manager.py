@@ -461,11 +461,10 @@ class PluginManager:
             manifest = definition.manifest
             package_sha256 = self._manifest_hash(manifest)
             try:
-                existing = self.store.get_plugin(plugin_id)
+                enabled = self.store.get_plugin_enabled(plugin_id)
             except KeyError:
                 enabled = manifest.default_enabled
             else:
-                enabled = bool(existing["enabled"])
                 if not manifest.disable_allowed:
                     enabled = True
             self.store.upsert_plugin(
@@ -1692,9 +1691,12 @@ class PluginManager:
                         destination / "plugin.json", limit=2 * 1024 * 1024
                     ) != read_plugin_file(manifest_path, limit=2 * 1024 * 1024):
                         raise PluginManagerError("OFFICIAL_PLUGIN_MANIFEST_MISMATCH")
-                    if current is not None and current["version"] == manifest.version:
-                        if current["package_sha256"] != package_sha256:
-                            raise PluginManagerError("OFFICIAL_PLUGIN_VERSION_DRIFT")
+                    if (
+                        current is not None
+                        and current["version"] == manifest.version
+                        and current["package_sha256"] != package_sha256
+                    ):
+                        raise PluginManagerError("OFFICIAL_PLUGIN_VERSION_DRIFT")
                 self._verify_integrity(destination, manifest)
                 shutil.rmtree(staging)
             else:

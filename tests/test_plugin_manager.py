@@ -30,6 +30,32 @@ from dronedream_agent_core.plugin_contracts import PluginGovernancePolicy, Plugi
 
 
 # 功能：
+#   模拟旧版以系统编码写坏内置插件清单，确保升级保留启用选择并用当前清单修复记录。
+# 输入：
+#   tmp_path：隔离数据库目录。
+# 输出：
+#   None：断言管理器能够启动且损坏清单已被当前内置定义覆盖。
+def test_upgrade_repairs_non_utf8_builtin_manifest(tmp_path):
+    store = AppStore(tmp_path)
+    manager = PluginManager(store)
+    manager.close()
+    plugin_id = "planning.candidate-metric-geometry"
+    store._connection.execute(
+        "UPDATE plugins SET enabled = 0, manifest_json = CAST(X'80' AS TEXT) "
+        "WHERE plugin_id = ?",
+        (plugin_id,),
+    )
+    store._connection.commit()
+
+    upgraded = PluginManager(store)
+
+    repaired = store.get_plugin(plugin_id)
+    assert repaired["enabled"] is False
+    assert repaired["manifest"]["plugin_id"] == plugin_id
+    upgraded.close()
+
+
+# 功能：
 #   模拟升级后遗留内置插件记录，确保新快照不引用已退役实现且历史安装数据仍保留。
 # 输入：
 #   tmp_path：隔离数据库目录。
