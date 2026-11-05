@@ -12,6 +12,7 @@ from dronedream_agent_app.storage import AppStore
 from dronedream_agent_core.asset_packages import AssetImportJob
 from dronedream_agent_core.asset_pair_qualification import AssetPairQualificationJob
 from dronedream_agent_core.model_harness.boundary import ModelHarnessExecutionAuthority
+from dronedream_agent_core.plugin_contracts import PluginManifest
 
 
 # 功能：
@@ -92,6 +93,173 @@ def test_orphaned_database_sidecars_are_preserved_before_reinitialization(tmp_pa
         assert (recovery_root / name).read_bytes() == payload
         record = next(item for item in receipt["files"] if item["name"] == name)
         assert record["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+# 功能：
+#   验证应用数据根变化后只重绑定能够由记录身份精确证明的 Core 自管路径，且不改外部路径。
+# 输入：
+#   tmp_path：pytest 分配的独立目录。
+# 输出：
+#   None：断言导入、版本、资格、附件和插件路径都随完整数据目录安全迁移。
+def test_managed_paths_rebind_after_application_data_root_moves(tmp_path: Path):
+    old_root = tmp_path / "old-root"
+    new_root = tmp_path / "new-root"
+    store = AppStore(old_root)
+    now = datetime.now(UTC)
+    try:
+        thread = store.create_thread("fixture", "fixture")
+        source_attachment = tmp_path / "attachment.txt"
+        source_attachment.write_text("managed", encoding="utf-8")
+        managed_attachment = store.save_attachment(
+            thread["thread_id"],
+            display_name="attachment.txt",
+            content_type="text/plain",
+            source=source_attachment,
+        )
+        foreign_attachment = store.save_attachment(
+            thread["thread_id"],
+            display_name="foreign.txt",
+            content_type="text/plain",
+            source=source_attachment,
+        )
+        foreign_path = tmp_path / "external" / "foreign.txt"
+        foreign_path.parent.mkdir()
+        foreign_path.write_text("external", encoding="utf-8")
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE attachments SET local_path=? WHERE attachment_id=?",
+                (str(foreign_path), foreign_attachment["attachment_id"]),
+            )
+
+        import_id = "asset-job-" + "1" * 24
+        import_source = store.asset_quarantine_root / import_id / "source.ddpkg"
+        import_source.parent.mkdir()
+        import_source.write_bytes(b"fixture")
+        import_job = AssetImportJob(
+            job_id=import_id,
+            owner_id="test-owner",
+            source_name="source.ddpkg",
+            source_format="ddpkg",
+            package_sha256="1" * 64,
+            progress_percent=0,
+            revision=0,
+            created_at=now,
+            updated_at=now,
+        )
+        store.save_asset_import_job(
+            import_job,
+            source_format="ddpkg",
+            source_path=import_source,
+            package_sha256=import_job.package_sha256,
+        )
+
+        map_id = "fixture-map"
+        map_hash = "2" * 64
+        vehicle_id = "fixture-vehicle"
+        vehicle_hash = "3" * 64
+        map_root = store.asset_versions_root / "map" / map_id / map_hash
+        vehicle_root = store.asset_versions_root / "vehicle" / vehicle_id / vehicle_hash
+        map_root.mkdir(parents=True)
+        vehicle_root.mkdir(parents=True)
+        with store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO asset_versions VALUES(?,?,?,?,?,?,?,?)",
+                (map_id, map_hash, "map", "qualified", str(map_root), "{}", "{}", now.isoformat()),
+            )
+            connection.execute(
+                "INSERT INTO asset_versions VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    vehicle_id,
+                    vehicle_hash,
+                    "vehicle",
+                    "qualified",
+                    str(vehicle_root),
+                    "{}",
+                    "{}",
+                    now.isoformat(),
+                ),
+            )
+        pair = AssetPairQualificationJob(
+            job_id="asset-qualification-job-" + "4" * 24,
+            owner_id="test-owner",
+            map_asset_id=map_id,
+            map_content_sha256="5" * 64,
+            vehicle_asset_id=vehicle_id,
+            vehicle_content_sha256="6" * 64,
+            state="qualified",
+            progress_percent=100,
+            qualification_id="asset-qualification-" + "7" * 24,
+            result_map_content_sha256=map_hash,
+            result_vehicle_content_sha256=vehicle_hash,
+            created_at=now,
+            updated_at=now,
+        )
+        workspace = store.asset_qualification_root / pair.job_id
+        workspace.mkdir()
+        store.save_asset_pair_qualification_job(
+            pair,
+            workspace_root=workspace,
+            map_bundle_root=map_root,
+            vehicle_bundle_root=vehicle_root,
+        )
+
+        manager = PluginManager(store)
+        try:
+            plugin = store.get_plugin("model.openai")
+            manifest = PluginManifest.model_validate(plugin["manifest"])
+            plugin_root = store.plugins_root / manifest.plugin_id / manifest.version
+            plugin_root.mkdir(parents=True)
+            store.upsert_plugin(
+                manifest=manifest,
+                package_sha256=str(plugin["package_sha256"]),
+                bundle_root=plugin_root,
+                builtin=False,
+                enabled=False,
+                status="disabled",
+                health="unknown",
+            )
+        finally:
+            manager.close()
+    finally:
+        store.close()
+
+    old_root.rename(new_root)
+    reopened = AppStore(new_root)
+    try:
+        assert reopened.get_asset_import_source(import_id) == (
+            new_root / "asset-quarantine" / import_id / "source.ddpkg"
+        ).resolve()
+        assert Path(str(reopened.get_asset_version(map_id, map_hash)["bundle_root"])) == (
+            new_root / "asset-versions" / "map" / map_id / map_hash
+        ).resolve()
+        assert reopened.asset_pair_qualification_paths(pair.job_id) == (
+            (new_root / "asset-qualifications" / pair.job_id).resolve(),
+            (new_root / "asset-versions" / "map" / map_id / map_hash).resolve(),
+            (new_root / "asset-versions" / "vehicle" / vehicle_id / vehicle_hash).resolve(),
+        )
+        assert Path(
+            str(
+                reopened.get_attachment(
+                    managed_attachment["attachment_id"], thread["thread_id"]
+                )["local_path"]
+            )
+        ) == (
+            new_root
+            / "attachments"
+            / str(thread["thread_id"])
+            / f"{managed_attachment['attachment_id']}.txt"
+        ).resolve()
+        assert reopened.get_attachment(
+            foreign_attachment["attachment_id"], thread["thread_id"]
+        )["local_path"] == str(foreign_path)
+        assert Path(str(reopened.get_plugin("model.openai")["bundle_root"])) == (
+            new_root / "plugins" / manifest.plugin_id / manifest.version
+        ).resolve()
+        assert Path(
+            str(reopened.get_plugin_version(manifest.plugin_id, manifest.version)["bundle_root"])
+        ) == (new_root / "plugins" / manifest.plugin_id / manifest.version).resolve()
+    finally:
+        reopened.close()
 
 
 # 功能：

@@ -150,6 +150,18 @@ def _open_database(root: Path) -> sqlite3.Connection:
     return sqlite3.connect(database_path, check_same_thread=False)
 
 
+def _stored_path_has_suffix(value: str, suffix: Path) -> bool:
+    """Return whether an absolute stored path ends in one exact managed suffix."""
+
+    stored = Path(value)
+    expected_parts = suffix.parts
+    if not stored.is_absolute() or not expected_parts or len(stored.parts) < len(expected_parts):
+        return False
+    actual = tuple(part.casefold() for part in stored.parts[-len(expected_parts) :])
+    expected = tuple(part.casefold() for part in expected_parts)
+    return actual == expected
+
+
 # 功能：
 #   1. 用可重入锁串行化共享连接的读、检查、写及返回值构造，防止读到其他线程的未提交数据。
 #   2. 锁不合并独立事务；包含文件验收的存储调用可能阻塞，不应放在实时控制回调内。
@@ -435,6 +447,7 @@ class AppStore:
         self._migrate_plugin_columns()
         self._migrate_plugin_version_columns()
         self._migrate_thread_asset_version_columns()
+        self._migrate_managed_paths()
         self._connection.commit()
 
     # 功能：
@@ -594,6 +607,167 @@ class AppStore:
             self._connection.execute(
                 "ALTER TABLE threads ADD COLUMN locale TEXT NOT NULL DEFAULT 'zh-CN'"
             )
+
+    # 功能：
+    #   当 Windows 应用数据根因安装容器或已验证搬迁而改变时，只重绑定能够由数据库
+    #   身份精确推导且已存在于当前根目录的 Core 自管路径；不移动文件、不改外部路径。
+    # 输入：
+    #   self：初始化中的存储实例。
+    # 输出：
+    #   None：安全匹配的路径在当前初始化事务内更新。
+    def _migrate_managed_paths(self) -> None:
+        def relocated(
+            stored_value: object,
+            suffix: Path,
+            destination: Path,
+            *,
+            file_required: bool = False,
+        ) -> str | None:
+            stored = str(stored_value)
+            if not stored or not _stored_path_has_suffix(stored, suffix):
+                return None
+            destination = destination.resolve()
+            if Path(stored).resolve() == destination:
+                return None
+            if file_required:
+                if not destination.is_file():
+                    return None
+            elif not destination.is_dir():
+                return None
+            return str(destination)
+
+        # Asset packages have an immutable path derived entirely from their indexed identity.
+        for row in self._connection.execute(
+            "SELECT asset_id,content_sha256,kind,bundle_root FROM asset_versions"
+        ).fetchall():
+            suffix = (
+                Path("asset-versions")
+                / str(row["kind"])
+                / str(row["asset_id"])
+                / str(row["content_sha256"])
+            )
+            value = relocated(row["bundle_root"], suffix, self.root / suffix)
+            if value is not None:
+                self._connection.execute(
+                    "UPDATE asset_versions SET bundle_root=? "
+                    "WHERE asset_id=? AND content_sha256=?",
+                    (value, str(row["asset_id"]), str(row["content_sha256"])),
+                )
+
+        # Quarantined import sources are always source.<bounded suffix> inside their job folder.
+        for row in self._connection.execute(
+            "SELECT job_id,source_path FROM asset_import_jobs"
+        ).fetchall():
+            source = Path(str(row["source_path"]))
+            if not source.name.casefold().startswith("source."):
+                continue
+            suffix = Path("asset-quarantine") / str(row["job_id"]) / source.name
+            value = relocated(
+                row["source_path"], suffix, self.root / suffix, file_required=True
+            )
+            if value is not None:
+                self._connection.execute(
+                    "UPDATE asset_import_jobs SET source_path=? WHERE job_id=?",
+                    (value, str(row["job_id"])),
+                )
+
+        # Qualification workspaces and their two package roots are reconstructed from the job.
+        for row in self._connection.execute(
+            "SELECT * FROM asset_pair_qualification_jobs"
+        ).fetchall():
+            try:
+                job = AssetPairQualificationJob.model_validate_json(str(row["job_json"]))
+            except ValueError:
+                continue
+            workspace_names = [job.job_id]
+            if job.owner_id == "bundled-release" and job.qualification_id is not None:
+                workspace_names.append(f"bundled-{job.qualification_id}")
+            for workspace_name in workspace_names:
+                suffix = Path("asset-qualifications") / workspace_name
+                value = relocated(row["workspace_root"], suffix, self.root / suffix)
+                if value is not None:
+                    self._connection.execute(
+                        "UPDATE asset_pair_qualification_jobs SET workspace_root=? "
+                        "WHERE job_id=?",
+                        (value, job.job_id),
+                    )
+                    break
+
+            for column, asset_id, content_sha256 in (
+                (
+                    "map_bundle_root",
+                    job.map_asset_id,
+                    job.result_map_content_sha256 or job.map_content_sha256,
+                ),
+                (
+                    "vehicle_bundle_root",
+                    job.vehicle_asset_id,
+                    job.result_vehicle_content_sha256 or job.vehicle_content_sha256,
+                ),
+            ):
+                version = self._connection.execute(
+                    "SELECT kind,bundle_root FROM asset_versions "
+                    "WHERE asset_id=? AND content_sha256=?",
+                    (asset_id, content_sha256),
+                ).fetchone()
+                if version is None:
+                    continue
+                suffix = (
+                    Path("asset-versions")
+                    / str(version["kind"])
+                    / asset_id
+                    / content_sha256
+                )
+                value = relocated(row[column], suffix, self.root / suffix)
+                if value is not None:
+                    self._connection.execute(
+                        f"UPDATE asset_pair_qualification_jobs SET {column}=? WHERE job_id=?",
+                        (value, job.job_id),
+                    )
+
+        # Attachments are copied into a thread folder under an exact generated attachment id.
+        for row in self._connection.execute(
+            "SELECT attachment_id,thread_id,display_name,local_path FROM attachments"
+        ).fetchall():
+            local_path = Path(str(row["local_path"]))
+            expected_name = (
+                str(row["attachment_id"])
+                + Path(str(row["display_name"])).suffix.lower()
+            )
+            if local_path.name != expected_name:
+                continue
+            suffix = Path("attachments") / str(row["thread_id"]) / expected_name
+            value = relocated(
+                row["local_path"], suffix, self.root / suffix, file_required=True
+            )
+            if value is not None:
+                self._connection.execute(
+                    "UPDATE attachments SET local_path=? WHERE attachment_id=?",
+                    (value, str(row["attachment_id"])),
+                )
+
+        # External plugin versions use one immutable plugins/<id>/<version> directory.
+        for row in self._connection.execute(
+            "SELECT plugin_id,version,bundle_root FROM plugin_versions "
+            "WHERE bundle_root != ''"
+        ).fetchall():
+            suffix = Path("plugins") / str(row["plugin_id"]) / str(row["version"])
+            value = relocated(row["bundle_root"], suffix, self.root / suffix)
+            if value is not None:
+                self._connection.execute(
+                    "UPDATE plugin_versions SET bundle_root=? WHERE plugin_id=? AND version=?",
+                    (value, str(row["plugin_id"]), str(row["version"])),
+                )
+        for row in self._connection.execute(
+            "SELECT plugin_id,version,bundle_root FROM plugins WHERE bundle_root != ''"
+        ).fetchall():
+            suffix = Path("plugins") / str(row["plugin_id"]) / str(row["version"])
+            value = relocated(row["bundle_root"], suffix, self.root / suffix)
+            if value is not None:
+                self._connection.execute(
+                    "UPDATE plugins SET bundle_root=? WHERE plugin_id=?",
+                    (value, str(row["plugin_id"])),
+                )
 
     # 功能：
     #   将查询行复制成独立字典，严格解码 SQLite 开关及有界 JSON，拒绝损坏或歧义内容。
